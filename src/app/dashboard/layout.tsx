@@ -4,7 +4,7 @@ import { Sidebar } from "@/features/navigation/components/Sidebar";
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen bg-[#081425] text-white">
+    <div className="min-h-screen text-white">
       <div className="mx-auto flex min-h-screen max-w-[1400px]">
         <div className="w-[320px] shrink-0">
           <Sidebar />
