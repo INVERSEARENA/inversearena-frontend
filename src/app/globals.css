@@ -27,10 +27,16 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-geist-sans), ui-sans-serif, system-ui;
+
   /* Grid with thin neon-green lines - slightly adjusted for better visibility */
   background-image:
     linear-gradient(rgba(55, 255, 28, 0.06) 1px, transparent 1px),
     linear-gradient(90deg, rgba(55, 255, 28, 0.06) 1px, transparent 1px);
   background-size: 40px 40px;
   background-attachment: fixed;
+}
+
+/* Custom class for the thin branding font */
+.font-extralight {
+  font-weight: 200;
 }
