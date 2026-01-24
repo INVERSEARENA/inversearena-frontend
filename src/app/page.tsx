@@ -13,7 +13,7 @@ export default function Home() {
 
       <main className="flex-grow">
         <Hero />
-        <ProtocolSteps />
+        <Protocol />
         <WhyInverse />
         <YieldShowcase />
         <BottomCta />

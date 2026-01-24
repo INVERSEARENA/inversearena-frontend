@@ -1,6 +1,11 @@
-import React from 'react';
+"use client";
+
+import { useState } from "react";
+import { PoolCreationModal } from "@/components/modals/PoolCreationModal";
 
 const Hero = () => {
+    const [isModalOpen, setIsModalOpen] = useState(false);
+
     return (
         <section className="relative pt-40 pb-20 px-6 max-w-7xl mx-auto w-full flex flex-col items-center text-center">
             <div className="relative z-10 flex flex-col items-center">
@@ -16,12 +21,25 @@ const Hero = () => {
                     </p>
                 </div>
 
-                <button className="group relative">
+                <button
+                    type="button"
+                    className="group relative"
+                    onClick={() => setIsModalOpen(true)}
+                >
                     <div className="px-16 py-6 bg-neon-green text-black font-bold text-3xl uppercase transform transition-transform group-hover:scale-105 active:scale-95 shadow-lg">
                         PLAY NOW
                     </div>
                 </button>
             </div>
+
+            <PoolCreationModal
+                isOpen={isModalOpen}
+                onClose={() => setIsModalOpen(false)}
+                onInitialize={(data) => {
+                    console.log("Initializing pool:", data);
+                    setIsModalOpen(false);
+                }}
+            />
         </section>
     );
 };
