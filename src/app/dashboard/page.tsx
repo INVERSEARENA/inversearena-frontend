@@ -1,3 +1,6 @@
+"use client";
+
+import { useState } from "react";
 import { FeaturedArenaCard } from "@/features/dashboard-home/components/FeaturedArenaCard";
 import { YieldGeneratorPanel } from "@/features/dashboard-home/components/YieldGeneratorPanel";
 import {
@@ -9,6 +12,7 @@ import { GlobalIntelTicker } from "@/features/dashboard-home/components/GlobalIn
 import { RecentGames } from "@/features/dashboard-home/components/RecentGames";
 import { Announcements } from "@/features/dashboard-home/components/Announcements";
 import { MetricsPanel } from "@/features/dashboard-home/components/MetricsPanel";
+import { PoolCreationModal } from "@/components/modals/PoolCreationModal";
 
 import {
   featuredArena,
@@ -20,6 +24,8 @@ import {
 } from "@/features/dashboard-home/mockHome";
 
 export default function DashboardHomePage() {
+  const [isModalOpen, setIsModalOpen] = useState(false);
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -31,7 +37,11 @@ export default function DashboardHomePage() {
           <YieldGeneratorPanel data={yieldGeneratorData} />
 
           <div className="grid grid-cols-2 gap-4">
-            <QuickActionTile icon={<PlusIcon />} label="CREATE NEW ARENA" />
+            <QuickActionTile
+              icon={<PlusIcon />}
+              label="CREATE NEW ARENA"
+              onClick={() => setIsModalOpen(true)}
+            />
             <QuickActionTile icon={<GridIcon />} label="BROWSE POOLS" />
           </div>
         </div>
@@ -44,6 +54,15 @@ export default function DashboardHomePage() {
         <Announcements announcement={activeAnnouncement} />
         <MetricsPanel metrics={networkMetrics} />
       </div>
+
+      <PoolCreationModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        onInitialize={(data) => {
+          console.log("Initializing pool:", data);
+          setIsModalOpen(false);
+        }}
+      />
     </div>
   );
 }

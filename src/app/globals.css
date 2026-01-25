@@ -6,6 +6,25 @@
   --color-dark-bg: #09101D;
   --color-card-bg: #0D1117;
   --color-border-gray: #1E232B;
+  --color-primary: #3cff14;
+  --color-background-dark: #0F172A;
+  --font-family-display: var(--font-space-grotesk), "Space Grotesk", sans-serif;
+}
+
+@utility border-3 {
+  border-width: 3px;
+}
+
+@utility border-t-3 {
+  border-top-width: 3px;
+}
+
+@utility border-b-3 {
+  border-bottom-width: 3px;
+}
+
+@utility border-l-3 {
+  border-left-width: 3px;
 }
 
 :root {
@@ -15,7 +34,8 @@
 
 html {
   scroll-behavior: smooth;
-  font-smoothing: antialiased;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 ::selection {
@@ -39,6 +59,10 @@ body {
 /* Custom class for the thin branding font */
 .font-extralight {
   font-weight: 200;
+}
+
+.font-display {
+  font-family: var(--font-space-grotesk), "Space Grotesk", sans-serif;
 }
 
 /* Pixel art font */

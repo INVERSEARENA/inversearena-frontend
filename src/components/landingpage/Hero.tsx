@@ -1,5 +1,3 @@
-import React from 'react';
-
 const Hero = () => {
     return (
         <section className="relative pt-40 pb-20 px-6 max-w-7xl mx-auto w-full flex flex-col items-center text-center">
@@ -16,7 +14,10 @@ const Hero = () => {
                     </p>
                 </div>
 
-                <button className="group relative">
+                <button
+                    type="button"
+                    className="group relative"
+                >
                     <div className="px-16 py-6 bg-neon-green text-black font-bold text-3xl uppercase transform transition-transform group-hover:scale-105 active:scale-95 shadow-lg">
                         PLAY NOW
                     </div>
