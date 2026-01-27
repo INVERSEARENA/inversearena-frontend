@@ -1,4 +1,15 @@
+'use client'
+import React from 'react';
+import { useState } from "react";
+
 const Hero = () => {
+    const [isModalOpen, setIsModalOpen] = useState(false);
+
+    const handleConfirm = async () => {
+        console.log("confirm logic here");
+        await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
     return (
         <section className="relative pt-40 pb-20 px-6 max-w-7xl mx-auto w-full flex flex-col items-center text-center">
             <div className="relative z-10 flex flex-col items-center">
