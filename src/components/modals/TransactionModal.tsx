@@ -133,6 +133,11 @@ export function TransactionModal({
                             Transaction has been confirmed on the network.
                         </p>
                         <button
+                            ref={(el) => {
+                                if (el && state === "SUCCESS") {
+                                    el.focus();
+                                }
+                            }}
                             onClick={onClose}
                             className="w-full bg-white text-black border-2 border-black py-4 font-black uppercase tracking-widest hover:bg-slate-200 transition-colors"
                         >
