@@ -13,6 +13,7 @@ import { RecentGames } from "@/features/dashboard-home/components/RecentGames";
 import { Announcements } from "@/features/dashboard-home/components/Announcements";
 import { MetricsPanel } from "@/features/dashboard-home/components/MetricsPanel";
 import { PoolCreationModal } from "@/components/modals/PoolCreationModal";
+import TelemetryPage from "@/app/dashboard/telemetry-bar/page";
 
 import {
   featuredArena,
@@ -28,7 +29,9 @@ export default function DashboardHomePage() {
 
   return (
     <div className="space-y-6">
+      <TelemetryPage/>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        {/* <TelemetryPage/> */}
         <div className="lg:col-span-2">
           <FeaturedArenaCard arena={featuredArena} />
         </div>
