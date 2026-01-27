@@ -210,21 +210,6 @@ export default function ProfilePage() {
           </div>
         </div>
       </div>
-
-      {/* Footer Strip */}
-      <footer className="pt-8 border-t border-white/5 flex flex-wrap justify-between items-center gap-4 text-[9px] uppercase tracking-[0.2em] font-mono text-zinc-600">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-neon-green" />
-            <span>NETWORK: MAINNET_V1</span>
-          </div>
-          <span>BLOCK: 48,291,092</span>
-        </div>
-        <div className="flex items-center gap-6">
-          <span>LATENCY: 24MS</span>
-          <span>© 2024 INVERSE_ARENA_LABS</span>
-        </div>
-      </footer>
     </div>
   );
 }

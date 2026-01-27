@@ -1,9 +1,17 @@
+"use client";
+
 import { dashboardNavItems } from "../navItems";
 import { SidebarNavLink } from "./SidebarNavLink";
+import { useWallet } from "@/features/wallet/useWallet";
+import { ConnectWalletButton } from "@/components/wallet/ConnectWalletButton";
 
 import type { ReactNode } from "react";
 
 export function Sidebar() {
+  const { status, publicKey } = useWallet();
+
+  const shortenAddress = (addr: string) =>
+    addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : "";
   const icons: Record<string, ReactNode> = {
     "/dashboard": (
       <svg
@@ -21,7 +29,7 @@ export function Sidebar() {
         <polyline points="9 22 9 12 15 12 15 22" />
       </svg>
     ),
-    "/dashboard/lobby": (
+    "/dashboard/leaderboard": (
       <svg
         xmlns="http://www.w3.org/2000/svg"
         width="20"
@@ -82,6 +90,7 @@ export function Sidebar() {
           INVERSE <span className="text-[#39ff14]">ARENA</span>
         </div>
         <div className="mt-2 text-xs font-semibold tracking-widest text-zinc-400">
+          PROTOCOL
           PROTOCOL V.2.0.4
         </div>
       </div>
@@ -93,6 +102,32 @@ export function Sidebar() {
       </nav>
 
       <div className="border-t border-white/10 p-4">
+        {status === 'connected' ? (
+          <>
+            <div className="flex items-center gap-2 text-xs font-semibold text-[#39ff14]">
+              <span className="inline-block h-2 w-2 rounded-full bg-[#39ff14]" />
+              WALLET CONNECTED
+            </div>
+
+            <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-white/10 bg-white/5 px-3 py-2">
+              <div className="truncate text-sm font-semibold text-zinc-200">
+                {shortenAddress(publicKey!)}
+              </div>
+            </div>
+            <div className="mt-3">
+              <ConnectWalletButton />
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="text-xs font-semibold text-zinc-400">
+              Not connected
+            </div>
+            <div className="mt-3">
+              <ConnectWalletButton />
+            </div>
+          </>
+        )}
         <div className="flex items-center gap-2 text-xs font-semibold text-[#39ff14]">
           <span className="inline-block size-2 rounded-full bg-[#39ff14]" />
           WALLET CONNECTED
