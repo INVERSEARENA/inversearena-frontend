@@ -1,3 +1,16 @@
+<<<<<<< HEAD
+"use client";
+
+import { useState, useCallback } from "react";
+import {
+  LeaderboardTable,
+  Pagination,
+  getPaginatedSurvivors,
+  getTotalPages,
+} from "@/features/leaderboard";
+
+const ITEMS_PER_PAGE = 4;
+=======
 const leaderboardStats = {
   totalYield: "$450,230",
   liveAgents: "1,204",
@@ -27,9 +40,37 @@ const podium = [
     highlight: false,
   },
 ];
+>>>>>>> upstream/main
 
 export default function LeaderboardPage() {
+  const [currentPage, setCurrentPage] = useState(1);
+
+  const totalPages = getTotalPages(ITEMS_PER_PAGE);
+  const paginatedSurvivors = getPaginatedSurvivors(currentPage, ITEMS_PER_PAGE);
+
+  const handlePageChange = useCallback((page: number) => {
+    setCurrentPage(page);
+  }, []);
+
+  const handleChallenge = useCallback((survivorId: string) => {
+    // TODO: connect to smart contract
+    console.log("Challenge initiated for survivor:", survivorId);
+  }, []);
+
   return (
+<<<<<<< HEAD
+    <div className="flex flex-col gap-6">
+      <LeaderboardTable
+        survivors={paginatedSurvivors}
+        onChallenge={handleChallenge}
+      />
+
+      <Pagination
+        currentPage={currentPage}
+        totalPages={totalPages}
+        onPageChange={handlePageChange}
+      />
+=======
     <div className="flex min-h-[calc(100vh-48px)] flex-col gap-8">
       <section className="relative w-full flex-1 overflow-hidden border border-[#0E1626] bg-[#0A101A] p-6 md:p-10">
         <div className="absolute inset-0 bg-gradient-to-br from-[#0D182A] via-transparent to-transparent" />
@@ -159,6 +200,7 @@ export default function LeaderboardPage() {
           ))}
         </div>
       </section>
+>>>>>>> upstream/main
     </div>
   );
 }
