@@ -8,11 +8,28 @@ import {
   ChooseYourFate,
   TotalYieldPot,
 } from "@/components/arena/core";
+import { useWallet } from "@/shared-d/hooks/useWallet";
+import { TransactionModal } from "@/components/modals/TransactionModal";
+import {
+  buildJoinArenaTransaction,
+  buildSubmitChoiceTransaction,
+  buildClaimWinningsTransaction,
+  submitSignedTransaction
+} from "@/shared-d/utils/stellar-transactions";
 
 export default function ArenaPage() {
-  const [selectedChoice, setSelectedChoice] = useState<"heads" | "tails" | null>(
-    null
-  );
+  const { isConnected, address, connect, signTransaction } = useWallet();
+  const [selectedChoice, setSelectedChoice] = useState<"heads" | "tails" | null>(null);
+  const [isJoined, setIsJoined] = useState(false); // Mock state for demo
+  const [hasWon, setHasWon] = useState(false); // Mock win state
+
+  // Transaction Modal State
+  const [showTxModal, setShowTxModal] = useState(false);
+  const [txType, setTxType] = useState<"JOIN" | "SUBMIT" | "CLAIM" | null>(null);
+  const [txDetails, setTxDetails] = useState<{ label: string; value: string | number }[]>([]);
+
+  // Mock Arena ID
+  const ARENA_ID = "C...ARENA";
 
   // Mock data - would come from API/contract
   const headsYield = 42;
@@ -21,56 +38,107 @@ export default function ArenaPage() {
   const tailsPercentage = 58;
 
   return (
-    <div className="min-h-screen p-4 md:p-6">
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <header className="flex justify-between items-center mb-6">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-neon-green" />
-            <span className="font-pixel text-sm text-white tracking-wider">
-              INVERSE ARENA
-            </span>
-          </div>
-          <div className="flex gap-3">
-            <button className="border border-white/20 px-4 py-2 font-pixel text-[8px] text-white tracking-wider hover:bg-white/5">
-              SOROBAN LIVE
-            </button>
-            <button className="bg-neon-green px-4 py-2 font-pixel text-[8px] text-black tracking-wider hover:bg-neon-green/90">
-              CONNECT WALLET
-            </button>
-          </div>
-        </header>
-
-        {/* Main grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* Left column - Game area */}
-          <div className="lg:col-span-2 flex flex-col gap-4">
-            {/* Top row: Choose Your Fate + Timer */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <ChooseYourFate />
-              <Timer initialSeconds={5} />
+    <>
+      <div className="min-h-screen p-4 md:p-6">
+        <div className="max-w-7xl mx-auto">
+          {/* Header */}
+          <header className="flex justify-between items-center mb-6">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 bg-neon-green" />
+              <span className="font-pixel text-sm text-white tracking-wider">
+                INVERSE ARENA
+              </span>
             </div>
+            <div className="flex gap-3">
+              <button className="border border-white/20 px-4 py-2 font-pixel text-[8px] text-white tracking-wider hover:bg-white/5">
+                SOROBAN LIVE
+              </button>
+              <button className="border border-white/20 px-4 py-2 font-pixel text-[8px] text-white tracking-wider hover:bg-white/5">
+                SOROBAN LIVE
+              </button>
+              <button
+                onClick={() => !isConnected && connect()}
+                className="bg-neon-green px-4 py-2 font-pixel text-[8px] text-black tracking-wider hover:bg-neon-green/90 uppercase"
+              >
+                {isConnected ? (address ? `${address.slice(0, 4)}...${address.slice(-4)}` : "CONNECTED") : "CONNECT WALLET"}
+              </button>
+            </div>
+          </header>
 
-            {/* Tension Bar */}
-            <TensionBar
-              headsPercentage={headsPercentage}
-              tailsPercentage={tailsPercentage}
-            />
+          {/* Join Arena Overlay / Button (Demo) */}
+          {isConnected && !isJoined && (
+            <div className="mb-6 bg-blue-900/20 border border-blue-500/50 p-4 flex justify-between items-center rounded">
+              <div className="text-blue-200 text-xs font-pixel">
+                YOU ARE OBSERVING. JOIN THE ARENA TO PLAY.
+              </div>
+              <button
+                onClick={() => {
+                  setTxType("JOIN");
+                  setTxDetails([
+                    { label: "Action", value: "Join Arena" },
+                    { label: "Entry Fee", value: "100 XLM" }, // Example
+                    { label: "Arena ID", value: ARENA_ID },
+                  ]);
+                  setShowTxModal(true);
+                }}
+                className="bg-blue-500 hover:bg-blue-400 text-black font-pixel text-[10px] px-6 py-2"
+              >
+                JOIN ROUND
+              </button>
+            </div>
+          )}
 
-            {/* Choice Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-grow">
-              <ChoiceCard
-                type="heads"
-                estimatedYield={headsYield}
-                isSelected={selectedChoice === "heads"}
-                onSelect={() => setSelectedChoice("heads")}
+          {/* Main grid */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {/* Left column - Game area */}
+            <div className="lg:col-span-2 flex flex-col gap-4">
+              {/* Top row: Choose Your Fate + Timer */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <ChooseYourFate />
+                <Timer initialSeconds={5} />
+              </div>
+
+              {/* Tension Bar */}
+              <TensionBar
+                headsPercentage={headsPercentage}
+                tailsPercentage={tailsPercentage}
               />
-              <ChoiceCard
-                type="tails"
-                estimatedYield={tailsYield}
-                isSelected={selectedChoice === "tails"}
-                onSelect={() => setSelectedChoice("tails")}
-              />
+
+              {/* Choice Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-grow">
+                <ChoiceCard
+                  type="heads"
+                  estimatedYield={headsYield}
+                  isSelected={selectedChoice === "heads"}
+                  onSelect={() => setSelectedChoice("heads")}
+                />
+                <ChoiceCard
+                  type="tails"
+                  estimatedYield={tailsYield}
+                  isSelected={selectedChoice === "tails"}
+                  onSelect={() => setSelectedChoice("tails")}
+                />
+              </div>
+
+              {/* Lock In Button */}
+              {selectedChoice && isJoined && (
+                <div className="mt-4 flex justify-center">
+                  <button
+                    onClick={() => {
+                      setTxType("SUBMIT");
+                      setTxDetails([
+                        { label: "Action", value: "Submit Choice" },
+                        { label: "Choice", value: selectedChoice.toUpperCase() },
+                        { label: "Round", value: "#12" }, // Mock
+                      ]);
+                      setShowTxModal(true);
+                    }}
+                    className="w-full md:w-auto bg-neon-pink text-white font-pixel text-lg px-12 py-4 border-4 border-black shadow-[4px_4px_0px_0px_#fff] hover:translate-y-1 hover:shadow-none transition-all uppercase"
+                  >
+                    LOCK IN {selectedChoice}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 
@@ -127,16 +195,35 @@ export default function ArenaPage() {
               <p className="font-pixel text-[8px] text-black/60 tracking-wider mb-2">
                 YOUR STATUS
               </p>
-              <p className="font-pixel text-xl text-black italic mb-4">STILL IN</p>
+              <p className="font-pixel text-xl text-black italic mb-4">
+                {hasWon ? "WINNER!" : "STILL IN"}
+              </p>
               <div className="space-y-2 text-[10px] font-mono text-black">
                 <div className="flex justify-between">
                   <span>CURRENT STAKE</span>
                   <span className="font-bold">$1,200.00</span>
                 </div>
-                <div className="flex justify-between">
-                  <span>POTENTIAL PAYOUT</span>
-                  <span className="font-bold">$24,420.00</span>
-                </div>
+                {hasWon ? (
+                  <button
+                    onClick={() => {
+                      setTxType("CLAIM");
+                      setTxDetails([
+                        { label: "Action", value: "Claim Winnings" },
+                        { label: "Amount", value: "$24,420.00" },
+                        { label: "Arena ID", value: ARENA_ID },
+                      ]);
+                      setShowTxModal(true);
+                    }}
+                    className="w-full mt-4 bg-black text-neon-green font-pixel text-xs py-3 border-2 border-black hover:bg-zinc-900 uppercase"
+                  >
+                    CLAIM WINNINGS
+                  </button>
+                ) : (
+                  <div className="flex justify-between">
+                    <span>POTENTIAL PAYOUT</span>
+                    <span className="font-bold">$24,420.00</span>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -165,6 +252,46 @@ export default function ArenaPage() {
           </div>
         </div>
       </div>
-    </div>
+
+      <TransactionModal
+        isOpen={showTxModal}
+        onClose={() => setShowTxModal(false)}
+        title={txType === "JOIN" ? "Join Arena" : txType === "SUBMIT" ? "Submit Choice" : "Claim Winnings"}
+        description={txType === "CLAIM" ? "Withdraw your earnings" : (txType === "JOIN" ? "Confirm entry to arena" : "Lock in your prediction")}
+        details={txDetails}
+        confirmLabel={txType === "JOIN" ? "Sign & Join" : (txType === "SUBMIT" ? "Sign & Submit" : "Sign & Claim")}
+        onConfirm={async () => {
+          if (!address || !txType) return;
+
+          try {
+            let tx;
+            if (txType === "JOIN") {
+              tx = await buildJoinArenaTransaction(address, ARENA_ID, 100);
+            } else if (txType === "SUBMIT" && selectedChoice) {
+              tx = await buildSubmitChoiceTransaction(address, ARENA_ID, selectedChoice === "heads" ? "Heads" : "Tails", 12);
+            } else if (txType === "CLAIM") {
+              tx = await buildClaimWinningsTransaction(address, ARENA_ID);
+            } else {
+              return;
+            }
+
+            const signedXdr = await signTransaction(tx.toXDR());
+            await submitSignedTransaction(signedXdr);
+
+            if (txType === "JOIN") setIsJoined(true);
+            if (txType === "SUBMIT") {
+              setTimeout(() => setHasWon(true), 5000);
+            }
+            if (txType === "CLAIM") setHasWon(false);
+
+            setShowTxModal(false);
+          } catch (e) {
+            console.error(e);
+            throw e;
+          }
+        }}
+      />
+
+    </>
   );
 }

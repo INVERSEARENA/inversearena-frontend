@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { WalletProvider } from "@/features/wallet/WalletProvider";
+import { ClientProviders } from "./ClientProviders";
 
 import { Geist, Geist_Mono, Press_Start_2P, Space_Grotesk } from "next/font/google";
 import "./globals.css";
@@ -47,9 +47,9 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${pressStart2P.variable} ${spaceGrotesk.variable} antialiased`}
       >
-        <WalletProvider>
+        <ClientProviders>
           {children}
-        </WalletProvider>
+        </ClientProviders>
       </body>
     </html>
   );

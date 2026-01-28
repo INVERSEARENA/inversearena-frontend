@@ -1,4 +1,5 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
+import { isConnected, requestAccess, getAddress, signTransaction as freighterSignTransaction } from '@stellar/freighter-api';
 
 /**
  * Wallet connection status
@@ -21,63 +22,60 @@ export interface UseWalletReturn {
   connect: () => Promise<void>;
   /** Disconnect from wallet */
   disconnect: () => void;
+  /** Sign a transaction XDR */
+  signTransaction: (xdr: string, network?: string) => Promise<string>;
 }
 
 /**
- * Mock wallet adapter for development
- * Replace this with actual Stellar wallet SDK integration later
- */
-const mockWalletAdapter = {
-  async connect(): Promise<string> {
-    // Simulate network delay
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    
-    // Simulate random success/failure (90% success rate)
-    if (Math.random() < 0.9) {
-      // Generate a mock Stellar address (starts with G, 56 characters)
-      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-      let address = 'G';
-      for (let i = 0; i < 55; i++) {
-        address += chars[Math.floor(Math.random() * chars.length)];
-      }
-      return address;
-    } else {
-      throw new Error('User rejected the connection');
-    }
-  },
-  
-  disconnect(): void {
-    // Cleanup logic would go here
-  }
-};
-
-/**
  * Reusable wallet hook for managing wallet connection state
- * 
- * @example
- * ```tsx
- * const { status, address, isConnected, connect, disconnect } = useWallet();
- * 
- * if (isConnected) {
- *   return <div>Connected: {address}</div>;
- * }
- * 
- * return <button onClick={connect}>Connect Wallet</button>;
- * ```
  */
 export function useWallet(): UseWalletReturn {
   const [status, setStatus] = useState<WalletStatus>('disconnected');
   const [address, setAddress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Check if wallet is already connected on mount
+  useEffect(() => {
+    async function checkConnection() {
+      try {
+        const connectionInfo = await isConnected();
+        if (connectionInfo?.isConnected) {
+          const addressInfo = await getAddress();
+          if (addressInfo?.address) {
+            setAddress(addressInfo.address);
+            setStatus('connected');
+          }
+        }
+      } catch (err) {
+        console.error('Failed to check wallet connection:', err);
+      }
+    }
+    checkConnection();
+  }, []);
+
   const connect = useCallback(async () => {
     try {
       setStatus('connecting');
       setError(null);
-      
-      const walletAddress = await mockWalletAdapter.connect();
-      
-      setAddress(walletAddress);
+
+      const connectionInfo = await isConnected();
+      if (!connectionInfo?.isConnected) {
+        // Freighter not installed
+        throw new Error('Freighter wallet is not installed');
+      }
+
+      // Request access
+      const accessInfo = await requestAccess();
+
+      if (accessInfo.error) {
+        throw new Error(accessInfo.error.toString());
+      }
+
+      if (!accessInfo?.address) {
+        throw new Error('User rejected the connection');
+      }
+
+      setAddress(accessInfo.address);
       setStatus('connected');
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to connect wallet';
@@ -88,10 +86,27 @@ export function useWallet(): UseWalletReturn {
   }, []);
 
   const disconnect = useCallback(() => {
-    mockWalletAdapter.disconnect();
+    // Freighter doesn't have a strict disconnect API for dApps (it's stateless mostly),
+    // but we clear our local state.
     setStatus('disconnected');
     setAddress(null);
     setError(null);
+  }, []);
+
+  const signTransaction = useCallback(async (xdr: string, network?: string) => {
+    try {
+      const networkPassphrase = network || "Test SDF Network ; September 2015"; // Default to Testnet
+      const result = await freighterSignTransaction(xdr, { networkPassphrase });
+
+      if (result.error) {
+        throw new Error(result.error.toString());
+      }
+
+      return result.signedTxXdr;
+    } catch (err) {
+      console.error("Signing error:", err);
+      throw err;
+    }
   }, []);
 
   return {
@@ -101,5 +116,6 @@ export function useWallet(): UseWalletReturn {
     isConnected: status === 'connected',
     connect,
     disconnect,
+    signTransaction,
   };
 }
