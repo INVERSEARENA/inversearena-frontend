@@ -7,6 +7,14 @@ import { isConnected, requestAccess, getAddress, signTransaction as freighterSig
 export type WalletStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
 /**
+ * Balance information for a currency
+ */
+export interface Balance {
+  xlm: number;
+  usdc: number;
+}
+
+/**
  * Wallet hook return type
  */
 export interface UseWalletReturn {
@@ -18,6 +26,10 @@ export interface UseWalletReturn {
   error: string | null;
   /** Derived boolean for convenience */
   isConnected: boolean;
+  /** Wallet balances */
+  balance: Balance;
+  /** Whether balances are being fetched */
+  isLoadingBalance: boolean;
   /** Connect to wallet */
   connect: () => Promise<void>;
   /** Disconnect from wallet */
@@ -26,6 +38,10 @@ export interface UseWalletReturn {
   signTransaction: (xdr: string, network?: string) => Promise<string>;
 }
 
+// Contract IDs for balance fetching
+const XLM_CONTRACT_ID = "CAS3J7GYLGXMF6TDJBXBGMELNUPVCGXIZ68TZE6GTVASJ63Y32KXVY77"; // Testnet Native SAC
+const USDC_CONTRACT_ID = "CC..."; // TODO: Add real USDC Contract ID
+
 /**
  * Reusable wallet hook for managing wallet connection state
  */
@@ -33,6 +49,53 @@ export function useWallet(): UseWalletReturn {
   const [status, setStatus] = useState<WalletStatus>('disconnected');
   const [address, setAddress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [balance, setBalance] = useState<Balance>({ xlm: 0, usdc: 0 });
+  const [isLoadingBalance, setIsLoadingBalance] = useState(false);
+
+  const fetchBalance = useCallback(async () => {
+    if (!address) return;
+
+    setIsLoadingBalance(true);
+    try {
+      const [xlmBalance, usdcBalance] = await Promise.all([
+        fetchAssetBalance(address, "XLM"),
+        fetchAssetBalance(address, "USDC"),
+      ]);
+
+      setBalance({ xlm: xlmBalance, usdc: usdcBalance });
+    } catch (err) {
+      console.error("Failed to fetch balances:", err);
+      // Keep previous balance on error
+    } finally {
+      setIsLoadingBalance(false);
+    }
+  }, [address]);
+
+  // Check if wallet is already connected on mount
+  useEffect(() => {
+    async function checkConnection() {
+      try {
+        const connectionInfo = await isConnected();
+        if (connectionInfo?.isConnected) {
+          const addressInfo = await getAddress();
+          if (addressInfo?.address) {
+            setAddress(addressInfo.address);
+            setStatus('connected');
+          }
+        }
+      } catch (err) {
+        console.error('Failed to check wallet connection:', err);
+      }
+    }
+    checkConnection();
+  }, []);
+
+  // Fetch balance when address changes (wallet connected)
+  useEffect(() => {
+    if (address && status === 'connected') {
+      fetchBalance();
+    }
+  }, [address, status, fetchBalance]);
 
   // Check if wallet is already connected on mount
   useEffect(() => {
@@ -91,6 +154,23 @@ export function useWallet(): UseWalletReturn {
     setStatus('disconnected');
     setAddress(null);
     setError(null);
+    setBalance({ xlm: 0, usdc: 0 });
+  }, []);
+
+  const signTransaction = useCallback(async (xdr: string, network?: string) => {
+    try {
+      const networkPassphrase = network || "Test SDF Network ; September 2015"; // Default to Testnet
+      const result = await freighterSignTransaction(xdr, { networkPassphrase });
+
+      if (result.error) {
+        throw new Error(result.error.toString());
+      }
+
+      return result.signedTxXdr;
+    } catch (err) {
+      console.error("Signing error:", err);
+      throw err;
+    }
   }, []);
 
   const signTransaction = useCallback(async (xdr: string, network?: string) => {
@@ -114,6 +194,8 @@ export function useWallet(): UseWalletReturn {
     address,
     error,
     isConnected: status === 'connected',
+    balance,
+    isLoadingBalance,
     connect,
     disconnect,
     signTransaction,

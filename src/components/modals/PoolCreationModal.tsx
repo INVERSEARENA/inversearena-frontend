@@ -1,13 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Modal } from "@/components/ui/Modal";
 import { useWallet } from "@/shared-d/hooks/useWallet";
 import { TransactionModal } from "@/components/modals/TransactionModal";
 import { buildCreatePoolTransaction, submitSignedTransaction } from "@/shared-d/utils/stellar-transactions";
 
 type RoundSpeed = "30S" | "1M" | "5M";
-type Currency = "USDC" | "XLM";
 
 interface PoolCreationModalProps {
   isOpen: boolean;
@@ -24,13 +23,15 @@ interface PoolCreationData {
 
 const MIN_CAPACITY = 10;
 const MAX_CAPACITY = 1000;
+const MIN_STAKE = 10; // Minimum stake for both XLM and USDC
 
 export function PoolCreationModal({
   isOpen,
   onClose,
   onInitialize,
 }: PoolCreationModalProps) {
-  const [stakeAmount, setStakeAmount] = useState(100);
+  // Form input state (using string for better control)
+  const [stakeAmountInput, setStakeAmountInput] = useState("100");
   const [currency, setCurrency] = useState<Currency>("USDC");
   const [roundSpeed, setRoundSpeed] = useState<RoundSpeed>("1M");
   const [arenaCapacity, setArenaCapacity] = useState(50);
@@ -42,6 +43,70 @@ export function PoolCreationModal({
   const totalPotentialPool = stakeAmount * arenaCapacity;
   const dynamicYield = 8.42;
   const minorityWinCap = 14.5;
+
+  // Get max stake based on currency and wallet balance
+  const getMaxStake = useCallback(() => {
+    if (!isConnected) return Infinity;
+    return currency === "XLM" ? balance.xlm : balance.usdc;
+  }, [isConnected, currency, balance]);
+
+  // Validate stake amount
+  const validateStake = useCallback(() => {
+    const maxStake = getMaxStake();
+    const result = validateStakeAmount({
+      amount: stakeAmountInput,
+      currency,
+      minStake: MIN_STAKE,
+      maxStake,
+    });
+
+    setStakeError(result.error || "");
+
+    // Focus error if it exists (Accessibility)
+    if (result.error && stakeErrorRef.current) {
+      stakeErrorRef.current.focus();
+    }
+
+    return result.isValid;
+  }, [stakeAmountInput, currency, getMaxStake]);
+
+  // Validate form on stake or currency change
+  useEffect(() => {
+    const isStakeValid = validateStake();
+    const isCapacityValid = arenaCapacity >= MIN_CAPACITY && arenaCapacity <= MAX_CAPACITY;
+    const hasStake = stakeAmountInput.trim() !== "" && stakeAmount > 0;
+
+    setIsFormValid(isStakeValid && isCapacityValid && hasStake);
+  }, [stakeAmountInput, stakeAmount, currency, arenaCapacity, validateStake]);
+
+  // Reset form when modal closes
+  useEffect(() => {
+    if (!isOpen) {
+      setStakeAmountInput("100");
+      setStakeError("");
+      setIsFormValid(false);
+      setRoundSpeed("1M");
+      setArenaCapacity(50);
+      setIsDeploying(false);
+    }
+  }, [isOpen]);
+
+  // Handle stake amount input change
+  const handleStakeAmountChange = (value: string) => {
+    const sanitized = sanitizeNumericInput(value);
+    const formatted = formatCurrencyInput(sanitized, currency);
+    setStakeAmountInput(formatted);
+  };
+
+  // Handle currency change
+  const handleCurrencyChange = (newCurrency: Currency) => {
+    setCurrency(newCurrency);
+    // Reformat the input for the new currency's precision
+    if (stakeAmountInput) {
+      const formatted = formatCurrencyInput(stakeAmountInput, newCurrency);
+      setStakeAmountInput(formatted);
+    }
+  };
 
   const handleDecreaseCapacity = () => {
     setArenaCapacity((prev) => Math.max(MIN_CAPACITY, prev - 10));
@@ -171,6 +236,7 @@ export function PoolCreationModal({
                     security
                   </span>
                 </div>
+              </section>
 
                 <div className="relative z-10 h-full flex flex-col">
                   <div className="flex justify-between items-start mb-8">
