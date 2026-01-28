@@ -1,9 +1,7 @@
-import React from 'react';
-
 const YieldShowcase = () => {
     return (
         <section id="yield" className="py-24 px-6 max-w-6xl mx-auto w-full">
-            <div className="border-[2px] border-neon-pink p-8 md:p-16 relative overflow-hidden bg-black/20 backdrop-blur-sm">
+            <div className="border-2 border-neon-pink p-8 md:p-16 relative overflow-hidden bg-black/20 backdrop-blur-sm">
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center relative z-10">
                     <div>
                         <div className="inline-block px-3 py-1 bg-neon-pink text-white text-[9px] font-bold tracking-[0.2em] mb-8 uppercase">
@@ -25,7 +23,7 @@ const YieldShowcase = () => {
                             </p>
                         </div>
 
-                        <div className="mt-12 pt-6 border-l-[3px] border-neon-pink pl-5">
+                        <div className="mt-12 pt-6 border-l-3 border-neon-pink pl-5">
                             <div className="flex flex-col">
                                 <span className="text-neon-pink text-4xl font-extralight tracking-tighter family-mono">+6.4% APY</span>
                                 <span className="text-[9px] uppercase tracking-widest text-zinc-500 mt-2 font-bold font-mono">Current Average Treasury Yield</span>
@@ -34,7 +32,7 @@ const YieldShowcase = () => {
                     </div>
 
                     {/* Yield Tracker Panel */}
-                    <div className="bg-[#09101D] border border-white/5 p-8 rounded-sm relative shadow-2xl">
+                    <div className="bg-dark-bg border border-white/5 p-8 rounded-sm relative shadow-2xl">
                         <div className="flex justify-between items-start mb-12">
                             <div>
                                 <h4 className="text-[9px] font-bold tracking-[0.3em] text-neon-pink uppercase mb-2">YIELD_TRACKER.V1</h4>
@@ -52,7 +50,7 @@ const YieldShowcase = () => {
                                 <div className="flex justify-between text-[9px] font-mono text-white mb-2 uppercase font-medium tracking-widest">
                                     <span>T-BILLS (60%)</span>
                                 </div>
-                                <div className="w-full h-6 bg-black/40 border border-white/5 p-[2px]">
+                                <div className="w-full h-6 bg-black/40 border border-white/5 p-0.5">
                                     <div className="h-full bg-neon-pink w-[60%]" />
                                 </div>
                             </div>
@@ -61,7 +59,7 @@ const YieldShowcase = () => {
                                 <div className="flex justify-between text-[9px] font-mono text-white mb-2 uppercase font-medium tracking-widest">
                                     <span>PRIVATE CREDIT (30%)</span>
                                 </div>
-                                <div className="w-full h-6 bg-black/40 border border-white/5 p-[2px]">
+                                <div className="w-full h-6 bg-black/40 border border-white/5 p-0.5">
                                     <div className="h-full bg-zinc-700 w-[30%]" />
                                 </div>
                             </div>

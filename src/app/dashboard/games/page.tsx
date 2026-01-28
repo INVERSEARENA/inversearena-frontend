@@ -13,18 +13,15 @@ export default function GamesPage() {
   const filter = searchParams.get("filter") || "all";
   const search = searchParams.get("q") || "";
 
-  // Filter arenas based on URL params
   const filteredArenas = useMemo(() => {
     let arenas = [...mockArenas];
 
-    // Apply filter
     if (filter === "high-stakes") {
       arenas = arenas.filter(arena => arena.badge === "WHALE" || parseFloat(arena.stake) > 100);
     } else if (filter === "fast-rounds") {
       arenas = arenas.filter(arena => arena.badge === "BLITZ" || arena.roundSpeed.includes("30s"));
     }
 
-    // Apply search
     if (search) {
       const searchLower = search.toLowerCase();
       arenas = arenas.filter(arena =>
@@ -45,7 +42,7 @@ export default function GamesPage() {
 
       <GamesFilters />
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-grow">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 grow">
         {filteredArenas.length > 0 ? (
           filteredArenas.map((arena) => (
             <ArenaCard key={arena.id} arena={arena} />
