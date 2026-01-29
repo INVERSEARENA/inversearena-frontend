@@ -153,3 +153,26 @@ export function useArenaTimer({
       }
     }
   }, [rawSeconds, isRunning]);
+  // Page visibility handling for resilience during tab switching
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        // Tab is hidden - pause updates but keep timing reference
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
+      } else {
+        // Tab is visible again - resume updates if timer was running
+        if (isRunning && rawSeconds > 0) {
+          updateTimer(); // Immediate update to catch up
+          intervalRef.current = setInterval(updateTimer, 100);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [isRunning, rawSeconds, updateTimer]);
