@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { ClientProviders } from "./ClientProviders";
+import { ErrorBoundary } from "@/components/error-boundary";
 
 import { Geist, Geist_Mono, Press_Start_2P, Space_Grotesk } from "next/font/google";
 import "./globals.css";
@@ -47,9 +48,11 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${pressStart2P.variable} ${spaceGrotesk.variable} antialiased`}
       >
-        <ClientProviders>
-          {children}
-        </ClientProviders>
+        <ErrorBoundary>
+          <ClientProviders>
+            {children}
+          </ClientProviders>
+        </ErrorBoundary>
       </body>
     </html>
   );
