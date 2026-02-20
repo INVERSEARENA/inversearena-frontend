@@ -1,14 +1,23 @@
-"use client"
-import React, { useState, useEffect } from 'react';
-import TelemetryBar from './telemetry-bar.component';
-import { SystemStatus, ServerTelemetry, GlobalPoolData } from './types/telemetry-bar.types';
+"use client";
 
+import React, { useState, useEffect } from "react";
+import TelemetryBar from "./telemetry-bar.component";
+import {
+  SystemStatus,
+  ServerTelemetry,
+  GlobalPoolData,
+} from "./types/telemetry-bar.types";
+import { CoinGeckoSimplePriceSchema } from "@/shared-d/utils/security-validation";
 
-const STATIC_SYSTEM_STATUS: SystemStatus = 'operational';
+const STATIC_SYSTEM_STATUS: SystemStatus = "operational";
 const STATIC_SERVER_TELEMETRY: ServerTelemetry = {
-  region: 'US-EAST-1',
+  region: "US-EAST-1",
   latency: 24,
 };
+
+const COINGECKO_SIMPLE_PRICE_URL =
+  process.env.NEXT_PUBLIC_COINGECKO_SIMPLE_PRICE_URL ||
+  "https://api.coingecko.com/api/v3/simple/price?ids=cardano&vs_currencies=usd";
 
 const TelemetryPage: React.FC = () => {
   const [globalPool, setGlobalPool] = useState<GlobalPoolData | null>(null);
@@ -17,59 +26,50 @@ const TelemetryPage: React.FC = () => {
   useEffect(() => {
     const fetchCryptoPrice = async () => {
       try {
-        // --- REAL-TIME ONLINE DATA ---
-        // Fetching live data for Cardano (ADA) from the public CoinGecko API.
-        const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=cardano&vs_currencies=usd');
+        const response = await fetch(COINGECKO_SIMPLE_PRICE_URL, {
+          cache: "no-store",
+        });
 
         if (!response.ok) {
           throw new Error(`CoinGecko API error! status: ${response.status}`);
         }
 
-        const data = await response.json();
-        
-        if (data.cardano && data.cardano.usd) {
-          // The API returns the price of 1 ADA. We'll simulate a larger "global pool" for visual effect.
-          const totalPoolValue = data.cardano.usd * 1_500_000; // Example: 1.5M ADA in the pool
-          setGlobalPool({
-            value: totalPoolValue,
-            symbol: '₳',
-          });
-          setError(null);
-        } else {
-          throw new Error('Invalid data structure from CoinGecko API');
-        }
-        
-      } catch (e: any) {
-        console.error("Failed to fetch real-time crypto price:", e);
+        const rawData: unknown = await response.json();
+        const data = CoinGeckoSimplePriceSchema.parse(rawData);
+
+        const totalPoolValue = data.cardano.usd * 1_500_000;
+        setGlobalPool({
+          value: totalPoolValue,
+          symbol: "ADA",
+        });
+        setError(null);
+      } catch (err: unknown) {
+        console.error("Failed to fetch real-time crypto price:", err);
         setError("Failed to fetch Global Pool value.");
-        // Set a fallback value for the pool on error
-        setGlobalPool({ value: 0, symbol: '₳' });
+        setGlobalPool({ value: 0, symbol: "ADA" });
       }
     };
 
-    fetchCryptoPrice(); // Initial fetch
-    
-    // Poll the API every 60 seconds for price updates (as per CoinGecko's free tier recommendations)
-    const intervalId = setInterval(fetchCryptoPrice, 60000); 
+    void fetchCryptoPrice();
+    const intervalId = setInterval(fetchCryptoPrice, 60000);
 
-    return () => clearInterval(intervalId); // Cleanup on unmount
+    return () => clearInterval(intervalId);
   }, []);
-  
+
   const handleNotifications = () => {
-    console.log('Notifications clicked');
+    console.log("Notifications clicked");
   };
 
   const handleSettings = () => {
-    console.log('Settings clicked');
+    console.log("Settings clicked");
   };
 
-  // Render a loading state for the global pool
   if (!globalPool) {
     return (
       <TelemetryBar
         systemStatus={STATIC_SYSTEM_STATUS}
         serverTelemetry={STATIC_SERVER_TELEMETRY}
-        globalPool={{ value: 0, symbol: '₳' }}
+        globalPool={{ value: 0, symbol: "ADA" }}
         className="animate-pulse"
       />
     );
@@ -94,3 +94,4 @@ const TelemetryPage: React.FC = () => {
 };
 
 export default TelemetryPage;
+

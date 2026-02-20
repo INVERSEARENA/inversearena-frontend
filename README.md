@@ -121,3 +121,18 @@ graph TD
 - Mobile app with native Passkey support.
 - DAO-governed RWA allocation strategies.
 - Private "Arena" hosting for influencers and brands.
+
+## Security Configuration
+
+Set allowed web origins with environment variables so CORS can stay strict and configurable:
+
+```bash
+ALLOWED_ORIGINS=https://app.inversearena.io,https://staging.inversearena.io
+NEXT_PUBLIC_APP_ORIGIN=https://app.inversearena.io
+```
+
+Optional API override used by telemetry module:
+
+```bash
+NEXT_PUBLIC_COINGECKO_SIMPLE_PRICE_URL=https://api.coingecko.com/api/v3/simple/price?ids=cardano&vs_currencies=usd
+```
