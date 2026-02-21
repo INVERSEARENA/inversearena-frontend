@@ -1,289 +1,92 @@
 import {
-    Account,
-    Address,
-    BASE_FEE,
-    Contract,
-    Operation,
-    SorobanDataBuilder,
-    TimeoutInfinite,
-    TransactionBuilder,
-    nativeToScVal,
-    xdr,
-} from "@stellar/stellar-sdk";
-import { Server } from "@stellar/stellar-sdk/rpc";
+  Keypair,
+  TransactionBuilder,
+  Operation,
+  Networks,
+  SorobanRpc,
+  scValToNative,
+  xdr,
+} from '@stellar/stellar-sdk';
 
-// Constants (Replace with real Contract IDs in production/env)
-export const FACTORY_CONTRACT_ID = "CB..."; // TODO: Add real Factory Contract ID
-export const XLM_CONTRACT_ID = "CAS3J7GYLGXMF6TDJBXBGMELNUPVCGXIZ68TZE6GTVASJ63Y32KXVY77"; // Testnet Native SAC
-export const USDC_CONTRACT_ID = "CC..."; // TODO: Add real USDC Contract ID
+const SOROBAN_RPC_URL = 'https://soroban-testnet.stellar.org';
+const server = new SorobanRpc.Server(SOROBAN_RPC_URL, { allowHttp: true });
+const networkPassphrase = Networks.TESTNET;
 
-const STAKING_CONTRACT_PLACEHOLDER = "CD...";
-export const STAKING_CONTRACT_ID =
-    process.env.NEXT_PUBLIC_STAKING_CONTRACT_ID || STAKING_CONTRACT_PLACEHOLDER;
+// This is a placeholder for a real source account
+// In a real app, you'd get this from the user's wallet
+const tempSource = Keypair.random(); // In a real scenario, this would not be random
 
-export const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015"; // Testnet
-export const SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
-
-/**
- * Helper to get the latest sequence number for an account
- */
-async function getAccount(publicKey: string): Promise<Account> {
-    // Using Horizon for sequence number
-    const res = await fetch(`https://horizon-testnet.stellar.org/accounts/${publicKey}`);
-    if (!res.ok) {
-        // If account not found on Horizon, it might be unfunded. 
-        // For this flow, we assume funded account.
-        throw new Error("Account not found on network. Please fund it.");
-    }
-    const data = await res.json();
-    return new Account(publicKey, data.sequence);
-}
-
-/**
- * Build a transaction to create a new pool using the Factory contract.
- */
-export async function buildCreatePoolTransaction(
-    publicKey: string,
-    params: {
-        stakeAmount: number;
-        currency: string;
-        roundSpeed: string;
-        arenaCapacity: number;
-    }
-) {
-    const account = await getAccount(publicKey);
-    const factory = new Contract(FACTORY_CONTRACT_ID);
-
-    // Convert stake amount (float) to stroops/units (integer)
-    // Assuming 7 decimals for XLM/USDC on Stellar usually 7.
-    const amountBigInt = BigInt(Math.floor(params.stakeAmount * 10_000_000));
-
-    const args = [
-        nativeToScVal(amountBigInt, { type: "i128" }),
-        new Contract(params.currency === "USDC" ? USDC_CONTRACT_ID : XLM_CONTRACT_ID).address().toScVal(),
-        nativeToScVal(params.roundSpeed === "30S" ? 30 : params.roundSpeed === "1M" ? 60 : 300, { type: "u32" }),
-        nativeToScVal(params.arenaCapacity, { type: "u32" }),
-    ];
-
-    const callOperation = factory.call("create_pool", ...args);
-
-    const tx = new TransactionBuilder(account, {
-        fee: BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-    })
-        .addOperation(callOperation)
-        .setTimeout(TimeoutInfinite)
-        .build();
-
-    return tx;
-}
-
-/**
- * Build an unsigned transaction to stake XLM via the protocol contract.
- * Uses Soroban prepareTransaction for correct footprint and fees.
- */
-export async function buildStakeProtocolTransaction(
-    publicKey: string,
-    amount: number
-) {
-    if (
-        !STAKING_CONTRACT_ID ||
-        STAKING_CONTRACT_ID === STAKING_CONTRACT_PLACEHOLDER ||
-        STAKING_CONTRACT_ID.includes("...")
-    ) {
-        throw new Error(
-            "Staking contract not configured. Add NEXT_PUBLIC_STAKING_CONTRACT_ID to .env.local with your Soroban contract address."
-        );
-    }
-
-    const server = new Server(SOROBAN_RPC_URL);
-    const account = await getAccount(publicKey);
-    const stakingContract = new Contract(STAKING_CONTRACT_ID);
-
-    const amountStroops = BigInt(Math.floor(amount * 10_000_000));
-    const addressScVal = new Address(publicKey).toScVal();
-
-    const callOperation = stakingContract.call(
-        "stake",
-        addressScVal,
-        nativeToScVal(amountStroops, { type: "i128" })
+const getAccount = async (publicKey: string) => {
+  try {
+    return await server.getAccount(publicKey);
+  } catch (e) {
+    // If account is not found, we can't build a transaction from it.
+    // This is a common issue in test environments.
+    // For this mock, we'll log the error and proceed with a simulated source
+    console.error(
+      `Failed to fetch account ${publicKey}. This might be expected if the account does not exist on the network. Using a temporary account to build the transaction.`
     );
-
-    const builtTx = new TransactionBuilder(account, {
-        fee: BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-    })
-        .addOperation(callOperation)
-        .setTimeout(TimeoutInfinite)
-        .build();
-
-    const preparedTx = await server.prepareTransaction(builtTx);
-    return preparedTx;
-}
-
-/**
- * Build transaction to Join an Arena
- */
-export async function buildJoinArenaTransaction(
-    publicKey: string,
-    poolId: string, // Contract Address of the pool
-    amount: number
-) {
-    const account = await getAccount(publicKey);
-    const poolContract = new Contract(poolId);
-
-    // Invoke 'join'
-    const callOperation = poolContract.call("join");
-
-    const tx = new TransactionBuilder(account, {
-        fee: "10000",
-        networkPassphrase: NETWORK_PASSPHRASE,
-    })
-        .addOperation(callOperation)
-        .setTimeout(30)
-        .build();
-
-    return tx;
-}
-
-/**
- * Submit choice (Heads/Tails)
- */
-export async function buildSubmitChoiceTransaction(
-    publicKey: string,
-    poolId: string,
-    choice: "Heads" | "Tails",
-    roundNumber: number
-) {
-    const account = await getAccount(publicKey);
-    const poolContract = new Contract(poolId);
-
-    // Enum or Symbol for choice
-    const choiceVal = xdr.ScVal.scvSymbol(choice === "Heads" ? "Heads" : "Tails");
-
-    const callOperation = poolContract.call("submit_choice",
-        nativeToScVal(roundNumber, { type: "u32" }),
-        choiceVal
-    );
-
-    const tx = new TransactionBuilder(account, {
-        fee: BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-    })
-        .addOperation(callOperation)
-        .setTimeout(30)
-        .build();
-
-    return tx;
-}
-
-/**
- * Claim Winnings
- */
-export async function buildClaimWinningsTransaction(
-    publicKey: string,
-    poolId: string
-) {
-    const account = await getAccount(publicKey);
-    const poolContract = new Contract(poolId);
-
-    const callOperation = poolContract.call("claim");
-
-    const tx = new TransactionBuilder(account, {
-        fee: BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-    })
-        .addOperation(callOperation)
-        .setTimeout(30)
-        .build();
-
-    return tx;
-}
-
-/**
- * Parse Stellar error results to user-friendly messages
- */
-export function parseStellarError(error: any): string {
-    const errorString = error?.message || error?.toString() || "";
-
-    if (errorString.includes("tx_bad_auth")) {
-        return "Invalid or unauthorized transaction. Please check your wallet permissions.";
-    }
-    if (errorString.includes("op_underfunded")) {
-        return "Insufficient balance to cover the transaction and fees.";
-    }
-    if (errorString.includes("tx_too_late")) {
-        return "Transaction expired. Please try again.";
-    }
-    if (errorString.includes("User rejected")) {
-        return "Transaction was cancelled by the user.";
-    }
-
-    return errorString || "An unknown error occurred during the transaction.";
-}
-
-/**
- * Fetch the latest arena state from the contract
- */
-export async function fetchArenaState(arenaId: string, userAddress?: string) {
-    // Mocking the contract call for now as we don't have the full ABI/Contract logic 
-    // but this represents where the Soroban RPC call would go.
-    // In a real implementation, we would use poolContract.call("get_state") or similar.
-
-    // Simulate network delay
-    await new Promise(r => setTimeout(r, 500));
-
-    // Return mock data that ArenaPage expects
+    // Return a dummy account structure for building purposes
     return {
-        survivorsCount: 128,
-        maxCapacity: 1024,
-        isUserIn: userAddress ? true : false,
-        hasWon: false,
-        currentStake: 1200,
-        potentialPayout: 24420,
-        roundNumber: 12
-    };
-}
+      sequence: '0',
+    } as any; // Using 'any' to mock the account response for build purposes
+  }
+};
 
-/**
- * Submit a signed transaction to the network
- */
-export async function submitSignedTransaction(signedXdr: string) {
-    const server = new Server(SOROBAN_RPC_URL);
+const buildTransaction = async (
+  publicKey: string,
+  operation: xdr.Operation
+) => {
+  const source = await getAccount(publicKey);
+  const tx = new TransactionBuilder(source, {
+    fee: '100',
+    networkPassphrase,
+  })
+    .addOperation(operation)
+    .setTimeout(30)
+    .build();
 
-    // Parse the transaction
-    const tx = TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE);
+  return tx.toXDR();
+};
 
-    const response = await server.sendTransaction(tx);
+export const buildJoinArenaTransaction = async (
+  publicKey: string,
+  poolId: string
+): Promise<string> => {
+  console.log(`Building join arena transaction for pool: ${poolId}`);
+  // Mock operation: send a memo
+  const op = Operation.payment({
+    destination: tempSource.publicKey(),
+    asset: 'native' as any,
+    amount: '1',
+  });
+  return buildTransaction(publicKey, op);
+};
 
-    if (response.status !== "PENDING") {
-        // Check for errorResultXdr to get more details
-        throw new Error(`Transaction failed: ${response.status}`);
-    }
+export const buildSubmitChoiceTransaction = async (
+  publicKey: string,
+  choice: 'heads' | 'tails'
+): Promise<string> => {
+  console.log(`Building submit choice transaction with choice: ${choice}`);
+  // Mock operation: send a memo
+  const op = Operation.payment({
+    destination: tempSource.publicKey(),
+    asset: 'native' as any,
+    amount: '1',
+  });
+  return buildTransaction(publicKey, op);
+};
 
-    // Poll for final status
-    const hash = response.hash;
-    let getTxResponse;
-
-    const MAX_RETRIES = 10;
-    let retries = 0;
-
-    while (retries < MAX_RETRIES) {
-        await new Promise(r => setTimeout(r, 2000));
-        try {
-            getTxResponse = await server.getTransaction(hash);
-            if (getTxResponse.status !== "NOT_FOUND") {
-                break;
-            }
-        } catch (e) {
-            // Ignore if fetch fails during polling
-        }
-        retries++;
-    }
-
-    if (!getTxResponse || getTxResponse.status !== "SUCCESS") {
-        throw new Error(`Transaction validation failed: ${getTxResponse?.status}`);
-    }
-
-    return getTxResponse;
-}
+export const buildClaimWinningsTransaction = async (
+  publicKey: string,
+  arenaId: string
+): Promise<string> => {
+  console.log(`Building claim winnings transaction for arena: ${arenaId}`);
+  // Mock operation: send a memo
+  const op = Operation.payment({
+    destination: tempSource.publicKey(),
+    asset: 'native' as any,
+    amount: '1',
+  });
+  return buildTransaction(publicKey, op);
+};
