@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:pagination": "node --test --test-isolation=none src/server/pagination/cursorPagination.test.ts"
   },
   "dependencies": {
     "@creit-tech/stellar-wallets-kit": "npm:@jsr/creit-tech__stellar-wallets-kit@^2.0.0-beta.9",

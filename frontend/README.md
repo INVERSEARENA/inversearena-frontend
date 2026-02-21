@@ -99,6 +99,8 @@ graph TD
     
     E --> I[Winner Declared]
     I --> J[Payout: Principal + Yield]
+```
+
 ## Smart Contract Components (Rust/WASM)
 - arena_manager.rs: Manages player states, round timing, and elimination logic.
 
@@ -121,6 +123,31 @@ graph TD
 - Mobile app with native Passkey support.
 - DAO-governed RWA allocation strategies.
 - Private "Arena" hosting for influencers and brands.
+
+## API Pagination
+
+The list APIs use cursor-based pagination with stable ordering by `createdAt DESC, id DESC`.
+
+- Default page size: `25`
+- Maximum page size: `100`
+- Query params:
+- `limit`: positive integer, capped at max page size.
+- `cursor`: opaque value returned by a previous page.
+
+Response shape:
+
+```json
+{
+  "items": [],
+  "cursor": "opaque-next-cursor-or-null",
+  "hasMore": true
+}
+```
+
+Implemented endpoints:
+
+- `GET /arenas/:id/participants`
+- `GET /pools/:id/eliminations`
 
 ## Security Configuration
 
