@@ -1,3 +1,7 @@
+"use client";
+
+import { motion } from "motion/react";
+
 type StatCard = {
   id: string;
   title: string;
@@ -31,15 +35,36 @@ const stats: StatCard[] = [
 
 export function StatsGrid() {
   return (
-    <section className="grid grid-cols-1 gap-3 p-4 md:grid-cols-3 md:p-6">
+    <motion.section
+      className="grid grid-cols-1 gap-3 p-4 md:grid-cols-3 md:p-6"
+      initial="hidden"
+      animate="visible"
+      variants={{
+        visible: { transition: { staggerChildren: 0.07 } },
+        hidden: {},
+      }}
+    >
       {stats.map((stat) => (
-        <article
+        <motion.article
           key={stat.id}
           className={
-            stat.dark
+            "flex min-h-[180px] flex-col " +
+            (stat.dark
               ? "border-[3px] border-black bg-black p-4"
-              : "border-[3px] border-black bg-[#F5F5F5] p-4"
+              : "border-[3px] border-black bg-[#F5F5F5] p-4")
           }
+          variants={{
+            hidden: { opacity: 0, y: 14 },
+            visible: { opacity: 1, y: 0 },
+          }}
+          transition={{ duration: 0.35, ease: [0.25, 0.46, 0.45, 0.94] }}
+          whileHover={{
+            y: -2,
+            boxShadow: stat.dark
+              ? "0 6px 20px rgba(0,0,0,0.3), 0 0 16px rgba(55, 255, 28, 0.12)"
+              : "6px 6px 0 #000",
+            transition: { duration: 0.2 },
+          }}
         >
           <p
             className={
@@ -61,7 +86,7 @@ export function StatsGrid() {
             {stat.value}
           </p>
 
-          <div className="mt-3 flex items-end justify-between gap-3">
+          <div className="mt-auto flex items-end justify-between gap-3 pt-3">
             {stat.subtitle ? (
               <p
                 className={
@@ -82,8 +107,8 @@ export function StatsGrid() {
               </span>
             ) : null}
           </div>
-        </article>
+        </motion.article>
       ))}
-    </section>
+    </motion.section>
   );
 }
