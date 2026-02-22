@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import type { PaymentService } from "../services/paymentService";
 import type { TransactionRepository } from "../repositories/transactionRepository";
+import { cache, cacheKeys } from "../cache/cacheService";
 
 export class PayoutsController {
   constructor(
@@ -10,6 +11,13 @@ export class PayoutsController {
 
   createPayout = async (req: Request, res: Response): Promise<void> => {
     const result = await this.paymentService.createPayoutTransaction(req.body);
+
+    // Invalidate arena stats and leaderboard caches on payout creation
+    await Promise.allSettled([
+      cache.delByPattern("arena:stats:*"),
+      cache.del(cacheKeys.leaderboard()),
+    ]);
+
     res.status(201).json(result);
   };
 
