@@ -99,6 +99,8 @@ graph TD
     
     E --> I[Winner Declared]
     I --> J[Payout: Principal + Yield]
+```
+
 ## Smart Contract Components (Rust/WASM)
 - arena_manager.rs: Manages player states, round timing, and elimination logic.
 
@@ -122,6 +124,31 @@ graph TD
 - DAO-governed RWA allocation strategies.
 - Private "Arena" hosting for influencers and brands.
 
+## API Pagination
+
+The list APIs use cursor-based pagination with stable ordering by `createdAt DESC, id DESC`.
+
+- Default page size: `25`
+- Maximum page size: `100`
+- Query params:
+- `limit`: positive integer, capped at max page size.
+- `cursor`: opaque value returned by a previous page.
+
+Response shape:
+
+```json
+{
+  "items": [],
+  "cursor": "opaque-next-cursor-or-null",
+  "hasMore": true
+}
+```
+
+Implemented endpoints:
+
+- `GET /arenas/:id/participants`
+- `GET /pools/:id/eliminations`
+
 ## Security Configuration
 
 Set allowed web origins with environment variables so CORS can stay strict and configurable:
@@ -136,3 +163,27 @@ Optional API override used by telemetry module:
 ```bash
 NEXT_PUBLIC_COINGECKO_SIMPLE_PRICE_URL=https://api.coingecko.com/api/v3/simple/price?ids=cardano&vs_currencies=usd
 ```
+
+## API Rate Limiting
+
+Sensitive write endpoints are protected with a Redis-backed limiter (`rate-limiter-flexible` + `ioredis`) with keys scoped by IP and optional wallet address.
+
+Protected endpoints:
+
+- `POST /auth/nonce`
+- `POST /pools`
+
+On limit violation, APIs return:
+
+- HTTP `429`
+- `Retry-After` response header (seconds)
+
+Configurable environment variables:
+
+- `REDIS_URL` (required for multi-instance shared limits)
+- `RATE_LIMIT_NONCE_PREFIX` (default: `rl:auth:nonce`)
+- `RATE_LIMIT_NONCE_POINTS` (default: `5`)
+- `RATE_LIMIT_NONCE_WINDOW_SECONDS` (default: `60`)
+- `RATE_LIMIT_POOLS_PREFIX` (default: `rl:pools:create`)
+- `RATE_LIMIT_POOLS_POINTS` (default: `3`)
+- `RATE_LIMIT_POOLS_WINDOW_SECONDS` (default: `60`)

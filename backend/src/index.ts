@@ -1,3 +1,5 @@
+export { cache, cacheKeys, cacheTTL } from "./cache/cacheService";
+export { redis } from "./cache/redisClient";
 export { getPaymentConfig } from "./config/paymentConfig";
 export { InMemoryTransactionRepository } from "./repositories/inMemoryTransactionRepository";
 export { SqlTransactionRepository } from "./repositories/sqlTransactionRepository";
