@@ -55,20 +55,20 @@ function getRedisClient(): IORedis | null {
 
 function createLimiter(config: RouteRateLimitConfig): RateLimiterAbstract {
   const redis = getRedisClient();
-  const storeOptions: IRateLimiterStoreOptions = {
+  const baseOptions = {
     keyPrefix: config.keyPrefix,
     points: config.points,
     duration: config.durationSeconds,
   };
 
   if (!redis) {
-    return new RateLimiterMemory(storeOptions);
+    return new RateLimiterMemory(baseOptions);
   }
 
   return new RateLimiterRedis({
-    ...storeOptions,
+    ...baseOptions,
     storeClient: redis,
-    insuranceLimiter: new RateLimiterMemory(storeOptions),
+    insuranceLimiter: new RateLimiterMemory(baseOptions),
   });
 }
 
