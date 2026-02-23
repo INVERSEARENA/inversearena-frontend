@@ -1,10 +1,12 @@
 import { Router } from "express";
 import { asyncHandler } from "../middleware/validate";
 import type { AdminController } from "../controllers/admin.controller";
+import type { RoundController } from "../controllers/round.controller";
 import type { RequestHandler } from "express";
 
 export function createAdminRouter(
   controller: AdminController,
+  roundController: RoundController,
   authMiddleware: RequestHandler
 ): Router {
   const router = Router();
@@ -25,6 +27,9 @@ export function createAdminRouter(
   );
   router.post("/pools/:id/reindex", authMiddleware, asyncHandler(controller.reindexPool));
   router.post("/reconciliation/run", authMiddleware, asyncHandler(controller.runReconciliation));
+
+  // Round resolution: admin-only
+  router.post("/rounds/resolve", authMiddleware, asyncHandler(roundController.resolveRound));
 
   // Read-only: requires admin auth
   router.get("/audit-logs", authMiddleware, asyncHandler(controller.listAuditLogs));

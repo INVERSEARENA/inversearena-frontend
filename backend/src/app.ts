@@ -10,11 +10,13 @@ import { PayoutsController } from "./controllers/payouts.controller";
 import { WorkerController } from "./controllers/worker.controller";
 import { AdminController } from "./controllers/admin.controller";
 import { AuthController } from "./controllers/auth.controller";
+import { RoundController } from "./controllers/round.controller";
 import type { PaymentService } from "./services/paymentService";
 import type { PaymentWorker } from "./workers/paymentWorker";
 import type { TransactionRepository } from "./repositories/transactionRepository";
 import type { AdminService } from "./services/adminService";
 import type { AuthService } from "./services/authService";
+import type { RoundService } from "./services/roundService";
 
 export interface AppDependencies {
   paymentService: PaymentService;
@@ -22,6 +24,7 @@ export interface AppDependencies {
   transactions: TransactionRepository;
   adminService: AdminService;
   authService: AuthService;
+  roundService: RoundService;
 }
 
 export function createApp(deps: AppDependencies): express.Application {
@@ -36,6 +39,12 @@ export function createApp(deps: AppDependencies): express.Application {
     res.json({ status: "ok" });
   });
 
+  app.get("/metrics", (_req, res) => {
+    const { roundMetrics } = require("./utils/roundMetrics");
+    res.set("Content-Type", "text/plain");
+    res.send(roundMetrics.toPrometheusFormat());
+  });
+
   const payoutsController = new PayoutsController(deps.paymentService, deps.transactions);
   const workerController = new WorkerController(deps.paymentWorker);
   const adminController = new AdminController(
@@ -44,12 +53,13 @@ export function createApp(deps: AppDependencies): express.Application {
     deps.transactions
   );
   const authController = new AuthController(deps.authService);
+  const roundController = new RoundController(deps.roundService);
 
   const adminAuthMiddleware = requireAdmin(new ApiKeyAuthProvider());
   const userAuthMiddleware = requireAuth(deps.authService);
 
   app.use("/api", createApiRouter(payoutsController, workerController, authController, userAuthMiddleware));
-  app.use("/api/admin", createAdminRouter(adminController, adminAuthMiddleware));
+  app.use("/api/admin", createAdminRouter(adminController, roundController, adminAuthMiddleware));
 
   app.use(errorHandler);
 

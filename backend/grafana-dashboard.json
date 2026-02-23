@@ -1,0 +1,95 @@
+{
+  "dashboard": {
+    "title": "InverseArena - Round State Machine",
+    "panels": [
+      {
+        "title": "Round Resolutions (Total)",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "round_resolutions_total",
+            "legendFormat": "Total Resolutions"
+          }
+        ]
+      },
+      {
+        "title": "Success Rate",
+        "type": "gauge",
+        "targets": [
+          {
+            "expr": "round_success_rate",
+            "legendFormat": "Success %"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "steps": [
+                { "value": 0, "color": "red" },
+                { "value": 90, "color": "yellow" },
+                { "value": 95, "color": "green" }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "title": "Average Resolution Duration",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "round_resolution_duration_avg_ms",
+            "legendFormat": "Avg Duration (ms)"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "ms"
+          }
+        }
+      },
+      {
+        "title": "Resolution Errors",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "round_resolution_errors_total",
+            "legendFormat": "Errors"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "steps": [
+                { "value": 0, "color": "green" },
+                { "value": 1, "color": "yellow" },
+                { "value": 5, "color": "red" }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "title": "Elimination Distribution",
+        "type": "piechart",
+        "targets": [
+          {
+            "expr": "round_eliminations_distribution",
+            "legendFormat": "{{bucket}}"
+          }
+        ]
+      }
+    ],
+    "refresh": "5s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    }
+  }
+}

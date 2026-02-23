@@ -50,6 +50,8 @@ model Round {
   id          String   @id @default(uuid())
   arenaId     String   @map("arena_id")
   roundNumber Int      @map("round_number")
+  state       String   @default("OPEN") // OPEN, CLOSED, RESOLVED, SETTLED
+  metadata    Json?    // Stores player choices, oracle yield, random seed
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
@@ -58,6 +60,7 @@ model Round {
 
   @@unique([arenaId, roundNumber]) // Each round is unique per arena
   @@index([arenaId])
+  @@index([state])
   @@map("rounds")
 }
 
