@@ -375,3 +375,73 @@ class EventBus<EventMap extends Record<string, any>> {
  * unsubscribe();
  */
 export const arenaEventBus = new EventBus<ArenaEventMap>(20);
+
+
+// ============================================================================
+// React Hook
+// ============================================================================
+
+/**
+ * React hook for subscribing to arena events with automatic cleanup
+ * 
+ * This hook automatically subscribes to an event on mount and unsubscribes
+ * on unmount. It also handles updates to the listener function and event name.
+ * 
+ * @param event - Event name to subscribe to
+ * @param listener - Callback function to invoke when event is emitted
+ * 
+ * @example
+ * import { useArenaEvent } from './arenaEventBus';
+ * 
+ * function MyComponent() {
+ *   useArenaEvent('round:started', (payload) => {
+ *     console.log('Round started:', payload.roundNumber);
+ *   });
+ * 
+ *   return <div>Listening for round events...</div>;
+ * }
+ */
+export function useArenaEvent<K extends keyof ArenaEventMap>(
+  event: K,
+  listener: EventListener<ArenaEventMap[K]>
+): void {
+  // Import React types dynamically to avoid hard dependency
+  // This allows the event bus to work in non-React environments
+  let useEffect: any;
+  let useRef: any;
+
+  try {
+    // Try to import React hooks if available
+    const React = require('react');
+    useEffect = React.useEffect;
+    useRef = React.useRef;
+  } catch (error) {
+    // React not available - this is expected in non-React environments
+    throw new Error(
+      'useArenaEvent requires React to be installed. ' +
+      'Use arenaEventBus.on() directly in non-React environments.'
+    );
+  }
+
+  // Store listener in ref to maintain stable reference
+  const listenerRef = useRef(listener);
+
+  // Update ref when listener changes
+  useEffect(() => {
+    listenerRef.current = listener;
+  }, [listener]);
+
+  // Subscribe to event with stable listener wrapper
+  useEffect(() => {
+    // Create stable listener that calls the current ref value
+    const stableListener = (payload: ArenaEventMap[K]) => {
+      listenerRef.current(payload);
+    };
+
+    // Subscribe to the event
+    const unsubscribe = arenaEventBus.on(event, stableListener);
+
+    // Cleanup on unmount or when event changes
+    return unsubscribe;
+  }, [event]);
+}
