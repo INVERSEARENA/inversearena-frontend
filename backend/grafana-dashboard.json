@@ -1,0 +1,72 @@
+{
+  "dashboard": {
+    "title": "InverseArena Backend Metrics",
+    "panels": [
+      {
+        "title": "HTTP Request Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(http_requests_total[5m])",
+            "legendFormat": "{{method}} {{route}} {{status}}"
+          }
+        ]
+      },
+      {
+        "title": "HTTP Request Duration (p95)",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
+            "legendFormat": "{{method}} {{route}}"
+          }
+        ]
+      },
+      {
+        "title": "Worker Jobs Pending",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "worker_jobs_pending",
+            "legendFormat": "{{job_type}}"
+          }
+        ]
+      },
+      {
+        "title": "Transaction Confirmation Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(txs_confirmed_total[5m])",
+            "legendFormat": "{{status}}"
+          }
+        ]
+      },
+      {
+        "title": "Round Resolution Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(round_resolutions_total[5m])",
+            "legendFormat": "{{status}}"
+          }
+        ]
+      },
+      {
+        "title": "Round Resolution Duration (p95)",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(round_resolution_duration_seconds_bucket[5m]))",
+            "legendFormat": "p95"
+          }
+        ]
+      }
+    ],
+    "refresh": "10s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    }
+  }
+}

@@ -1,0 +1,96 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id             String           @id @default(uuid())
+  walletAddress  String           @unique @map("wallet_address")
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+
+  transactions   Transaction[]
+  eliminationLogs EliminationLog[]
+
+  @@map("users")
+}
+
+model Arena {
+  id          String   @id @default(uuid())
+  metadata    Json?    // Stores generic arena settings (e.g. entry fee, limits)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  pools       Pool[]
+  rounds      Round[]
+
+  @@map("arenas")
+}
+
+model Pool {
+  id          String   @id @default(uuid())
+  arenaId     String   @map("arena_id")
+  stakeAmount Float  @map("stake_amount") // Using Float for exact representations of crypto amounts
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  arena       Arena    @relation(fields: [arenaId], references: [id])
+
+  @@index([arenaId]) // Index to quickly find pools for an arena
+  @@map("pools")
+}
+
+model Round {
+  id          String   @id @default(uuid())
+  arenaId     String   @map("arena_id")
+  roundNumber Int      @map("round_number")
+  state       String   @default("OPEN") // OPEN, CLOSED, RESOLVED, SETTLED
+  metadata    Json?    // Stores player choices, oracle yield, random seed
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  arena       Arena    @relation(fields: [arenaId], references: [id])
+  eliminationLogs EliminationLog[]
+
+  @@unique([arenaId, roundNumber]) // Each round is unique per arena
+  @@index([arenaId])
+  @@index([state])
+  @@map("rounds")
+}
+
+model Transaction {
+  id          String   @id @default(uuid())
+  txHash      String   @unique @map("tx_hash") // The on-chain transaction hash
+  userId      String   @map("user_id")
+  amount      Float  // Amount involved
+  type        String   // Type of transaction e.g., "DEPOSIT", "WITHDRAW"
+  status      String   // Status of transaction e.g., "PENDING", "SUCCESS", "FAILED"
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([status]) // Useful for querying unconfirmed transactions
+  @@map("transactions")
+}
+
+model EliminationLog {
+  id          String   @id @default(uuid())
+  roundId     String   @map("round_id")
+  userId      String   @map("user_id")
+  reason      String?  // Reason for elimination if applicable
+  eliminatedAt DateTime @default(now()) @map("eliminated_at")
+
+  round       Round    @relation(fields: [roundId], references: [id])
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@index([roundId])
+  @@index([userId])
+  @@map("elimination_logs")
+}
