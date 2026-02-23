@@ -22,18 +22,23 @@ import {
   StellarContractIdSchema,
   StellarPublicKeySchema,
 } from "@/shared-d/utils/security-validation";
+import {
+  STELLAR_NETWORK,
+  TRANSACTION_CONFIG,
+} from "@/components/hook-d/arenaConstants";
 
 // Constants (Replace with real Contract IDs in production/env)
-export const FACTORY_CONTRACT_ID = "CB..."; // TODO: Add real Factory Contract ID
-export const XLM_CONTRACT_ID = "CAS3J7GYLGXMF6TDJBXBGMELNUPVCGXIZ68TZE6GTVASJ63Y32KXVY77"; // Testnet Native SAC
-export const USDC_CONTRACT_ID = "CC..."; // TODO: Add real USDC Contract ID
+export const FACTORY_CONTRACT_ID = STELLAR_NETWORK.CONTRACTS.FACTORY;
+export const XLM_CONTRACT_ID = STELLAR_NETWORK.CONTRACTS.XLM;
+export const USDC_CONTRACT_ID = STELLAR_NETWORK.CONTRACTS.USDC;
 
-const STAKING_CONTRACT_PLACEHOLDER = "CD...";
+const STAKING_CONTRACT_PLACEHOLDER =
+  STELLAR_NETWORK.CONTRACTS.STAKING_PLACEHOLDER;
 export const STAKING_CONTRACT_ID =
   process.env.NEXT_PUBLIC_STAKING_CONTRACT_ID || STAKING_CONTRACT_PLACEHOLDER;
 
-export const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015"; // Testnet
-export const SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
+export const NETWORK_PASSPHRASE = STELLAR_NETWORK.PASSPHRASE;
+export const SOROBAN_RPC_URL = STELLAR_NETWORK.SOROBAN_RPC_URL;
 
 const CreatePoolParamsSchema = z.object({
   stakeAmount: PositiveAmountSchema,
@@ -49,7 +54,7 @@ async function getAccount(publicKey: string): Promise<Account> {
   const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
 
   const res = await fetch(
-    `https://horizon-testnet.stellar.org/accounts/${validatedPublicKey}`
+    `https://horizon-testnet.stellar.org/accounts/${validatedPublicKey}`,
   );
   if (!res.ok) {
     throw new Error("Account not found on network. Please fund it.");
@@ -71,19 +76,21 @@ export async function buildCreatePoolTransaction(
     currency: string;
     roundSpeed: string;
     arenaCapacity: number;
-  }
+  },
 ) {
   const validatedParams = CreatePoolParamsSchema.parse(params);
   const account = await getAccount(publicKey);
   const factory = new Contract(FACTORY_CONTRACT_ID);
 
   // Convert stake amount to stroops/units (7 decimals).
-  const amountBigInt = BigInt(Math.floor(validatedParams.stakeAmount * 10_000_000));
+  const amountBigInt = BigInt(
+    Math.floor(validatedParams.stakeAmount * 10_000_000),
+  );
 
   const args = [
     nativeToScVal(amountBigInt, { type: "i128" }),
     new Contract(
-      validatedParams.currency === "USDC" ? USDC_CONTRACT_ID : XLM_CONTRACT_ID
+      validatedParams.currency === "USDC" ? USDC_CONTRACT_ID : XLM_CONTRACT_ID,
     )
       .address()
       .toScVal(),
@@ -93,7 +100,7 @@ export async function buildCreatePoolTransaction(
         : validatedParams.roundSpeed === "1M"
           ? 60
           : 300,
-      { type: "u32" }
+      { type: "u32" },
     ),
     nativeToScVal(validatedParams.arenaCapacity, { type: "u32" }),
   ];
@@ -113,7 +120,10 @@ export async function buildCreatePoolTransaction(
  * Build an unsigned transaction to stake XLM via the protocol contract.
  * Uses Soroban prepareTransaction for correct footprint and fees.
  */
-export async function buildStakeProtocolTransaction(publicKey: string, amount: number) {
+export async function buildStakeProtocolTransaction(
+  publicKey: string,
+  amount: number,
+) {
   const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
   const validatedAmount = PositiveAmountSchema.parse(amount);
 
@@ -123,7 +133,7 @@ export async function buildStakeProtocolTransaction(publicKey: string, amount: n
     STAKING_CONTRACT_ID.includes("...")
   ) {
     throw new Error(
-      "Staking contract not configured. Add NEXT_PUBLIC_STAKING_CONTRACT_ID to .env.local with your Soroban contract address."
+      "Staking contract not configured. Add NEXT_PUBLIC_STAKING_CONTRACT_ID to .env.local with your Soroban contract address.",
     );
   }
 
@@ -137,7 +147,7 @@ export async function buildStakeProtocolTransaction(publicKey: string, amount: n
   const callOperation = stakingContract.call(
     "stake",
     addressScVal,
-    nativeToScVal(amountStroops, { type: "i128" })
+    nativeToScVal(amountStroops, { type: "i128" }),
   );
 
   const builtTx = new TransactionBuilder(account, {
@@ -157,7 +167,7 @@ export async function buildStakeProtocolTransaction(publicKey: string, amount: n
 export async function buildJoinArenaTransaction(
   publicKey: string,
   poolId: string,
-  amount: number
+  amount: number,
 ) {
   const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
   const validatedPoolId = StellarContractIdSchema.parse(poolId);
@@ -168,11 +178,11 @@ export async function buildJoinArenaTransaction(
   const callOperation = poolContract.call("join");
 
   return new TransactionBuilder(account, {
-    fee: "10000",
+    fee: TRANSACTION_CONFIG.JOIN_FEE,
     networkPassphrase: NETWORK_PASSPHRASE,
   })
     .addOperation(callOperation)
-    .setTimeout(30)
+    .setTimeout(TRANSACTION_CONFIG.TIMEOUT_SECONDS)
     .build();
 }
 
@@ -183,7 +193,7 @@ export async function buildSubmitChoiceTransaction(
   publicKey: string,
   poolId: string,
   choice: "Heads" | "Tails",
-  roundNumber: number
+  roundNumber: number,
 ) {
   const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
   const validatedPoolId = StellarContractIdSchema.parse(poolId);
@@ -192,12 +202,14 @@ export async function buildSubmitChoiceTransaction(
 
   const account = await getAccount(validatedPublicKey);
   const poolContract = new Contract(validatedPoolId);
-  const choiceVal = xdr.ScVal.scvSymbol(validatedChoice === "Heads" ? "Heads" : "Tails");
+  const choiceVal = xdr.ScVal.scvSymbol(
+    validatedChoice === "Heads" ? "Heads" : "Tails",
+  );
 
   const callOperation = poolContract.call(
     "submit_choice",
     nativeToScVal(validatedRoundNumber, { type: "u32" }),
-    choiceVal
+    choiceVal,
   );
 
   return new TransactionBuilder(account, {
@@ -205,14 +217,17 @@ export async function buildSubmitChoiceTransaction(
     networkPassphrase: NETWORK_PASSPHRASE,
   })
     .addOperation(callOperation)
-    .setTimeout(30)
+    .setTimeout(TRANSACTION_CONFIG.TIMEOUT_SECONDS)
     .build();
 }
 
 /**
  * Claim winnings.
  */
-export async function buildClaimWinningsTransaction(publicKey: string, poolId: string) {
+export async function buildClaimWinningsTransaction(
+  publicKey: string,
+  poolId: string,
+) {
   const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
   const validatedPoolId = StellarContractIdSchema.parse(poolId);
 
@@ -299,11 +314,13 @@ export async function submitSignedTransaction(signedXdr: string) {
   const hash = response.hash;
   let getTxResponse: Awaited<ReturnType<Server["getTransaction"]>> | undefined;
 
-  const MAX_RETRIES = 10;
+  const MAX_RETRIES = TRANSACTION_CONFIG.MAX_RETRIES;
   let retries = 0;
 
   while (retries < MAX_RETRIES) {
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await new Promise((resolve) =>
+      setTimeout(resolve, TRANSACTION_CONFIG.RETRY_INTERVAL_MS),
+    );
     try {
       getTxResponse = await server.getTransaction(hash);
       if (getTxResponse.status !== "NOT_FOUND") {
@@ -321,4 +338,3 @@ export async function submitSignedTransaction(signedXdr: string) {
 
   return getTxResponse;
 }
-

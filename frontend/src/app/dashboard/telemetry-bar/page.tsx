@@ -8,6 +8,7 @@ import {
   GlobalPoolData,
 } from "./types/telemetry-bar.types";
 import { CoinGeckoSimplePriceSchema } from "@/shared-d/utils/security-validation";
+import { UI_BEHAVIOR } from "@/components/hook-d/arenaConstants";
 
 const STATIC_SYSTEM_STATUS: SystemStatus = "operational";
 const STATIC_SERVER_TELEMETRY: ServerTelemetry = {
@@ -51,7 +52,7 @@ const TelemetryPage: React.FC = () => {
     };
 
     void fetchCryptoPrice();
-    const intervalId = setInterval(fetchCryptoPrice, 60000);
+    const intervalId = setInterval(fetchCryptoPrice, 60000); // TODO: Move to constants if needed
 
     return () => clearInterval(intervalId);
   }, []);

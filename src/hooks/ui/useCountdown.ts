@@ -1,6 +1,7 @@
-'use client';
+"use client";
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from "react";
+import { UI_BEHAVIOR } from "../../components/hook-d/arenaConstants";
 
 export interface CountdownOptions {
   targetTimestamp?: number;
@@ -18,7 +19,7 @@ export interface CountdownResult {
   resume: () => void;
 }
 
-const pad = (n: number) => n.toString().padStart(2, '0');
+const pad = (n: number) => n.toString().padStart(2, "0");
 
 function computeRemaining(targetTimestamp: number): number {
   return Math.max(0, Math.floor((targetTimestamp - Date.now()) / 1000));
@@ -28,10 +29,12 @@ export const useCountdown = (options: CountdownOptions): CountdownResult => {
   const { targetTimestamp, durationSeconds } = options;
 
   const target = useRef(
-    targetTimestamp ?? Date.now() + (durationSeconds ?? 0) * 1000
+    targetTimestamp ?? Date.now() + (durationSeconds ?? 0) * 1000,
   );
 
-  const [remaining, setRemaining] = useState(() => computeRemaining(target.current));
+  const [remaining, setRemaining] = useState(() =>
+    computeRemaining(target.current),
+  );
   const isPausedRef = useRef(false);
   const [isPaused, setIsPaused] = useState(false);
   const pausedAtRef = useRef<number | null>(null);
@@ -44,7 +47,7 @@ export const useCountdown = (options: CountdownOptions): CountdownResult => {
       setRemaining(left);
 
       if (left <= 0) clearInterval(interval);
-    }, 1000);
+    }, UI_BEHAVIOR.COUNTDOWN_INTERVAL);
 
     return () => clearInterval(interval);
   }, []);
@@ -75,5 +78,14 @@ export const useCountdown = (options: CountdownOptions): CountdownResult => {
   const display = `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
   const isExpired = remaining <= 0;
 
-  return { hours, minutes, seconds, display, isExpired, isPaused, pause, resume };
+  return {
+    hours,
+    minutes,
+    seconds,
+    display,
+    isExpired,
+    isPaused,
+    pause,
+    resume,
+  };
 };

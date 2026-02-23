@@ -1,9 +1,15 @@
-'use client';
+"use client";
 
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { fetchArenaState } from '@/shared-d/utils/stellar-transactions';
+import { useState, useEffect, useCallback, useRef } from "react";
+import { fetchArenaState } from "@/shared-d/utils/stellar-transactions";
 
-export type GameState = 'JOINING' | 'ACTIVE' | 'RESOLVING' | 'ENDED';
+import {
+  ARENA_STATES,
+  UI_BEHAVIOR,
+  GAME_MECHANICS,
+} from "../../components/hook-d/arenaConstants";
+
+export type GameState = keyof typeof ARENA_STATES;
 
 export interface ArenaState {
   arenaId: string;
@@ -24,20 +30,23 @@ interface UseArenaStateOptions {
   refreshInterval?: number;
 }
 
-const TERMINAL_STATES: GameState[] = ['ENDED'];
-const DEFAULT_REFRESH_INTERVAL = 5000;
+const TERMINAL_STATES: GameState[] = [ARENA_STATES.ENDED];
+const DEFAULT_REFRESH_INTERVAL = UI_BEHAVIOR.ARENA_POLLING_INTERVAL;
 
-function deriveGameState(survivorCount: number, maxCapacity: number): GameState {
-  if (survivorCount === maxCapacity) return 'JOINING';
-  if (survivorCount === 1) return 'ENDED';
-  if (survivorCount <= 0) return 'ENDED';
-  return 'ACTIVE';
+function deriveGameState(
+  survivorCount: number,
+  maxCapacity: number,
+): GameState {
+  if (survivorCount === maxCapacity) return "JOINING";
+  if (survivorCount === 1) return "ENDED";
+  if (survivorCount <= 0) return "ENDED";
+  return "ACTIVE";
 }
 
 export const useArenaState = (
   arenaId: string,
   userAddress?: string,
-  options: UseArenaStateOptions = {}
+  options: UseArenaStateOptions = {},
 ) => {
   const refreshInterval = options.refreshInterval ?? DEFAULT_REFRESH_INTERVAL;
 
@@ -59,8 +68,14 @@ export const useArenaState = (
         survivorCount: data.survivorsCount,
         maxCapacity: data.maxCapacity,
         populationSplit: {
-          heads: Math.floor(data.survivorsCount * 0.55),
-          tails: Math.ceil(data.survivorsCount * 0.45),
+          heads: Math.floor(
+            data.survivorsCount *
+              GAME_MECHANICS.POPULATION_SPLIT.HEADS_FRACTION,
+          ),
+          tails: Math.ceil(
+            data.survivorsCount *
+              GAME_MECHANICS.POPULATION_SPLIT.TAILS_FRACTION,
+          ),
         },
         gameState,
         roundNumber: data.roundNumber,
@@ -73,7 +88,9 @@ export const useArenaState = (
       setError(null);
       return gameState;
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch arena state');
+      setError(
+        err instanceof Error ? err.message : "Failed to fetch arena state",
+      );
       return null;
     }
   }, [arenaId, userAddress]);
