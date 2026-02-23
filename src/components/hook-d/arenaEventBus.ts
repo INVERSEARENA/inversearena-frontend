@@ -344,3 +344,34 @@ class EventBus<EventMap extends Record<string, any>> {
     }
   }
 }
+
+
+// ============================================================================
+// Singleton Instance
+// ============================================================================
+
+/**
+ * Singleton instance of the arena event bus
+ * 
+ * This instance is shared across the entire application, ensuring
+ * all components and services communicate through the same event bus.
+ * 
+ * @example
+ * import { arenaEventBus } from './arenaEventBus';
+ * 
+ * // Subscribe to events
+ * const unsubscribe = arenaEventBus.on('round:started', (payload) => {
+ *   console.log('Round', payload.roundNumber, 'started!');
+ * });
+ * 
+ * // Emit events
+ * arenaEventBus.emit('round:started', {
+ *   roundNumber: 1,
+ *   timestamp: Date.now(),
+ *   duration: 60
+ * });
+ * 
+ * // Clean up
+ * unsubscribe();
+ */
+export const arenaEventBus = new EventBus<ArenaEventMap>(20);
