@@ -1,6 +1,7 @@
 import type { PaymentStatus } from "../types/payment";
 import { PaymentService } from "../services/paymentService";
 import type { TransactionRepository } from "../repositories/transactionRepository";
+import { workerJobsPending, txsConfirmedTotal } from "../utils/metrics";
 
 export interface PaymentWorkerResult {
   processed: number;
@@ -19,6 +20,8 @@ export class PaymentWorker {
     const statuses: PaymentStatus[] = ["queued", "submitted"];
     const pending = await this.transactions.listByStatus(statuses, limit);
 
+    workerJobsPending.set({ job_type: 'payment' }, pending.length);
+
     let submitted = 0;
     let confirmed = 0;
     let failed = 0;
@@ -31,6 +34,7 @@ export class PaymentWorker {
         }
         if (result.transaction.status === "failed") {
           failed += 1;
+          txsConfirmedTotal.inc({ status: 'failed' });
         }
         continue;
       }
@@ -38,8 +42,10 @@ export class PaymentWorker {
       const refreshed = await this.paymentService.confirmSubmittedTransaction(transaction.id);
       if (refreshed.status === "confirmed") {
         confirmed += 1;
+        txsConfirmedTotal.inc({ status: 'confirmed' });
       } else if (refreshed.status === "failed") {
         failed += 1;
+        txsConfirmedTotal.inc({ status: 'failed' });
       }
     }
 
