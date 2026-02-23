@@ -256,4 +256,36 @@ class EventBus<EventMap extends Record<string, any>> {
       );
     }
   }
+
+  /**
+   * Emit an event to all registered listeners
+   * 
+   * @param event - Event name to emit
+   * @param payload - Data to pass to all listeners
+   * 
+   * @example
+   * arenaEventBus.emit('round:started', {
+   *   roundNumber: 1,
+   *   timestamp: Date.now(),
+   *   duration: 60
+   * });
+   */
+  emit<K extends keyof EventMap>(event: K, payload: EventMap[K]): void {
+    const eventListeners = this.listeners.get(event);
+
+    // No listeners registered - silent no-op
+    if (!eventListeners || eventListeners.size === 0) {
+      return;
+    }
+
+    // Invoke all listeners with error handling
+    eventListeners.forEach((listener) => {
+      try {
+        listener(payload);
+      } catch (error) {
+        // Log error but continue executing remaining listeners
+        console.error(`Error in listener for event "${String(event)}":`, error);
+      }
+    });
+  }
 }
