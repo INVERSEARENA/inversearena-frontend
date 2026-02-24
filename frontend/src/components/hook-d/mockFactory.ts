@@ -322,3 +322,70 @@ export function createMockEliminationLog(
   
   return events;
 }
+
+
+/**
+ * Creates a mock Arena with sensible defaults
+ * 
+ * @param overrides - Partial Arena to override defaults
+ * @param options - Factory options including optional seed
+ * @returns Complete Arena object
+ * 
+ * @example
+ * // Generate random arena
+ * const arena = createMockArena();
+ * 
+ * @example
+ * // Generate deterministic arena
+ * const arena = createMockArena({}, { seed: 12345 });
+ * 
+ * @example
+ * // Override specific fields
+ * const arena = createMockArena({
+ *   status: 'ENDED',
+ *   maxPlayers: 50,
+ *   participants: [createMockParticipant({ status: 'ALIVE' })]
+ * });
+ */
+export function createMockArena(
+  overrides?: Partial<Arena>,
+  options?: MockFactoryOptions
+): Arena {
+  const rng = createRNG(options?.seed);
+  
+  // Generate a unique arena ID
+  const arenaId = `arena-${randomInt(rng, 100000, 999999)}`;
+  
+  // Generate default participants (3-5 players)
+  const participantCount = randomInt(rng, 3, 5);
+  const participants: PlayerEntry[] = [];
+  for (let i = 0; i < participantCount; i++) {
+    participants.push(createMockParticipant({}, { seed: options?.seed ? options.seed + i : undefined }));
+  }
+  
+  // Generate default rounds (1-3 rounds)
+  const roundCount = randomInt(rng, 1, 3);
+  const rounds: RoundResult[] = [];
+  for (let i = 0; i < roundCount; i++) {
+    rounds.push(createMockRoundResult({ round: i + 1 }, { seed: options?.seed ? options.seed + i + 100 : undefined }));
+  }
+  
+  const defaults: Arena = {
+    arenaId,
+    status: randomChoice<ArenaV2Status>(rng, ['PENDING', 'JOINING', 'ACTIVE', 'RESOLVING', 'ENDED', 'CANCELLED']),
+    maxPlayers: randomInt(rng, 10, 100),
+    currentPlayers: participantCount,
+    entryFee: `${randomInt(rng, 10, 1000)}`,
+    currentRound: roundCount,
+    roundPhase: randomChoice<RoundPhase>(rng, ['WAITING', 'CHOOSING', 'RESOLVING', 'RESOLVED']),
+    createdAt: Date.now(),
+    participants,
+    rounds,
+    yieldData: createMockYieldSnapshot({}, { seed: options?.seed ? options.seed + 1000 : undefined }),
+  };
+  
+  return {
+    ...defaults,
+    ...overrides,
+  };
+}
