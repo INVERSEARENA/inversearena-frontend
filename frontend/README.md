@@ -1,26 +1,24 @@
-# <img width="60" height="60" alt="InverseLogo (1)" src="https://github.com/user-attachments/assets/d75a1127-d4d5-4e3c-8289-3e1379552bdb" />
- INVERSE ARENA
+# <img width="60" height="60" alt="InverseLogo" src="https://github.com/user-attachments/assets/d75a1127-d4d5-4e3c-8289-3e1379552bdb" /> INVERSE ARENA
 
-## The RWA-Powered multiplayer blockchain elimination game where the minority wins. Built on the Stellar Network.
+**The RWA-Powered multiplayer blockchain elimination game where the minority wins. Built on the Stellar Network.**
 
 [![Stellar Network](https://img.shields.io/badge/Built%20on-Stellar-000000?style=for-the-badge&logo=stellar&logoColor=white)](https://stellar.org)
 [![Soroban](https://img.shields.io/badge/Smart%20Contracts-Soroban/Rust-orange?style=for-the-badge)](https://soroban.stellar.org)
 
-
-**Inverse Arena** is a high-stakes "Last Man Standing" prediction game where players compete by making binary choices (Heads or Tails). The twist: players who choose the **minority option** advance, while the majority are eliminated. 
+**Inverse Arena** is a high-stakes "Last Man Standing" prediction game where players compete by making binary choices (Heads or Tails). The twist: players who choose the **minority option** advance, while the majority are eliminated.
 
 While players battle psychologically, their entry fees are never idle. Built on **Stellar**, Inverse Arena automatically routes prize pools into **Real-World Asset (RWA)** protocols to generate institutional-grade yield during gameplay.
 
 ---
 ## 🎯 The Problem
 
-### 1. The GameFi Sustainability Crisis 
+### 1. The GameFi Sustainability Crisis
 
 Most Web3 games rely on inflationary token emissions to reward players. When new player growth slows, the token value crashes, the economy collapses, and the project fails. Investors are tired of "Ponzinomics" that lack a real revenue floor.
 
 ### 2. The Idle Capital Inefficiency
 
-Currently, billions in GameFi TVL (Total Value Locked) sits stagnant in smart contracts. While players and stakers wait for matches or progress through levels, their capital earns $0$ interest. This is a massive opportunity cost for users and a waste of liquidity for the ecosystem.
+Currently, billions in GameFi TVL (Total Value Locked) sits stagnant in smart contracts. While players and stakers wait for matches or progress through levels, their capital earns $0 interest. This is a massive opportunity cost for users and a waste of liquidity for the ecosystem.
 
 ### 3. The "Majority-Rule" Boredom
 
@@ -28,9 +26,8 @@ Traditional prediction games often reward the majority, leading to "herd behavio
 
 ### 4. Fragmented UX & Value Friction
 
-Players face a "dead-air" problem: long matchmaking wait times with no value accrual. If a player waits 10 minutes for a game to start, they have lost both time and potential yield. Current platforms fail to bridge the gap between DeFi earning and Active gaming.
+Players face a "dead-air" problem: long matchmaking wait times with no value accrual. If a player waits 10 minutes for a game to start, they have lost both time and potential yield. Current platforms fail to bridge the gap between DeFi earning and active gaming.
 
----
 ---
 
 ## 💡  Solution
