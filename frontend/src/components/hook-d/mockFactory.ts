@@ -240,3 +240,85 @@ export function createMockRoundResult(
     ...overrides,
   };
 }
+
+
+/**
+ * Creates a mock YieldSnapshot with realistic financial data
+ * 
+ * @param overrides - Partial YieldSnapshot to override defaults
+ * @param options - Factory options including optional seed
+ * @returns Complete YieldSnapshot object
+ * 
+ * @example
+ * // Generate random yield snapshot
+ * const yieldData = createMockYieldSnapshot();
+ * 
+ * @example
+ * // Generate deterministic yield snapshot
+ * const yieldData = createMockYieldSnapshot({}, { seed: 12345 });
+ * 
+ * @example
+ * // Override specific fields
+ * const yieldData = createMockYieldSnapshot({ apy: 12.5, principal: 5000 });
+ */
+export function createMockYieldSnapshot(
+  overrides?: Partial<YieldSnapshot>,
+  options?: MockFactoryOptions
+): YieldSnapshot {
+  const rng = createRNG(options?.seed);
+  
+  const defaults: YieldSnapshot = {
+    principal: randomInt(rng, 100, 10000),
+    accruedYield: rng.next() * 500, // 0 to 500
+    apy: rng.next() * 20, // 0% to 20% APY (realistic DeFi range)
+    lastUpdatedAt: Date.now(),
+    surgeMultiplier: 1.0 + rng.next() * 2.0, // 1.0 to 3.0
+  };
+  
+  return {
+    ...defaults,
+    ...overrides,
+  };
+}
+
+
+/**
+ * Creates an array of mock EliminationEvent objects
+ * 
+ * @param count - Number of elimination events to generate
+ * @param options - Factory options including optional seed
+ * @returns Array of EliminationEvent objects
+ * @throws {TypeError} If count is not a positive integer
+ * 
+ * @example
+ * // Generate 5 random elimination events
+ * const events = createMockEliminationLog(5);
+ * 
+ * @example
+ * // Generate deterministic elimination events
+ * const events = createMockEliminationLog(10, { seed: 12345 });
+ */
+export function createMockEliminationLog(
+  count: number,
+  options?: MockFactoryOptions
+): EliminationEvent[] {
+  if (!Number.isInteger(count) || count < 0) {
+    throw new TypeError(`Count must be a non-negative integer, got: ${count}`);
+  }
+  
+  const rng = createRNG(options?.seed);
+  const events: EliminationEvent[] = [];
+  const reasons: Array<"MINORITY" | "TIMEOUT" | "FORFEIT"> = ["MINORITY", "TIMEOUT", "FORFEIT"];
+  
+  for (let i = 0; i < count; i++) {
+    events.push({
+      arenaId: `arena-${randomInt(rng, 1000, 9999)}`,
+      round: i + 1, // Sequential round numbers
+      walletAddress: randomStellarAddress(rng),
+      reason: randomChoice(rng, reasons),
+      timestamp: randomTimestamp(rng),
+    });
+  }
+  
+  return events;
+}
