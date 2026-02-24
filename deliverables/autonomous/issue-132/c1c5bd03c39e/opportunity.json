@@ -1,0 +1,18 @@
+{
+  "headline": "GitHub[INVERSEARENA/inversearena-frontend]: implement Arena Data Formatters",
+  "url": "https://github.com/INVERSEARENA/inversearena-frontend/issues/132",
+  "expected_usd": 1240.5,
+  "strategy": "锁定明码 bounty；交付代码+run_log+sample_data，并准备自动交割链接。",
+  "raw_expected": "1240.50 USD",
+  "bounty_literal": "1,240.50 USDC",
+  "source_line": "## 🚨 发现新商机：GitHub[INVERSEARENA/inversearena-frontend]: implement Arena Data Formatters",
+  "kind": "generic_automation",
+  "difficulty": 1.0,
+  "score": 1240.5,
+  "oid": "639ed2aa50373de243b4c2c525e93390e88a84277cabc30dd42fed788ae8906e",
+  "payout": {
+    "asset": "USDT",
+    "chain": "EVM",
+    "wallet": "0xF57503F99fA20b912200ed90D26d945093136ef5"
+  }
+}
