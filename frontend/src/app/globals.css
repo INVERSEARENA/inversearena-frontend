@@ -98,6 +98,8 @@ body {
 .pool-success-modal-scrollbar::-webkit-scrollbar-thumb:hover {
   background-color: #00DD00;
   /* Slightly lighter on hover */
+}
+
 /* ── Neubrutalist utilities (Waiting Room) ── */
 .neubrutalist-border {
   border: 3px solid #000000;
@@ -137,10 +139,6 @@ body {
 }
 
 /* ── Arena V2 ── */
-@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
-
-@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
-@import "tailwindcss";
 
 :root {
   --arena-green: #00ff41;
