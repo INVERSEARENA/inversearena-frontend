@@ -5,6 +5,49 @@
  * Uses a seedable pseudo-random number generator (mulberry32) to ensure reproducible outputs.
  * 
  * @module mockFactory
+ * 
+ * @example Basic Usage
+ * ```typescript
+ * import { createMockArena, createMockParticipant } from './mockFactory';
+ * 
+ * // Generate random mock data
+ * const arena = createMockArena();
+ * const participant = createMockParticipant();
+ * ```
+ * 
+ * @example Deterministic Generation (for tests)
+ * ```typescript
+ * // Same seed produces identical results
+ * const arena1 = createMockArena({}, { seed: 12345 });
+ * const arena2 = createMockArena({}, { seed: 12345 });
+ * // arena1 and arena2 are identical
+ * ```
+ * 
+ * @example Override Defaults
+ * ```typescript
+ * // Customize specific fields
+ * const arena = createMockArena({
+ *   status: 'ACTIVE',
+ *   maxPlayers: 50,
+ *   entryFee: '100'
+ * });
+ * 
+ * const participant = createMockParticipant({
+ *   status: 'ALIVE',
+ *   currentRound: 5
+ * });
+ * ```
+ * 
+ * @example Generate Multiple Items
+ * ```typescript
+ * // Generate elimination log
+ * const events = createMockEliminationLog(10, { seed: 999 });
+ * 
+ * // Generate multiple participants
+ * const participants = Array.from({ length: 5 }, (_, i) => 
+ *   createMockParticipant({}, { seed: 1000 + i })
+ * );
+ * ```
  */
 
 import type {
