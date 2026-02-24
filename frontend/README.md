@@ -46,10 +46,11 @@ Players face a "dead-air" problem: long matchmaking wait times with no value acc
 ## ⚡ Why Stellar & Soroban?
 
 In 2026, Stellar is the premier choice for Inverse Arena due to:
-- **Ultra-Fast Finality**: Ledger settlement in **2-5 seconds**—essential for fast-paced elimination rounds.
-- **Near-Zero Fees**: Transaction costs are roughly **0.00001 XLM**, allowing for micro-stake games.
-- **Native RWA Ecosystem**: Direct access to yield-bearing assets like **Ondo USDY** and tokenized Treasury bills.
-- **Passkey Support**: Players can sign "Heads" or "Tails" moves using **FaceID or TouchID**, removing the need for seed phrases.
+
+- **Ultra-Fast Finality**: Ledger settlement in 2-5 seconds—essential for fast-paced elimination rounds
+- **Near-Zero Fees**: Transaction costs are roughly 0.00001 XLM, allowing for micro-stake games
+- **Native RWA Ecosystem**: Direct access to yield-bearing assets like Ondo USDY and tokenized Treasury bills
+- **Passkey Support**: Players can sign "Heads" or "Tails" moves using FaceID or TouchID, removing the need for seed phrases
 
 ---
 
@@ -57,25 +58,28 @@ In 2026, Stellar is the premier choice for Inverse Arena due to:
 
 Traditional GameFi prize pools are stagnant. Inverse Arena turns capital into a productive asset:
 
-- **USDY (Ondo Finance)**: Entry fees in USDC are swapped to USDY to earn ~5% APY from US Treasuries.
-- **Yield-Bearing Anchors**: Leveraging Stellar's "Anchor" network to tap into global fiat-backed yields.
-- **Sustainable Rewards**: Winnings are paid out as **Principal + Accumulated Yield**, creating a non-inflationary economic model.
+- **USDY (Ondo Finance)**: Entry fees in USDC are swapped to USDY to earn ~5% APY from US Treasuries
+- **Yield-Bearing Anchors**: Leveraging Stellar's "Anchor" network to tap into global fiat-backed yields
+- **Sustainable Rewards**: Winnings are paid out as Principal + Accumulated Yield, creating a non-inflationary economic model
 
 ---
 
 ## 🕹️ Game Mechanics
 
 ### 1. The "Contrarian" Engine
-Players enter a pool. Each round, they must predict what the *fewer* number of people will choose.
-- **Majority Chose Heads?** -> Heads are eliminated.
-- **Minority Chose Tails?** -> Tails advance to the next round.
-- **One Survivor?** -> The "Last Man Standing" claims the entire pool + RWA yield.
+
+Players enter a pool. Each round, they must predict what the fewer number of people will choose.
+
+- **Majority Chose Heads?** → Heads are eliminated
+- **Minority Chose Tails?** → Tails advance to the next round
+- **One Survivor?** → The "Last Man Standing" claims the entire pool + RWA yield
 
 ### 2. Pool Lifecycle
-- **Creation**: Hosts stake XLM to create a pool.
-- **Entry**: Players join using USDC, EURC, or XLM.
-- **Yield Start**: Soroban smart contracts move funds to yield-bearing RWA vaults.
-- **Resolution**: Rounds execute every 30-60 seconds until a winner is declared.
+
+- **Creation**: Hosts stake XLM to create a pool
+- **Entry**: Players join using USDC, EURC, or XLM
+- **Yield Start**: Soroban smart contracts move funds to yield-bearing RWA vaults
+- **Resolution**: Rounds execute every 30-60 seconds until a winner is declared
 
 ---
 
@@ -98,40 +102,47 @@ graph TD
     I --> J[Payout: Principal + Yield]
 ```
 
-## Smart Contract Components (Rust/WASM)
-- arena_manager.rs: Manages player states, round timing, and elimination logic.
+### Smart Contract Components (Rust/WASM)
 
-- rwa_adapter.rs: Interfaces with Stellar Asset Contracts (SAC) to swap and deposit funds into yield protocols.
+- `arena_manager.rs`: Manages player states, round timing, and elimination logic
+- `rwa_adapter.rs`: Interfaces with Stellar Asset Contracts (SAC) to swap and deposit funds into yield protocols
+- `random_engine.rs`: Utilizes Stellar's ledger-based entropy for fair round outcomes
 
-- random_engine.rs: Utilizes Stellar's ledger-based entropy for fair round outcomes.
+---
 
-## Roadmap
+## 🗺️ Roadmap
+
 ### Phase 1: Stellar Testnet (Q1 2026) ✅
-- Soroban core logic deployment.
-- Integration with Stellar Asset Contracts (USDC).
-- Alpha testing with 100 concurrent players.
+
+- Soroban core logic deployment
+- Integration with Stellar Asset Contracts (USDC)
+- Alpha testing with 100 concurrent players
 
 ### Phase 2: RWA Integration (Q2 2026) ⏳
-- Mainnet launch on Stellar.
-- Integration with Ondo USDY for automated prize pool yield.
-- MoneyGram "Cash-In" feature for global accessibility.
+
+- Mainnet launch on Stellar
+- Integration with Ondo USDY for automated prize pool yield
+- MoneyGram "Cash-In" feature for global accessibility
 
 ### Phase 3: Expansion (Q3 2026) 🚀
-- Mobile app with native Passkey support.
-- DAO-governed RWA allocation strategies.
-- Private "Arena" hosting for influencers and brands.
 
-## API Pagination
+- Mobile app with native Passkey support
+- DAO-governed RWA allocation strategies
+- Private "Arena" hosting for influencers and brands
+
+---
+
+## 📄 API Pagination
 
 The list APIs use cursor-based pagination with stable ordering by `createdAt DESC, id DESC`.
 
-- Default page size: `25`
-- Maximum page size: `100`
-- Query params:
-- `limit`: positive integer, capped at max page size.
-- `cursor`: opaque value returned by a previous page.
+- **Default page size**: `25`
+- **Maximum page size**: `100`
+- **Query params**:
+  - `limit`: Positive integer, capped at max page size
+  - `cursor`: Opaque value returned by a previous page
 
-Response shape:
+### Response Shape
 
 ```json
 {
@@ -141,12 +152,14 @@ Response shape:
 }
 ```
 
-Implemented endpoints:
+### Implemented Endpoints
 
 - `GET /arenas/:id/participants`
 - `GET /pools/:id/eliminations`
 
-## Security Configuration
+---
+
+## 🔒 Security Configuration
 
 Set allowed web origins with environment variables so CORS can stay strict and configurable:
 
@@ -161,21 +174,27 @@ Optional API override used by telemetry module:
 NEXT_PUBLIC_COINGECKO_SIMPLE_PRICE_URL=https://api.coingecko.com/api/v3/simple/price?ids=cardano&vs_currencies=usd
 ```
 
-## API Rate Limiting
+---
+
+## ⚡ API Rate Limiting
 
 Sensitive write endpoints are protected with a Redis-backed limiter (`rate-limiter-flexible` + `ioredis`) with keys scoped by IP and optional wallet address.
 
-Protected endpoints:
+### Protected Endpoints
 
 - `POST /auth/nonce`
 - `POST /pools`
 
-On limit violation, APIs return:
+### On Limit Violation
+
+APIs return:
 
 - HTTP `429`
 - `Retry-After` response header (seconds)
 
-Configurable environment variables:
+### Configuration
+
+Environment variables:
 
 - `REDIS_URL` (required for multi-instance shared limits)
 - `RATE_LIMIT_NONCE_PREFIX` (default: `rl:auth:nonce`)
