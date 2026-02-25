@@ -6,11 +6,17 @@ import { createAdminRouter } from "./routes/admin";
 import { errorHandler } from "./middleware/errorHandler";
 import { requestLogger } from "./middleware/logger";
 import { metricsMiddleware } from "./middleware/metrics";
-import { ApiKeyAuthProvider, requireAdmin, requireAuth } from "./middleware/auth";
+import {
+  ApiKeyAuthProvider,
+  requireAdmin,
+  requireAuth,
+} from "./middleware/auth";
 import { PayoutsController } from "./controllers/payouts.controller";
 import { WorkerController } from "./controllers/worker.controller";
 import { AdminController } from "./controllers/admin.controller";
 import { AuthController } from "./controllers/auth.controller";
+import { UsersController } from "./controllers/users.controller";
+import { LeaderboardController } from "./controllers/leaderboard.controller";
 import { TransactionsController } from "./controllers/transactions.controller";
 import { RoundController } from "./controllers/round.controller";
 import { register } from "./utils/metrics";
@@ -20,6 +26,7 @@ import type { TransactionRepository } from "./repositories/transactionRepository
 import type { AdminService } from "./services/adminService";
 import type { AuthService } from "./services/authService";
 import type { RoundService } from "./services/roundService";
+import { prisma } from "./db/prisma";
 
 export interface AppDependencies {
   paymentService: PaymentService;
@@ -48,22 +55,41 @@ export function createApp(deps: AppDependencies): express.Application {
     res.send(await register.metrics());
   });
 
-  const payoutsController = new PayoutsController(deps.paymentService, deps.transactions);
+  const payoutsController = new PayoutsController(
+    deps.paymentService,
+    deps.transactions,
+  );
   const workerController = new WorkerController(deps.paymentWorker);
   const adminController = new AdminController(
     deps.adminService,
     deps.paymentService,
-    deps.transactions
+    deps.transactions,
   );
   const authController = new AuthController(deps.authService);
+  const usersController = new UsersController(prisma);
+  const leaderboardController = new LeaderboardController(prisma);
   const transactionsController = new TransactionsController(deps.transactions);
   const roundController = new RoundController(deps.roundService);
 
   const adminAuthMiddleware = requireAdmin(new ApiKeyAuthProvider());
   const userAuthMiddleware = requireAuth(deps.authService);
 
-  app.use("/api", createApiRouter(payoutsController, workerController, authController, transactionsController, userAuthMiddleware));
-  app.use("/api/admin", createAdminRouter(adminController, roundController, adminAuthMiddleware));
+  app.use(
+    "/api",
+    createApiRouter(
+      payoutsController,
+      workerController,
+      authController,
+      usersController,
+      leaderboardController,
+      transactionsController,
+      userAuthMiddleware,
+    ),
+  );
+  app.use(
+    "/api/admin",
+    createAdminRouter(adminController, roundController, adminAuthMiddleware),
+  );
 
   app.use(errorHandler);
 
