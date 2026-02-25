@@ -1,4 +1,4 @@
-import mongoose from "mongoose";
+import * as mongoose from "mongoose";
 
 const MONGODB_URI = process.env.MONGODB_URI;
 
@@ -7,7 +7,7 @@ if (!MONGODB_URI) {
 }
 
 export async function connectDB(): Promise<void> {
-  await mongoose.connect(MONGODB_URI, { dbName: "inversearena" });
+  await mongoose.connect(MONGODB_URI!, { dbName: "inversearena" });
   console.log("Connected to MongoDB");
 }
 

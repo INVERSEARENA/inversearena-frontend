@@ -31,7 +31,7 @@ export const logger = pino({
 });
 
 export const reportErrorToSentry = (err: Error, context?: Record<string, any>) => {
-    Sentry.withScope((scope) => {
+    Sentry.withScope((scope: any) => {
         if (context) {
             if (context.userWallet) {
                 context.userWalletMasked = maskWalletAddress(context.userWallet);
