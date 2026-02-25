@@ -2,6 +2,7 @@
 
 import React, { Component, ErrorInfo, ReactNode } from "react";
 import { ErrorFallback } from "./ErrorFallback";
+import { captureReactError } from "@/lib/sentry";
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -65,8 +66,8 @@ export class ErrorBoundary extends Component<
       this.props.onError(error, errorInfo);
     }
 
-    // In production, you might want to log to an error reporting service
-    // Example: logErrorToService(error, errorInfo);
+    // Report to Sentry (no-ops when NEXT_PUBLIC_SENTRY_DSN is not set).
+    captureReactError(error, errorInfo);
   }
 
   handleReset = (): void => {
