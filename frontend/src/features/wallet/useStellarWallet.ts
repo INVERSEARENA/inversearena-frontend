@@ -3,11 +3,14 @@ import { FreighterModule } from "@creit-tech/stellar-wallets-kit/modules/freight
 import { xBullModule } from "@creit-tech/stellar-wallets-kit/modules/xbull";
 import { AlbedoModule } from "@creit-tech/stellar-wallets-kit/modules/albedo";
 import { useEffect, useState, useCallback } from "react";
+import { WalletStatus } from "./types";
 
 // Define an interface for the wallet hook's return type
 export interface WalletHook {
   publicKey: string | null;
   isConnected: boolean;
+  status: WalletStatus;
+  error: string | null;
   connectWallet: () => Promise<void>;
   disconnectWallet: () => void;
 }
@@ -20,6 +23,8 @@ export interface WalletHook {
 export const useStellarWallet = (network: Networks): WalletHook => {
   const [publicKey, setPublicKey] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [status, setStatus] = useState<WalletStatus>('disconnected');
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     StellarWalletsKit.init({
@@ -34,13 +39,18 @@ export const useStellarWallet = (network: Networks): WalletHook => {
 
   const connectWallet = useCallback(async () => {
     try {
+      setStatus('connecting');
+      setError(null);
       const { address } = await StellarWalletsKit.authModal();
       setPublicKey(address);
       setIsConnected(true);
-    } catch (error) {
-      console.error("Failed to connect wallet:", error);
+      setStatus('connected');
+    } catch (err) {
+      console.error("Failed to connect wallet:", err);
       setIsConnected(false);
       setPublicKey(null);
+      setStatus('error');
+      setError(err instanceof Error ? err.message : "Failed to connect wallet");
     }
   }, []);
 
@@ -48,8 +58,10 @@ export const useStellarWallet = (network: Networks): WalletHook => {
     StellarWalletsKit.disconnect();
     setPublicKey(null);
     setIsConnected(false);
+    setStatus('disconnected');
+    setError(null);
   }, []);
 
-  return { publicKey, isConnected, connectWallet, disconnectWallet };
+  return { publicKey, isConnected, status, error, connectWallet, disconnectWallet };
 };
 
