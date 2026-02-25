@@ -178,6 +178,56 @@ NEXT_PUBLIC_COINGECKO_SIMPLE_PRICE_URL=https://api.coingecko.com/api/v3/simple/p
 
 ---
 
+## 🚨 Frontend Error Reporting (Sentry)
+
+Unhandled React render errors caught by the `ErrorBoundary` are automatically reported to [Sentry](https://sentry.io) in production.
+
+### How it works
+
+- `sentry.client.config.ts` (project root) initialises the SDK on the browser.
+- `src/lib/sentry.ts` exposes `captureReactError()`, called by `ErrorBoundary.componentDidCatch`.
+- Each report includes the **React component stack** so you can pinpoint the exact component that threw.
+- The existing fallback UI ("Retry / Go Home / Report Issue") is unchanged.
+
+### Setup
+
+1. Create a project in the [Sentry dashboard](https://sentry.io) and copy the **DSN**.
+2. Add environment variables to your deployment:
+
+```bash
+# Required – reporting is disabled when this is absent (safe for local dev)
+NEXT_PUBLIC_SENTRY_DSN=https://<key>@o<org>.ingest.sentry.io/<project>
+
+# Optional – label events by environment in the Sentry dashboard
+NEXT_PUBLIC_SENTRY_ENVIRONMENT=production
+
+# Optional – set by CI to the git SHA or semver tag for release tracking
+NEXT_PUBLIC_SENTRY_RELEASE=v1.2.3
+
+# Server-only (build time) – needed to upload source maps so stack traces
+# show original TypeScript source instead of minified output
+SENTRY_AUTH_TOKEN=<token from Sentry Settings → Auth Tokens>
+```
+
+3. Deploy. Errors will appear under your project in the Sentry dashboard within seconds.
+
+### Privacy / PII
+
+- `sendDefaultPii` is **disabled** — cookies and auth headers are never attached to events.
+- A `beforeSend` scrubber strips all user fields except an opaque anonymous `id`.
+- Wallet addresses, private keys, and any other sensitive data must **not** be passed as Sentry context anywhere in the codebase.
+
+### Scope
+
+The `ErrorBoundary` only catches **React render errors**. It does **not** catch:
+- Async errors (`Promise` rejections, `setTimeout`)
+- Event-handler errors
+- Server-side rendering errors
+
+Global `unhandledrejection` / `window.onerror` handlers are a planned follow-up (see issue #183).
+
+---
+
 ## ⚡ API Rate Limiting
 
 Sensitive write endpoints are protected with a Redis-backed limiter (`rate-limiter-flexible` + `ioredis`) with keys scoped by IP and optional wallet address.
