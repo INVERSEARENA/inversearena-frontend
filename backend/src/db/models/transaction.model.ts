@@ -1,7 +1,7 @@
 import { Schema, model, type Document } from "mongoose";
 import type { PaymentStatus, TransactionRecord } from "../../types/payment";
 
-export interface TransactionDocument extends Omit<TransactionRecord, "id">, Document {
+export interface TransactionDocument extends Omit<TransactionRecord, "id"> {
   _id: string;
 }
 

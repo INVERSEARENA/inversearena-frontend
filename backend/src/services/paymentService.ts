@@ -6,7 +6,9 @@ import {
   TransactionBuilder,
   nativeToScVal,
 } from "@stellar/stellar-sdk";
-import { Api, Server } from "@stellar/stellar-sdk/rpc";
+// @ts-ignore
+import { rpc } from "@stellar/stellar-sdk";
+const { Api, Server } = rpc;
 import { z } from "zod";
 
 import { getPaymentConfig, type PaymentConfig } from "../config/paymentConfig";
@@ -70,12 +72,12 @@ const delay = async (ms: number): Promise<void> =>
 
 export interface PaymentServiceOptions {
   config?: PaymentConfig;
-  rpcServer?: Server;
+  rpcServer?: any;
 }
 
 export class PaymentService {
   private readonly config: PaymentConfig;
-  private readonly rpcServer: Server;
+  private readonly rpcServer: any;
 
   constructor(
     private readonly transactions: TransactionRepository,

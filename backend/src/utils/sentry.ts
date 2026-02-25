@@ -12,7 +12,7 @@ export const initSentry = () => {
             ],
             tracesSampleRate: 1.0,
             profilesSampleRate: 1.0,
-            beforeSend: (event) => {
+            beforeSend: (event: any) => {
                 // Redact JWT_SECRET in case it accidentally leaks into Sentry payload
                 if (process.env.JWT_SECRET && event.exception?.values?.[0]?.value?.includes(process.env.JWT_SECRET)) {
                     event.exception.values[0].value = event.exception.values[0].value.replace(

@@ -15,7 +15,7 @@ export class RoundService {
     const start = Date.now();
 
     try {
-      const result = await this.prisma.$transaction(async (tx) => {
+      const result = await this.prisma.$transaction(async (tx: any) => {
         const round = await tx.round.findUnique({
           where: { id: input.roundId },
           include: { eliminationLogs: true },
@@ -60,7 +60,7 @@ export class RoundService {
               oracleYield: input.oracleYield,
               randomSeed: input.randomSeed,
               resolution: { eliminatedPlayers, payouts, poolBalances }
-            },
+            } as any,
             updatedAt: new Date() 
           },
         });
