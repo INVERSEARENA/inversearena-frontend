@@ -4,23 +4,20 @@ import { useState } from "react";
 import { SettingsCard } from "@/components/arena-v2/settings/SettingsCard";
 import { SettingsSlider } from "@/components/arena-v2/settings/SettingsSlider";
 import { SettingsToggle } from "@/components/arena-v2/settings/SettingsToggle";
+import { useArenaSettings } from "@/shared-d/hooks/useArenaSettings";
 
 type ColorMode = "dark" | "high-contrast";
 
 export default function ArenaV2SettingsPage() {
-  const [masterVolume, setMasterVolume] = useState(85);
-  const [effectsVolume, setEffectsVolume] = useState(70);
-  const [musicStreamEnabled, setMusicStreamEnabled] = useState(true);
-  const [voiceCommEnabled, setVoiceCommEnabled] = useState(false);
-  const [energyPulseEnabled, setEnergyPulseEnabled] = useState(true);
-  const [colorMode, setColorMode] = useState<ColorMode>("dark");
-  const [hudOpacity, setHudOpacity] = useState(45);
+  const { settings, updateSetting, isLoaded } = useArenaSettings();
   const [saveState, setSaveState] = useState<"idle" | "saved">("idle");
 
   const handleSave = () => {
     setSaveState("saved");
     window.setTimeout(() => setSaveState("idle"), 1800);
   };
+
+  if (!isLoaded) return null;
 
   return (
     <main className="min-h-screen bg-[#060d1f] px-4 py-6 text-[#d8e4ff] sm:px-8 lg:px-10">
@@ -42,12 +39,28 @@ export default function ArenaV2SettingsPage() {
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[2.1fr_1.2fr]">
           <SettingsCard title="AUDIO_CONFIGURATION">
             <div className="space-y-5">
-              <SettingsSlider label="MASTER_VOLUME" value={masterVolume} onChange={setMasterVolume} />
-              <SettingsSlider label="EFFECTS_VOLUME" value={effectsVolume} onChange={setEffectsVolume} />
+              <SettingsSlider 
+                label="MASTER_VOLUME" 
+                value={settings.masterVolume} 
+                onChange={(v) => updateSetting("masterVolume", v)} 
+              />
+              <SettingsSlider 
+                label="EFFECTS_VOLUME" 
+                value={settings.effectsVolume} 
+                onChange={(v) => updateSetting("effectsVolume", v)} 
+              />
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <SettingsToggle label="MUSIC_STREAM" enabled={musicStreamEnabled} onChange={setMusicStreamEnabled} />
-                <SettingsToggle label="VOICE_COMM" enabled={voiceCommEnabled} onChange={setVoiceCommEnabled} />
+                <SettingsToggle 
+                  label="MUSIC_STREAM" 
+                  enabled={settings.musicStream} 
+                  onChange={(v) => updateSetting("musicStream", v)} 
+                />
+                <SettingsToggle 
+                  label="VOICE_COMM" 
+                  enabled={settings.voiceComm} 
+                  onChange={(v) => updateSetting("voiceComm", v)} 
+                />
               </div>
             </div>
           </SettingsCard>
@@ -59,15 +72,15 @@ export default function ArenaV2SettingsPage() {
               </p>
               <button
                 type="button"
-                onClick={() => setEnergyPulseEnabled((prev) => !prev)}
+                onClick={() => updateSetting("energyPulse", !settings.energyPulse)}
                 className={`flex h-12 w-full items-center justify-between border-2 border-black px-3 font-pixel text-[11px] uppercase tracking-[0.14em] transition ${
-                  energyPulseEnabled
+                  settings.energyPulse
                     ? "bg-[#39ff14] text-black hover:brightness-95"
                     : "bg-[#0e1528] text-[#d8e4ff] hover:border-[#39ff14]"
                 }`}
               >
-                <span>{energyPulseEnabled ? "ENABLED" : "DISABLED"}</span>
-                <span className="text-lg">{energyPulseEnabled ? "●" : "○"}</span>
+                <span>{settings.energyPulse ? "ENABLED" : "DISABLED"}</span>
+                <span className="text-lg">{settings.energyPulse ? "●" : "○"}</span>
               </button>
             </SettingsCard>
 
@@ -75,9 +88,9 @@ export default function ArenaV2SettingsPage() {
               <div className="space-y-2">
                 <button
                   type="button"
-                  onClick={() => setColorMode("dark")}
+                  onClick={() => updateSetting("colorMode", "dark")}
                   className={`h-11 w-full border-2 border-black font-pixel text-[10px] uppercase tracking-[0.14em] transition ${
-                    colorMode === "dark"
+                    settings.colorMode === "dark"
                       ? "bg-[#39ff14] text-black"
                       : "bg-[#0e1528] text-[#d8e4ff] hover:border-[#39ff14]"
                   }`}
@@ -86,9 +99,9 @@ export default function ArenaV2SettingsPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setColorMode("high-contrast")}
+                  onClick={() => updateSetting("colorMode", "high-contrast")}
                   className={`h-11 w-full border-2 font-pixel text-[10px] uppercase tracking-[0.14em] transition ${
-                    colorMode === "high-contrast"
+                    settings.colorMode === "high-contrast"
                       ? "border-[#39ff14] bg-[#39ff14] text-black"
                       : "border-[#25365d] bg-transparent text-[#d8e4ff] hover:border-[#39ff14]"
                   }`}
@@ -104,8 +117,8 @@ export default function ArenaV2SettingsPage() {
           <SettingsCard title="HUD_CONFIGURATION">
             <SettingsSlider
               label="ARENA_OVERLAY_OPACITY"
-              value={hudOpacity}
-              onChange={setHudOpacity}
+              value={settings.hudOpacity}
+              onChange={(v) => updateSetting("hudOpacity", v)}
               segmented
             />
           </SettingsCard>
