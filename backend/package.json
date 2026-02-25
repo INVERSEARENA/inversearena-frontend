@@ -8,6 +8,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
+    "test:request-validation": "tsx --test tests/request-validation.unit.test.ts",
     "typecheck": "tsc --noEmit",
     "migrate": "prisma migrate deploy",
     "migrate:dev": "prisma migrate dev"

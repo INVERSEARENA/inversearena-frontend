@@ -187,6 +187,15 @@ Sensitive write endpoints are protected with a Redis-backed limiter (`rate-limit
 - `POST /auth/nonce`
 - `POST /pools`
 
+### POST /pools Validation
+
+Request body accepts optional fields:
+
+- `name`: optional string, trimmed, maximum `256` characters
+- `walletAddress`: optional Stellar public key, format `^G[A-Z2-7]{55}$`
+
+Invalid payloads return HTTP `400` with an `issues` array describing validation failures.
+
 ### On Limit Violation
 
 APIs return:
