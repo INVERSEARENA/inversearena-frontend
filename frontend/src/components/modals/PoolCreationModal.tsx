@@ -24,6 +24,10 @@ interface PoolCreationModalProps {
   isOpen: boolean;
   onClose: () => void;
   onInitialize?: (data: PoolCreationData) => void;
+  challengedSurvivor?: {
+    agentId: string;
+    rank: number;
+  };
 }
 
 interface PoolCreationData {
@@ -41,6 +45,7 @@ export function PoolCreationModal({
   isOpen,
   onClose,
   onInitialize,
+  challengedSurvivor,
 }: PoolCreationModalProps) {
   // Form input state (using string for better control)
   const [stakeAmountInput, setStakeAmountInput] = useState("100");
@@ -168,11 +173,13 @@ export function PoolCreationModal({
 
           <div className="mb-8">
             <h2 className="text-4xl lg:text-5xl font-black tracking-tighter uppercase leading-none mb-2 italic text-white">
-              Pool Creation
+              {challengedSurvivor ? "Challenge Initiated" : "Pool Creation"}
             </h2>
             <div className="bg-primary h-2 w-40 mb-4 border-b-2 border-black" />
             <p className="text-base font-medium text-slate-400 uppercase tracking-widest">
-              Deploy new arena instance to Soroban network
+              {challengedSurvivor 
+                ? `Challenging Agent ${challengedSurvivor.agentId.charAt(0)}...${challengedSurvivor.agentId.slice(-4)} (Rank #${challengedSurvivor.rank})`
+                : "Deploy new arena instance to Soroban network"}
             </p>
           </div>
 

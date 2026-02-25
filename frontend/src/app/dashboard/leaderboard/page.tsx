@@ -1,12 +1,14 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import {
   LeaderboardTable,
   Pagination,
   getPaginatedSurvivors,
   getTotalPages,
+  mockRankedSurvivors,
 } from "@/features/leaderboard";
+import { PoolCreationModal } from "@/components/modals/PoolCreationModal";
 
 const ITEMS_PER_PAGE = 4;
 
@@ -42,17 +44,30 @@ const podium = [
 
 export default function LeaderboardPage() {
   const [currentPage, setCurrentPage] = useState(1);
+  const [isChallengeModalOpen, setIsChallengeModalOpen] = useState(false);
+  const [targetedSurvivor, setTargetedSurvivor] = useState<{agentId: string, rank: number} | undefined>();
 
-  const totalPages = getTotalPages(ITEMS_PER_PAGE);
-  const paginatedSurvivors = getPaginatedSurvivors(currentPage, ITEMS_PER_PAGE);
+  const itemsPerPage = 7; // Matching the design
+  const totalPages = Math.ceil(mockRankedSurvivors.length / itemsPerPage);
+
+  const paginatedSurvivors = useMemo(() => {
+    const start = (currentPage - 1) * itemsPerPage;
+    return mockRankedSurvivors.slice(start, start + itemsPerPage);
+  }, [currentPage, itemsPerPage]);
 
   const handlePageChange = useCallback((page: number) => {
     setCurrentPage(page);
   }, []);
 
   const handleChallenge = useCallback((survivorId: string) => {
-    // TODO: connect to smart contract
-    console.log("Challenge initiated for survivor:", survivorId);
+    const survivor = mockRankedSurvivors.find(s => s.id === survivorId);
+    if (survivor) {
+      setTargetedSurvivor({
+        agentId: survivor.agentId,
+        rank: survivor.rank
+      });
+      setIsChallengeModalOpen(true);
+    }
   }, []);
 
   return (
@@ -197,7 +212,13 @@ export default function LeaderboardPage() {
       <Pagination
         currentPage={currentPage}
         totalPages={totalPages}
-        onPageChange={handlePageChange}
+        onPageChange={setCurrentPage}
+      />
+
+      <PoolCreationModal 
+        isOpen={isChallengeModalOpen}
+        onClose={() => setIsChallengeModalOpen(false)}
+        challengedSurvivor={targetedSurvivor}
       />
     </div>
   );
