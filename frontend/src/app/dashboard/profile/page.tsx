@@ -2,6 +2,8 @@
 
 import React, { useState } from "react";
 import { Button } from "@/components/ui/Button";
+import { useArenaSettings } from "@/shared-d/hooks/useArenaSettings";
+import { SettingsToggle } from "@/components/arena-v2/settings/SettingsToggle";
 
 // Mock Data
 const MOCK_ARENAS = [
@@ -19,6 +21,7 @@ const MOCK_HISTORY = [
 ];
 
 export default function ProfilePage() {
+  const { settings, updateSetting } = useArenaSettings();
   const [arenaFilter, setArenaFilter] = useState<"All" | "Live">("All");
 
   const filteredArenas = arenaFilter === "All" 
@@ -210,6 +213,36 @@ export default function ProfilePage() {
           </div>
         </div>
       </div>
+
+      {/* Preferences Section */}
+      <section className="space-y-4">
+        <h3 className="text-sm font-bold tracking-[0.2em] text-zinc-400 uppercase">PREFERENCES.CFG</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="p-6 border border-white/5 bg-black/20 backdrop-blur-sm space-y-4">
+            <div className="flex justify-between items-center">
+              <div>
+                <h4 className="text-[10px] font-bold tracking-[0.2em] text-zinc-500 uppercase">SYSTEM_NOTIFICATIONS</h4>
+                <p className="text-[10px] text-zinc-600 mt-1 uppercase">ENABLE_REAL_TIME_ARENA_ALERTS</p>
+              </div>
+              <SettingsToggle 
+                label="" 
+                enabled={settings.notificationsEnabled} 
+                onChange={(v) => updateSetting("notificationsEnabled", v)} 
+              />
+            </div>
+          </div>
+          
+          <div className="p-6 border border-white/5 bg-black/20 backdrop-blur-sm space-y-4">
+            <div className="flex justify-between items-center opacity-50">
+              <div>
+                <h4 className="text-[10px] font-bold tracking-[0.2em] text-zinc-500 uppercase">MARKETING_OFFERS</h4>
+                <p className="text-[10px] text-zinc-600 mt-1 uppercase">RECAP_EMAILS_AND_UPDATES</p>
+              </div>
+              <span className="text-[9px] font-bold text-zinc-600 tracking-widest border border-zinc-700 px-2 py-1">DISABLED</span>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
