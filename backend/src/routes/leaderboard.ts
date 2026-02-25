@@ -2,32 +2,34 @@ import { Router } from "express";
 import { asyncHandler } from "../middleware/validate";
 import { cacheMiddleware } from "../middleware/cache";
 import { cacheKeys, cacheTTL } from "../cache/cacheService";
+import type { LeaderboardController } from "../controllers/leaderboard.controller";
+import type { RequestHandler } from "express";
 
-export function createLeaderboardRouter(): Router {
+export function createLeaderboardRouter(
+  controller: LeaderboardController,
+  authMiddleware: RequestHandler,
+): Router {
   const router = Router();
 
   /**
    * GET /api/leaderboard
-   * Returns top-ranked players.
+   *
+   * Protected — requires valid JWT.
    * Cached for 30s — updates after games end.
+   *
+   * Query params:
+   *  - limit  (1–100, default 20)
+   *  - cursor (opaque string for next page)
    */
   router.get(
     "/",
-    cacheMiddleware(() => cacheKeys.leaderboard(), cacheTTL.LEADERBOARD),
-    asyncHandler(async (_req, res) => {
-      // TODO: Replace with actual DB query
-      const leaderboard = {
-        players: [
-          { rank: 1, address: "GABCD...XYZ", survivalStreak: 12, totalYield: 4250.0, arenasWon: 8 },
-          { rank: 2, address: "GEFGH...UVW", survivalStreak: 10, totalYield: 3800.5, arenasWon: 6 },
-          { rank: 3, address: "GIJKL...RST", survivalStreak: 9, totalYield: 3200.0, arenasWon: 5 },
-        ],
-        totalPlayers: 1024,
-        lastUpdated: new Date().toISOString(),
-      };
-
-      res.json(leaderboard);
-    })
+    authMiddleware,
+    cacheMiddleware(
+      (req) =>
+        `${cacheKeys.leaderboard()}:${req.query.limit ?? 20}:${req.query.cursor ?? "0"}`,
+      cacheTTL.LEADERBOARD,
+    ),
+    asyncHandler(controller.getLeaderboard),
   );
 
   return router;

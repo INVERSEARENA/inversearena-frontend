@@ -16,6 +16,7 @@ import { WorkerController } from "./controllers/worker.controller";
 import { AdminController } from "./controllers/admin.controller";
 import { AuthController } from "./controllers/auth.controller";
 import { UsersController } from "./controllers/users.controller";
+import { LeaderboardController } from "./controllers/leaderboard.controller";
 import { TransactionsController } from "./controllers/transactions.controller";
 import { RoundController } from "./controllers/round.controller";
 import { register } from "./utils/metrics";
@@ -66,6 +67,7 @@ export function createApp(deps: AppDependencies): express.Application {
   );
   const authController = new AuthController(deps.authService);
   const usersController = new UsersController(prisma);
+  const leaderboardController = new LeaderboardController(prisma);
   const transactionsController = new TransactionsController(deps.transactions);
   const roundController = new RoundController(deps.roundService);
 
@@ -79,6 +81,7 @@ export function createApp(deps: AppDependencies): express.Application {
       workerController,
       authController,
       usersController,
+      leaderboardController,
       transactionsController,
       userAuthMiddleware,
     ),

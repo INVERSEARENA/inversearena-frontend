@@ -11,6 +11,7 @@ import type { PayoutsController } from "../controllers/payouts.controller";
 import type { WorkerController } from "../controllers/worker.controller";
 import type { AuthController } from "../controllers/auth.controller";
 import type { UsersController } from "../controllers/users.controller";
+import type { LeaderboardController } from "../controllers/leaderboard.controller";
 import type { TransactionsController } from "../controllers/transactions.controller";
 
 export function createApiRouter(
@@ -18,6 +19,7 @@ export function createApiRouter(
   workerController: WorkerController,
   authController: AuthController,
   usersController: UsersController,
+  leaderboardController: LeaderboardController,
   transactionsController: TransactionsController,
   requireAuth: RequestHandler,
 ): Router {
@@ -34,7 +36,10 @@ export function createApiRouter(
   );
   router.use("/oracle", createOracleRouter());
   router.use("/arenas", createArenasRouter());
-  router.use("/leaderboard", createLeaderboardRouter());
+  router.use(
+    "/leaderboard",
+    createLeaderboardRouter(leaderboardController, requireAuth),
+  );
 
   return router;
 }

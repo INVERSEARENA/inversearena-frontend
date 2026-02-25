@@ -1,9 +1,23 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/Button";
+import { useWallet } from "@/shared-d/hooks/useWallet";
 
-// Mock Data
+// ── Types ────────────────────────────────────────────────────────────
+interface UserProfile {
+  id: string;
+  walletAddress: string;
+  displayName: string | null;
+  joinedAt: string;
+  lastLoginAt: string;
+  gamesPlayed: number;
+  gamesWon: number;
+  totalYieldEarned: string;
+  currentRank: number | null;
+}
+
+// Mock Data — arenas & history still static until those endpoints exist
 const MOCK_ARENAS = [
   { id: "AR_8821", name: "Cyber Siege", stake: "500 XLM", participants: "12/20", status: "LIVE" },
   { id: "AR_7712", name: "Neon Nexus", stake: "1,200 XLM", participants: "8/15", status: "SETTLING" },
@@ -18,12 +32,74 @@ const MOCK_HISTORY = [
   { arena: "#2030", stake: "750 XLM", rounds: "8 Rounds", result: "SURVIVED", pnl: "+65.0 XLM", success: true },
 ];
 
-export default function ProfilePage() {
-  const [arenaFilter, setArenaFilter] = useState<"All" | "Live">("All");
+// ── Helpers ──────────────────────────────────────────────────────────
+function truncateAddress(addr: string): string {
+  if (addr.length <= 12) return addr;
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
 
-  const filteredArenas = arenaFilter === "All" 
-    ? MOCK_ARENAS 
+// ── Component ───────────────────────────────────────────────────────
+export default function ProfilePage() {
+  const { address } = useWallet();
+  const [arenaFilter, setArenaFilter] = useState<"All" | "Live">("All");
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchProfile = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const token = typeof window !== "undefined"
+        ? localStorage.getItem("access_token")
+        : null;
+
+      if (!token) {
+        setError("Not authenticated");
+        setProfile(null);
+        return;
+      }
+
+      const res = await fetch("/api/users/me", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+
+      const data: UserProfile = await res.json();
+      setProfile(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load profile");
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void fetchProfile();
+  }, [fetchProfile]);
+
+  const filteredArenas = arenaFilter === "All"
+    ? MOCK_ARENAS
     : MOCK_ARENAS.filter(a => a.status === "LIVE");
+
+  // Derived display values
+  const agentId = profile
+    ? truncateAddress(profile.walletAddress)
+    : address
+      ? truncateAddress(address)
+      : "---";
+
+  const displayRank = profile?.currentRank !== null && profile?.currentRank !== undefined
+    ? `RANK: #${profile.currentRank}`
+    : "RANK: UNRANKED";
+
+  const gamesPlayed = profile?.gamesPlayed ?? 0;
+  const gamesWon = profile?.gamesWon ?? 0;
+  const totalYield = profile?.totalYieldEarned ?? "0.00";
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
@@ -32,7 +108,7 @@ export default function ProfilePage() {
         <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none">
           <div className="text-[120px] font-bold leading-none select-none -mr-8 -mt-8 font-mono">ID</div>
         </div>
-        
+
         <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center gap-6 md:gap-8">
           {/* Avatar Tile */}
           <div className="w-24 h-24 md:w-32 md:h-32 bg-neon-green flex items-center justify-center shrink-0">
@@ -43,13 +119,17 @@ export default function ProfilePage() {
 
           <div className="flex-1 space-y-4">
             <div className="flex flex-wrap items-center gap-3">
-              <h2 className="text-2xl md:text-3xl font-extralight tracking-tighter family-mono uppercase">
-                AGENT_ID: <span className="text-neon-green">X_K42_99LR</span>
-              </h2>
-              <button 
+              {isLoading ? (
+                <div className="h-8 w-64 bg-zinc-800 animate-pulse" />
+              ) : (
+                <h2 className="text-2xl md:text-3xl font-extralight tracking-tighter family-mono uppercase">
+                  AGENT_ID: <span className="text-neon-green">{agentId}</span>
+                </h2>
+              )}
+              <button
                 className="p-1.5 rounded-full hover:bg-white/10 text-zinc-400 transition-colors"
-                onClick={() => navigator.clipboard.writeText("X_K42_99LR")}
-                title="Copy ID"
+                onClick={() => navigator.clipboard.writeText(profile?.walletAddress ?? address ?? "")}
+                title="Copy Wallet Address"
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
@@ -59,12 +139,26 @@ export default function ProfilePage() {
 
             <div className="flex flex-wrap gap-4 items-center">
               <div className="flex items-center gap-2">
-                <span className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold font-mono">TOTAL SURVIVAL TIME:</span>
-                <span className="text-sm font-mono text-white">482H 12M 04S</span>
+                <span className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold font-mono">GAMES PLAYED:</span>
+                {isLoading ? (
+                  <div className="h-4 w-12 bg-zinc-800 animate-pulse" />
+                ) : (
+                  <span className="text-sm font-mono text-white">{gamesPlayed}</span>
+                )}
               </div>
               <div className="flex gap-2">
-                <span className="px-2 py-0.5 bg-neon-green/10 border border-neon-green/50 text-neon-green text-[10px] font-bold uppercase tracking-wider">RANK: VETERAN</span>
-                <span className="px-2 py-0.5 bg-zinc-800 border border-zinc-700 text-zinc-300 text-[10px] font-bold uppercase tracking-wider">LEVEL 42</span>
+                {isLoading ? (
+                  <div className="h-5 w-32 bg-zinc-800 animate-pulse" />
+                ) : (
+                  <>
+                    <span className="px-2 py-0.5 bg-neon-green/10 border border-neon-green/50 text-neon-green text-[10px] font-bold uppercase tracking-wider">
+                      {displayRank}
+                    </span>
+                    <span className="px-2 py-0.5 bg-zinc-800 border border-zinc-700 text-zinc-300 text-[10px] font-bold uppercase tracking-wider">
+                      WON: {gamesWon}
+                    </span>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -75,21 +169,35 @@ export default function ProfilePage() {
         </div>
       </section>
 
+      {/* Error Banner */}
+      {error && (
+        <div className="border border-neon-pink/30 bg-neon-pink/5 p-4 text-neon-pink text-xs font-mono flex items-center justify-between">
+          <span>⚠ {error}</span>
+          <button onClick={fetchProfile} className="underline hover:no-underline text-[10px] uppercase tracking-widest">
+            RETRY
+          </button>
+        </div>
+      )}
+
       {/* Stats Row */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Active Stake */}
+        {/* Games Played */}
         <div className="p-6 border border-white/5 bg-black/20 backdrop-blur-sm space-y-6">
           <div className="flex justify-between items-start">
-            <h4 className="text-[10px] font-bold tracking-[0.2em] text-zinc-500 uppercase">ACTIVE_STAKE.SYS</h4>
+            <h4 className="text-[10px] font-bold tracking-[0.2em] text-zinc-500 uppercase">GAMES_PLAYED.SYS</h4>
             <div className="w-2 h-2 rounded-full bg-neon-green animate-pulse" />
           </div>
           <div>
-            <div className="text-3xl font-extralight text-white font-mono tracking-tighter">15,000.00 XLM</div>
-            <div className="text-[10px] text-neon-green font-mono uppercase tracking-widest mt-1">+12.5% APY ESTIMATED</div>
+            {isLoading ? (
+              <div className="h-9 w-24 bg-zinc-800 animate-pulse" />
+            ) : (
+              <div className="text-3xl font-extralight text-white font-mono tracking-tighter">{gamesPlayed}</div>
+            )}
+            <div className="text-[10px] text-zinc-500 font-mono uppercase tracking-widest mt-1">TOTAL ARENAS ENTERED</div>
           </div>
-          <Button variant="secondary" className="w-full h-10 text-[10px] tracking-widest uppercase border-white/10 hover:bg-white/5">
-            MANAGE STAKE
-          </Button>
+          <div className="text-xs font-mono text-zinc-400">
+            WON: <span className="text-neon-green">{gamesWon}</span>
+          </div>
         </div>
 
         {/* Total Yield Earned - Highlighted */}
@@ -103,7 +211,11 @@ export default function ProfilePage() {
             </div>
           </div>
           <div>
-            <div className="text-3xl font-extralight text-white font-mono tracking-tighter">1,242.88 XLM</div>
+            {isLoading ? (
+              <div className="h-9 w-40 bg-zinc-800 animate-pulse" />
+            ) : (
+              <div className="text-3xl font-extralight text-white font-mono tracking-tighter">{totalYield} USDC</div>
+            )}
             <div className="text-[10px] text-zinc-500 font-mono uppercase tracking-widest mt-1">GENERATED VIA RWA DEPLOYMENT</div>
           </div>
           <Button className="w-full h-10 text-[10px] tracking-widest uppercase bg-neon-pink hover:bg-neon-pink/90 text-white border-none">
@@ -111,17 +223,25 @@ export default function ProfilePage() {
           </Button>
         </div>
 
-        {/* Arenas Created */}
+        {/* Rank */}
         <div className="p-6 border border-white/5 bg-black/20 backdrop-blur-sm space-y-6">
           <div className="flex justify-between items-start">
-            <h4 className="text-[10px] font-bold tracking-[0.2em] text-zinc-500 uppercase">ARENAS_HOSTED.DATA</h4>
+            <h4 className="text-[10px] font-bold tracking-[0.2em] text-zinc-500 uppercase">CURRENT_RANK.DATA</h4>
           </div>
           <div>
-            <div className="text-3xl font-extralight text-white font-mono tracking-tighter">12</div>
-            <div className="text-[10px] text-zinc-500 font-mono uppercase tracking-widest mt-1">TOTAL HOSTED MATCHES</div>
+            {isLoading ? (
+              <div className="h-9 w-16 bg-zinc-800 animate-pulse" />
+            ) : (
+              <div className="text-3xl font-extralight text-white font-mono tracking-tighter">
+                {profile?.currentRank !== null && profile?.currentRank !== undefined
+                  ? `#${profile.currentRank}`
+                  : "—"}
+              </div>
+            )}
+            <div className="text-[10px] text-zinc-500 font-mono uppercase tracking-widest mt-1">LEADERBOARD POSITION</div>
           </div>
           <Button variant="secondary" className="w-full h-10 text-[10px] tracking-widest uppercase border-white/10 hover:bg-white/5">
-            HOST NEW ARENA
+            VIEW LEADERBOARD
           </Button>
         </div>
       </div>
@@ -136,17 +256,16 @@ export default function ProfilePage() {
               {["All", "Live"].map((filter) => (
                 <button
                   key={filter}
-                  onClick={() => setArenaFilter(filter as any)}
-                  className={`px-4 py-1 text-[10px] uppercase tracking-widest font-bold transition-all ${
-                    arenaFilter === filter ? "bg-neon-green text-black" : "text-zinc-500 hover:text-white"
-                  }`}
+                  onClick={() => setArenaFilter(filter as "All" | "Live")}
+                  className={`px-4 py-1 text-[10px] uppercase tracking-widest font-bold transition-all ${arenaFilter === filter ? "bg-neon-green text-black" : "text-zinc-500 hover:text-white"
+                    }`}
                 >
                   {filter}
                 </button>
               ))}
             </div>
           </div>
-          
+
           <div className="overflow-x-auto">
             <table className="w-full text-left font-mono text-[11px] uppercase tracking-wider">
               <thead>
@@ -167,11 +286,10 @@ export default function ProfilePage() {
                     <td className="py-4 text-zinc-300">{arena.stake}</td>
                     <td className="py-4 text-center text-zinc-300">{arena.participants}</td>
                     <td className="py-4 text-right">
-                      <span className={`px-2 py-0.5 text-[9px] font-bold ${
-                        arena.status === 'LIVE' ? 'text-neon-green bg-neon-green/10' :
-                        arena.status === 'SETTLING' ? 'text-neon-pink bg-neon-pink/10' :
-                        'text-zinc-500 bg-white/5'
-                      }`}>
+                      <span className={`px-2 py-0.5 text-[9px] font-bold ${arena.status === 'LIVE' ? 'text-neon-green bg-neon-green/10' :
+                          arena.status === 'SETTLING' ? 'text-neon-pink bg-neon-pink/10' :
+                            'text-zinc-500 bg-white/5'
+                        }`}>
                         {arena.status}
                       </span>
                     </td>
@@ -199,9 +317,8 @@ export default function ProfilePage() {
                   </div>
                 </div>
                 <div className="text-right">
-                  <span className={`text-[9px] font-bold tracking-widest px-2 py-1 ${
-                    item.success ? 'bg-neon-green/10 text-neon-green' : 'bg-neon-pink/10 text-neon-pink'
-                  }`}>
+                  <span className={`text-[9px] font-bold tracking-widest px-2 py-1 ${item.success ? 'bg-neon-green/10 text-neon-green' : 'bg-neon-pink/10 text-neon-pink'
+                    }`}>
                     {item.result}
                   </span>
                 </div>
@@ -213,4 +330,3 @@ export default function ProfilePage() {
     </div>
   );
 }
-
