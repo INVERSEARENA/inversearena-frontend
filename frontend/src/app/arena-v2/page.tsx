@@ -1,3 +1,5 @@
+"use client";
+
 import { ChooseYourFate, ChoiceCard, TensionBar, Timer, TotalYieldPot } from "@/components/arena/core";
 import { OnboardingTour } from "@/components/arena-v2/onboarding/OnboardingTour";
 
