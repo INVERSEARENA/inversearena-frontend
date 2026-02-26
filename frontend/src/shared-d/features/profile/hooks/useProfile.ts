@@ -1,16 +1,16 @@
 import { useState, useEffect, useCallback } from 'react';
-import { 
-  UseProfileData, 
-  UseProfileOptions, 
+import {
+  UseProfileData,
+  UseProfileOptions,
   MyArenasFilter,
   AgentIdentity,
   ProfileStats,
   MyArena,
   HistoryEntry
 } from '../types';
-import { 
-  profileRepository, 
-  handleRepositoryError 
+import {
+  profileRepository,
+  handleRepositoryError
 } from '../data/profileRepository';
 
 // Hook implementation
@@ -19,12 +19,12 @@ export function useProfile(options: UseProfileOptions = {}): UseProfileData & {
   refetch: () => Promise<void>;
 } {
   const { address, myArenasFilter = 'all' } = options;
-  
+
   // State management
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [error, setError] = useState<string | undefined>();
   const [currentFilter, setCurrentFilter] = useState<MyArenasFilter>(myArenasFilter);
-  
+
   // Data states
   const [identity, setIdentity] = useState<AgentIdentity | null>(null);
   const [stats, setStats] = useState<ProfileStats | null>(null);
@@ -66,7 +66,7 @@ export function useProfile(options: UseProfileOptions = {}): UseProfileData & {
   // Filter change handler
   const setMyArenasFilter = useCallback(async (filter: MyArenasFilter) => {
     setCurrentFilter(filter);
-    
+
     try {
       // Only refetch arenas when filter changes
       const arenasData = await profileRepository.getMyArenas(address, filter);
@@ -98,7 +98,10 @@ export function useProfile(options: UseProfileOptions = {}): UseProfileData & {
   const defaultStats: ProfileStats = {
     totalStake: 0,
     yieldEarned: 0,
-    arenasCreated: 0
+    arenasCreated: 0,
+    gamesPlayed: 0,
+    gamesWon: 0,
+    totalYieldEarned: '0.00'
   };
 
   return {

@@ -6,11 +6,14 @@ export interface AgentIdentity {
   survivalTime: number; // in seconds
 }
 
-// Stats card data
+// Stats card data (mapping to backend UserProfile)
 export interface ProfileStats {
   totalStake: number;
   yieldEarned: number;
   arenasCreated: number;
+  gamesPlayed?: number;
+  gamesWon?: number;
+  totalYieldEarned?: string;
 }
 
 // Arena status types
