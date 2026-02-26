@@ -40,3 +40,17 @@ export function validateParams<T>(schema: ZodType<T>): RequestHandler {
     }
   };
 }
+
+/**
+ * Validates and normalizes req.query using a Zod schema.
+ */
+export function validateQuery<T>(schema: ZodType<T>): RequestHandler {
+  return (req, _res, next) => {
+    try {
+      req.query = schema.parse(req.query) as unknown as Request["query"];
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
