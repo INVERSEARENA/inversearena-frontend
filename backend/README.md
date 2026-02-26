@@ -71,6 +71,8 @@ docker-compose -f docker-compose.monitoring.yml up -d
 
 ## Environment Configuration
 
+For a full reference of every environment variable (including defaults and required/optional status), see **[docs/ENVIRONMENT.md](../docs/ENVIRONMENT.md)**.
+
 Set these values in deployment secrets (never commit private keys):
 
 ### Round System

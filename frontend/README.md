@@ -10,6 +10,7 @@
 While players battle psychologically, their entry fees are never idle. Built on **Stellar**, Inverse Arena automatically routes prize pools into **Real-World Asset (RWA)** protocols to generate institutional-grade yield during gameplay.
 
 ---
+
 ## 🎯 The Problem
 
 ### 1. The GameFi Sustainability Crisis
@@ -30,10 +31,9 @@ Players face a "dead-air" problem: long matchmaking wait times with no value acc
 
 ---
 
-## 💡  Solution
+## 💡 Solution
 
 1. RWA-Powered Prize Pools: Player stakes ($USDTO$) are never idle. They are immediately routed into institutional-grade, yield-bearing Real-World Assets. The prize pool grows every second the game is active.
-
 
 2. The "Contrarian" Game Engine: A high-tension PvP survival game where you only survive if you choose the minority side. It’s a psychological battle that rewards strategy over herd behavior.
 
@@ -91,13 +91,13 @@ graph TD
     B --> C{Game Logic: Minority Wins?}
     C -->|Eliminated| D[Exit Pool]
     C -->|Survival| E[Next Round]
-    
+
     subgraph Stellar Ledger
     B --> F[YieldVault.rs]
     F --> G[Ondo USDY / RWA Assets]
     G --> H[Institutional Yield]
     end
-    
+
     E --> I[Winner Declared]
     I --> J[Payout: Principal + Yield]
 ```
@@ -161,6 +161,8 @@ The list APIs use cursor-based pagination with stable ordering by `createdAt DES
 
 ## 🔒 Security Configuration
 
+For a full reference of every environment variable used by the frontend and backend, see **[docs/ENVIRONMENT.md](../docs/ENVIRONMENT.md)**.
+
 Set allowed web origins with environment variables so CORS can stay strict and configurable:
 
 ```bash
@@ -220,6 +222,7 @@ SENTRY_AUTH_TOKEN=<token from Sentry Settings → Auth Tokens>
 ### Scope
 
 The `ErrorBoundary` only catches **React render errors**. It does **not** catch:
+
 - Async errors (`Promise` rejections, `setTimeout`)
 - Event-handler errors
 - Server-side rendering errors
