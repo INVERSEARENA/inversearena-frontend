@@ -52,7 +52,7 @@ const TelemetryPage: React.FC = () => {
     };
 
     void fetchCryptoPrice();
-    const intervalId = setInterval(fetchCryptoPrice, 60000); // TODO: Move to constants if needed
+    const intervalId = setInterval(fetchCryptoPrice, UI_BEHAVIOR.TELEMETRY_POLL_INTERVAL_MS);
 
     return () => clearInterval(intervalId);
   }, []);
