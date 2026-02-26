@@ -1,6 +1,5 @@
 import type { Request, Response } from "express";
 import type { PrismaClient } from "@prisma/client";
-import { UserModel } from "../db/models/user.model";
 import { z } from "zod";
 
 // ── Query param validation ──────────────────────────────────────────
@@ -9,13 +8,14 @@ const LeaderboardQuerySchema = z.object({
   cursor: z.string().optional(),
 });
 
-// ── Internal types ──────────────────────────────────────────────────
-interface PlayerStats {
+// ── Response shape (matches frontend Survivor type) ─────────────────
+export interface PlayerStats {
+  id: string;
   rank: number;
   walletAddress: string;
-  displayName: string | null;
-  totalYield: string;
-  gamesPlayed: number;
+  survivalStreak: number;
+  totalYield: number;
+  arenasWon: number;
 }
 
 interface DecodedCursor {
@@ -65,52 +65,54 @@ export class LeaderboardController {
   // ──────────────────────────────────────────────────────────────────
 
   /**
-   * Aggregates all users' stats from resolved rounds and returns a
-   * sorted array of players ranked by total yield (descending).
+   * Aggregates all users' stats from resolved rounds and elimination logs,
+   * returning a sorted array of players ranked by total yield (descending).
+   *
+   * - totalYield     : sum of payouts from round resolution metadata
+   * - arenasWon      : distinct arenas where user participated but was never eliminated
+   * - survivalStreak : rounds participated minus rounds eliminated (cumulative)
    */
   private async buildRankedPlayers(): Promise<PlayerStats[]> {
-    // 1. Fetch all resolved rounds in one query
+    // 1. Fetch all resolved rounds
     const resolvedRounds = await this.prisma.round.findMany({
       where: { state: "RESOLVED" },
       select: { arenaId: true, metadata: true },
     });
 
-    // 2. Accumulate per-user stats from round metadata
+    // Per-user accumulators
     const yieldByUser = new Map<string, number>();
-    const arenasPerUser = new Map<string, Set<string>>();
+    const arenasByUser = new Map<string, Set<string>>();
+    const roundsParticipatedByUser = new Map<string, number>();
 
     for (const round of resolvedRounds) {
       const meta = round.metadata as Record<string, unknown> | null;
       if (!meta) continue;
 
-      // Track participation via playerChoices
       const choices = meta.playerChoices as
         | Array<{ userId: string }>
         | undefined;
       if (choices) {
         for (const c of choices) {
-          if (!arenasPerUser.has(c.userId)) {
-            arenasPerUser.set(c.userId, new Set());
-          }
-          arenasPerUser.get(c.userId)!.add(round.arenaId);
+          if (!arenasByUser.has(c.userId)) arenasByUser.set(c.userId, new Set());
+          arenasByUser.get(c.userId)!.add(round.arenaId);
+          roundsParticipatedByUser.set(
+            c.userId,
+            (roundsParticipatedByUser.get(c.userId) ?? 0) + 1,
+          );
         }
       }
 
-      // Track yield from resolution payouts
       const resolution = meta.resolution as
         | { payouts?: Array<{ userId: string; amount: number }> }
         | undefined;
       if (resolution?.payouts) {
         for (const p of resolution.payouts) {
-          yieldByUser.set(
-            p.userId,
-            (yieldByUser.get(p.userId) ?? 0) + p.amount,
-          );
+          yieldByUser.set(p.userId, (yieldByUser.get(p.userId) ?? 0) + p.amount);
         }
       }
     }
 
-    // 3. Also count participation from elimination logs
+    // 2. Fetch elimination logs to compute arenasWon and survivalStreak
     const eliminations = await this.prisma.eliminationLog.findMany({
       select: {
         userId: true,
@@ -118,58 +120,77 @@ export class LeaderboardController {
       },
     });
 
+    const eliminatedArenasByUser = new Map<string, Set<string>>();
+    const eliminationCountByUser = new Map<string, number>();
+
     for (const el of eliminations) {
-      if (!arenasPerUser.has(el.userId)) {
-        arenasPerUser.set(el.userId, new Set());
+      if (!arenasByUser.has(el.userId)) arenasByUser.set(el.userId, new Set());
+      arenasByUser.get(el.userId)!.add(el.round.arenaId);
+
+      if (!eliminatedArenasByUser.has(el.userId)) {
+        eliminatedArenasByUser.set(el.userId, new Set());
       }
-      arenasPerUser.get(el.userId)!.add(el.round.arenaId);
+      eliminatedArenasByUser.get(el.userId)!.add(el.round.arenaId);
+
+      eliminationCountByUser.set(
+        el.userId,
+        (eliminationCountByUser.get(el.userId) ?? 0) + 1,
+      );
     }
 
-    // 4. Merge all user IDs that have any activity
+    // 3. Merge all user IDs
     const allUserIds = new Set([
       ...yieldByUser.keys(),
-      ...arenasPerUser.keys(),
+      ...arenasByUser.keys(),
     ]);
 
-    if (allUserIds.size === 0) {
-      return [];
-    }
+    if (allUserIds.size === 0) return [];
 
-    // 5. Fetch user identity from MongoDB in bulk
-    const users = await UserModel.find(
-      { _id: { $in: Array.from(allUserIds) } },
-      { walletAddress: 1, displayName: 1 },
-    ).lean();
+    // 4. Fetch user identity from PostgreSQL (same DB as game data)
+    type UserRow = { id: string; walletAddress: string };
+    const users: UserRow[] = await this.prisma.user.findMany({
+      where: { id: { in: Array.from(allUserIds) } },
+      select: { id: true, walletAddress: true },
+    });
 
-    const userMap = new Map(users.map((u) => [u._id.toString(), u]));
+    const userMap = new Map<string, UserRow>(users.map((u) => [u.id, u]));
 
-    // 6. Build unsorted player list
+    // 5. Build unsorted player list
     const players: Omit<PlayerStats, "rank">[] = [];
 
     for (const userId of allUserIds) {
       const user = userMap.get(userId);
       if (!user) continue; // skip orphaned game records
 
+      const participatedArenas = arenasByUser.get(userId) ?? new Set<string>();
+      const eliminatedArenas = eliminatedArenasByUser.get(userId) ?? new Set<string>();
+
+      const arenasWon = [...participatedArenas].filter(
+        (a) => !eliminatedArenas.has(a),
+      ).length;
+
+      const roundsParticipated = roundsParticipatedByUser.get(userId) ?? 0;
+      const eliminationCount = eliminationCountByUser.get(userId) ?? 0;
+      const survivalStreak = Math.max(0, roundsParticipated - eliminationCount);
+
       players.push({
+        id: user.id,
         walletAddress: user.walletAddress,
-        displayName: (user.displayName as string) ?? null,
-        totalYield: (yieldByUser.get(userId) ?? 0).toFixed(2),
-        gamesPlayed: arenasPerUser.get(userId)?.size ?? 0,
+        totalYield: yieldByUser.get(userId) ?? 0,
+        arenasWon,
+        survivalStreak,
       });
     }
 
-    // 7. Sort by totalYield descending, then by gamesPlayed descending for tiebreaker
+    // 6. Sort by totalYield descending, arenasWon as tiebreaker
     players.sort((a, b) => {
-      const yieldDiff = parseFloat(b.totalYield) - parseFloat(a.totalYield);
+      const yieldDiff = b.totalYield - a.totalYield;
       if (yieldDiff !== 0) return yieldDiff;
-      return b.gamesPlayed - a.gamesPlayed;
+      return b.arenasWon - a.arenasWon;
     });
 
-    // 8. Assign 1-based ranks
-    return players.map((p, i) => ({
-      ...p,
-      rank: i + 1,
-    }));
+    // 7. Assign 1-based ranks
+    return players.map((p, i) => ({ ...p, rank: i + 1 }));
   }
 
   // ── Cursor encoding ───────────────────────────────────────────────
