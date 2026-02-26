@@ -1,0 +1,68 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: inversearenatest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: "npm"
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install Dependencies
+        working-directory: ./backend
+        run: npm ci
+
+      - name: Run Prisma Migrations
+        working-directory: ./backend
+        env:
+          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest
+        run: |
+          npx prisma generate
+          npx prisma migrate deploy
+
+      - name: Run Integration Tests
+        working-directory: ./backend
+        env:
+          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest
+          REDIS_URL: redis://localhost:6379
+          JWT_SECRET: super-secret-test-key-must-be-at-least-32-chars
+          ADMIN_API_KEY: test-admin-key
+        run: npm run test:ci

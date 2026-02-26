@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import {
   LeaderboardTable,
   Pagination,
@@ -10,11 +10,19 @@ import {
   type Survivor,
 } from "@/features/leaderboard";
 import { PoolCreationModal } from "@/components/modals/PoolCreationModal";
+import { Skeleton } from "@/components/ui/Skeleton";
 
 export default function LeaderboardPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [isChallengeModalOpen, setIsChallengeModalOpen] = useState(false);
-  const [targetedSurvivor, setTargetedSurvivor] = useState<{agentId: string, rank: number} | undefined>();
+  const [targetedSurvivor, setTargetedSurvivor] = useState<{ agentId: string, rank: number } | undefined>();
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Simulate loading
+  useEffect(() => {
+    const timer = setTimeout(() => setIsLoading(false), 1000);
+    return () => clearTimeout(timer);
+  }, []);
 
   const { survivors, loading, error } = useLeaderboard(100);
 
@@ -80,6 +88,13 @@ export default function LeaderboardPage() {
               <p className="mt-2 text-2xl font-semibold text-white">
                 {totalYieldDisplay}
               </p>
+              {isLoading ? (
+                <Skeleton className="h-8 w-24 mt-2" />
+              ) : (
+                <p className="mt-2 text-2xl font-semibold text-white">
+                  {leaderboardStats.totalYield}
+                </p>
+              )}
             </div>
             <div className="border-[3px] border-[#37FF1C] bg-[#37FF1C] px-4 py-4 min-h-[88px]">
               <p className="text-[8px] font-mono uppercase tracking-[0.2em] text-black/80">
@@ -88,6 +103,13 @@ export default function LeaderboardPage() {
               <p className="mt-2 text-2xl font-semibold text-black">
                 {survivors.length.toLocaleString()}
               </p>
+              {isLoading ? (
+                <Skeleton className="h-8 w-24 mt-2 bg-black/20" />
+              ) : (
+                <p className="mt-2 text-2xl font-semibold text-black">
+                  {leaderboardStats.liveAgents}
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -167,6 +189,68 @@ export default function LeaderboardPage() {
                           {survivor.survivalStreak} Rounds
                         </p>
                       </div>
+              <div className={`${survivor.highlight ? "mt-5" : "mt-10"} flex items-center gap-4`}>
+                {isLoading ? (
+                  <>
+                    <Skeleton className={`h-16 w-16 ${survivor.highlight ? '' : 'h-12 w-12'}`} />
+                    <div className="space-y-2">
+                      <Skeleton className="h-4 w-32" />
+                      <Skeleton className="h-2 w-16" />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div
+                      className={`${survivor.highlight ? "h-16 w-16" : "h-12 w-12"
+                        } shrink-0 border ${survivor.highlight
+                          ? "border-[#37FF1C] bg-gradient-to-br from-[#0D2B12] via-[#0D1A12] to-black"
+                          : "border-[#1B2636] bg-gradient-to-br from-[#0C1727] via-[#0D1118] to-black"
+                        }`}
+                    />
+                    <div>
+                      <p
+                        className={`${survivor.highlight ? "text-lg italic" : "text-sm"} font-semibold text-white`}
+                      >
+                        {survivor.name}
+                      </p>
+                      <p className="mt-1 text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
+                        TOTAL YIELD
+                      </p>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {survivor.highlight ? (
+                <>
+                  <div className="mt-5 h-px w-full bg-white/10" />
+                  <div className="mt-4 grid grid-cols-2 gap-6">
+                    <div>
+                      <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
+                        YIELD GENERATED
+                      </p>
+                      {isLoading ? (
+                        <Skeleton className="h-6 w-20 mt-1" />
+                      ) : (
+                        <p className="mt-1 text-lg font-semibold text-[#37FF1C]">
+                          {survivor.totalYield}
+                        </p>
+                      )}
+                      <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
+                        {survivor.currency}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
+                        STREAK
+                      </p>
+                      {isLoading ? (
+                        <Skeleton className="h-6 w-20 mt-1" />
+                      ) : (
+                        <p className="mt-1 text-lg font-semibold text-white">
+                          {survivor.streak}
+                        </p>
+                      )}
                     </div>
                   </>
                 ) : (
@@ -178,10 +262,23 @@ export default function LeaderboardPage() {
                       USDC
                     </p>
                   </div>
-                )}
-              </div>
-            );
-          })}
+                </>
+              ) : (
+                <div className="mt-auto pt-6">
+                  {isLoading ? (
+                    <Skeleton className="h-6 w-24" />
+                  ) : (
+                    <p className="text-lg font-semibold text-[#37FF1C]">
+                      {survivor.totalYield}
+                    </p>
+                  )}
+                  <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
+                    {survivor.currency}
+                  </p>
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       </section>
 
@@ -193,17 +290,19 @@ export default function LeaderboardPage() {
       <LeaderboardTable
         survivors={paginatedSurvivors}
         onChallenge={handleChallenge}
-        isLoading={loading}
+        isLoading={isLoading}
       />
 
       {/* Pagination */}
-      <Pagination
-        currentPage={currentPage}
-        totalPages={totalPages}
-        onPageChange={setCurrentPage}
-      />
+      {!isLoading && (
+        <Pagination
+          currentPage={currentPage}
+          totalPages={totalPages}
+          onPageChange={setCurrentPage}
+        />
+      )}
 
-      <PoolCreationModal 
+      <PoolCreationModal
         isOpen={isChallengeModalOpen}
         onClose={() => setIsChallengeModalOpen(false)}
         challengedSurvivor={targetedSurvivor}
@@ -211,3 +310,4 @@ export default function LeaderboardPage() {
     </div>
   );
 }
+
