@@ -9,4 +9,5 @@ export interface WalletState {
 export interface WalletContextType extends WalletState {
   connect: () => Promise<void>;
   disconnect: () => void;
+  network: string;
 }
