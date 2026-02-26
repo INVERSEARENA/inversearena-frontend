@@ -159,6 +159,26 @@ The list APIs use cursor-based pagination with stable ordering by `createdAt DES
 
 ---
 
+## 🌐 Stellar Network Configuration
+
+The Stellar network used by the wallet provider is controlled by an environment variable so you can switch between testnet and mainnet without code changes:
+
+```bash
+# "testnet" (default) or "mainnet"
+NEXT_PUBLIC_STELLAR_NETWORK=testnet
+```
+
+| Value | Stellar Network | When to use |
+|-------|----------------|-------------|
+| `testnet` (default) | Test SDF Network | Local development, staging |
+| `mainnet` | Public Global Stellar Network | Production |
+
+If the variable is missing or empty the app defaults to **testnet**. An unrecognised value logs a console warning and also falls back to testnet.
+
+> **Note:** This is a Next.js public env var — changes require a restart of the dev server (or a new build).
+
+---
+
 ## 🔒 Security Configuration
 
 Set allowed web origins with environment variables so CORS can stay strict and configurable:
