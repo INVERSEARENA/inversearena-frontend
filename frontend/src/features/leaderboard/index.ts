@@ -21,3 +21,6 @@ export {
   formatAgentId,
   formatCurrency,
 } from './data/mockLeaderboard';
+
+// Hooks
+export { useLeaderboard } from './hooks/useLeaderboard';
