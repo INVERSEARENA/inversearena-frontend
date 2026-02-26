@@ -24,6 +24,12 @@ const ReconciliationSchema = z.object({
   dryRun: z.boolean().optional().default(false),
 });
 
+const ListAuditLogsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).optional().default(50),
+  action: z.string().optional(),
+  adminId: z.string().optional(),
+});
+
 export class AdminController {
   constructor(
     private readonly adminService: AdminService,
@@ -193,11 +199,11 @@ export class AdminController {
   };
 
   listAuditLogs = async (req: Request, res: Response): Promise<void> => {
-    const limit = Math.min(Number(req.query.limit ?? 50), 200);
+    const { limit, action, adminId } = ListAuditLogsQuerySchema.parse(req.query);
     const filter: Record<string, unknown> = {};
 
-    if (typeof req.query.action === "string") filter.action = req.query.action;
-    if (typeof req.query.adminId === "string") filter.adminId = req.query.adminId;
+    if (action !== undefined) filter.action = action;
+    if (adminId !== undefined) filter.adminId = adminId;
 
     const [logs, total] = await Promise.all([
       AuditLogModel.find(filter).sort({ createdAt: -1 }).limit(limit).lean(),
