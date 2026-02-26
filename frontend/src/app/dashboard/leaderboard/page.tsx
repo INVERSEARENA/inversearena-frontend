@@ -85,14 +85,11 @@ export default function LeaderboardPage() {
               <p className="text-[8px] font-mono uppercase tracking-[0.2em] text-zinc-500">
                 TOTAL YIELD
               </p>
-              <p className="mt-2 text-2xl font-semibold text-white">
-                {totalYieldDisplay}
-              </p>
               {isLoading ? (
                 <Skeleton className="h-8 w-24 mt-2" />
               ) : (
                 <p className="mt-2 text-2xl font-semibold text-white">
-                  {leaderboardStats.totalYield}
+                  {totalYieldDisplay}
                 </p>
               )}
             </div>
@@ -100,14 +97,11 @@ export default function LeaderboardPage() {
               <p className="text-[8px] font-mono uppercase tracking-[0.2em] text-black/80">
                 LIVE AGENTS
               </p>
-              <p className="mt-2 text-2xl font-semibold text-black">
-                {survivors.length.toLocaleString()}
-              </p>
               {isLoading ? (
                 <Skeleton className="h-8 w-24 mt-2 bg-black/20" />
               ) : (
                 <p className="mt-2 text-2xl font-semibold text-black">
-                  {leaderboardStats.liveAgents}
+                  {survivors.length.toLocaleString()}
                 </p>
               )}
             </div>
@@ -122,11 +116,10 @@ export default function LeaderboardPage() {
             return (
               <div
                 key={survivor.rank}
-                className={`relative flex flex-col justify-between border ${
-                  isFirst
-                    ? "border-[#37FF1C] bg-black shadow-[0_0_35px_rgba(55,255,28,0.25)] lg:min-h-[340px]"
-                    : "border-[#0F1B2D] bg-[#172235] lg:min-h-[270px]"
-                } px-5 py-5 md:px-6 md:py-6`}
+                className={`relative flex flex-col justify-between border ${isFirst
+                  ? "border-[#37FF1C] bg-black shadow-[0_0_35px_rgba(55,255,28,0.25)] lg:min-h-[340px]"
+                  : "border-[#0F1B2D] bg-[#172235] lg:min-h-[270px]"
+                  } px-5 py-5 md:px-6 md:py-6`}
               >
                 <div className="relative min-h-[28px]">
                   {isFirst ? (
@@ -147,19 +140,25 @@ export default function LeaderboardPage() {
                 </div>
 
                 <div className={`${isFirst ? "mt-5" : "mt-10"} flex items-center gap-4`}>
-                  <div
-                    className={`${
-                      isFirst ? "h-16 w-16" : "h-12 w-12"
-                    } shrink-0 border ${
-                      isFirst
-                        ? "border-[#37FF1C] bg-gradient-to-br from-[#0D2B12] via-[#0D1A12] to-black"
-                        : "border-[#1B2636] bg-gradient-to-br from-[#0C1727] via-[#0D1118] to-black"
-                    }`}
-                  />
+                  {isLoading ? (
+                    <Skeleton className={`${isFirst ? "h-16 w-16" : "h-12 w-12"} shrink-0`} />
+                  ) : (
+                    <div
+                      className={`${isFirst ? "h-16 w-16" : "h-12 w-12"
+                        } shrink-0 border ${isFirst
+                          ? "border-[#37FF1C] bg-gradient-to-br from-[#0D2B12] via-[#0D1A12] to-black"
+                          : "border-[#1B2636] bg-gradient-to-br from-[#0C1727] via-[#0D1118] to-black"
+                        }`}
+                    />
+                  )}
                   <div>
-                    <p className={`${isFirst ? "text-lg italic" : "text-sm"} font-semibold text-white`}>
-                      {formatAgentId(survivor.agentId)}
-                    </p>
+                    {isLoading ? (
+                      <Skeleton className="h-6 w-24" />
+                    ) : (
+                      <p className={`${isFirst ? "text-lg italic" : "text-sm"} font-semibold text-white`}>
+                        {formatAgentId(survivor.agentId)}
+                      </p>
+                    )}
                     <p className="mt-1 text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
                       TOTAL YIELD
                     </p>
@@ -174,9 +173,13 @@ export default function LeaderboardPage() {
                         <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
                           YIELD GENERATED
                         </p>
-                        <p className="mt-1 text-lg font-semibold text-[#37FF1C]">
-                          {formatCurrency(survivor.totalYield)}
-                        </p>
+                        {isLoading ? (
+                          <Skeleton className="h-6 w-20 mt-1" />
+                        ) : (
+                          <p className="mt-1 text-lg font-semibold text-[#37FF1C]">
+                            {formatCurrency(survivor.totalYield)}
+                          </p>
+                        )}
                         <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
                           USDC
                         </p>
@@ -185,100 +188,33 @@ export default function LeaderboardPage() {
                         <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
                           STREAK
                         </p>
-                        <p className="mt-1 text-lg font-semibold text-white">
-                          {survivor.survivalStreak} Rounds
-                        </p>
+                        {isLoading ? (
+                          <Skeleton className="h-6 w-20 mt-1" />
+                        ) : (
+                          <p className="mt-1 text-lg font-semibold text-white">
+                            {survivor.survivalStreak} Rounds
+                          </p>
+                        )}
                       </div>
-              <div className={`${survivor.highlight ? "mt-5" : "mt-10"} flex items-center gap-4`}>
-                {isLoading ? (
-                  <>
-                    <Skeleton className={`h-16 w-16 ${survivor.highlight ? '' : 'h-12 w-12'}`} />
-                    <div className="space-y-2">
-                      <Skeleton className="h-4 w-32" />
-                      <Skeleton className="h-2 w-16" />
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div
-                      className={`${survivor.highlight ? "h-16 w-16" : "h-12 w-12"
-                        } shrink-0 border ${survivor.highlight
-                          ? "border-[#37FF1C] bg-gradient-to-br from-[#0D2B12] via-[#0D1A12] to-black"
-                          : "border-[#1B2636] bg-gradient-to-br from-[#0C1727] via-[#0D1118] to-black"
-                        }`}
-                    />
-                    <div>
-                      <p
-                        className={`${survivor.highlight ? "text-lg italic" : "text-sm"} font-semibold text-white`}
-                      >
-                        {survivor.name}
-                      </p>
-                      <p className="mt-1 text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
-                        TOTAL YIELD
-                      </p>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              {survivor.highlight ? (
-                <>
-                  <div className="mt-5 h-px w-full bg-white/10" />
-                  <div className="mt-4 grid grid-cols-2 gap-6">
-                    <div>
-                      <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
-                        YIELD GENERATED
-                      </p>
-                      {isLoading ? (
-                        <Skeleton className="h-6 w-20 mt-1" />
-                      ) : (
-                        <p className="mt-1 text-lg font-semibold text-[#37FF1C]">
-                          {survivor.totalYield}
-                        </p>
-                      )}
-                      <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
-                        {survivor.currency}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
-                        STREAK
-                      </p>
-                      {isLoading ? (
-                        <Skeleton className="h-6 w-20 mt-1" />
-                      ) : (
-                        <p className="mt-1 text-lg font-semibold text-white">
-                          {survivor.streak}
-                        </p>
-                      )}
                     </div>
                   </>
                 ) : (
                   <div className="mt-auto pt-6">
-                    <p className="text-lg font-semibold text-[#37FF1C]">
-                      {formatCurrency(survivor.totalYield)}
-                    </p>
+                    {isLoading ? (
+                      <Skeleton className="h-6 w-24" />
+                    ) : (
+                      <p className="text-lg font-semibold text-[#37FF1C]">
+                        {formatCurrency(survivor.totalYield)}
+                      </p>
+                    )}
                     <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
                       USDC
                     </p>
                   </div>
-                </>
-              ) : (
-                <div className="mt-auto pt-6">
-                  {isLoading ? (
-                    <Skeleton className="h-6 w-24" />
-                  ) : (
-                    <p className="text-lg font-semibold text-[#37FF1C]">
-                      {survivor.totalYield}
-                    </p>
-                  )}
-                  <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
-                    {survivor.currency}
-                  </p>
-                </div>
-              )}
-            </div>
-          ))}
+                )}
+              </div>
+            );
+          })}
         </div>
       </section>
 
