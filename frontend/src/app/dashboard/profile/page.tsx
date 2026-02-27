@@ -1,12 +1,14 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { useArenaSettings } from "@/shared-d/hooks/useArenaSettings";
 import { SettingsToggle } from "@/components/arena-v2/settings/SettingsToggle";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LayoutGrid, History } from "lucide-react";
+import { useProfile } from "@/shared-d/features/profile/hooks/useProfile";
+import { MyArenasFilter } from "@/shared-d/features/profile/types";
 
 // Mock helpers - in a real app these would come from a utils file
 const truncateAddress = (address: string) => {
@@ -17,109 +19,44 @@ const truncateAddress = (address: string) => {
 // Dummy useWallet for now if not available
 const useWallet = () => ({ address: "GD...X4Y2" });
 
-// ── Types ────────────────────────────────────────────────────────────
-interface UserProfile {
-  id: string;
-  walletAddress: string;
-  displayName: string | null;
-  joinedAt: string;
-  lastLoginAt: string;
-  gamesPlayed: number;
-  gamesWon: number;
-  totalYieldEarned: string;
-  currentRank: number | null;
-}
-
-// Mock Data — arenas & history still static until those endpoints exist
-const MOCK_ARENAS = [
-  { id: "AR_8821", name: "Cyber Siege", stake: "500 XLM", participants: "12/20", status: "LIVE" },
-  { id: "AR_7712", name: "Neon Nexus", stake: "1,200 XLM", participants: "8/15", status: "SETTLING" },
-  { id: "AR_6654", name: "Gravity Void", stake: "250 XLM", participants: "20/20", status: "COMPLETED" },
-  { id: "AR_5521", name: "Data Breach", stake: "1,000 XLM", participants: "5/10", status: "LIVE" },
-];
-
-const MOCK_HISTORY = [
-  { arena: "#2042", stake: "500 XLM", rounds: "12 Rounds", result: "SURVIVED", pnl: "+88.0 XLM", success: true },
-  { arena: "#2038", stake: "200 XLM", rounds: "5 Rounds", result: "ELIMINATED", pnl: "-200.0 XLM", success: false },
-  { arena: "#2035", stake: "1,000 XLM", rounds: "15 Rounds", result: "SURVIVED", pnl: "+142.5 XLM", success: true },
-  { arena: "#2030", stake: "750 XLM", rounds: "8 Rounds", result: "SURVIVED", pnl: "+65.0 XLM", success: true },
-];
-
 export default function ProfilePage() {
   const { settings, updateSetting } = useArenaSettings();
   const { address } = useWallet();
-  const [arenaFilter, setArenaFilter] = useState<"All" | "Live">("All");
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [arenaFilter, setArenaFilter] = useState<MyArenasFilter>("all");
 
-  const fetchProfile = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const token = typeof window !== "undefined"
-        ? localStorage.getItem("access_token")
-        : null;
+  // Use the unified profile hook
+  const {
+    profile,
+    myArenas,
+    history,
+    status,
+    error,
+    refetch
+  } = useProfile({
+    address,
+    myArenasFilter: arenaFilter
+  });
 
-      if (!token) {
-        // For demo purposes, we'll set mock profile if no token
-        setTimeout(() => {
-          setProfile({
-            id: "user_1",
-            walletAddress: address || "GD...X4Y2",
-            displayName: "Test Agent",
-            joinedAt: new Date().toISOString(),
-            lastLoginAt: new Date().toISOString(),
-            gamesPlayed: 24,
-            gamesWon: 18,
-            totalYieldEarned: "1,240.50",
-            currentRank: 42
-          });
-          setIsLoading(false);
-        }, 1000);
-        return;
-      }
+  const isLoading = status === 'loading' || status === 'idle';
 
-      const res = await fetch("/api/users/me", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `HTTP ${res.status}`);
-      }
-
-      const data: UserProfile = await res.json();
-      setProfile(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load profile");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [address]);
-
-  useEffect(() => {
-    void fetchProfile();
-  }, [fetchProfile]);
-
-  const filteredArenas = arenaFilter === "All"
-    ? MOCK_ARENAS
-    : MOCK_ARENAS.filter(a => a.status === "LIVE");
+  const filteredArenas = arenaFilter === "all"
+    ? myArenas
+    : myArenas.filter(a => a.status === "live");
 
   // Derived display values
-  const agentId = profile
-    ? truncateAddress(profile.walletAddress)
+  const agentId = profile?.identity?.id !== '...'
+    ? profile.identity.id
     : address
       ? truncateAddress(address)
       : "---";
 
-  const displayRank = profile?.currentRank !== null && profile?.currentRank !== undefined
-    ? `RANK: #${profile.currentRank}`
+  const displayRank = profile?.identity?.rank
+    ? `RANK: #${profile.identity.rank}`
     : "RANK: UNRANKED";
 
-  const gamesPlayed = profile?.gamesPlayed ?? 0;
-  const gamesWon = profile?.gamesWon ?? 0;
-  const totalYield = profile?.totalYieldEarned ?? "0.00";
+  const gamesPlayed = profile?.stats?.gamesPlayed ?? 0;
+  const gamesWon = profile?.stats?.gamesWon ?? 0;
+  const totalYield = profile?.stats?.totalYieldEarned ?? "0.00";
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
@@ -149,7 +86,7 @@ export default function ProfilePage() {
               {!isLoading && (
                 <button
                   className="p-1.5 rounded-full hover:bg-white/10 text-zinc-400 transition-colors"
-                  onClick={() => navigator.clipboard.writeText(profile?.walletAddress ?? address ?? "")}
+                  onClick={() => navigator.clipboard.writeText(address ?? "")}
                   title="Copy Wallet Address"
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -195,7 +132,7 @@ export default function ProfilePage() {
       {error && (
         <div className="border border-neon-pink/30 bg-neon-pink/5 p-4 text-neon-pink text-xs font-mono flex items-center justify-between">
           <span>⚠ {error}</span>
-          <button onClick={fetchProfile} className="underline hover:no-underline text-[10px] uppercase tracking-widest">
+          <button onClick={() => refetch()} className="underline hover:no-underline text-[10px] uppercase tracking-widest">
             RETRY
           </button>
         </div>
@@ -255,8 +192,8 @@ export default function ProfilePage() {
               <Skeleton className="h-9 w-16" />
             ) : (
               <div className="text-3xl font-extralight text-white font-mono tracking-tighter">
-                {profile?.currentRank !== null && profile?.currentRank !== undefined
-                  ? `#${profile.currentRank}`
+                {profile?.identity?.rank
+                  ? `#${profile.identity.rank}`
                   : "—"}
               </div>
             )}
@@ -275,10 +212,10 @@ export default function ProfilePage() {
           <div className="flex justify-between items-center mb-6">
             <h3 className="text-sm font-bold tracking-[0.2em] text-zinc-400 uppercase">MY_ARENAS.DAT</h3>
             <div className="flex bg-black/40 border border-white/10 p-1">
-              {["All", "Live"].map((filter) => (
+              {["all", "live"].map((filter) => (
                 <button
                   key={filter}
-                  onClick={() => setArenaFilter(filter as "All" | "Live")}
+                  onClick={() => setArenaFilter(filter as MyArenasFilter)}
                   className={`px-4 py-1 text-[10px] uppercase tracking-widest font-bold transition-all ${arenaFilter === filter ? "bg-neon-green text-black" : "text-zinc-500 hover:text-white"
                     }`}
                 >
@@ -312,14 +249,14 @@ export default function ProfilePage() {
                         <div className="text-white font-bold">{arena.name}</div>
                         <div className="text-[9px] text-zinc-600 mt-1">{arena.id}</div>
                       </td>
-                      <td className="py-4 text-zinc-300">{arena.stake}</td>
-                      <td className="py-4 text-center text-zinc-300">{arena.participants}</td>
+                      <td className="py-4 text-zinc-300">{arena.entryFee} XLM</td>
+                      <td className="py-4 text-center text-zinc-300">{arena.playersCount}/{arena.maxPlayers}</td>
                       <td className="py-4 text-right">
-                        <span className={`px-2 py-0.5 text-[9px] font-bold ${arena.status === 'LIVE' ? 'text-neon-green bg-neon-green/10' :
-                          arena.status === 'SETTLING' ? 'text-neon-pink bg-neon-pink/10' :
+                        <span className={`px-2 py-0.5 text-[9px] font-bold ${arena.status === 'live' ? 'text-neon-green bg-neon-green/10' :
+                          arena.status === 'completed' ? 'text-neon-pink bg-neon-pink/10' :
                             'text-zinc-500 bg-white/5'
                           }`}>
-                          {arena.status}
+                          {arena.status.toUpperCase()}
                         </span>
                       </td>
                     </tr>
@@ -346,23 +283,23 @@ export default function ProfilePage() {
               [...Array(4)].map((_, i) => (
                 <Skeleton key={i} className="h-16 w-full" />
               ))
-            ) : MOCK_HISTORY.length > 0 ? (
-              MOCK_HISTORY.map((item, idx) => (
+            ) : history.length > 0 ? (
+              history.map((item, idx) => (
                 <div key={idx} className="group border border-white/5 bg-black/20 p-4 hover:border-white/10 transition-all flex justify-between items-center">
                   <div className="space-y-1">
                     <div className="flex items-center gap-3">
-                      <span className="text-[10px] font-bold text-zinc-500">ARENA {item.arena}</span>
+                      <span className="text-[10px] font-bold text-zinc-500">{item.action.toUpperCase()}</span>
                       <span className="text-[10px] text-zinc-600">|</span>
-                      <span className="text-[10px] text-zinc-400">{item.stake} • {item.rounds}</span>
+                      <span className="text-[10px] text-zinc-400">{item.arenaId ? `Arena ${item.arenaId}` : item.description}</span>
                     </div>
-                    <div className={`text-xs font-bold ${item.success ? 'text-neon-green' : 'text-neon-pink'}`}>
-                      {item.pnl}
+                    <div className={`text-xs font-bold ${item.amount && item.amount > 0 ? 'text-neon-green' : 'text-neon-pink'}`}>
+                      {item.amount ? `${item.amount > 0 ? '+' : ''}${item.amount} XLM` : '—'}
                     </div>
                   </div>
                   <div className="text-right">
-                    <span className={`text-[9px] font-bold tracking-widest px-2 py-1 ${item.success ? 'bg-neon-green/10 text-neon-green' : 'bg-neon-pink/10 text-neon-pink'
+                    <span className={`text-[9px] font-bold tracking-widest px-2 py-1 ${item.action === 'arena_won' || item.action === 'yield_earned' ? 'bg-neon-green/10 text-neon-green' : 'bg-neon-pink/10 text-neon-pink'
                       }`}>
-                      {item.result}
+                      {item.action}
                     </span>
                   </div>
                 </div>
