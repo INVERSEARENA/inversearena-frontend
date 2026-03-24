@@ -242,7 +242,6 @@ impl FactoryContract {
 
         env.events()
             .publish((TOPIC_POOL_CREATED,), (pool_id, creator, capacity, stake_amount));
->>>>>>> upstream/main
     }
 
     // ── Upgrade mechanism ────────────────────────────────────────────────────

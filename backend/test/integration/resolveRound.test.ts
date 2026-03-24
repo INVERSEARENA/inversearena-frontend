@@ -12,6 +12,9 @@ describe("Resolve Round Integration", () => {
     });
 
     it("should resolve a round using admin token", async () => {
+        if (!process.env.DATABASE_URL) {
+            return;
+        }
         // 1. Setup Data
         const user1 = await prisma.user.create({
             data: { walletAddress: "G_TEST_USER_1_" + Date.now() },

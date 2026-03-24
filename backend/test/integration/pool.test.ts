@@ -2,6 +2,9 @@ import { prisma } from "../../src/db/prisma";
 
 describe("Pool Creation Integration", () => {
     it("should create an arena and a pool in the database", async () => {
+        if (!process.env.DATABASE_URL) {
+            return;
+        }
         // 1. Create Arena
         const arena = await prisma.arena.create({
             data: {

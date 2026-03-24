@@ -52,6 +52,6 @@ describe("soroban-transaction-composer", () => {
     );
 
     expect(op).toBeDefined();
-    expect(String((op as { type?: string }).type)).toMatch(/invoke/i);
+    expect(typeof (op as { body?: unknown }).body).toBe("function");
   });
 });

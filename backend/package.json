@@ -10,7 +10,7 @@
     "start": "node dist/server.js",
     "test:request-validation": "tsx --test tests/request-validation.unit.test.ts",
     "test": "jest",
-    "test:ci": "jest --ci --runInBand",
+    "test:ci": "prisma generate && jest --ci --runInBand",
     "typecheck": "tsc --noEmit",
     "migrate": "prisma migrate deploy",
     "migrate:dev": "prisma migrate dev"
