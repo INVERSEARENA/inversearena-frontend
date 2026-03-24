@@ -9,6 +9,11 @@ use soroban_sdk::{
 const ADMIN_KEY: Symbol = symbol_short!("ADMIN");
 const PENDING_HASH_KEY: Symbol = symbol_short!("P_HASH");
 const EXECUTE_AFTER_KEY: Symbol = symbol_short!("P_AFTER");
+const SURVIVORS_KEY: Symbol = symbol_short!("SURVIV");
+const PRIZE_POOL_KEY: Symbol = symbol_short!("PRIZE");
+const GAME_STATUS_KEY: Symbol = symbol_short!("G_STATUS");
+const TOKEN_KEY: Symbol = symbol_short!("TOKEN");
+const CAPACITY_KEY: Symbol = symbol_short!("CAP");
 
 // ── Timelock constant: 48 hours in seconds ────────────────────────────────────
 
@@ -41,6 +46,12 @@ pub enum ArenaError {
     RoundStillOpen = 7,
     RoundDeadlineOverflow = 8,
     NotInitialized = 9,
+    ArenaFull = 10,
+    AlreadyJoined = 11,
+    InvalidAmount = 12,
+    NoPrizeToClaim = 13,
+    AlreadyClaimed = 14,
+    ReentrancyGuard = 15,
 }
 
 #[contracttype]
@@ -73,6 +84,9 @@ enum DataKey {
     Config,
     Round,
     Submission(u32, Address),
+    Survivor(Address),
+    PrizeClaimed(Address),
+    Status,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -237,6 +251,71 @@ impl ArenaContract {
         bump(&env, &DataKey::Round);
 
         Ok(round)
+    }
+
+    pub fn join(
+        env: Env,
+        player: Address,
+        amount: i128,
+        currency: Symbol,
+    ) -> Result<(), ArenaError> {
+        player.require_auth();
+
+        if amount <= 0 {
+            return Err(ArenaError::InvalidAmount);
+        }
+
+        let survivor_key = DataKey::Survivor(player.clone());
+        if storage(&env).has(&survivor_key) {
+            return Err(ArenaError::AlreadyJoined);
+        }
+
+        let config = get_config(&env)?;
+        let capacity = config.round_speed_in_ledgers;
+        let round = get_round(&env)?;
+
+        if round.total_submissions >= capacity {
+            return Err(ArenaError::ArenaFull);
+        }
+
+        storage(&env).set(&survivor_key, &());
+        bump(&env, &survivor_key);
+
+        Ok(())
+    }
+
+    pub fn claim(env: Env, winner: Address) -> Result<i128, ArenaError> {
+        winner.require_auth();
+
+        if env
+            .storage()
+            .instance()
+            .get::<_, bool>(&GAME_STATUS_KEY)
+            .unwrap_or(false)
+        {
+            return Err(ArenaError::ReentrancyGuard);
+        }
+
+        let prize_key = DataKey::PrizeClaimed(winner.clone());
+        if storage(&env).has(&prize_key) {
+            return Err(ArenaError::AlreadyClaimed);
+        }
+
+        let prize: i128 = env.storage().instance().get(&PRIZE_POOL_KEY).unwrap_or(0);
+        if prize <= 0 {
+            return Err(ArenaError::NoPrizeToClaim);
+        }
+
+        env.storage().instance().set(&GAME_STATUS_KEY, &true);
+
+        storage(&env).set(&prize_key, &prize);
+        bump(&env, &prize_key);
+
+        env.storage().instance().set(&PRIZE_POOL_KEY, &0i128);
+
+        env.storage().instance().set(&GAME_STATUS_KEY, &false);
+
+        Ok(prize)
     }
 
     pub fn get_config(env: Env) -> Result<ArenaConfig, ArenaError> {
