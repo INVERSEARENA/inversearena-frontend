@@ -199,7 +199,12 @@ impl ArenaContract {
         Ok(next_round)
     }
 
-    pub fn submit_choice(env: Env, player: Address, choice: Choice) -> Result<(), ArenaError> {
+    pub fn submit_choice(
+        env: Env,
+        player: Address,
+        round_number: u32,
+        choice: Choice,
+    ) -> Result<(), ArenaError> {
         env.storage()
             .instance()
             .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
@@ -208,6 +213,10 @@ impl ArenaContract {
         let mut round = get_round(&env)?;
         if !round.active {
             return Err(ArenaError::NoActiveRound);
+        }
+
+        if round_number != round.round_number {
+            return Err(ArenaError::RoundDeadlineOverflow);
         }
 
         let current_ledger = env.ledger().sequence();
@@ -253,12 +262,7 @@ impl ArenaContract {
         Ok(round)
     }
 
-    pub fn join(
-        env: Env,
-        player: Address,
-        amount: i128,
-        currency: Symbol,
-    ) -> Result<(), ArenaError> {
+    pub fn join(env: Env, player: Address, amount: i128) -> Result<(), ArenaError> {
         player.require_auth();
 
         if amount <= 0 {
@@ -268,14 +272,6 @@ impl ArenaContract {
         let survivor_key = DataKey::Survivor(player.clone());
         if storage(&env).has(&survivor_key) {
             return Err(ArenaError::AlreadyJoined);
-        }
-
-        let config = get_config(&env)?;
-        let capacity = config.round_speed_in_ledgers;
-        let round = get_round(&env)?;
-
-        if round.total_submissions >= capacity {
-            return Err(ArenaError::ArenaFull);
         }
 
         storage(&env).set(&survivor_key, &());
