@@ -7,6 +7,13 @@ dist/
 out/
 build/
 
+# Rust / Soroban (workspace build artifacts)
+contract/target/
+
+# Testing & caches
+coverage/
+.eslintcache
+
 # IDE settings
 .vscode/
 .idea/
@@ -39,9 +46,3 @@ package-lock.json
 GITHUB_ISSUE.md
 
 issues.md
-
-# Rust/Soroban
-target/
-**/*.rs.bk
-Cargo.lock
-contract/**/test_snapshots/
