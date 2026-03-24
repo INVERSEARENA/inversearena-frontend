@@ -274,7 +274,7 @@ fn test_propose_upgrade_replaces_previous() {
 // ── execute_upgrade – timelock guard ─────────────────────────────────────────
 
 #[test]
-#[should_panic(expected = "no pending upgrade")]
+#[should_panic(expected = "malformed upgrade state")]
 fn test_execute_without_proposal_panics() {
     let (_env, _admin, client) = setup();
     client.execute_upgrade();
@@ -324,7 +324,7 @@ fn test_cancel_clears_pending_upgrade() {
 }
 
 #[test]
-#[should_panic(expected = "no pending upgrade")]
+#[should_panic(expected = "malformed upgrade state")]
 fn test_execute_after_cancel_panics() {
     let (env, _admin, client) = setup();
     client.propose_upgrade(&dummy_hash(&env));

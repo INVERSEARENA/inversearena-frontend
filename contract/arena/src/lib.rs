@@ -53,6 +53,8 @@ pub enum ArenaError {
     NoPrizeToClaim = 14,
     AlreadyClaimed = 15,
     ReentrancyGuard = 16,
+    PlayerNotSurvivor = 17,
+    RoundMismatch = 18,
 }
 
 #[contracttype]
@@ -318,7 +320,12 @@ impl ArenaContract {
         }
 
         if round_number != round.round_number {
-            return Err(ArenaError::RoundDeadlineOverflow);
+            return Err(ArenaError::RoundMismatch);
+        }
+
+        let survivor_key = DataKey::Survivor(player.clone());
+        if !storage(&env).has(&survivor_key) {
+            return Err(ArenaError::PlayerNotSurvivor);
         }
 
         let current_ledger = env.ledger().sequence();
@@ -513,6 +520,10 @@ impl ArenaContract {
             .get(&ADMIN_KEY)
             .expect("not initialized");
         admin.require_auth();
+
+        if !env.storage().instance().has(&EXECUTE_AFTER_KEY) || !env.storage().instance().has(&PENDING_HASH_KEY) {
+            panic!("malformed upgrade state");
+        }
 
         let execute_after: u64 = env
             .storage()

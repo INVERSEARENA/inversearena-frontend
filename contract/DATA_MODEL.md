@@ -38,6 +38,8 @@ File: `contract/arena/src/lib.rs`
 | `DataKey::Config` | `ArenaConfig` | Round speed configuration; written once on `init` |
 | `DataKey::Round` | `RoundState` | Active round state (number, ledgers, submission count, flags) |
 | `DataKey::Submission(round_number, player)` | `Choice` | A player's Heads/Tails choice for a given round |
+| `DataKey::Survivor(player)` | `()` | Whitelist status for a player participating in the arena |
+| `DataKey::PrizeClaimed(player)` | `i128` | Tracks whether and how much prize a player has claimed |
 
 #### Instance storage (`env.storage().instance()`)
 

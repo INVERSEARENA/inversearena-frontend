@@ -242,7 +242,6 @@ impl FactoryContract {
 
         env.events()
             .publish((TOPIC_POOL_CREATED,), (pool_id, creator, capacity, stake_amount));
->>>>>>> upstream/main
     }
 
     // ── Upgrade mechanism ────────────────────────────────────────────────────
@@ -304,6 +303,10 @@ impl FactoryContract {
             .get(&ADMIN_KEY)
             .expect("not initialized");
         admin.require_auth();
+
+        if !env.storage().instance().has(&EXECUTE_AFTER_KEY) || !env.storage().instance().has(&PENDING_HASH_KEY) {
+            panic!("malformed upgrade state");
+        }
 
         let execute_after: u64 = env
             .storage()
