@@ -46,3 +46,6 @@ package-lock.json
 GITHUB_ISSUE.md
 
 issues.md
+
+# Soroban test snapshots
+**/test_snapshots/

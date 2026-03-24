@@ -45,6 +45,8 @@ pub enum ArenaError {
     RoundDeadlineOverflow = 8,
     NotInitialized = 9,
     Paused = 10,
+    NotASurvivor = 11,
+    Eliminated = 12,
 }
 
 #[contracttype]
@@ -52,6 +54,13 @@ pub enum ArenaError {
 pub enum Choice {
     Heads,
     Tails,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SurvivorStatus {
+    Active,
+    Eliminated,
 }
 
 #[contracttype]
@@ -77,6 +86,7 @@ enum DataKey {
     Config,
     Round,
     Submission(u32, Address),
+    Survivor(Address),
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -168,6 +178,42 @@ impl ArenaContract {
             .unwrap_or(false)
     }
 
+    /// Join the arena as a player.
+    pub fn join_arena(env: Env, player: Address) -> Result<(), ArenaError> {
+        require_not_paused(&env)?;
+        player.require_auth();
+
+        if storage(&env).has(&DataKey::Survivor(player.clone())) {
+            return Ok(()); // Already joined
+        }
+
+        storage(&env).set(&DataKey::Survivor(player.clone()), &SurvivorStatus::Active);
+        bump(&env, &DataKey::Survivor(player));
+
+        Ok(())
+    }
+
+    /// Return the survivor status of a player.
+    pub fn get_survivor_status(env: Env, player: Address) -> Option<SurvivorStatus> {
+        storage(&env).get(&DataKey::Survivor(player))
+    }
+
+    /// Eliminate a player from the arena. Admin-only.
+    pub fn eliminate_player(env: Env, player: Address) -> Result<(), ArenaError> {
+        require_not_paused(&env)?;
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+
+        if !storage(&env).has(&DataKey::Survivor(player.clone())) {
+            return Err(ArenaError::NotASurvivor);
+        }
+
+        storage(&env).set(&DataKey::Survivor(player.clone()), &SurvivorStatus::Eliminated);
+        bump(&env, &DataKey::Survivor(player));
+
+        Ok(())
+    }
+
     // ── Round state machine ──────────────────────────────────────────────────
 
     pub fn start_round(env: Env) -> Result<RoundState, ArenaError> {
@@ -213,6 +259,14 @@ impl ArenaContract {
         let mut round = get_round(&env)?;
         if !round.active {
             return Err(ArenaError::NoActiveRound);
+        }
+
+        let survivor_status: SurvivorStatus = storage(&env)
+            .get(&DataKey::Survivor(player.clone()))
+            .ok_or(ArenaError::NotASurvivor)?;
+
+        if survivor_status == SurvivorStatus::Eliminated {
+            return Err(ArenaError::Eliminated);
         }
 
         let current_ledger = env.ledger().sequence();
@@ -277,7 +331,6 @@ impl ArenaContract {
     /// earliest timestamp at which `execute_upgrade` may be called (now + 48 h).
     /// Emits `UpgradeProposed(new_wasm_hash, execute_after)`.
     pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) {
-        require_not_paused(&env).unwrap();
         let admin: Address = env
             .storage()
             .instance()
@@ -303,7 +356,6 @@ impl ArenaContract {
     /// Panics if there is no pending proposal or the timelock has not elapsed.
     /// Emits `UpgradeExecuted(new_wasm_hash)`.
     pub fn execute_upgrade(env: Env) {
-        require_not_paused(&env).unwrap();
         let admin: Address = env
         
             .storage()
@@ -343,7 +395,6 @@ impl ArenaContract {
     /// Panics if there is no pending proposal.
     /// Emits `UpgradeCancelled`.
     pub fn cancel_upgrade(env: Env) {
-        require_not_paused(&env).unwrap();
         let admin: Address = env
             .storage()
             .instance()
