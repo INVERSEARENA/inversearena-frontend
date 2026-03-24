@@ -160,7 +160,7 @@ impl ArenaContract {
     /// * `env` - The Soroban environment.
     ///
     /// # Errors
-    /// Panics with `"not initialized"` if [`initialize`](Self::initialize) has not been called.
+    /// Panics with `"not initialized"` if `initialize` has not been called.
     ///
     /// # Authorization
     /// None — read-only, open to any caller.
@@ -179,7 +179,7 @@ impl ArenaContract {
     /// * `env` - The Soroban environment.
     ///
     /// # Errors
-    /// * [`ArenaError::NotInitialized`] — [`init`](Self::init) has not been called.
+    /// * [`ArenaError::NotInitialized`] — `initialize` has not been called.
     /// * [`ArenaError::RoundAlreadyActive`] — A round is currently in progress.
     /// * [`ArenaError::RoundDeadlineOverflow`] — Ledger sequence + round speed overflows `u32`.
     ///
@@ -307,7 +307,7 @@ impl ArenaContract {
     /// * `env` - The Soroban environment.
     ///
     /// # Errors
-    /// * [`ArenaError::NotInitialized`] — [`init`](Self::init) has not been called.
+    /// * [`ArenaError::NotInitialized`] — `initialize` has not been called.
     ///
     /// # Authorization
     /// None — read-only, open to any caller.
@@ -321,7 +321,7 @@ impl ArenaContract {
     /// * `env` - The Soroban environment.
     ///
     /// # Errors
-    /// * [`ArenaError::NotInitialized`] — [`init`](Self::init) has not been called.
+    /// * [`ArenaError::NotInitialized`] — `initialize` has not been called.
     ///
     /// # Authorization
     /// None — read-only, open to any caller.

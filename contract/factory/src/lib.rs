@@ -81,7 +81,7 @@ impl FactoryContract {
     /// * `env` - The Soroban environment.
     ///
     /// # Errors
-    /// Panics with `"not initialized"` if [`initialize`](Self::initialize) has not been called.
+    /// Panics with `"not initialized"` if `initialize` has not been called.
     ///
     /// # Authorization
     /// None — read-only, open to any caller.
