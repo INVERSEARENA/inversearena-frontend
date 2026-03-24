@@ -3,7 +3,12 @@
  *
  * Every transaction builder and contract query throws a `ContractError`
  * on failure so that UI components can catch and display errors uniformly.
+ *
+ * On-chain numeric panic codes are documented in `contract/ERRORS.md` and mapped
+ * to user copy via `./contract-error-registry.ts`.
  */
+
+import { userMessageForContractPanicCode } from "@/shared-d/utils/contract-error-registry";
 
 // ── Known error codes ────────────────────────────────────────────────
 export enum ContractErrorCode {
@@ -246,13 +251,8 @@ function extractSimulationDetail(error: unknown): string | null {
     return parseHostError(obj.error);
   }
 
-  // Nested in message
   const msg = extractMessage(error);
-  if (msg.includes("Error(Contract")) {
-    const match = msg.match(/Error\(Contract,\s*#(\d+)\)/);
-    if (match) return `Contract error code ${match[1]}`;
-  }
-  if (msg.includes("HostError")) {
+  if (msg.includes("Error(Contract") || msg.includes("HostError")) {
     return parseHostError(msg);
   }
 
@@ -264,10 +264,10 @@ function extractSimulationDetail(error: unknown): string | null {
  * Example input: "HostError: Error(Contract, #4)"
  */
 function parseHostError(raw: string): string {
-  // Contract-level error with numeric code
   const contractMatch = raw.match(/Error\(Contract,\s*#(\d+)\)/);
   if (contractMatch) {
-    return `Contract error code ${contractMatch[1]}`;
+    const code = Number.parseInt(contractMatch[1], 10);
+    return userMessageForContractPanicCode(code);
   }
 
   // WasmVm errors

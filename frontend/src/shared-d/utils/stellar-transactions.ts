@@ -1,23 +1,14 @@
+/**
+ * Stellar / Soroban orchestration for Inverse Arena.
+ *
+ * Split per #245: `contract-client-factory`, `horizon-account-loader`,
+ * `stellar-fee-estimator`, and `soroban-transaction-composer`.
+ */
+import { Account, TransactionBuilder } from "@stellar/stellar-sdk";
 import {
-  Account,
-  Address,
-  BASE_FEE,
-  Contract,
-  TimeoutInfinite,
-  TransactionBuilder,
-  nativeToScVal,
-  xdr,
-} from "@stellar/stellar-sdk";
-import { Server } from "@stellar/stellar-sdk/rpc";
-import { z } from "zod";
-import {
-  ArenaCapacitySchema,
-  HorizonAccountResponseSchema,
   PositiveAmountSchema,
-  PoolCurrencySchema,
   RoundChoiceSchema,
   RoundNumberSchema,
-  RoundSpeedSchema,
   SignedXdrSchema,
   StellarContractIdSchema,
   StellarPublicKeySchema,
@@ -31,9 +22,41 @@ import {
   ContractErrorCode,
   parseContractError,
 } from "@/shared-d/utils/contract-error";
+import { ContractClientFactory } from "@/shared-d/utils/contract-client-factory";
+import {
+  HorizonAccountFetchError,
+  loadAccountFromHorizon,
+} from "@/shared-d/utils/horizon-account-loader";
+import {
+  getDefaultInvokeBaseFee,
+  getInfiniteTimeout,
+  getJoinArenaFee,
+  getShortTxTimeoutSeconds,
+  getStandardTxTimeoutSeconds,
+  getSubmitRetryConfig,
+} from "@/shared-d/utils/stellar-fee-estimator";
+import {
+  buildClaimCallOperation,
+  buildCreatePoolCallOperation,
+  buildGetArenaStateCallOperation,
+  buildGetUserStateCallOperation,
+  buildJoinCallOperation,
+  buildStakeCallOperation,
+  buildSubmitChoiceCallOperation,
+  composeUnsignedTransaction,
+} from "@/shared-d/utils/soroban-transaction-composer";
+import { CreatePoolParamsSchema } from "@/shared-d/utils/stellar-transaction-schemas";
+import {
+  extractBoolFromScVal,
+  extractI128FromScVal,
+  extractU32FromScVal,
+} from "@/shared-d/utils/stellar-scval-extract";
 
 // Re-export so consumers can import from one place
 export { ContractError, ContractErrorCode, parseContractError } from "@/shared-d/utils/contract-error";
+
+export { ContractClientFactory } from "@/shared-d/utils/contract-client-factory";
+export type { ContractClientFactoryDeps } from "@/shared-d/utils/contract-client-factory";
 
 // Constants (Replace with real Contract IDs in production/env)
 export const FACTORY_CONTRACT_ID = STELLAR_NETWORK.CONTRACTS.FACTORY;
@@ -49,35 +72,23 @@ export const NETWORK_PASSPHRASE = STELLAR_NETWORK.PASSPHRASE;
 export const HORIZON_URL = STELLAR_NETWORK.HORIZON_URL.replace(/\/+$/, "");
 export const SOROBAN_RPC_URL = STELLAR_NETWORK.SOROBAN_RPC_URL;
 
-const CreatePoolParamsSchema = z.object({
-  stakeAmount: PositiveAmountSchema,
-  currency: PoolCurrencySchema,
-  roundSpeed: RoundSpeedSchema,
-  arenaCapacity: ArenaCapacitySchema,
-});
+const defaultSorobanClients = new ContractClientFactory(SOROBAN_RPC_URL);
 
 /**
- * Helper to get the latest sequence number for an account.
+ * Orchestration: Horizon account load + {@link ContractError} mapping.
+ * Low-level fetch lives in {@link loadAccountFromHorizon}.
  */
 async function getAccount(publicKey: string, fn: string): Promise<Account> {
   try {
     const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
-
-    const res = await fetch(
-      `${HORIZON_URL}/accounts/${validatedPublicKey}`,
-    );
-    if (!res.ok) {
+    return await loadAccountFromHorizon(HORIZON_URL, validatedPublicKey);
+  } catch (error) {
+    if (error instanceof HorizonAccountFetchError) {
       throw new ContractError({
         code: ContractErrorCode.ACCOUNT_NOT_FOUND,
         fn,
       });
     }
-
-    const rawData: unknown = await res.json();
-    const data = HorizonAccountResponseSchema.parse(rawData);
-
-    return new Account(validatedPublicKey, data.sequence);
-  } catch (error) {
     throw parseContractError(error, fn);
   }
 }
@@ -98,40 +109,19 @@ export async function buildCreatePoolTransaction(
   try {
     const validatedParams = CreatePoolParamsSchema.parse(params);
     const account = await getAccount(publicKey, FN);
-    const factory = new Contract(FACTORY_CONTRACT_ID);
+    const factory = defaultSorobanClients.createContract(FACTORY_CONTRACT_ID);
 
-    // Convert stake amount to stroops/units (7 decimals).
-    const amountBigInt = BigInt(
-      Math.floor(validatedParams.stakeAmount * 10_000_000),
-    );
+    const operation = buildCreatePoolCallOperation(factory, validatedParams, {
+      xlmContractId: XLM_CONTRACT_ID,
+      usdcContractId: USDC_CONTRACT_ID,
+    });
 
-    const args = [
-      nativeToScVal(amountBigInt, { type: "i128" }),
-      new Contract(
-        validatedParams.currency === "USDC" ? USDC_CONTRACT_ID : XLM_CONTRACT_ID,
-      )
-        .address()
-        .toScVal(),
-      nativeToScVal(
-        validatedParams.roundSpeed === "30S"
-          ? 30
-          : validatedParams.roundSpeed === "1M"
-            ? 60
-            : 300,
-        { type: "u32" },
-      ),
-      nativeToScVal(validatedParams.arenaCapacity, { type: "u32" }),
-    ];
-
-    const callOperation = factory.call("create_pool", ...args);
-
-    return new TransactionBuilder(account, {
-      fee: BASE_FEE,
+    return composeUnsignedTransaction(account, {
+      fee: getDefaultInvokeBaseFee(),
       networkPassphrase: NETWORK_PASSPHRASE,
-    })
-      .addOperation(callOperation)
-      .setTimeout(TimeoutInfinite)
-      .build();
+      timeout: getInfiniteTimeout(),
+      operation,
+    });
   } catch (error) {
     throw parseContractError(error, FN);
   }
@@ -163,26 +153,25 @@ export async function buildStakeProtocolTransaction(
       });
     }
 
-    const server = new Server(SOROBAN_RPC_URL);
+    const server = defaultSorobanClients.createRpcServer();
     const account = await getAccount(validatedPublicKey, FN);
-    const stakingContract = new Contract(STAKING_CONTRACT_ID);
-
-    const amountStroops = BigInt(Math.floor(validatedAmount * 10_000_000));
-    const addressScVal = new Address(validatedPublicKey).toScVal();
-
-    const callOperation = stakingContract.call(
-      "stake",
-      addressScVal,
-      nativeToScVal(amountStroops, { type: "i128" }),
+    const stakingContract = defaultSorobanClients.createContract(
+      STAKING_CONTRACT_ID,
     );
 
-    const builtTx = new TransactionBuilder(account, {
-      fee: BASE_FEE,
+    const amountStroops = BigInt(Math.floor(validatedAmount * 10_000_000));
+    const operation = buildStakeCallOperation(
+      stakingContract,
+      amountStroops,
+      validatedPublicKey,
+    );
+
+    const builtTx = composeUnsignedTransaction(account, {
+      fee: getDefaultInvokeBaseFee(),
       networkPassphrase: NETWORK_PASSPHRASE,
-    })
-      .addOperation(callOperation)
-      .setTimeout(TimeoutInfinite)
-      .build();
+      timeout: getInfiniteTimeout(),
+      operation,
+    });
 
     return server.prepareTransaction(builtTx);
   } catch (error) {
@@ -205,16 +194,15 @@ export async function buildJoinArenaTransaction(
     PositiveAmountSchema.parse(amount);
 
     const account = await getAccount(validatedPublicKey, FN);
-    const poolContract = new Contract(validatedPoolId);
-    const callOperation = poolContract.call("join");
+    const poolContract = defaultSorobanClients.createContract(validatedPoolId);
+    const operation = buildJoinCallOperation(poolContract);
 
-    return new TransactionBuilder(account, {
-      fee: TRANSACTION_CONFIG.JOIN_FEE,
+    return composeUnsignedTransaction(account, {
+      fee: getJoinArenaFee(),
       networkPassphrase: NETWORK_PASSPHRASE,
-    })
-      .addOperation(callOperation)
-      .setTimeout(TRANSACTION_CONFIG.TIMEOUT_SECONDS)
-      .build();
+      timeout: getStandardTxTimeoutSeconds(),
+      operation,
+    });
   } catch (error) {
     throw parseContractError(error, FN);
   }
@@ -237,24 +225,19 @@ export async function buildSubmitChoiceTransaction(
     const validatedRoundNumber = RoundNumberSchema.parse(roundNumber);
 
     const account = await getAccount(validatedPublicKey, FN);
-    const poolContract = new Contract(validatedPoolId);
-    const choiceVal = xdr.ScVal.scvSymbol(
-      validatedChoice === "Heads" ? "Heads" : "Tails",
+    const poolContract = defaultSorobanClients.createContract(validatedPoolId);
+    const operation = buildSubmitChoiceCallOperation(
+      poolContract,
+      validatedRoundNumber,
+      validatedChoice,
     );
 
-    const callOperation = poolContract.call(
-      "submit_choice",
-      nativeToScVal(validatedRoundNumber, { type: "u32" }),
-      choiceVal,
-    );
-
-    return new TransactionBuilder(account, {
-      fee: BASE_FEE,
+    return composeUnsignedTransaction(account, {
+      fee: getDefaultInvokeBaseFee(),
       networkPassphrase: NETWORK_PASSPHRASE,
-    })
-      .addOperation(callOperation)
-      .setTimeout(TRANSACTION_CONFIG.TIMEOUT_SECONDS)
-      .build();
+      timeout: getStandardTxTimeoutSeconds(),
+      operation,
+    });
   } catch (error) {
     throw parseContractError(error, FN);
   }
@@ -273,54 +256,32 @@ export async function buildClaimWinningsTransaction(
     const validatedPoolId = StellarContractIdSchema.parse(poolId);
 
     const account = await getAccount(validatedPublicKey, FN);
-    const poolContract = new Contract(validatedPoolId);
-    const callOperation = poolContract.call("claim");
+    const poolContract = defaultSorobanClients.createContract(validatedPoolId);
+    const operation = buildClaimCallOperation(poolContract);
 
-    return new TransactionBuilder(account, {
-      fee: BASE_FEE,
+    return composeUnsignedTransaction(account, {
+      fee: getDefaultInvokeBaseFee(),
       networkPassphrase: NETWORK_PASSPHRASE,
-    })
-      .addOperation(callOperation)
-      .setTimeout(30)
-      .build();
+      timeout: getShortTxTimeoutSeconds(),
+      operation,
+    });
   } catch (error) {
     throw parseContractError(error, FN);
   }
 }
 
 /**
- * Parse Stellar error results to user-friendly messages.
- * Now ContractError-aware: if the error is already a ContractError,
- * returns its message directly.
+ * Parse Stellar / Soroban errors for display in the UI.
+ *
+ * Delegates to `parseContractError` so copy stays aligned with
+ * `contract/ERRORS.md` and `DEFAULT_MESSAGES` in `contract-error.ts`.
+ * On-chain numeric codes are resolved via `contract-error-registry.ts`.
  */
 export function parseStellarError(error: unknown): string {
   if (error instanceof ContractError) {
     return error.message;
   }
-
-  const errorString =
-    error instanceof Error
-      ? error.message
-      : typeof error === "string"
-        ? error
-        : typeof error === "object" && error !== null && "message" in error
-          ? String((error as { message: unknown }).message)
-          : String(error ?? "");
-
-  if (errorString.includes("tx_bad_auth")) {
-    return "Invalid or unauthorized transaction. Please check your wallet permissions.";
-  }
-  if (errorString.includes("op_underfunded")) {
-    return "Insufficient balance to cover the transaction and fees.";
-  }
-  if (errorString.includes("tx_too_late")) {
-    return "Transaction expired. Please try again.";
-  }
-  if (errorString.includes("User rejected")) {
-    return "Transaction was cancelled by the user.";
-  }
-
-  return errorString || "An unknown error occurred during the transaction.";
+  return parseContractError(error, "parseStellarError").message;
 }
 
 /**
@@ -343,7 +304,7 @@ export interface ArenaStateResponse {
  */
 export async function fetchArenaState(
   arenaId: string,
-  userAddress?: string
+  userAddress?: string,
 ): Promise<ArenaStateResponse> {
   const FN = "fetchArenaState";
   try {
@@ -352,30 +313,25 @@ export async function fetchArenaState(
       ? StellarPublicKeySchema.parse(userAddress)
       : undefined;
 
-    const server = new Server(SOROBAN_RPC_URL);
-    const arenaContract = new Contract(validatedArenaId);
+    const server = defaultSorobanClients.createRpcServer();
+    const arenaContract = defaultSorobanClients.createContract(validatedArenaId);
 
-    // Build a dummy account for simulation (no actual signing needed for reads)
     const dummyAccount = new Account(
       "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-      "0"
+      "0",
     );
 
-    // Query arena state - adjust method names based on your contract
-    const getStateOperation = arenaContract.call("get_arena_state");
-
-    const stateTx = new TransactionBuilder(dummyAccount, {
-      fee: BASE_FEE,
+    const getStateOperation =
+      buildGetArenaStateCallOperation(arenaContract);
+    const stateTx = composeUnsignedTransaction(dummyAccount, {
+      fee: getDefaultInvokeBaseFee(),
       networkPassphrase: NETWORK_PASSPHRASE,
-    })
-      .addOperation(getStateOperation)
-      .setTimeout(30)
-      .build();
+      timeout: getShortTxTimeoutSeconds(),
+      operation: getStateOperation,
+    });
 
-    // Simulate to read state without submitting
     const stateSimulation = await server.simulateTransaction(stateTx);
 
-    // Type guard: check if simulation was successful
     if (
       "error" in stateSimulation ||
       !("result" in stateSimulation) ||
@@ -391,33 +347,31 @@ export async function fetchArenaState(
       });
     }
 
-    // Parse the contract response
     const stateData = stateSimulation.result.retval;
 
-    // Extract values from the contract response
-    const survivorsCount = extractU32FromScVal(stateData, "survivors_count") || 0;
+    const survivorsCount =
+      extractU32FromScVal(stateData, "survivors_count") || 0;
     const maxCapacity = extractU32FromScVal(stateData, "max_capacity") || 0;
     const roundNumber = extractU32FromScVal(stateData, "round_number") || 0;
     const currentStake = extractI128FromScVal(stateData, "current_stake") || 0;
-    const potentialPayout = extractI128FromScVal(stateData, "potential_payout") || 0;
+    const potentialPayout =
+      extractI128FromScVal(stateData, "potential_payout") || 0;
 
     let isUserIn = false;
     let hasWon = false;
 
-    // If user address provided, check user-specific state
     if (validatedUserAddress) {
-      const userStateOperation = arenaContract.call(
-        "get_user_state",
-        new Address(validatedUserAddress).toScVal()
+      const userStateOperation = buildGetUserStateCallOperation(
+        arenaContract,
+        validatedUserAddress,
       );
 
-      const userStateTx = new TransactionBuilder(dummyAccount, {
-        fee: BASE_FEE,
+      const userStateTx = composeUnsignedTransaction(dummyAccount, {
+        fee: getDefaultInvokeBaseFee(),
         networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(userStateOperation)
-        .setTimeout(30)
-        .build();
+        timeout: getShortTxTimeoutSeconds(),
+        operation: userStateOperation,
+      });
 
       const userSimulation = await server.simulateTransaction(userStateTx);
 
@@ -448,114 +402,18 @@ export async function fetchArenaState(
 }
 
 /**
- * Helper to extract u32 value from ScVal
- */
-function extractU32FromScVal(scVal: xdr.ScVal, fieldName?: string): number | null {
-  try {
-    if (fieldName && scVal.switch().name === "scvMap") {
-      const map = scVal.map();
-      if (!map) return null;
-
-      for (const entry of map) {
-        const key = entry.key();
-        if (key.switch().name === "scvSymbol" && key.sym().toString() === fieldName) {
-          const val = entry.val();
-          if (val.switch().name === "scvU32") {
-            return val.u32();
-          }
-        }
-      }
-      return null;
-    }
-
-    if (scVal.switch().name === "scvU32") {
-      return scVal.u32();
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Helper to extract i128 value from ScVal
- */
-function extractI128FromScVal(scVal: xdr.ScVal, fieldName?: string): number | null {
-  try {
-    if (fieldName && scVal.switch().name === "scvMap") {
-      const map = scVal.map();
-      if (!map) return null;
-
-      for (const entry of map) {
-        const key = entry.key();
-        if (key.switch().name === "scvSymbol" && key.sym().toString() === fieldName) {
-          const val = entry.val();
-          if (val.switch().name === "scvI128") {
-            const i128Parts = val.i128();
-            // Convert i128 to number (may lose precision for very large values)
-            const hi = i128Parts.hi().toBigInt();
-            const lo = i128Parts.lo().toBigInt();
-            const value = (hi << 64n) | lo;
-            return Number(value) / 10_000_000; // Convert from stroops
-          }
-        }
-      }
-      return null;
-    }
-
-    if (scVal.switch().name === "scvI128") {
-      const i128Parts = scVal.i128();
-      const hi = i128Parts.hi().toBigInt();
-      const lo = i128Parts.lo().toBigInt();
-      const value = (hi << 64n) | lo;
-      return Number(value) / 10_000_000;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Helper to extract boolean value from ScVal
- */
-function extractBoolFromScVal(scVal: xdr.ScVal, fieldName?: string): boolean | null {
-  try {
-    if (fieldName && scVal.switch().name === "scvMap") {
-      const map = scVal.map();
-      if (!map) return null;
-
-      for (const entry of map) {
-        const key = entry.key();
-        if (key.switch().name === "scvSymbol" && key.sym().toString() === fieldName) {
-          const val = entry.val();
-          if (val.switch().name === "scvBool") {
-            return val.b();
-          }
-        }
-      }
-      return null;
-    }
-
-    if (scVal.switch().name === "scvBool") {
-      return scVal.b();
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Submit a signed transaction to the network.
  */
 export async function submitSignedTransaction(signedXdr: string) {
   const FN = "submitSignedTransaction";
   try {
     const validatedSignedXdr = SignedXdrSchema.parse(signedXdr);
-    const server = new Server(SOROBAN_RPC_URL);
+    const server = defaultSorobanClients.createRpcServer();
 
-    const tx = TransactionBuilder.fromXDR(validatedSignedXdr, NETWORK_PASSPHRASE);
+    const tx = TransactionBuilder.fromXDR(
+      validatedSignedXdr,
+      NETWORK_PASSPHRASE,
+    );
     const response = await server.sendTransaction(tx);
 
     if (response.status !== "PENDING") {
@@ -567,14 +425,16 @@ export async function submitSignedTransaction(signedXdr: string) {
     }
 
     const hash = response.hash;
-    let getTxResponse: Awaited<ReturnType<Server["getTransaction"]>> | undefined;
+    let getTxResponse: Awaited<
+      ReturnType<(typeof server)["getTransaction"]>
+    > | undefined;
 
-    const MAX_RETRIES = TRANSACTION_CONFIG.MAX_RETRIES;
+    const { maxRetries, retryIntervalMs } = getSubmitRetryConfig();
     let retries = 0;
 
-    while (retries < MAX_RETRIES) {
+    while (retries < maxRetries) {
       await new Promise((resolve) =>
-        setTimeout(resolve, TRANSACTION_CONFIG.RETRY_INTERVAL_MS),
+        setTimeout(resolve, retryIntervalMs),
       );
       try {
         getTxResponse = await server.getTransaction(hash);

@@ -151,7 +151,8 @@ describe('parseContractError', () => {
     };
     const result = parseContractError(simError, 'fetchArenaState');
     expect(result.code).toBe(ContractErrorCode.SIMULATION_FAILED);
-    expect(result.message).toContain('Contract error code 4');
+    expect(result.message).toContain('on-chain code 4');
+    expect(result.message).toContain('current game');
   });
 
   it('should detect HostError in message', () => {
@@ -171,14 +172,16 @@ describe('parseContractError', () => {
     const err = { message: 'Error(Contract, #12)' };
     const result = parseContractError(err, 'test');
     expect(result.code).toBe(ContractErrorCode.SIMULATION_FAILED);
-    expect(result.message).toContain('Contract error code 12');
+    expect(result.message).toContain('on-chain code 12');
+    expect(result.message).toContain('ERRORS.md');
   });
 
   it('should prefer error field from simulation response objects', () => {
     const err = { error: 'HostError: Error(Contract, #7)', message: 'simulation failed' };
     const result = parseContractError(err, 'test');
     expect(result.code).toBe(ContractErrorCode.SIMULATION_FAILED);
-    expect(result.message).toContain('Contract error code 7');
+    expect(result.message).toContain('on-chain code 7');
+    expect(result.message).toContain('time window');
   });
 
   // ── Transaction failures ─────────────────────────────────────────
