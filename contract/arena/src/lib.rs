@@ -331,7 +331,6 @@ impl ArenaContract {
     /// earliest timestamp at which `execute_upgrade` may be called (now + 48 h).
     /// Emits `UpgradeProposed(new_wasm_hash, execute_after)`.
     pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) {
-        require_not_paused(&env).unwrap();
         let admin: Address = env
             .storage()
             .instance()
@@ -357,7 +356,6 @@ impl ArenaContract {
     /// Panics if there is no pending proposal or the timelock has not elapsed.
     /// Emits `UpgradeExecuted(new_wasm_hash)`.
     pub fn execute_upgrade(env: Env) {
-        require_not_paused(&env).unwrap();
         let admin: Address = env
         
             .storage()
@@ -397,7 +395,6 @@ impl ArenaContract {
     /// Panics if there is no pending proposal.
     /// Emits `UpgradeCancelled`.
     pub fn cancel_upgrade(env: Env) {
-        require_not_paused(&env).unwrap();
         let admin: Address = env
             .storage()
             .instance()

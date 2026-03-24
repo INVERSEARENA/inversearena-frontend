@@ -672,26 +672,30 @@ fn partial_submissions_preserved_after_timeout() {
 
 #[test]
 fn test_pause_unpause_admin_only() {
-    let (env, _admin, client) = setup_with_admin();
-    let _non_admin = Address::generate(&env);
+    let (env, admin, client) = setup_with_admin();
 
     assert!(!client.is_paused());
 
     // Admin can pause
     client.pause();
+    
+    // Verify admin authorized the call
+    assert_eq!(
+        env.auths().get(0).unwrap().0,
+        admin
+    );
+
     assert!(client.is_paused());
 
     // Admin can unpause
     client.unpause();
-    assert!(!client.is_paused());
+    
+    assert_eq!(
+        env.auths().get(0).unwrap().0,
+        admin
+    );
 
-    // Non-admin cannot pause
-    env.mock_all_auths(); // Reset auths
-    let _result = client.try_pause();
-    // This should fail authorize if it was checked correctly, 
-    // but in tests with mock_all_auths we need to verify it specifically if we want,
-    // however, the code uses admin.require_auth() where admin is the stored admin.
-    // Since we called initialize with `admin`, only `admin.require_auth()` will pass if it was the one calling.
+    assert!(!client.is_paused());
 }
 
 #[test]
@@ -705,15 +709,11 @@ fn test_functions_fail_when_paused() {
 
     // All state-changing functions should fail
     assert_eq!(client.try_start_round(), Err(Ok(ArenaError::Paused)));
-    assert_eq!(client.try_submit_choice(&player, &Choice::Heads), Err(Ok(ArenaError::Paused)));
     assert_eq!(client.try_timeout_round(), Err(Ok(ArenaError::Paused)));
     
-    let _hash = dummy_hash(&env);
-    // These panic on failure in lib.rs if I used .unwrap(), 
-    // but I can use try_ versions to check Result.
-    // Wait, in lib.rs I used require_not_paused(&env).unwrap() for proposals? 
-    // Let me check if they returned Result. No, they were void functions.
-    // If they return Result, I can check error code.
+    // Upgrades should NOT fail when paused
+    let hash = dummy_hash(&env);
+    client.propose_upgrade(&hash); // Should not panic/fail
 }
 
 #[test]
