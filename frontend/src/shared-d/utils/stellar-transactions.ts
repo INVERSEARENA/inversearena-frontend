@@ -15,7 +15,6 @@ import {
 } from "@/shared-d/utils/security-validation";
 import {
   STELLAR_NETWORK,
-  TRANSACTION_CONFIG,
 } from "@/components/hook-d/arenaConstants";
 import {
   ContractError,
@@ -47,10 +46,16 @@ import {
 } from "@/shared-d/utils/soroban-transaction-composer";
 import { CreatePoolParamsSchema } from "@/shared-d/utils/stellar-transaction-schemas";
 import {
-  extractBoolFromScVal,
-  extractI128FromScVal,
-  extractU32FromScVal,
-} from "@/shared-d/utils/stellar-scval-extract";
+  parseArenaStateFromScVal,
+  parseUserStateFromScVal,
+  buildArenaDisplayState,
+} from "@/shared-d/utils/contract-state-parsers";
+import type {
+  ArenaContractEvent,
+  ArenaState,
+  FetchArenaStateResult,
+  UserState,
+} from "@/shared-d/types/contract-state";
 
 // Re-export so consumers can import from one place
 export { ContractError, ContractErrorCode, parseContractError } from "@/shared-d/utils/contract-error";
@@ -287,16 +292,7 @@ export function parseStellarError(error: unknown): string {
 /**
  * Arena state response type
  */
-export interface ArenaStateResponse {
-  arenaId: string;
-  survivorsCount: number;
-  maxCapacity: number;
-  isUserIn: boolean;
-  hasWon: boolean;
-  currentStake: number;
-  potentialPayout: number;
-  roundNumber: number;
-}
+export type { ArenaContractEvent, ArenaState, FetchArenaStateResult, UserState };
 
 /**
  * Fetch the latest arena state from the contract.
@@ -305,7 +301,7 @@ export interface ArenaStateResponse {
 export async function fetchArenaState(
   arenaId: string,
   userAddress?: string,
-): Promise<ArenaStateResponse> {
+): Promise<FetchArenaStateResult> {
   const FN = "fetchArenaState";
   try {
     const validatedArenaId = StellarContractIdSchema.parse(arenaId);
@@ -347,18 +343,12 @@ export async function fetchArenaState(
       });
     }
 
-    const stateData = stateSimulation.result.retval;
-
-    const survivorsCount =
-      extractU32FromScVal(stateData, "survivors_count") || 0;
-    const maxCapacity = extractU32FromScVal(stateData, "max_capacity") || 0;
-    const roundNumber = extractU32FromScVal(stateData, "round_number") || 0;
-    const currentStake = extractI128FromScVal(stateData, "current_stake") || 0;
-    const potentialPayout =
-      extractI128FromScVal(stateData, "potential_payout") || 0;
-
-    let isUserIn = false;
-    let hasWon = false;
+    const arenaState = parseArenaStateFromScVal(stateSimulation.result.retval);
+    const displayState = buildArenaDisplayState(arenaState);
+    let userState: UserState = {
+      active: false,
+      won: false,
+    };
 
     if (validatedUserAddress) {
       const userStateOperation = buildGetUserStateCallOperation(
@@ -380,21 +370,17 @@ export async function fetchArenaState(
         "result" in userSimulation &&
         userSimulation.result?.retval
       ) {
-        const userData = userSimulation.result.retval;
-        isUserIn = extractBoolFromScVal(userData, "is_active") || false;
-        hasWon = extractBoolFromScVal(userData, "has_won") || false;
+        userState = parseUserStateFromScVal(userSimulation.result.retval);
       }
     }
 
     return {
       arenaId: validatedArenaId,
-      survivorsCount,
-      maxCapacity,
-      isUserIn,
-      hasWon,
-      currentStake,
-      potentialPayout,
-      roundNumber,
+      arenaState,
+      userState,
+      isUserIn: userState.active,
+      hasWon: userState.won,
+      ...displayState,
     };
   } catch (error) {
     throw parseContractError(error, FN);

@@ -4,6 +4,7 @@ import {
   extractBoolFromScVal,
   extractI128FromScVal,
   extractU32FromScVal,
+  stroopsToDisplayAmount,
 } from "../stellar-scval-extract";
 
 describe("stellar-scval-extract", () => {
@@ -19,6 +20,10 @@ describe("stellar-scval-extract", () => {
 
   it("extractI128FromScVal reads i128 stroops-style magnitude", () => {
     const v = nativeToScVal(10_000_000n, { type: "i128" });
-    expect(extractI128FromScVal(v)).toBe(1);
+    expect(extractI128FromScVal(v)).toBe(10_000_000n);
+  });
+
+  it("stroopsToDisplayAmount converts bigint values for UI display", () => {
+    expect(stroopsToDisplayAmount(24_420_000_000n)).toBe(2442);
   });
 });
