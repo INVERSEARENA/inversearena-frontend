@@ -2,6 +2,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Symbol,
+    Vec,
 };
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
@@ -445,6 +446,47 @@ impl FactoryContract {
 
         env.events().publish((TOPIC_UPGRADE_CANCELLED,), ());
         Ok(())
+    }
+
+    // ── Query methods ─────────────────────────────────────────────────────
+
+    /// Return the metadata for a single arena by `pool_id`, or `None` if
+    /// no pool with that id exists.
+    pub fn get_arena(env: Env, pool_id: u32) -> Option<ArenaMetadata> {
+        let meta_key = (METADATA_PREFIX, pool_id);
+        env.storage().instance().get(&meta_key)
+    }
+
+    /// Return a page of arena metadata entries.
+    ///
+    /// * `offset` — number of entries to skip from the beginning.
+    /// * `limit`  — maximum number of entries to return.
+    pub fn get_arenas(env: Env, offset: u32, limit: u32) -> Vec<ArenaMetadata> {
+        let all_pools: Vec<u32> = env
+            .storage()
+            .instance()
+            .get(&ALL_POOLS_KEY)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut result = Vec::new(&env);
+        let len = all_pools.len();
+        let start = offset;
+        let end = if offset + limit > len {
+            len
+        } else {
+            offset + limit
+        };
+
+        let mut i = start;
+        while i < end {
+            let pool_id = all_pools.get(i).unwrap();
+            let meta_key = (METADATA_PREFIX, pool_id);
+            if let Some(meta) = env.storage().instance().get::<_, ArenaMetadata>(&meta_key) {
+                result.push_back(meta);
+            }
+            i += 1;
+        }
+        result
     }
 
     /// Return the pending WASM hash and the earliest execution timestamp,

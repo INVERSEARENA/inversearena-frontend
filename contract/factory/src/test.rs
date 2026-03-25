@@ -11,14 +11,13 @@ const MAX_CAPACITY: u32 = 256;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-fn assert_auth_err<T: core::fmt::Debug>(res: Result<T, Result<soroban_sdk::Error, soroban_sdk::InvokeError>>) {
-    assert_eq!(
-        res.unwrap_err().unwrap(),
-        soroban_sdk::Error::from_type_and_code(
-            soroban_sdk::xdr::ScErrorType::Context,
-            soroban_sdk::xdr::ScErrorCode::InvalidAction,
-        )
-    );
+fn assert_auth_err<T: core::fmt::Debug, E: core::fmt::Debug>(
+    res: Result<T, Result<E, soroban_sdk::InvokeError>>,
+) {
+    match res {
+        Err(Err(soroban_sdk::InvokeError::Abort)) => {} // auth failure
+        other => panic!("expected auth error, got: {:?}", other),
+    }
 }
 
 fn setup() -> (Env, Address, FactoryContractClient<'static>) {
@@ -433,6 +432,7 @@ fn test_unauthorized_set_min_stake_panics() {
 }
 
 #[test]
+#[should_panic(expected = "InvalidAction")]
 fn test_unauthorized_propose_upgrade_panics() {
     // `require_auth()` is enforced by the Soroban host and cannot be replaced
     // with a typed error — this test intentionally remains as a panic check.
@@ -445,6 +445,7 @@ fn test_unauthorized_propose_upgrade_panics() {
 }
 
 #[test]
+#[should_panic(expected = "InvalidAction")]
 fn test_unauthorized_execute_upgrade_panics() {
     let env = Env::default();
     let contract_id = env.register(FactoryContract, ());
@@ -455,6 +456,7 @@ fn test_unauthorized_execute_upgrade_panics() {
 }
 
 #[test]
+#[should_panic(expected = "InvalidAction")]
 fn test_unauthorized_cancel_upgrade_panics() {
     let env = Env::default();
     let contract_id = env.register(FactoryContract, ());

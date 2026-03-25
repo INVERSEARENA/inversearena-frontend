@@ -1477,12 +1477,18 @@ fn get_arena_state_reflects_round_number() {
 /// After `join()`, `survivors_count` increases and subsequent reads are consistent.
 #[test]
 fn get_arena_state_reflects_survivor_count() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let client = create_client(&env);
+    let (env, admin, client) = setup_with_admin();
+
+    let (_token, token_id) = setup_token(&env, &admin);
+    let asset = StellarAssetClient::new(&env, &token_id);
+    client.set_token(&token_id);
 
     let player_a = Address::generate(&env);
     let player_b = Address::generate(&env);
+
+    // Mint tokens to players so they can stake.
+    asset.mint(&player_a, &1000);
+    asset.mint(&player_b, &1000);
 
     // Before any joins.
     assert_eq!(client.get_arena_state().survivors_count, 0);
