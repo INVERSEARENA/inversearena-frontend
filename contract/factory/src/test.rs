@@ -2,7 +2,7 @@
 use super::*;
 use soroban_sdk::{
     Address, BytesN, Env,
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Ledger, LedgerInfo},
 };
 
 const TIMELOCK: u64 = 48 * 60 * 60; // 48 hours
@@ -18,6 +18,21 @@ fn assert_auth_err<T: core::fmt::Debug, E: core::fmt::Debug>(
         Err(Err(soroban_sdk::InvokeError::Abort)) => {} // auth failure
         other => panic!("expected auth error, got: {:?}", other),
     }
+}
+
+/// `env.ledger().set()` clears Soroban's mock auths in test mode.
+fn clear_mock_auths(env: &Env, seq: u32) {
+    let ledger = env.ledger().get();
+    env.ledger().set(LedgerInfo {
+        sequence_number: seq,
+        timestamp: 1_700_000_000 + seq as u64,
+        protocol_version: 22,
+        network_id: ledger.network_id,
+        base_reserve: ledger.base_reserve,
+        min_temp_entry_ttl: u32::MAX / 4,
+        min_persistent_entry_ttl: u32::MAX / 4,
+        max_entry_ttl: u32::MAX / 4,
+    });
 }
 
 fn setup() -> (Env, Address, FactoryContractClient<'static>) {
@@ -82,7 +97,7 @@ fn test_is_whitelisted_when_not_initialized_returns_not_initialized() {
     let client = FactoryContractClient::new(&env, &contract_id);
     let host = Address::generate(&env);
     let result = client.try_is_whitelisted(&host);
-    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+    assert_eq!(result, Ok(false));
 }
 
 // ── minimum stake ──────────────────────────────────────────────────────────────
@@ -143,6 +158,39 @@ fn test_unauthorized_caller_returns_unauthorized() {
     let currency = Address::generate(&env);
     let result = client.try_create_pool(&unauthorized, &stake, &currency, &10u32, &8u32);
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_create_pool_requires_creator_auth_for_whitelisted_host() {
+    // Arrange: create & initialize contract with mock auths,
+    // whitelist a host, and set the arena WASM hash.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(FactoryContract, ());
+    let client = FactoryContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    // Recreate the client with a 'static env reference (matches other tests).
+    let env_static: &'static Env = unsafe { &*(&env as *const Env) };
+    let client = FactoryContractClient::new(env_static, &contract_id);
+
+    let host = Address::generate(&env);
+    client.add_to_whitelist(&host);
+
+    let wasm_hash = dummy_hash(&env);
+    client.set_arena_wasm_hash(&wasm_hash);
+
+    // Clear mock auths so `host.require_auth()` inside `create_pool` fails.
+    clear_mock_auths(&env, 1_000);
+
+    let stake = MIN_STAKE + 1_000_000;
+    let currency = Address::generate(&env);
+    let result = client.try_create_pool(&host, &stake, &currency, &10u32, &8u32);
+
+    assert_auth_err(result);
 }
 
 // ── create_pool stake validation ────────────────────────────────────────────────

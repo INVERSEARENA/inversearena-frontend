@@ -52,7 +52,9 @@ pub enum PayoutError {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
-    Payout(Symbol, u32, Address),
+    // Payout record domain-separated by `context` plus the tuple
+    // `(pool_id, round_id)` and the `winner` identity.
+    Payout(Symbol, u32, u32, Address),
 }
 
 #[contracterror]
@@ -173,15 +175,18 @@ impl PayoutContract {
 
     /// Distribute winnings to a winner. Admin-only.
     ///
-    /// Uses a `(context, idempotency_key, winner)` triple to prevent
-    /// double-pays. The `context` field provides domain separation so the
-    /// same payout contract can serve multiple arenas or game modes without
-    /// risk of key collision.
+    /// Uses a `(context, pool_id, round_id, winner)` tuple to prevent
+    /// double-pays.
+    ///
+    /// This avoids relying on a single external `u32` sequence that might be
+    /// recycled across multiple pools/rounds, which could otherwise lead to
+    /// denial-of-service by causing false "AlreadyProcessed" collisions.
     ///
     /// # Arguments
     /// * `caller` - Must be the admin address.
     /// * `context` - Domain namespace (e.g. `"arena_1"`, `"tourney"`).
-    /// * `idempotency_key` - Unique key within the context preventing duplicate payouts.
+    /// * `pool_id` - Arena/pool identifier.
+    /// * `round_id` - Round identifier within the pool.
     /// * `winner` - Recipient address.
     /// * `amount` - Amount to pay; must be > 0.
     /// * `currency` - Currency symbol (e.g. `XLM`, `USDC`).
@@ -198,7 +203,8 @@ impl PayoutContract {
         env: Env,
         caller: Address,
         context: Symbol,
-        idempotency_key: u32,
+        pool_id: u32,
+        round_id: u32,
         winner: Address,
         amount: i128,
         currency: Address,
@@ -213,7 +219,7 @@ impl PayoutContract {
             return Err(PayoutError::InvalidAmount);
         }
 
-        let payout_key = DataKey::Payout(context, idempotency_key, winner.clone());
+        let payout_key = DataKey::Payout(context, pool_id, round_id, winner.clone());
         if env
             .storage()
             .instance()
@@ -285,8 +291,14 @@ impl PayoutContract {
     ///
     /// # Authorization
     /// None — read-only, open to any caller.
-    pub fn is_payout_processed(env: Env, context: Symbol, idempotency_key: u32, winner: Address) -> bool {
-        let payout_key = DataKey::Payout(context, idempotency_key, winner);
+    pub fn is_payout_processed(
+        env: Env,
+        context: Symbol,
+        pool_id: u32,
+        round_id: u32,
+        winner: Address,
+    ) -> bool {
+        let payout_key = DataKey::Payout(context, pool_id, round_id, winner);
         env.storage()
             .instance()
             .get::<_, PayoutData>(&payout_key)
@@ -298,8 +310,14 @@ impl PayoutContract {
     ///
     /// # Authorization
     /// None — read-only, open to any caller.
-    pub fn get_payout(env: Env, context: Symbol, idempotency_key: u32, winner: Address) -> Option<PayoutData> {
-        let payout_key = DataKey::Payout(context, idempotency_key, winner);
+    pub fn get_payout(
+        env: Env,
+        context: Symbol,
+        pool_id: u32,
+        round_id: u32,
+        winner: Address,
+    ) -> Option<PayoutData> {
+        let payout_key = DataKey::Payout(context, pool_id, round_id, winner);
         env.storage().instance().get(&payout_key)
     }
 }

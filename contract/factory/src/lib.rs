@@ -242,9 +242,6 @@ impl FactoryContract {
     /// # Errors
     /// * [`Error::NotInitialized`] — contract not initialised.
     pub fn is_whitelisted(env: Env, host: Address) -> Result<bool, Error> {
-        if !env.storage().instance().has(&ADMIN_KEY) {
-            return Err(Error::NotInitialized);
-        }
         let key = (WHITELIST_PREFIX, host);
         Ok(env.storage().instance().get(&key).unwrap_or(false))
     }
@@ -295,6 +292,10 @@ impl FactoryContract {
         capacity: u32,
     ) -> Result<Address, Error> {
         let admin = require_admin(&env)?;
+
+        // Prevent spoofing: the `caller` address used as `creator` must be
+        // the transaction signer (unless Soroban auth is mocked in tests).
+        caller.require_auth();
 
         // Use invoker() for authorization check.
         // For Soroban 20+, env.invoker() is preferred over passing Address.

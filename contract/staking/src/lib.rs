@@ -158,3 +158,6 @@ fn get_token_contract(env: &Env) -> Result<Address, StakingError> {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod integration_tests;
