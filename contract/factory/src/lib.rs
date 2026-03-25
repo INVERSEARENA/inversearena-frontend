@@ -120,11 +120,14 @@ impl FactoryContract {
     /// * [`Error::AlreadyInitialized`] — contract has already been initialised.
     ///
     /// # Authorization
-    /// None — permissionless; must be called immediately after deploy.
+    /// Requires auth from the admin address to prevent front-running.
     pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
         if env.storage().instance().has(&ADMIN_KEY) {
             return Err(Error::AlreadyInitialized);
         }
+
+        admin.require_auth();
+
         env.storage().instance().set(&ADMIN_KEY, &admin);
         env.storage()
             .instance()
@@ -390,8 +393,12 @@ impl FactoryContract {
 
         env.invoke_contract::<()>(
             &arena_address,
-            &soroban_sdk::Symbol::new(&env, "initialize"),
-            soroban_sdk::vec![&env, env.current_contract_address().into_val(&env)],
+            &soroban_sdk::Symbol::new(&env, "init_factory"),
+            soroban_sdk::vec![
+                &env,
+                env.current_contract_address().into_val(&env),
+                caller.clone().into_val(&env)
+            ],
         );
 
         env.invoke_contract::<()>(

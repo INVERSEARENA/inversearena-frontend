@@ -57,6 +57,19 @@ impl PayoutContract {
         if env.storage().instance().has(&ADMIN_KEY) {
             panic!("already initialized");
         }
+
+        admin.require_auth();
+
+        env.storage().instance().set(&ADMIN_KEY, &admin);
+    }
+
+    pub fn init_factory(env: Env, factory: Address, admin: Address) {
+        if env.storage().instance().has(&ADMIN_KEY) {
+            panic!("already initialized");
+        }
+
+        factory.require_auth();
+
         env.storage().instance().set(&ADMIN_KEY, &admin);
     }
 
