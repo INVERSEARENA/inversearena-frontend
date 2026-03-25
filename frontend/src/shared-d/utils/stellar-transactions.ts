@@ -42,6 +42,7 @@ import {
   buildJoinCallOperation,
   buildStakeCallOperation,
   buildSubmitChoiceCallOperation,
+  buildUnstakeCallOperation,
   composeUnsignedTransaction,
 } from "@/shared-d/utils/soroban-transaction-composer";
 import { CreatePoolParamsSchema } from "@/shared-d/utils/stellar-transaction-schemas";
@@ -162,6 +163,56 @@ export async function buildStakeProtocolTransaction(
     const operation = buildStakeCallOperation(
       stakingContract,
       amountStroops,
+      validatedPublicKey,
+    );
+
+    const builtTx = composeUnsignedTransaction(account, {
+      fee: getDefaultInvokeBaseFee(),
+      networkPassphrase: NETWORK_PASSPHRASE,
+      timeout: getInfiniteTimeout(),
+      operation,
+    });
+
+    return server.prepareTransaction(builtTx);
+  } catch (error) {
+    throw parseContractError(error, FN);
+  }
+}
+
+/**
+ * Build an unsigned transaction to unstake shares via the protocol contract.
+ * Uses Soroban prepareTransaction for correct footprint and fees.
+ */
+export async function buildUnstakeProtocolTransaction(
+  publicKey: string,
+  shares: bigint,
+) {
+  const FN = "buildUnstakeProtocolTransaction";
+  try {
+    const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
+
+    if (
+      !STAKING_CONTRACT_ID ||
+      STAKING_CONTRACT_ID === STAKING_CONTRACT_PLACEHOLDER ||
+      STAKING_CONTRACT_ID.includes("...")
+    ) {
+      throw new ContractError({
+        code: ContractErrorCode.CONFIG_MISSING,
+        message:
+          "Staking contract not configured. Add NEXT_PUBLIC_STAKING_CONTRACT_ID to .env.local with your Soroban contract address.",
+        fn: FN,
+      });
+    }
+
+    const server = defaultSorobanClients.createRpcServer();
+    const account = await getAccount(validatedPublicKey, FN);
+    const stakingContract = defaultSorobanClients.createContract(
+      STAKING_CONTRACT_ID,
+    );
+
+    const operation = buildUnstakeCallOperation(
+      stakingContract,
+      shares,
       validatedPublicKey,
     );
 

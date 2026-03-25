@@ -2,6 +2,8 @@ import { describe, it, expect } from "@jest/globals";
 import { Account, Contract } from "@stellar/stellar-sdk";
 import {
   buildJoinCallOperation,
+  buildStakeCallOperation,
+  buildUnstakeCallOperation,
   composeUnsignedTransaction,
   roundSpeedToSeconds,
   buildCreatePoolCallOperation,
@@ -53,5 +55,41 @@ describe("soroban-transaction-composer", () => {
 
     expect(op).toBeDefined();
     expect(typeof (op as { body?: unknown }).body).toBe("function");
+  });
+
+  it("buildStakeCallOperation returns an invoke operation", () => {
+    const staking = new Contract(VALID_CONTRACT);
+    const op = buildStakeCallOperation(
+      staking,
+      BigInt(250_000_000),
+      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
+
+    expect(op).toBeDefined();
+    expect(typeof (op as { body?: unknown }).body).toBe("function");
+  });
+
+  it("buildUnstakeCallOperation returns an invoke operation", () => {
+    const staking = new Contract(VALID_CONTRACT);
+    const op = buildUnstakeCallOperation(
+      staking,
+      BigInt(125_000_000),
+      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
+
+    expect(op).toBeDefined();
+    expect(typeof (op as { body?: unknown }).body).toBe("function");
+  });
+
+  it("buildUnstakeCallOperation accepts zero-value bigint without throwing", () => {
+    const staking = new Contract(VALID_CONTRACT);
+    // The composer layer doesn't validate amounts — that's the contract's job.
+    const op = buildUnstakeCallOperation(
+      staking,
+      BigInt(0),
+      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
+
+    expect(op).toBeDefined();
   });
 });

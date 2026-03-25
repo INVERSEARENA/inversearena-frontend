@@ -104,3 +104,107 @@ fn integration_stake_flow_and_yield_mimic() {
     );
 }
 
+#[test]
+fn integration_unstake_after_yield() {
+    let (env, _admin, staker1, staker2, client, token_client) = setup();
+    let contract_address = client.address.clone();
+
+    let balance1_before = token_client.balance(&staker1);
+    let balance2_before = token_client.balance(&staker2);
+
+    // Both stakers deposit equal amounts.
+    let amount1 = 200_000_000i128;
+    let amount2 = 200_000_000i128;
+    let minted1 = client.stake(&staker1, &amount1);
+    let minted2 = client.stake(&staker2, &amount2);
+
+    assert_eq!(minted1, amount1); // first stake: shares == amount
+    assert_eq!(minted2, amount2); // equal ratio => same shares
+
+    // Mimic yield accrual: TOTAL_STAKED increases by 100M (50M effective per staker
+    // proportional to shares) without minting new shares.
+    let yield_amount = 100_000_000i128;
+    let new_total_staked = amount1 + amount2 + yield_amount; // 500M
+
+    env.as_contract(&contract_address, || {
+        env.storage()
+            .instance()
+            .set(&TOTAL_STAKED_KEY, &new_total_staked);
+    });
+
+    // Also mint yield tokens into the contract so the transfer can succeed.
+    let token_admin_client =
+        token::StellarAssetClient::new(&env, &client.token());
+    token_admin_client.mint(&contract_address, &yield_amount);
+
+    let total_shares_before = client.total_shares(); // 400M
+
+    // Staker1 unstakes ALL shares.
+    // Expected token_amount = minted1 * new_total_staked / total_shares
+    //                       = 200M * 500M / 400M = 250M
+    let returned1 = client.unstake(&staker1, &minted1);
+    let expected_returned1 = minted1
+        .checked_mul(new_total_staked)
+        .and_then(|v| v.checked_div(total_shares_before))
+        .expect("math");
+    assert_eq!(returned1, expected_returned1);
+    assert_eq!(returned1, 250_000_000); // principal 200M + yield 50M
+
+    // Staker1 balance restored with yield.
+    assert_eq!(
+        token_client.balance(&staker1),
+        balance1_before + 50_000_000 // net gain = yield portion
+    );
+
+    // Staker1 position fully removed.
+    assert_eq!(
+        client.get_position(&staker1),
+        StakePosition {
+            amount: 0,
+            shares: 0,
+        }
+    );
+
+    // Global totals reflect only staker2's remaining position.
+    let remaining_staked = new_total_staked - returned1; // 250M
+    let remaining_shares = total_shares_before - minted1; // 200M
+    assert_eq!(client.total_staked(), remaining_staked);
+    assert_eq!(client.total_shares(), remaining_shares);
+
+    // Staker2's position is unchanged (only staker1 unstaked).
+    let pos2 = client.get_position(&staker2);
+    assert_eq!(pos2.shares, minted2);
+    assert_eq!(pos2.amount, amount2);
+
+    // Staker2 partial unstake: half of their shares.
+    let half_shares2 = minted2 / 2; // 100M
+    // Expected: 100M * 250M / 200M = 125M
+    let returned2 = client.unstake(&staker2, &half_shares2);
+    let expected_returned2 = half_shares2
+        .checked_mul(remaining_staked)
+        .and_then(|v| v.checked_div(remaining_shares))
+        .expect("math");
+    assert_eq!(returned2, expected_returned2);
+    assert_eq!(returned2, 125_000_000);
+
+    // Staker2 balance: original - 200M (staked) + 125M (partial unstake)
+    assert_eq!(
+        token_client.balance(&staker2),
+        balance2_before - amount2 + returned2
+    );
+
+    // Staker2 position should be halved in shares, amount proportionally reduced.
+    let pos2_after = client.get_position(&staker2);
+    assert_eq!(pos2_after.shares, half_shares2); // 100M shares remain
+    // amount = original_amount * remaining_shares / original_shares = 200M * 100M / 200M = 100M
+    let expected_amount2 = amount2
+        .checked_mul(half_shares2)
+        .and_then(|v| v.checked_div(minted2))
+        .expect("math");
+    assert_eq!(pos2_after.amount, expected_amount2);
+
+    // Final totals
+    assert_eq!(client.total_staked(), remaining_staked - returned2); // 125M
+    assert_eq!(client.total_shares(), remaining_shares - half_shares2); // 100M
+}
+

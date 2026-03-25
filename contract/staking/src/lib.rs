@@ -9,6 +9,7 @@ const TOKEN_KEY: Symbol = symbol_short!("TOKEN");
 const TOTAL_STAKED_KEY: Symbol = symbol_short!("T_STAKE");
 const TOTAL_SHARES_KEY: Symbol = symbol_short!("T_SHARE");
 const TOPIC_STAKED: Symbol = symbol_short!("STAKED");
+const TOPIC_UNSTAKED: Symbol = symbol_short!("UNSTAKD");
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -18,6 +19,8 @@ pub enum StakingError {
     NotInitialized = 2,
     InvalidAmount = 3,
     ZeroShareMint = 4,
+    InsufficientShares = 5,
+    ZeroShares = 6,
 }
 
 #[contracttype]
@@ -113,6 +116,75 @@ impl StakingContract {
         );
 
         Ok(minted_shares)
+    }
+
+    pub fn unstake(env: Env, staker: Address, shares: i128) -> Result<i128, StakingError> {
+        let token_contract = get_token_contract(&env)?;
+        staker.require_auth();
+
+        // Checks
+        if shares <= 0 {
+            return Err(StakingError::ZeroShares);
+        }
+
+        let position_key = DataKey::Position(staker.clone());
+        let position: StakePosition = env
+            .storage()
+            .persistent()
+            .get(&position_key)
+            .ok_or(StakingError::InsufficientShares)?;
+
+        if shares > position.shares {
+            return Err(StakingError::InsufficientShares);
+        }
+
+        let total_staked = Self::total_staked(env.clone())?;
+        let total_shares = Self::total_shares(env.clone())?;
+
+        // Compute token amount: shares * total_staked / total_shares
+        let token_amount = shares
+            .checked_mul(total_staked)
+            .and_then(|v| v.checked_div(total_shares))
+            .ok_or(StakingError::ZeroShareMint)?;
+
+        // Effects (before external call — CEI pattern)
+        let new_shares = position.shares - shares;
+        if new_shares == 0 {
+            env.storage().persistent().remove(&position_key);
+        } else {
+            let new_amount = position
+                .amount
+                .checked_mul(new_shares)
+                .and_then(|v| v.checked_div(position.shares))
+                .ok_or(StakingError::ZeroShareMint)?;
+            env.storage().persistent().set(
+                &position_key,
+                &StakePosition {
+                    amount: new_amount,
+                    shares: new_shares,
+                },
+            );
+        }
+
+        env.storage()
+            .instance()
+            .set(&TOTAL_STAKED_KEY, &(total_staked - token_amount));
+        env.storage()
+            .instance()
+            .set(&TOTAL_SHARES_KEY, &(total_shares - shares));
+
+        // Interaction
+        let contract_address = env.current_contract_address();
+        let token_client = token::TokenClient::new(&env, &token_contract);
+        token_client.transfer(&contract_address, &staker, &token_amount);
+
+        // Event
+        env.events().publish(
+            (TOPIC_UNSTAKED, staker, token_contract),
+            (token_amount, shares),
+        );
+
+        Ok(token_amount)
     }
 
     pub fn get_position(env: Env, staker: Address) -> StakePosition {
