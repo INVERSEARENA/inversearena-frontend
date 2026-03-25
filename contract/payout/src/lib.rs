@@ -7,6 +7,10 @@ use soroban_sdk::{
 const ADMIN_KEY: Symbol = symbol_short!("ADMIN");
 const TOPIC_PAYOUT_EXECUTED: Symbol = symbol_short!("PAYOUT");
 
+/// Event payload version. Include in every event data tuple so consumers
+/// can detect schema changes without re-deploying indexers.
+const EVENT_VERSION: u32 = 1;
+
 // ── Error codes ───────────────────────────────────────────────────────────────
 //
 // All public write entrypoints return `Result<_, PayoutError>` so callers
@@ -146,7 +150,7 @@ impl PayoutContract {
         env.storage().instance().set(&payout_key, &payout_data);
 
         env.events()
-            .publish((TOPIC_PAYOUT_EXECUTED,), (winner, amount, currency));
+            .publish((TOPIC_PAYOUT_EXECUTED,), (EVENT_VERSION, winner, amount, currency));
 
         Ok(())
     }

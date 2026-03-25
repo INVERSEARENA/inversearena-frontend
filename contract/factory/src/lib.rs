@@ -47,6 +47,10 @@ const TOPIC_POOL_CREATED: Symbol = symbol_short!("POOL_CRE");
 const TOPIC_HOST_WHITELISTED: Symbol = symbol_short!("WL_ADD");
 const TOPIC_HOST_REMOVED: Symbol = symbol_short!("WL_REM");
 
+/// Event payload version. Include in every event data tuple so consumers
+/// can detect schema changes without re-deploying indexers.
+const EVENT_VERSION: u32 = 1;
+
 // ── Error codes ───────────────────────────────────────────────────────────────
 //
 // All public write entrypoints return `Result<_, Error>` so callers receive a
@@ -159,7 +163,7 @@ impl FactoryContract {
         admin.require_auth();
         let key = (WHITELIST_PREFIX, host.clone());
         env.storage().instance().set(&key, &true);
-        env.events().publish((TOPIC_HOST_WHITELISTED,), host);
+        env.events().publish((TOPIC_HOST_WHITELISTED,), (EVENT_VERSION, host));
         Ok(())
     }
 
@@ -173,7 +177,7 @@ impl FactoryContract {
         admin.require_auth();
         let key = (WHITELIST_PREFIX, host.clone());
         env.storage().instance().remove(&key);
-        env.events().publish((TOPIC_HOST_REMOVED,), host);
+        env.events().publish((TOPIC_HOST_REMOVED,), (EVENT_VERSION, host));
         Ok(())
     }
 
@@ -268,7 +272,7 @@ impl FactoryContract {
 
         let metadata = ArenaMetadata {
             pool_id,
-            creator,
+            creator: creator.clone(),
             capacity,
             stake_amount,
         };
@@ -284,7 +288,7 @@ impl FactoryContract {
         env.storage().instance().set(&ALL_POOLS_KEY, &all_pools);
 
         env.events()
-            .publish((TOPIC_POOL_CREATED,), (pool_id, creator, capacity, stake_amount));
+            .publish((TOPIC_POOL_CREATED,), (EVENT_VERSION, pool_id, creator, capacity, stake_amount));
 
         Ok(())
     }
@@ -319,7 +323,7 @@ impl FactoryContract {
             .set(&EXECUTE_AFTER_KEY, &execute_after);
 
         env.events()
-            .publish((TOPIC_UPGRADE_PROPOSED,), (new_wasm_hash, execute_after));
+            .publish((TOPIC_UPGRADE_PROPOSED,), (EVENT_VERSION, new_wasm_hash, execute_after));
         Ok(())
     }
 
@@ -363,7 +367,7 @@ impl FactoryContract {
         env.storage().instance().remove(&EXECUTE_AFTER_KEY);
 
         env.events()
-            .publish((TOPIC_UPGRADE_EXECUTED,), new_wasm_hash.clone());
+            .publish((TOPIC_UPGRADE_EXECUTED,), (EVENT_VERSION, new_wasm_hash.clone()));
 
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         Ok(())
@@ -394,7 +398,7 @@ impl FactoryContract {
         env.storage().instance().remove(&PENDING_HASH_KEY);
         env.storage().instance().remove(&EXECUTE_AFTER_KEY);
 
-        env.events().publish((TOPIC_UPGRADE_CANCELLED,), ());
+        env.events().publish((TOPIC_UPGRADE_CANCELLED,), (EVENT_VERSION,));
         Ok(())
     }
 

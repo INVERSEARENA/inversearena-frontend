@@ -32,6 +32,10 @@ const TOPIC_PAUSED: Symbol = symbol_short!("PAUSED");
 const TOPIC_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
 const TOPIC_GAME_ENDED: Symbol = symbol_short!("G_END");
 
+/// Event payload version. Include in every event data tuple so consumers
+/// can detect schema changes without re-deploying indexers.
+const EVENT_VERSION: u32 = 1;
+
 // ── Error codes ───────────────────────────────────────────────────────────────
 
 #[contracterror]
@@ -289,7 +293,7 @@ impl ArenaContract {
         let admin = Self::admin(env.clone());
         admin.require_auth();
         env.storage().instance().set(&PAUSED_KEY, &true);
-        env.events().publish((TOPIC_PAUSED,), ());
+        env.events().publish((TOPIC_PAUSED,), (EVENT_VERSION,));
     }
 
     /// Unpause the contract. Admin-only.
@@ -297,7 +301,7 @@ impl ArenaContract {
         let admin = Self::admin(env.clone());
         admin.require_auth();
         env.storage().instance().set(&PAUSED_KEY, &false);
-        env.events().publish((TOPIC_UNPAUSED,), ());
+        env.events().publish((TOPIC_UNPAUSED,), (EVENT_VERSION,));
     }
 
     /// Return whether the contract is paused.
@@ -640,7 +644,7 @@ impl ArenaContract {
             .set(&EXECUTE_AFTER_KEY, &execute_after);
 
         env.events()
-            .publish((TOPIC_UPGRADE_PROPOSED,), (new_wasm_hash, execute_after));
+            .publish((TOPIC_UPGRADE_PROPOSED,), (EVENT_VERSION, new_wasm_hash, execute_after));
     }
 
     /// Execute a previously proposed upgrade after the 48-hour timelock.
@@ -692,7 +696,7 @@ impl ArenaContract {
         env.storage().instance().remove(&EXECUTE_AFTER_KEY);
 
         env.events()
-            .publish((TOPIC_UPGRADE_EXECUTED,), new_wasm_hash.clone());
+            .publish((TOPIC_UPGRADE_EXECUTED,), (EVENT_VERSION, new_wasm_hash.clone()));
 
         env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
@@ -732,7 +736,7 @@ impl ArenaContract {
         env.storage().instance().remove(&PENDING_HASH_KEY);
         env.storage().instance().remove(&EXECUTE_AFTER_KEY);
 
-        env.events().publish((TOPIC_UPGRADE_CANCELLED,), ());
+        env.events().publish((TOPIC_UPGRADE_CANCELLED,), (EVENT_VERSION,));
     }
 
     /// Return the pending WASM hash and the earliest execution timestamp,
