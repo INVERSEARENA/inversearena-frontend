@@ -111,7 +111,7 @@ export async function buildCreatePoolTransaction(
     const account = await getAccount(publicKey, FN);
     const factory = defaultSorobanClients.createContract(FACTORY_CONTRACT_ID);
 
-    const operation = buildCreatePoolCallOperation(factory, validatedParams, {
+    const operation = buildCreatePoolCallOperation(factory, publicKey, validatedParams, {
       xlmContractId: XLM_CONTRACT_ID,
       usdcContractId: USDC_CONTRACT_ID,
     });
@@ -195,7 +195,7 @@ export async function buildJoinArenaTransaction(
 
     const account = await getAccount(validatedPublicKey, FN);
     const poolContract = defaultSorobanClients.createContract(validatedPoolId);
-    const operation = buildJoinCallOperation(poolContract);
+    const operation = buildJoinCallOperation(poolContract, validatedPublicKey);
 
     return composeUnsignedTransaction(account, {
       fee: getJoinArenaFee(),
@@ -257,7 +257,7 @@ export async function buildClaimWinningsTransaction(
 
     const account = await getAccount(validatedPublicKey, FN);
     const poolContract = defaultSorobanClients.createContract(validatedPoolId);
-    const operation = buildClaimCallOperation(poolContract);
+    const operation = buildClaimCallOperation(poolContract, validatedPublicKey);
 
     return composeUnsignedTransaction(account, {
       fee: getDefaultInvokeBaseFee(),

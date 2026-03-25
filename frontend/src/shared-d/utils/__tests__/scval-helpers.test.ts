@@ -1,4 +1,5 @@
 import { describe, it, expect } from "@jest/globals";
+import { StrKey } from "@stellar/stellar-sdk";
 import {
   encodeAddress,
   encodeAmount,
@@ -11,8 +12,7 @@ const SAMPLE_PUBLIC_KEY =
   "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
 
 /** Known contract id format from project defaults (testnet XLM SAC). */
-const SAMPLE_CONTRACT_ID =
-  "CAS3J7GYLGXMF6TDJBXBGMELNUPVCGXIZ68TZE6GTVASJ63Y32KXVY77";
+const SAMPLE_CONTRACT_ID = StrKey.encodeContract(Buffer.alloc(32, 3));
 
 describe("encodeAmount", () => {
   it("encodes bigint as scvI128", () => {

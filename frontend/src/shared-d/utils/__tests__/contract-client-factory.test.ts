@@ -1,5 +1,5 @@
 import { describe, it, expect } from "@jest/globals";
-import { Contract } from "@stellar/stellar-sdk";
+import { Contract, StrKey } from "@stellar/stellar-sdk";
 import {
   ContractClientFactory,
   type ContractClientFactoryDeps,
@@ -54,7 +54,7 @@ describe("ContractClientFactory", () => {
   it("returns different Contract instances for different IDs", () => {
     const factory = new ContractClientFactory("https://x");
     const id1 = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
-    const id2 = "CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKYO63434AE3N7YX5BSYL6WNNG";
+    const id2 = StrKey.encodeContract(Buffer.alloc(32, 7));
     const c1 = factory.createContract(id1);
     const c2 = factory.createContract(id2);
     expect(c1).not.toBe(c2);

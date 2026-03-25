@@ -44,6 +44,7 @@ export function roundSpeedToSeconds(
 
 export function buildCreatePoolCallOperation(
   factory: Contract,
+  publicKey: string,
   params: CreatePoolParamsValidated,
   tokenContractIds: { xlmContractId: string; usdcContractId: string },
 ): Operation {
@@ -55,6 +56,7 @@ export function buildCreatePoolCallOperation(
   const roundSpeedSeconds = roundSpeedToSeconds(params.roundSpeed);
 
   const args = [
+    encodeAddress(publicKey),
     encodeAmount(amountBigInt),
     encodeAddress(currencyContractId),
     encodeRound(roundSpeedSeconds),
@@ -76,8 +78,11 @@ export function buildStakeCallOperation(
   );
 }
 
-export function buildJoinCallOperation(poolContract: Contract): Operation {
-  return poolContract.call("join");
+export function buildJoinCallOperation(
+  poolContract: Contract,
+  publicKey: string,
+): Operation {
+  return poolContract.call("join", encodeAddress(publicKey));
 }
 
 export function buildSubmitChoiceCallOperation(
@@ -92,8 +97,11 @@ export function buildSubmitChoiceCallOperation(
   );
 }
 
-export function buildClaimCallOperation(poolContract: Contract): Operation {
-  return poolContract.call("claim");
+export function buildClaimCallOperation(
+  poolContract: Contract,
+  publicKey: string,
+): Operation {
+  return poolContract.call("claim", encodeAddress(publicKey));
 }
 
 export function buildGetArenaStateCallOperation(

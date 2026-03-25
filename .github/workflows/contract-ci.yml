@@ -19,6 +19,8 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -31,9 +33,25 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Build contracts
+        working-directory: ./contract
+        run: cargo build --workspace
+
       - name: Run contract tests
         working-directory: ./contract
         run: cargo test --workspace
+
+      - name: Build WASM release
+        working-directory: ./contract
+        run: cargo build --target wasm32-unknown-unknown --release --workspace
+
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-artifacts
+          path: |
+            contract/target/wasm32-unknown-unknown/release/*.wasm
+          retention-days: 5
 
       - name: Build contract docs
         working-directory: ./contract

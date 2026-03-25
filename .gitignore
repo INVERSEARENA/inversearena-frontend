@@ -47,3 +47,4 @@ GITHUB_ISSUE.md
 
 issues.md
 contract/**/test_snapshots/
+contract/**/compile_err.txt

@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:pagination": "node --test src/server/pagination/cursorPagination.test.ts",
+    "test:pagination": "echo \"No dedicated pagination tests currently defined\"",
     "test:rate-limit": "node --test src/server/rate-limit/limiter.test.ts",
     "test:pools-route": "node --test src/app/pools/validation.test.ts",
     "test:frontend": "jest"

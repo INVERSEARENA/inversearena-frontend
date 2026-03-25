@@ -38,6 +38,8 @@ File: `contract/arena/src/lib.rs`
 | `DataKey::Config` | `ArenaConfig` | Round speed configuration; written once on `init` |
 | `DataKey::Round` | `RoundState` | Active round state (number, ledgers, submission count, flags) |
 | `DataKey::Submission(round_number, player)` | `Choice` | A player's Heads/Tails choice for a given round |
+| `DataKey::Survivor(player)` | `()` | Marker set when a player successfully joins; used to verify eligibility in `claim` |
+| `DataKey::PrizeClaimed(winner)` | `i128` | Records the prize amount claimed by the winner; prevents double-claim |
 
 #### Instance storage (`env.storage().instance()`)
 
@@ -46,6 +48,10 @@ File: `contract/arena/src/lib.rs`
 | `ADMIN` | `Address` | Contract admin; set once via `initialize` |
 | `P_HASH` | `BytesN<32>` | WASM hash pending upgrade via 48-hour timelock |
 | `P_AFTER` | `u64` | Earliest timestamp at which `execute_upgrade` may be called |
+| `TOKEN` | `Address` | SAC token contract used for stake deposits and prize payouts; set via `set_token` |
+| `S_COUNT` | `u32` | Running count of survivors registered via `join`; incremented on each successful join |
+| `PRIZE` | `i128` | Accumulated prize pool; incremented by each player's stake on `join`, zeroed on `claim` |
+| `G_FIN` | `bool` | Permanently `true` after a successful `claim`; blocks any further claim attempts |
 
 ### Factory Contract
 
@@ -76,10 +82,19 @@ No custom Soroban storage keys are currently defined or used.
 | `get_config` | `Config` | — | — |
 | `get_round` | `Round` | — | — |
 | `get_choice` | `Submission(n, player)` | — | — |
+| `join` | `TOKEN`, `S_COUNT`, `PRIZE` (instance), `Survivor(player)` | `Survivor(player)`, `S_COUNT`, `PRIZE` (instance) | `Survivor(player)` |
+| `set_token` | `ADMIN` (instance) | `TOKEN` (instance) | — |
+| `survivor_count` | `S_COUNT` (instance) | — | — |
+| `claim` | `G_FIN`, `S_COUNT`, `Survivor(winner)`, `PrizeClaimed(winner)`, `PRIZE`, `TOKEN` | `PrizeClaimed(winner)`, `PRIZE`, `G_FIN` (instance) | `PrizeClaimed(winner)` |
 | `initialize` | `ADMIN` (instance) | `ADMIN` (instance) | — |
-| `propose_upgrade` | `ADMIN` (instance) | `P_HASH`, `P_AFTER` (instance) | — |
-| `execute_upgrade` | `ADMIN`, `P_AFTER`, `P_HASH` (instance) | removes `P_HASH`, `P_AFTER` (instance) | — |
-| `cancel_upgrade` | `ADMIN`, `P_HASH` (instance) | removes `P_HASH`, `P_AFTER` (instance) | — |
+| `propose_upgrade` ¹ | `ADMIN` (instance) | `P_HASH`, `P_AFTER` (instance) | — |
+| `execute_upgrade` ¹ | `ADMIN`, `P_AFTER`, `P_HASH` (instance) | removes `P_HASH`, `P_AFTER` (instance) | — |
+| `cancel_upgrade` ¹ | `ADMIN`, `P_HASH` (instance) | removes `P_HASH`, `P_AFTER` (instance) | — |
+| `join` | `Survivor(player)`, `S_COUNT` (instance) | `Survivor(player)`, `S_COUNT` (instance) | `Survivor(player)` |
+| `set_capacity` | `ADMIN` (instance) | `CAPACITY` (instance) | — |
+| `get_arena_state` | `S_COUNT`, `CAPACITY` (instance), `Round` | — | — |
+
+¹ Exempt from the global pause check — see [Emergency Pause Policy](#emergency-pause-policy) below.
 
 ## TTL Policy Baseline
 
@@ -140,6 +155,53 @@ Round lifecycle state machine:
     ▼
 [Round { active: true, round_number + 1 }] ...
 ```
+
+## Emergency Pause Policy
+
+### Overview
+
+The arena contract exposes a global pause mechanism (`pause` / `unpause`, admin-only).
+When paused, all state-mutating game functions reject calls with `ArenaError::Paused`.
+
+**However, governance/upgrade functions are explicitly exempt from the pause check.**
+
+### Exempt functions
+
+| Function | Pause exempt? | Reason |
+| --- | --- | --- |
+| `propose_upgrade` | **Yes** | Admin must be able to queue a recovery upgrade at any time |
+| `execute_upgrade` | **Yes** | Admin must be able to deploy the recovery upgrade after the timelock |
+| `cancel_upgrade` | **Yes** | Admin must be able to retract an incorrect proposal before correcting it |
+| `pause` | **Yes** | Admin must always be able to pause |
+| `unpause` | **Yes** | Admin must always be able to unpause |
+
+### Non-exempt functions (blocked when paused)
+
+| Function | Blocked when paused? |
+| --- | --- |
+| `start_round` | Yes |
+| `submit_choice` | Yes |
+| `timeout_round` | Yes |
+| `join` | Yes |
+| `claim` | Yes |
+
+### Rationale
+
+A global pause is an emergency safety measure (e.g. to halt activity during a
+critical bug discovery). If the pause also blocked upgrade functions, a paused
+contract could become permanently locked with no recovery path. By keeping
+governance functions exempt, the admin retains full ability to:
+
+1. Propose a corrective WASM upgrade while the contract is paused.
+2. Wait for the 48-hour timelock to elapse.
+3. Execute the upgrade and restore normal operation.
+4. Unpause.
+
+### Invariant
+
+> `propose_upgrade`, `execute_upgrade`, and `cancel_upgrade` MUST NOT call
+> `require_not_paused`. Any future addition of new governance functions should
+> follow the same exemption rule and update this table.
 
 ## Historical baseline note
 
