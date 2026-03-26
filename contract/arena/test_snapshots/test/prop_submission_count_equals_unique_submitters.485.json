@@ -258,7 +258,7 @@
                         "symbol": "round_speed_in_ledgers"
                       },
                       "val": {
-                        "u32": 2
+                        "u32": 29
                       }
                     }
                   ]
@@ -322,7 +322,7 @@
                         "symbol": "round_deadline_ledger"
                       },
                       "val": {
-                        "u32": 502
+                        "u32": 529
                       }
                     },
                     {

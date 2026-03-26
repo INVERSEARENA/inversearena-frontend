@@ -1822,3 +1822,42 @@ fn get_user_state_returns_consistent_for_multiple_players() {
     assert_eq!(state_outsider.is_active, false);
     assert_eq!(state_outsider.has_won, false);
 }
+
+// ── set_capacity bounds validation (Issue: 0 or 1 makes game unresolvable) ──
+
+#[test]
+fn set_capacity_bounds_validation() {
+    let (_env, _admin, client) = setup_with_admin();
+
+    // Below minimum: 0 must be rejected.
+    assert_eq!(
+        client.try_set_capacity(&0u32),
+        Err(Ok(ArenaError::InvalidAmount)),
+    );
+
+    // Below minimum: 1 must be rejected (need at least 2 for a resolvable game).
+    assert_eq!(
+        client.try_set_capacity(&1u32),
+        Err(Ok(ArenaError::InvalidAmount)),
+    );
+
+    // Exact minimum (MIN_ARENA_PARTICIPANTS = 2): must succeed.
+    client.set_capacity(&bounds::MIN_ARENA_PARTICIPANTS);
+    assert_eq!(
+        client.get_arena_state().max_capacity,
+        bounds::MIN_ARENA_PARTICIPANTS,
+    );
+
+    // Exact maximum (MAX_ARENA_PARTICIPANTS): must succeed.
+    client.set_capacity(&bounds::MAX_ARENA_PARTICIPANTS);
+    assert_eq!(
+        client.get_arena_state().max_capacity,
+        bounds::MAX_ARENA_PARTICIPANTS,
+    );
+
+    // Above maximum: must be rejected.
+    assert_eq!(
+        client.try_set_capacity(&(bounds::MAX_ARENA_PARTICIPANTS + 1)),
+        Err(Ok(ArenaError::InvalidAmount)),
+    );
+}

@@ -12,7 +12,7 @@
   ],
   "ledger": {
     "protocol_version": 22,
-    "sequence_number": 150,
+    "sequence_number": 110,
     "timestamp": 1700000000,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
@@ -56,7 +56,7 @@
                         "symbol": "round_speed_in_ledgers"
                       },
                       "val": {
-                        "u32": 49
+                        "u32": 9
                       }
                     }
                   ]
@@ -120,7 +120,7 @@
                         "symbol": "round_deadline_ledger"
                       },
                       "val": {
-                        "u32": 149
+                        "u32": 109
                       }
                     },
                     {

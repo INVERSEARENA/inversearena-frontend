@@ -3,6 +3,9 @@
 //! Documented in `contract/BOUNDS.md`. Production limits use the `not(test)` values.
 //! Unit tests compile with **lower** caps so boundary cases (N−1, N, N+1) stay fast in CI.
 
+/// Minimum participants for a resolvable game (both sides need at least 1 player).
+pub const MIN_ARENA_PARTICIPANTS: u32 = 2;
+
 /// Maximum registered survivors (`DataKey::Survivor` entries + `S_COUNT`).
 #[cfg(test)]
 pub const MAX_ARENA_PARTICIPANTS: u32 = 64;

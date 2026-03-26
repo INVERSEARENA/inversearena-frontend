@@ -228,14 +228,20 @@ impl ArenaContract {
         env.storage().instance().set(&TOKEN_KEY, &token);
     }
 
-    pub fn set_capacity(env: Env, capacity: u32) {
+    pub fn set_capacity(env: Env, capacity: u32) -> Result<(), ArenaError> {
         let admin: Address = env
             .storage()
             .instance()
             .get(&ADMIN_KEY)
-            .expect("not initialized");
+            .ok_or(ArenaError::NotInitialized)?;
         admin.require_auth();
+        if capacity < bounds::MIN_ARENA_PARTICIPANTS
+            || capacity > bounds::MAX_ARENA_PARTICIPANTS
+        {
+            return Err(ArenaError::InvalidAmount);
+        }
         env.storage().instance().set(&CAPACITY_KEY, &capacity);
+        Ok(())
     }
 
     pub fn set_winner(
