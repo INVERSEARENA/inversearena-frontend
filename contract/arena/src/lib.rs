@@ -96,16 +96,6 @@ pub struct RoundState {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ArenaState {
-    pub survivors_count: u32,
-    pub max_capacity: u32,
-    pub round_number: u32,
-    pub current_stake: i128,
-    pub potential_payout: i128,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArenaStateView {
     pub survivors_count: u32,
     pub max_capacity: u32,
