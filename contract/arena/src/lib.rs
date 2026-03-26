@@ -179,11 +179,13 @@ impl ArenaContract {
     ///
     /// # Arguments
     /// * `env` - The Soroban environment.
-    /// * `round_speed_in_ledgers` - Number of ledgers each round lasts. Must be > 0.
+    /// * `round_speed_in_ledgers` - Number of ledgers each round lasts. Must be in
+    ///   `[bounds::MIN_SPEED_LEDGERS, bounds::MAX_SPEED_LEDGERS]` (inclusive).
     ///
     /// # Errors
     /// * [`ArenaError::AlreadyInitialized`] — Contract has already been initialised.
-    /// * [`ArenaError::InvalidRoundSpeed`] — `round_speed_in_ledgers` is zero.
+    /// * [`ArenaError::InvalidRoundSpeed`] — `round_speed_in_ledgers` is outside the
+    ///   valid range `[MIN_SPEED_LEDGERS, MAX_SPEED_LEDGERS]`.
     ///
     /// # Authorization
     /// None — permissionless; caller is responsible for calling immediately after deploy.
@@ -192,7 +194,9 @@ impl ArenaContract {
             return Err(ArenaError::AlreadyInitialized);
         }
 
-        if round_speed_in_ledgers == 0 {
+        if round_speed_in_ledgers < bounds::MIN_SPEED_LEDGERS
+            || round_speed_in_ledgers > bounds::MAX_SPEED_LEDGERS
+        {
             return Err(ArenaError::InvalidRoundSpeed);
         }
 
@@ -861,6 +865,8 @@ fn bump(env: &Env, key: &DataKey) {
         .persistent()
         .extend_ttl(key, GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
 }
+
+pub mod bounds;
 
 #[cfg(test)]
 mod test;

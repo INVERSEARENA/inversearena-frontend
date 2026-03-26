@@ -127,6 +127,39 @@ fn setup_token<'a>(env: &'a Env, admin: &Address) -> (StellarAssetClient<'a>, Ad
     (asset, token_id)
 }
 
+// ── round_speed bounds ────────────────────────────────────────────────────────
+
+#[test]
+fn test_init_zero_round_speed_returns_invalid() {
+    let env = make_env();
+    let client = create_client(&env);
+    assert_eq!(client.try_init(&0), Err(Ok(ArenaError::InvalidRoundSpeed)));
+}
+
+#[test]
+fn test_init_min_round_speed_succeeds() {
+    let env = make_env();
+    let client = create_client(&env);
+    assert!(client.try_init(&bounds::MIN_SPEED_LEDGERS).is_ok());
+}
+
+#[test]
+fn test_init_max_round_speed_succeeds() {
+    let env = make_env();
+    let client = create_client(&env);
+    assert!(client.try_init(&bounds::MAX_SPEED_LEDGERS).is_ok());
+}
+
+#[test]
+fn test_init_above_max_round_speed_returns_invalid() {
+    let env = make_env();
+    let client = create_client(&env);
+    assert_eq!(
+        client.try_init(&(bounds::MAX_SPEED_LEDGERS + 1)),
+        Err(Ok(ArenaError::InvalidRoundSpeed))
+    );
+}
+
 // ── sanity: basic contract round cycle ───────────────────────────────────────
 
 #[test]
