@@ -1,6 +1,11 @@
 #[cfg(test)]
 use super::*;
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
+use soroban_sdk::{
+    symbol_short,
+    testutils::Address as _,
+    token::{Client as TokenClient, StellarAssetClient},
+    Address, Env,
+};
 
 fn setup() -> (Env, Address, PayoutContractClient<'static>) {
     let env = Env::default();
@@ -10,6 +15,10 @@ fn setup() -> (Env, Address, PayoutContractClient<'static>) {
     let client = PayoutContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     client.initialize(&admin);
+    let xlm_symbol = symbol_short!("XLM");
+    let xlm_token = setup_currency(&env, &admin);
+    client.set_currency_token(&xlm_symbol, &xlm_token);
+    StellarAssetClient::new(&env, &xlm_token).mint(&client.address, &10_000_000_000i128);
 
     let env_static: &'static Env = unsafe { &*(&env as *const Env) };
     let client = PayoutContractClient::new(env_static, &contract_id);
@@ -32,6 +41,8 @@ fn test_double_initialize_panics() {
 #[test]
 fn test_admin_can_distribute_winnings() {
     let (env, admin, client) = setup();
+    let currency_addr = setup_currency(&env, &admin);
+    let token = TokenClient::new(&env, &currency_addr);
     let winner = Address::generate(&env);
     let idempotency_key = 1u32;
     let amount = 1000i128;
@@ -44,6 +55,7 @@ fn test_admin_can_distribute_winnings() {
     let payout = client.get_payout(&idempotency_key, &winner).unwrap();
     assert_eq!(payout.winner, winner);
     assert_eq!(payout.amount, amount);
+    assert_eq!(token.balance(&winner), amount);
     assert!(payout.paid);
 }
 
@@ -174,6 +186,7 @@ fn test_different_idempotency_keys_allow_multiple_payouts() {
 #[test]
 fn test_get_payout_returns_none_for_unprocessed() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register(PayoutContract, ());
     let client = PayoutContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
@@ -185,6 +198,7 @@ fn test_get_payout_returns_none_for_unprocessed() {
 #[test]
 fn test_get_payout_returns_data_for_processed() {
     let (env, admin, client) = setup();
+    let currency_addr = setup_currency(&env, &admin);
     let winner = Address::generate(&env);
     let idempotency_key = 1u32;
     let amount = 5000i128;
