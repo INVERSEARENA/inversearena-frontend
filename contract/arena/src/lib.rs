@@ -65,6 +65,7 @@ pub enum ArenaError {
     TokenNotSet = 19,
     MaxSubmissionsPerRound = 20,
     PlayerEliminated = 21,
+    WrongRoundNumber = 22,
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -354,7 +355,7 @@ impl ArenaContract {
             return Err(ArenaError::NoActiveRound);
         }
         if round_number != round.round_number {
-            return Err(ArenaError::RoundDeadlineOverflow);
+            return Err(ArenaError::WrongRoundNumber);
         }
         if env.ledger().sequence() > round.round_deadline_ledger {
             return Err(ArenaError::SubmissionWindowClosed);

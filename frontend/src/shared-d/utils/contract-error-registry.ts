@@ -26,6 +26,8 @@ export const CONTRACT_PANIC_USER_MESSAGES: Readonly<Record<number, string>> =
     204: "There is nothing to claim right now.",
     // Arena `ArenaError` (Rust enum numeric codes — see contract/ERRORS.md)
     20: "This round has reached the maximum number of submissions.",
+    21: "You have been eliminated from this arena.",
+    22: "The round has advanced. Please refresh and resubmit.",
     // Staking 300–399
     300: "Stake amount is invalid.",
     301: "Staking is temporarily unavailable.",

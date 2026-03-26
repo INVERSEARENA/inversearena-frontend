@@ -25,7 +25,7 @@
                 {
                   "vec": [
                     {
-                      "symbol": "Tails"
+                      "symbol": "Heads"
                     }
                   ]
                 }
@@ -85,7 +85,7 @@
                         "symbol": "round_speed_in_ledgers"
                       },
                       "val": {
-                        "u32": 13
+                        "u32": 24
                       }
                     }
                   ]
@@ -149,7 +149,7 @@
                         "symbol": "round_deadline_ledger"
                       },
                       "val": {
-                        "u32": 213
+                        "u32": 224
                       }
                     },
                     {
@@ -237,7 +237,7 @@
                 "val": {
                   "vec": [
                     {
-                      "symbol": "Tails"
+                      "symbol": "Heads"
                     }
                   ]
                 }

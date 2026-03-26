@@ -1753,3 +1753,15 @@ fn winner_is_identifiable_before_claim() {
     assert_eq!(state.has_won, true);
     assert_eq!(state.is_active, false);
 }
+
+#[test]
+fn submit_choice_wrong_round_returns_wrong_round_number() {
+    let env = make_env();
+    let client = create_client(&env);
+    client.init(&10);
+    client.start_round();
+
+    let player = Address::generate(&env);
+    let result = client.try_submit_choice(&player, &99u32, &Choice::Heads);
+    assert_eq!(result, Err(Ok(ArenaError::WrongRoundNumber)));
+}

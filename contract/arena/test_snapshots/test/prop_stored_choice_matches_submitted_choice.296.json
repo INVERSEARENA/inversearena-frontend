@@ -25,7 +25,7 @@
                 {
                   "vec": [
                     {
-                      "symbol": "Tails"
+                      "symbol": "Heads"
                     }
                   ]
                 }
@@ -237,7 +237,7 @@
                 "val": {
                   "vec": [
                     {
-                      "symbol": "Tails"
+                      "symbol": "Heads"
                     }
                   ]
                 }

@@ -15,19 +15,11 @@
     [],
     [],
     [],
-    [],
-    [],
-    [],
-    [],
-    [],
-    [],
-    [],
-    [],
     []
   ],
   "ledger": {
     "protocol_version": 22,
-    "sequence_number": 1413,
+    "sequence_number": 1119,
     "timestamp": 1700000000,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
@@ -71,7 +63,7 @@
                         "symbol": "round_speed_in_ledgers"
                       },
                       "val": {
-                        "u32": 44
+                        "u32": 22
                       }
                     }
                   ]
@@ -135,7 +127,7 @@
                         "symbol": "round_deadline_ledger"
                       },
                       "val": {
-                        "u32": 1412
+                        "u32": 1118
                       }
                     },
                     {
@@ -143,7 +135,7 @@
                         "symbol": "round_number"
                       },
                       "val": {
-                        "u32": 9
+                        "u32": 5
                       }
                     },
                     {
@@ -151,7 +143,7 @@
                         "symbol": "round_start_ledger"
                       },
                       "val": {
-                        "u32": 1368
+                        "u32": 1096
                       }
                     },
                     {
