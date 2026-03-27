@@ -138,6 +138,7 @@ enum DataKey {
     HeadsSubmitters(u32),
     TailsSubmitters(u32),
     Survivor(Address),
+    Eliminated(Address),
     PrizeClaimed(Address),
     Winner(Address),
 }
@@ -397,6 +398,10 @@ impl ArenaContract {
         player.require_auth();
 
         // Verify the player is a registered survivor (i.e. joined the game).
+        let eliminated_key = DataKey::Eliminated(player.clone());
+        if storage(&env).has(&eliminated_key) {
+            return Err(ArenaError::PlayerEliminated);
+        }
         let survivor_key = DataKey::Survivor(player.clone());
         if !storage(&env).has(&survivor_key) {
             return Err(ArenaError::NotASurvivor);
@@ -495,6 +500,9 @@ impl ArenaContract {
             let survivor_key = DataKey::Survivor(player.clone());
             if storage(&env).has(&survivor_key) {
                 storage(&env).remove(&survivor_key);
+                let eliminated_key = DataKey::Eliminated(player.clone());
+                storage(&env).set(&eliminated_key, &true);
+                bump(&env, &eliminated_key);
                 eliminated_count += 1;
             }
         }

@@ -1950,15 +1950,12 @@ fn get_user_state_returns_consistent_for_multiple_players() {
 
 #[test]
 fn submit_choice_rejects_non_survivor() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let client = create_client(&env);
-    let non_survivor = Address::generate(&env);
+    let (env, _admin, client, _token_id, _players) = setup_game(5, 2);
 
     set_ledger_sequence(&env, 100);
-    client.init(&5);
     client.start_round();
+
+    let non_survivor = Address::generate(&env);
 
     // non_survivor never called join(), so they have no Survivor key.
     let result = client.try_submit_choice(&non_survivor, &1u32, &Choice::Heads);

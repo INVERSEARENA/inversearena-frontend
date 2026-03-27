@@ -30,7 +30,7 @@ test("AuthService.requestNonce: successful request", async () => {
   assert.ok(result.expiresAt instanceof Date);
   assert.strictEqual(mockCreate.mock.callCount(), 1);
   
-  const callParams = mockCreate.mock.calls[0].arguments[0];
+  const callParams = mockCreate.mock.calls[0].arguments[0] as { walletAddress: string };
   assert.strictEqual(callParams.walletAddress, walletAddress);
 });
 

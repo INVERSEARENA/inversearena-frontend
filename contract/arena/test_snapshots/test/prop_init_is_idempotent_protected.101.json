@@ -55,7 +55,7 @@
                         "symbol": "round_speed_in_ledgers"
                       },
                       "val": {
-                        "u32": 72
+                        "u32": 96
                       }
                     }
                   ]

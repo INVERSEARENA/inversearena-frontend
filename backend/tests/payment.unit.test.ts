@@ -1,6 +1,7 @@
 import { test, mock, afterEach } from "node:test";
 import assert from "node:assert";
-import { Server, TransactionBuilder } from "@stellar/stellar-sdk";
+import { rpc, TransactionBuilder } from "@stellar/stellar-sdk";
+const { Server } = rpc;
 import { PaymentService } from "../src/services/paymentService";
 import { InMemoryTransactionRepository } from "../src/repositories/inMemoryTransactionRepository";
 import type { PaymentConfig } from "../src/config/paymentConfig";
