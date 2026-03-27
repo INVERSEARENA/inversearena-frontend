@@ -106,6 +106,13 @@ The arena pool contract uses `#[contracterror]` with **explicit** `repr(u32)` va
 
 **ABI snapshot:** `contract/arena/abi_snapshot.json` guards these ordinals in CI (`abi_guard` tests).
 
+> **Required process — every new `ArenaError` variant must be added in the same PR to all three places:**
+> 1. `contract/arena/src/lib.rs` — add the variant with its explicit `repr(u32)` value.
+> 2. `contract/arena/abi_snapshot.json` — add `"VariantName": N` to the `arena_error` object.
+> 3. `contract/arena/src/abi_guard.rs` — add `("VariantName", ArenaError::VariantName)` to the `pairs` slice.
+>
+> Omitting any of the three lets `cargo test` pass while the snapshot is stale, providing false safety for downstream consumers that branch on error codes.
+
 ---
 
 ## Infrastructure / network errors (non-contract codes)

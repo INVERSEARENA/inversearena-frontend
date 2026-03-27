@@ -202,3 +202,58 @@ fn unstake_rejects_zero_shares() {
         Err(Ok(StakingError::ZeroShares))
     );
 }
+
+// ── Issue #388: stake/unstake events use only fixed topic; variable data in payload ──
+
+#[test]
+fn stake_emits_one_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, _admin, staker, client, _token_client) = setup();
+
+    let before = env.events().all().len();
+    client.stake(&staker, &100_000_000i128);
+    let after = env.events().all().len();
+
+    // Exactly one staking event must be emitted (token SAC transfers do not
+    // add to the contract event log in the test environment).
+    assert!(
+        after > before,
+        "stake() must emit at least one event"
+    );
+}
+
+#[test]
+fn unstake_emits_one_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, _admin, staker, client, _token_client) = setup();
+
+    let shares = client.stake(&staker, &100_000_000i128);
+
+    let before = env.events().all().len();
+    client.unstake(&staker, &shares);
+    let after = env.events().all().len();
+
+    assert!(
+        after > before,
+        "unstake() must emit at least one event"
+    );
+}
+
+#[test]
+fn stake_and_unstake_each_emit_exactly_one_new_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, _admin, staker, client, _token_client) = setup();
+
+    let count_0 = env.events().all().len();
+    let shares = client.stake(&staker, &100_000_000i128);
+    let count_1 = env.events().all().len();
+
+    client.unstake(&staker, &shares);
+    let count_2 = env.events().all().len();
+
+    assert_eq!(count_1 - count_0, 1, "stake() must emit exactly one event");
+    assert_eq!(count_2 - count_1, 1, "unstake() must emit exactly one event");
+}

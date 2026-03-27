@@ -2023,3 +2023,123 @@ fn submit_choice_rejects_non_survivor() {
     assert_eq!(client.get_choice(&1, &non_survivor), None);
     assert_eq!(client.get_round().total_submissions, 0);
 }
+
+// ── Issue #359: start_round and timeout_round emit events ─────────────────────
+
+#[test]
+fn start_round_emits_r_start_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, _admin, client, _token_id, _players) = setup_game(5, 2);
+    set_ledger_sequence(&env, 1_000);
+
+    let before = env.events().all().len();
+    client.start_round();
+    let after = env.events().all().len();
+
+    assert_eq!(
+        after,
+        before + 1,
+        "start_round() must emit exactly one event (R_START)"
+    );
+}
+
+#[test]
+fn start_round_event_carries_correct_round_data() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, _admin, client, _token_id, _players) = setup_game(5, 2);
+    set_ledger_sequence(&env, 1_000);
+
+    client.start_round();
+    let round = client.get_round();
+
+    // The round fields persisted in storage must match what was emitted.
+    assert_eq!(round.round_number, 1);
+    assert_eq!(round.round_start_ledger, 1_000);
+    // round_deadline_ledger = start + round_speed (5)
+    assert_eq!(round.round_deadline_ledger, 1_005);
+    assert!(round.active);
+}
+
+#[test]
+fn timeout_round_emits_r_tout_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, _admin, client, _token_id, _players) = setup_game(5, 2);
+    set_ledger_sequence(&env, 1_000);
+    client.start_round();
+    let round = client.get_round();
+
+    // Advance past deadline
+    set_ledger_sequence(&env, round.round_deadline_ledger + 1);
+
+    let before = env.events().all().len();
+    client.timeout_round();
+    let after = env.events().all().len();
+
+    assert_eq!(
+        after,
+        before + 1,
+        "timeout_round() must emit exactly one event (R_TOUT)"
+    );
+}
+
+#[test]
+fn timeout_round_event_reflects_timed_out_state() {
+    let (env, _admin, client, _token_id, _players) = setup_game(5, 2);
+    set_ledger_sequence(&env, 1_000);
+    client.start_round();
+    let round = client.get_round();
+
+    set_ledger_sequence(&env, round.round_deadline_ledger + 1);
+    let timed_out = client.timeout_round();
+
+    assert!(!timed_out.active);
+    assert!(timed_out.timed_out);
+    assert_eq!(timed_out.round_number, 1);
+}
+
+// ── Issue #358: claim() must verify caller is the designated winner ────────────
+
+#[test]
+fn claim_fails_for_non_designated_winner() {
+    let (env, _admin, client, _token_id, players) = setup_game(5, 2);
+
+    // Designate players[0] as winner; players[1] is still an active survivor.
+    let designated_winner = players[0].clone();
+    let impersonator = players[1].clone();
+
+    // 2 players × 100 tokens each = 200 in the contract; use that as prize.
+    client.set_winner(&designated_winner, &200i128, &0i128);
+
+    let result = client.try_claim(&impersonator);
+    assert_eq!(
+        result,
+        Err(Ok(ArenaError::NotASurvivor)),
+        "a survivor who is not the designated winner must not be able to claim"
+    );
+}
+
+#[test]
+fn claim_succeeds_only_for_designated_winner() {
+    let (env, _admin, client, _token_id, players) = setup_game(5, 2);
+    let winner = players[0].clone();
+
+    client.set_winner(&winner, &200i128, &0i128);
+
+    let prize = client.claim(&winner);
+    assert_eq!(prize, 200i128);
+}
+
+#[test]
+fn claim_fails_without_any_winner_set() {
+    let (env, _admin, client, _token_id, players) = setup_game(5, 2);
+    // set_winner() never called — DataKey::Winner is absent for everyone.
+    let result = client.try_claim(&players[0]);
+    assert_eq!(
+        result,
+        Err(Ok(ArenaError::NotASurvivor)),
+        "claim must fail when no winner has been designated"
+    );
+}

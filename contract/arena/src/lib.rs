@@ -552,6 +552,12 @@ impl ArenaContract {
     pub fn claim(env: Env, winner: Address) -> Result<i128, ArenaError> {
         require_not_paused(&env)?;
         winner.require_auth();
+        // Verify caller is the address designated by set_winner(); any other
+        // survivor could otherwise pass require_auth() with their own address
+        // and drain the prize pool.
+        if !storage(&env).has(&DataKey::Winner(winner.clone())) {
+            return Err(ArenaError::NotASurvivor);
+        }
         if env
             .storage()
             .instance()

@@ -113,8 +113,8 @@ impl StakingContract {
         token_client.transfer(&staker, &contract_address, &amount);
 
         env.events().publish(
-            (TOPIC_STAKED, staker, token_contract),
-            (amount, minted_shares),
+            (TOPIC_STAKED,),
+            (staker, token_contract, amount, minted_shares),
         );
 
         Ok(minted_shares)
@@ -192,7 +192,7 @@ impl StakingContract {
         token_client.transfer(&env.current_contract_address(), &staker, &amount);
 
         env.events()
-            .publish((TOPIC_UNSTAKED, staker, token_contract), (amount, shares));
+            .publish((TOPIC_UNSTAKED,), (staker, token_contract, amount, shares));
 
         Ok(amount)
     }
