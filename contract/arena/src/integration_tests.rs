@@ -67,13 +67,14 @@ fn deploy_arena(
     env: &Env,
     admin: &Address,
     round_speed: u32,
+    required_stake: i128,
     token: &Address,
 ) -> ArenaContractClient<'static> {
     let env_s: &'static Env = unsafe { &*(env as *const Env) };
     let arena_id = env.register(ArenaContract, ());
     let arena = ArenaContractClient::new(env_s, &arena_id);
 
-    arena.init(&round_speed);
+    arena.init(&round_speed, &required_stake);
     arena.initialize(admin);
     arena.set_token(token);
 
@@ -116,7 +117,7 @@ fn lifecycle_full_game_three_rounds_eight_players() {
     let _capacity = 8u32;
     let stake = 10_000_000i128;
 
-    let arena = deploy_arena(&env, &admin, round_speed, &xlm_address);
+    let arena = deploy_arena(&env, &admin, round_speed, stake, &xlm_address);
 
     // ── Step 2: Rounds ────────────────────────────────────────────────────────
     // Generate 8 players.
@@ -174,7 +175,7 @@ fn lifecycle_full_game_resolve_round_to_claim() {
     let token_reader = TokenClient::new(&env, &token_id);
     let stake = 10_000_000i128;
 
-    let arena = deploy_arena(&env, &admin, 5, &token_id);
+    let arena = deploy_arena(&env, &admin, 5, stake, &token_id);
 
     let players: std::vec::Vec<Address> = (0..8).map(|_| Address::generate(&env)).collect();
     join_players(&env, &arena, &token, &players, stake);
@@ -256,7 +257,7 @@ fn test_double_claim_prevention() {
         .register_stellar_asset_contract_v2(token_admin.clone())
         .address();
     let token = StellarAssetClient::new(&env, &token_id);
-    let arena = deploy_arena(&env, &admin, 10u32, &token_id);
+    let arena = deploy_arena(&env, &admin, 10u32, 10_000_000i128, &token_id);
 
     let player = Address::generate(&env);
     let stake = 1000i128;
@@ -266,6 +267,9 @@ fn test_double_claim_prevention() {
     // Set player as winner
     env.mock_all_auths();
     arena.set_winner(&player, &stake, &yield_comp);
+    env.as_contract(&arena.address, || {
+        env.storage().instance().set(&GAME_FINISHED_KEY, &true);
+    });
 
     // First claim succeeds
     arena.claim(&player);
@@ -317,7 +321,7 @@ fn test_emergency_pause_and_resume() {
         .register_stellar_asset_contract_v2(token_admin.clone())
         .address();
     let token = StellarAssetClient::new(&env, &xlm_address);
-    let arena = deploy_arena(&env, &admin, 10u32, &xlm_address);
+    let arena = deploy_arena(&env, &admin, 10u32, 100i128, &xlm_address);
     let players = vec![Address::generate(&env), Address::generate(&env)];
     join_players(&env, &arena, &token, &players, 100i128);
 
@@ -345,7 +349,7 @@ fn test_upgrade_cancellation() {
     let (_factory, _) = deploy_all(&env, &admin);
 
     let xlm_address = Address::generate(&env);
-    let arena = deploy_arena(&env, &admin, 10u32, &xlm_address);
+    let arena = deploy_arena(&env, &admin, 10u32, 100i128, &xlm_address);
 
     let new_wasm = dummy_wasm_hash(&env);
 

@@ -11,6 +11,8 @@ use soroban_sdk::{
     token::StellarAssetClient,
 };
 
+const TEST_REQUIRED_STAKE: i128 = 100i128;
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /// Advance ledger sequence, preserving existing TTL settings.
@@ -144,7 +146,7 @@ fn seed_joined_players(
     for _ in 0..player_count {
         let player = Address::generate(env);
         asset.mint(&player, &1_000_000i128);
-        client.join(&player, &100i128);
+        client.join(&player, &TEST_REQUIRED_STAKE);
         players.push(player);
     }
     players
@@ -160,7 +162,7 @@ fn configure_arena(
     client.initialize(&admin);
     let (_asset, token_id) = setup_token(env, &admin);
     client.set_token(&token_id);
-    client.init(&round_speed);
+    client.init(&round_speed, &TEST_REQUIRED_STAKE);
     env.mock_all_auths();
     let players = seed_joined_players(env, client, &token_id, player_count);
     (admin, token_id, players)
@@ -179,10 +181,40 @@ fn setup_game(
     let (env, admin, client) = setup_with_admin();
     let (_asset, token_id) = setup_token(&env, &admin);
     client.set_token(&token_id);
-    client.init(&round_speed);
+    client.init(&round_speed, &TEST_REQUIRED_STAKE);
     env.mock_all_auths();
     let players = seed_joined_players(&env, &client, &token_id, player_count);
     (env, admin, client, token_id, players)
+}
+
+fn setup_finished_game_with_winner(
+    prize_amount: i128,
+) -> (
+    Env,
+    Address,
+    ArenaContractClient<'static>,
+    Address,
+    Address,
+) {
+    let (env, admin, client, token_id, players) = setup_game(5, 3);
+    let asset = StellarAssetClient::new(&env, &token_id);
+    let existing_pool = TEST_REQUIRED_STAKE * players.len() as i128;
+    if prize_amount > existing_pool {
+        asset.mint(&client.address, &(prize_amount - existing_pool));
+    }
+
+    set_ledger_sequence(&env, 1);
+    client.start_round();
+    client.submit_choice(&players[0], &1u32, &Choice::Heads);
+    client.submit_choice(&players[1], &1u32, &Choice::Tails);
+    client.submit_choice(&players[2], &1u32, &Choice::Tails);
+    set_ledger_sequence(&env, 7);
+    client.resolve_round();
+
+    let winner = players[0].clone();
+    client.set_winner(&winner, &prize_amount, &0i128);
+
+    (env, admin, client, token_id, winner)
 }
 
 // ── round_speed bounds ────────────────────────────────────────────────────────
@@ -191,21 +223,32 @@ fn setup_game(
 fn test_init_zero_round_speed_returns_invalid() {
     let env = make_env();
     let client = create_client(&env);
-    assert_eq!(client.try_init(&0), Err(Ok(ArenaError::InvalidRoundSpeed)));
+    assert_eq!(
+        client.try_init(&0, &TEST_REQUIRED_STAKE),
+        Err(Ok(ArenaError::InvalidRoundSpeed))
+    );
 }
 
 #[test]
 fn test_init_min_round_speed_succeeds() {
     let env = make_env();
     let client = create_client(&env);
-    assert!(client.try_init(&bounds::MIN_SPEED_LEDGERS).is_ok());
+    assert!(
+        client
+            .try_init(&bounds::MIN_SPEED_LEDGERS, &TEST_REQUIRED_STAKE)
+            .is_ok()
+    );
 }
 
 #[test]
 fn test_init_max_round_speed_succeeds() {
     let env = make_env();
     let client = create_client(&env);
-    assert!(client.try_init(&bounds::MAX_SPEED_LEDGERS).is_ok());
+    assert!(
+        client
+            .try_init(&bounds::MAX_SPEED_LEDGERS, &TEST_REQUIRED_STAKE)
+            .is_ok()
+    );
 }
 
 #[test]
@@ -213,7 +256,7 @@ fn test_init_above_max_round_speed_returns_invalid() {
     let env = make_env();
     let client = create_client(&env);
     assert_eq!(
-        client.try_init(&(bounds::MAX_SPEED_LEDGERS + 1)),
+        client.try_init(&(bounds::MAX_SPEED_LEDGERS + 1), &TEST_REQUIRED_STAKE),
         Err(Ok(ArenaError::InvalidRoundSpeed))
     );
 }
@@ -384,7 +427,7 @@ fn get_full_state_returns_combined_arena_and_user_state() {
     asset.mint(&other, &100i128);
 
     set_ledger_sequence(&env, 800);
-    client.init(&5);
+    client.init(&5, &10i128);
 
     client.join(&player, &10i128);
     client.join(&other, &10i128);
@@ -739,8 +782,8 @@ proptest! {
         let env = make_env();
         let client = create_client(&env);
 
-        client.init(&first_speed);
-        let result = client.try_init(&second_speed);
+        client.init(&first_speed, &TEST_REQUIRED_STAKE);
+        let result = client.try_init(&second_speed, &TEST_REQUIRED_STAKE);
 
         prop_assert_eq!(
             result,
@@ -954,7 +997,7 @@ fn timeout_round_fails_when_no_active_round() {
     let client = create_client(&env);
 
     set_ledger_sequence(&env, 50);
-    client.init(&3);
+    client.init(&3, &TEST_REQUIRED_STAKE);
     // do NOT call start_round
 
     set_ledger_sequence(&env, 200);
@@ -1163,7 +1206,7 @@ fn start_round_rejects_when_no_players_joined() {
     let (env, admin, client) = setup_with_admin();
     let (_asset, token_id) = setup_token(&env, &admin);
     client.set_token(&token_id);
-    client.init(&5);
+    client.init(&5, &TEST_REQUIRED_STAKE);
 
     let err = client.try_start_round();
     assert_eq!(err, Err(Ok(ArenaError::NotEnoughPlayers)));
@@ -1353,7 +1396,7 @@ fn test_functions_fail_when_paused() {
     let (env, _admin, client) = setup_with_admin();
     let player = Address::generate(&env);
 
-    client.init(&10);
+    client.init(&10, &TEST_REQUIRED_STAKE);
     client.pause();
     assert!(client.is_paused());
 
@@ -1477,7 +1520,7 @@ fn test_paused_blocks_game_functions_not_governance() {
     let player = Address::generate(&env);
     let hash = dummy_hash(&env);
 
-    client.init(&10u32);
+    client.init(&10u32, &TEST_REQUIRED_STAKE);
     client.pause();
     assert!(client.is_paused());
 
@@ -1632,23 +1675,12 @@ fn get_arena_state_reflects_survivor_count() {
     let (env, admin, client) = setup_with_admin();
     let (_token, token_id) = setup_token(&env, &admin);
     let asset = StellarAssetClient::new(&env, &token_id);
-    asset.mint(&client.address, &1_000_000i128);
     client.set_token(&token_id);
+    client.init(&5, &10_000_000i128);
 
     env.mock_all_auths();
     let player_a = Address::generate(&env);
     let player_b = Address::generate(&env);
-    asset.mint(&player_a, &10_000i128);
-    asset.mint(&player_b, &10_000i128);
-
-    let (_token, token_id) = setup_token(&env, &admin);
-    let asset = StellarAssetClient::new(&env, &token_id);
-    client.set_token(&token_id);
-
-    let player_a = Address::generate(&env);
-    let player_b = Address::generate(&env);
-
-    // Mint tokens to players so they can stake.
     asset.mint(&player_a, &20_000_000i128);
     asset.mint(&player_b, &20_000_000i128);
 
@@ -1724,6 +1756,7 @@ fn join_boundary_participants_n_minus_1_n_n_plus_1() {
     let asset = StellarAssetClient::new(&env, &token_id);
     asset.mint(&client.address, &50_000_000i128);
     client.set_token(&token_id);
+    client.init(&5, &TEST_REQUIRED_STAKE);
 
     // Use admin capacity so the test stays fast while still exercising typed `ArenaFull`.
     const CAP: u32 = 50;
@@ -1746,6 +1779,39 @@ fn join_boundary_participants_n_minus_1_n_n_plus_1() {
     asset.mint(&too_many, &1000i128);
     let err = client.try_join(&too_many, &100i128);
     assert_eq!(err, Err(Ok(ArenaError::ArenaFull)));
+}
+
+#[test]
+fn join_rejects_amounts_that_do_not_match_required_stake() {
+    let (env, admin, client) = setup_with_admin();
+    let (_token, token_id) = setup_token(&env, &admin);
+    let asset = StellarAssetClient::new(&env, &token_id);
+    client.set_token(&token_id);
+    client.init(&5, &TEST_REQUIRED_STAKE);
+
+    let player = Address::generate(&env);
+    asset.mint(&player, &1_000_000i128);
+
+    let err = client.try_join(&player, &(TEST_REQUIRED_STAKE - 1));
+    assert_eq!(err, Err(Ok(ArenaError::InvalidAmount)));
+}
+
+#[test]
+fn set_token_rejects_changes_after_first_join() {
+    let (env, admin, client) = setup_with_admin();
+    let (_old_token, old_token_id) = setup_token(&env, &admin);
+    let (_new_token, new_token_id) = setup_token(&env, &admin);
+    let old_asset = StellarAssetClient::new(&env, &old_token_id);
+
+    client.set_token(&old_token_id);
+    client.init(&5, &TEST_REQUIRED_STAKE);
+
+    let player = Address::generate(&env);
+    old_asset.mint(&player, &1_000_000i128);
+    client.join(&player, &TEST_REQUIRED_STAKE);
+
+    let err = client.try_set_token(&new_token_id);
+    assert_eq!(err, Err(Ok(ArenaError::TokenConfigurationLocked)));
 }
 
 // ── Issue #277: round state machine invariant suite ───────────────────────────
@@ -1773,57 +1839,40 @@ fn round_state_machine_invariant_suite_happy_path() {
 
 #[test]
 fn claim_single_winner_gets_correct_prize() {
-    let (env, admin, client) = setup_with_admin();
-    let (asset, token_id) = setup_token(&env, &admin);
-    // Fund the contract with enough tokens for the prize.
-    asset.mint(&client.address, &1_500i128);
-    client.set_token(&token_id);
-
-    let winner = Address::generate(&env);
-    client.set_winner(&winner, &1_000i128, &500i128);
+    let (_env, _admin, client, _token_id, winner) = setup_finished_game_with_winner(1_500i128);
 
     let claimed = client.claim(&winner);
     assert_eq!(claimed, 1_500i128);
 }
 
 #[test]
-fn claim_second_set_winner_overwrites_prize_pool() {
-    let (env, admin, client) = setup_with_admin();
-    let (asset, token_id) = setup_token(&env, &admin);
-    asset.mint(&client.address, &3_000i128);
-    client.set_token(&token_id);
-
-    let winner_a = Address::generate(&env);
-    let winner_b = Address::generate(&env);
-    client.set_winner(&winner_a, &1_000i128, &500i128);
-    // Second set_winner overwrites the prize pool.
-    client.set_winner(&winner_b, &800i128, &200i128);
-
-    // The active prize pool is now 1000 (800 + 200), not 1500.
-    let claimed_b = client.claim(&winner_b);
-    assert_eq!(claimed_b, 1_000i128);
-}
-
-#[test]
-fn claim_last_winner_sets_round_finished() {
+fn claim_rejects_before_game_is_finished() {
     let (env, admin, client) = setup_with_admin();
     let (asset, token_id) = setup_token(&env, &admin);
     asset.mint(&client.address, &1_000i128);
     client.set_token(&token_id);
 
     let winner = Address::generate(&env);
-    client.set_winner(&winner, &600i128, &400i128);
+    client.set_winner(&winner, &1_000i128, &0i128);
 
-    // Before claim, start a round so RoundState exists.
-    client.init(&5);
-    let participant_a = Address::generate(&env);
-    let participant_b = Address::generate(&env);
-    asset.mint(&participant_a, &100i128);
-    asset.mint(&participant_b, &100i128);
-    client.join(&participant_a, &10i128);
-    client.join(&participant_b, &10i128);
-    set_ledger_sequence(&env, 1);
-    client.start_round();
+    let err = client.try_claim(&winner);
+    assert_eq!(err, Err(Ok(ArenaError::GameNotFinished)));
+}
+
+#[test]
+fn claim_second_set_winner_overwrites_prize_pool() {
+    let (_env, _admin, client, _token_id, winner) = setup_finished_game_with_winner(1_500i128);
+    client.set_winner(&winner, &1_000i128, &500i128);
+    client.set_winner(&winner, &800i128, &200i128);
+
+    // The active prize pool is now 1000 (800 + 200), not 1500.
+    let claimed_b = client.claim(&winner);
+    assert_eq!(claimed_b, 1_000i128);
+}
+
+#[test]
+fn claim_last_winner_sets_round_finished() {
+    let (_env, _admin, client, _token_id, winner) = setup_finished_game_with_winner(1_000i128);
 
     client.claim(&winner);
 
@@ -1834,13 +1883,7 @@ fn claim_last_winner_sets_round_finished() {
 
 #[test]
 fn claim_already_claimed_returns_error() {
-    let (env, admin, client) = setup_with_admin();
-    let (asset, token_id) = setup_token(&env, &admin);
-    asset.mint(&client.address, &1_000i128);
-    client.set_token(&token_id);
-
-    let winner = Address::generate(&env);
-    client.set_winner(&winner, &600i128, &400i128);
+    let (_env, _admin, client, _token_id, winner) = setup_finished_game_with_winner(1_000i128);
     client.claim(&winner);
 
     // Second claim must be rejected.
@@ -1850,13 +1893,8 @@ fn claim_already_claimed_returns_error() {
 
 #[test]
 fn join_rejects_after_game_is_finished() {
-    let (env, admin, client) = setup_with_admin();
-    let (asset, token_id) = setup_token(&env, &admin);
-    client.set_token(&token_id);
-
-    let winner = Address::generate(&env);
-    client.set_winner(&winner, &600i128, &400i128);
-    asset.mint(&client.address, &1_000i128);
+    let (env, _admin, client, token_id, winner) = setup_finished_game_with_winner(1_000i128);
+    let asset = StellarAssetClient::new(&env, &token_id);
     client.claim(&winner);
 
     let player = Address::generate(&env);
@@ -1867,14 +1905,7 @@ fn join_rejects_after_game_is_finished() {
 
 #[test]
 fn start_round_rejects_after_game_is_finished() {
-    let (env, admin, client) = setup_with_admin();
-    let (asset, token_id) = setup_token(&env, &admin);
-    client.set_token(&token_id);
-
-    client.init(&5);
-    let winner = Address::generate(&env);
-    client.set_winner(&winner, &600i128, &400i128);
-    asset.mint(&client.address, &1_000i128);
+    let (_env, _admin, client, _token_id, winner) = setup_finished_game_with_winner(1_000i128);
     client.claim(&winner);
 
     let err = client.try_start_round();
@@ -1886,6 +1917,7 @@ fn start_round_rejects_after_game_is_finished() {
 #[test]
 fn join_fails_when_token_not_set() {
     let (env, _admin, client) = setup_with_admin();
+    client.init(&5, &TEST_REQUIRED_STAKE);
     // No set_token call — token is unset.
     env.mock_all_auths();
 
@@ -1906,6 +1938,7 @@ fn join_succeeds_on_retry_after_capacity_was_cleared() {
 
     const CAP: u32 = 2;
     client.set_token(&token_id);
+    client.init(&5, &TEST_REQUIRED_STAKE);
     client.set_capacity(&CAP);
 
     env.mock_all_auths();
@@ -1935,6 +1968,7 @@ fn join_fails_when_paused() {
     let (_token, token_id) = setup_token(&env, &admin);
     let asset = StellarAssetClient::new(&env, &token_id);
     client.set_token(&token_id);
+    client.init(&5, &TEST_REQUIRED_STAKE);
 
     env.mock_all_auths();
     client.pause();
@@ -1950,7 +1984,7 @@ fn winner_is_identifiable_before_claim() {
     let env = Env::default();
     env.mock_all_auths();
     let client = create_client(&env);
-    client.init(&10);
+    client.init(&10, &TEST_REQUIRED_STAKE);
     client.initialize(&Address::generate(&env));
 
     let token_admin_addr = Address::generate(&env);
@@ -1986,7 +2020,7 @@ fn get_user_state_non_existent_player_returns_inactive() {
     env.mock_all_auths();
     let client = create_client(&env);
     set_ledger_sequence(&env, 800);
-    client.init(&5);
+    client.init(&5, &TEST_REQUIRED_STAKE);
 
     let unknown = Address::generate(&env);
     let state = client.get_user_state(&unknown);
@@ -2000,7 +2034,7 @@ fn get_user_state_active_player_shows_active() {
     let (asset, token_id) = setup_token(&env, &admin);
     client.set_token(&token_id);
     set_ledger_sequence(&env, 800);
-    client.init(&5);
+    client.init(&5, &10i128);
 
     let player = Address::generate(&env);
     asset.mint(&player, &100i128);
@@ -2017,7 +2051,7 @@ fn get_user_state_returns_consistent_for_multiple_players() {
     let (asset, token_id) = setup_token(&env, &admin);
     client.set_token(&token_id);
     set_ledger_sequence(&env, 800);
-    client.init(&5);
+    client.init(&5, &TEST_REQUIRED_STAKE);
 
     let player_a = Address::generate(&env);
     let player_b = Address::generate(&env);
@@ -2025,8 +2059,8 @@ fn get_user_state_returns_consistent_for_multiple_players() {
 
     asset.mint(&player_a, &100i128);
     asset.mint(&player_b, &100i128);
-    client.join(&player_a, &10i128);
-    client.join(&player_b, &20i128);
+    client.join(&player_a, &TEST_REQUIRED_STAKE);
+    client.join(&player_b, &TEST_REQUIRED_STAKE);
 
     let state_a = client.get_user_state(&player_a);
     let state_b = client.get_user_state(&player_b);
@@ -2081,8 +2115,6 @@ fn start_round_emits_r_start_event() {
 
 #[test]
 fn start_round_event_carries_correct_round_data() {
-    use soroban_sdk::testutils::Events as _;
-
     let (env, _admin, client, _token_id, _players) = setup_game(5, 2);
     set_ledger_sequence(&env, 1_000);
 
@@ -2139,14 +2171,9 @@ fn timeout_round_event_reflects_timed_out_state() {
 
 #[test]
 fn claim_fails_for_non_designated_winner() {
-    let (env, _admin, client, _token_id, players) = setup_game(5, 2);
-
-    // Designate players[0] as winner; players[1] is still an active survivor.
-    let designated_winner = players[0].clone();
-    let impersonator = players[1].clone();
-
-    // 2 players × 100 tokens each = 200 in the contract; use that as prize.
-    client.set_winner(&designated_winner, &200i128, &0i128);
+    let (env, _admin, client, _token_id, _designated_winner) =
+        setup_finished_game_with_winner(300i128);
+    let impersonator = Address::generate(&env);
 
     let result = client.try_claim(&impersonator);
     assert_eq!(
@@ -2158,18 +2185,22 @@ fn claim_fails_for_non_designated_winner() {
 
 #[test]
 fn claim_succeeds_only_for_designated_winner() {
-    let (env, _admin, client, _token_id, players) = setup_game(5, 2);
-    let winner = players[0].clone();
-
-    client.set_winner(&winner, &200i128, &0i128);
+    let (_env, _admin, client, _token_id, winner) = setup_finished_game_with_winner(300i128);
 
     let prize = client.claim(&winner);
-    assert_eq!(prize, 200i128);
+    assert_eq!(prize, 300i128);
 }
 
 #[test]
 fn claim_fails_without_any_winner_set() {
-    let (env, _admin, client, _token_id, players) = setup_game(5, 2);
+    let (env, _admin, client, _token_id, players) = setup_game(5, 3);
+    set_ledger_sequence(&env, 1);
+    client.start_round();
+    client.submit_choice(&players[0], &1u32, &Choice::Heads);
+    client.submit_choice(&players[1], &1u32, &Choice::Tails);
+    client.submit_choice(&players[2], &1u32, &Choice::Tails);
+    set_ledger_sequence(&env, 7);
+    client.resolve_round();
     // set_winner() never called — DataKey::Winner is absent for everyone.
     let result = client.try_claim(&players[0]);
     assert_eq!(

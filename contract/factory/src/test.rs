@@ -2,8 +2,8 @@
 use super::*;
 use arena::ArenaContractClient;
 use soroban_sdk::{
-    Address, BytesN, Env,
-    testutils::{Address as _, Ledger, LedgerInfo},
+    Address, BytesN, Env, IntoVal, Symbol,
+    testutils::{Address as _, Ledger},
     token::StellarAssetClient,
 };
 
@@ -20,21 +20,6 @@ fn assert_auth_err<T: core::fmt::Debug, E: core::fmt::Debug>(
         Err(Err(soroban_sdk::InvokeError::Abort)) => {} // auth failure
         other => panic!("expected auth error, got: {:?}", other),
     }
-}
-
-/// `env.ledger().set()` clears Soroban's mock auths in test mode.
-fn clear_mock_auths(env: &Env, seq: u32) {
-    let ledger = env.ledger().get();
-    env.ledger().set(LedgerInfo {
-        sequence_number: seq,
-        timestamp: 1_700_000_000 + seq as u64,
-        protocol_version: 22,
-        network_id: ledger.network_id,
-        base_reserve: ledger.base_reserve,
-        min_temp_entry_ttl: u32::MAX / 4,
-        min_persistent_entry_ttl: u32::MAX / 4,
-        max_entry_ttl: u32::MAX / 4,
-    });
 }
 
 fn setup() -> (Env, Address, FactoryContractClient<'static>) {
@@ -123,6 +108,27 @@ fn test_set_min_stake() {
     let new_min = 5_000_000i128; // 5 XLM
     client.set_min_stake(&new_min);
     assert_eq!(client.get_min_stake(), new_min);
+}
+
+#[test]
+fn test_set_min_stake_emits_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, _admin, client) = setup();
+    let new_min = 5_000_000i128;
+
+    let before = env.events().all().len();
+    client.set_min_stake(&new_min);
+    let events = env.events().all();
+    assert_eq!(events.len(), before + 1);
+
+    let last = events.last().expect("event must exist");
+    let (_contract, topics, data) = last;
+    let topic: Symbol = topics.get(0).unwrap().into_val(&env);
+    let payload: (u32, i128, i128) = data.into_val(&env);
+
+    assert_eq!(topic, symbol_short!("MIN_UP"));
+    assert_eq!(payload, (1, MIN_STAKE, new_min));
 }
 
 #[test]
@@ -528,6 +534,27 @@ fn test_set_admin_changes_admin() {
 }
 
 #[test]
+fn test_set_admin_emits_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, admin, client) = setup();
+    let new_admin = Address::generate(&env);
+
+    let before = env.events().all().len();
+    client.set_admin(&new_admin);
+    let events = env.events().all();
+    assert_eq!(events.len(), before + 1);
+
+    let last = events.last().expect("event must exist");
+    let (_contract, topics, data) = last;
+    let topic: Symbol = topics.get(0).unwrap().into_val(&env);
+    let payload: (u32, Address, Address) = data.into_val(&env);
+
+    assert_eq!(topic, symbol_short!("ADM_CHG"));
+    assert_eq!(payload, (1, admin, new_admin));
+}
+
+#[test]
 fn test_set_admin_fails_without_initialization_returns_not_initialized() {
     let env = Env::default();
     let contract_id = env.register(FactoryContract, ());
@@ -541,10 +568,11 @@ fn test_set_admin_fails_without_initialization_returns_not_initialized() {
 fn test_unauthorized_set_admin_panics() {
     let env = Env::default();
     let contract_id = env.register(FactoryContract, ());
-    // No mock_all_auths()!
     let client = FactoryContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.initialize(&admin);
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&ADMIN_KEY, &admin);
+    });
     assert_auth_err(client.try_set_admin(&Address::generate(&env)));
 }
 
@@ -554,8 +582,28 @@ fn test_unauthorized_set_arena_wasm_hash_panics() {
     let contract_id = env.register(FactoryContract, ());
     let client = FactoryContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.initialize(&admin);
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&ADMIN_KEY, &admin);
+    });
     assert_auth_err(client.try_set_arena_wasm_hash(&dummy_hash(&env)));
+}
+
+#[test]
+fn test_set_arena_wasm_hash_emits_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, _admin, client) = setup();
+    let wasm_hash = dummy_hash(&env);
+
+    let before = env.events().all().len();
+    client.set_arena_wasm_hash(&wasm_hash);
+    let events = env.events().all();
+    assert_eq!(events.len(), before + 1);
+
+    let last = events.last().expect("event must exist");
+    let (_contract, topics, _data) = last;
+    let topic: Symbol = topics.get(0).unwrap().into_val(&env);
+    assert_eq!(topic, symbol_short!("WASM_UP"));
 }
 
 #[test]
@@ -564,7 +612,9 @@ fn test_unauthorized_whitelist_panics() {
     let contract_id = env.register(FactoryContract, ());
     let client = FactoryContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.initialize(&admin);
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&ADMIN_KEY, &admin);
+    });
     assert_auth_err(client.try_add_to_whitelist(&Address::generate(&env)));
     assert_auth_err(client.try_remove_from_whitelist(&Address::generate(&env)));
 }
@@ -575,7 +625,10 @@ fn test_unauthorized_set_min_stake_panics() {
     let contract_id = env.register(FactoryContract, ());
     let client = FactoryContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.initialize(&admin);
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&ADMIN_KEY, &admin);
+        env.storage().instance().set(&MIN_STAKE_KEY, &MIN_STAKE);
+    });
     assert_auth_err(client.try_set_min_stake(&1000i128));
 }
 
@@ -738,6 +791,27 @@ fn test_add_supported_token_makes_token_supported() {
     assert!(!client.is_token_supported(&token));
     client.add_supported_token(&token);
     assert!(client.is_token_supported(&token));
+}
+
+#[test]
+fn test_add_supported_token_emits_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, _admin, client) = setup();
+    let token = Address::generate(&env);
+
+    let before = env.events().all().len();
+    client.add_supported_token(&token);
+    let events = env.events().all();
+    assert_eq!(events.len(), before + 1);
+
+    let last = events.last().expect("event must exist");
+    let (_contract, topics, data) = last;
+    let topic: Symbol = topics.get(0).unwrap().into_val(&env);
+    let payload: (u32, bool, bool, Address) = data.into_val(&env);
+
+    assert_eq!(topic, symbol_short!("TOK_ADD"));
+    assert_eq!(payload, (1, false, true, token));
 }
 
 #[test]

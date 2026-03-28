@@ -59,6 +59,10 @@ const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("UP_CANC");
 const TOPIC_POOL_CREATED: Symbol = symbol_short!("POOL_CRE");
 const TOPIC_HOST_WHITELISTED: Symbol = symbol_short!("WL_ADD");
 const TOPIC_HOST_REMOVED: Symbol = symbol_short!("WL_REM");
+const TOPIC_ADMIN_CHANGED: Symbol = symbol_short!("ADM_CHG");
+const TOPIC_WASM_UPDATED: Symbol = symbol_short!("WASM_UP");
+const TOPIC_TOKEN_ADDED: Symbol = symbol_short!("TOK_ADD");
+const TOPIC_MIN_STAKE_UPDATED: Symbol = symbol_short!("MIN_UP");
 
 /// Event payload version. Include in every event data tuple so consumers
 /// can detect schema changes without re-deploying indexers.
@@ -202,6 +206,8 @@ impl FactoryContract {
         let admin = require_admin(&env)?;
         admin.require_auth();
         env.storage().instance().set(&ADMIN_KEY, &new_admin);
+        env.events()
+            .publish((TOPIC_ADMIN_CHANGED,), (EVENT_VERSION, admin, new_admin));
         Ok(())
     }
 
@@ -212,9 +218,15 @@ impl FactoryContract {
     pub fn set_arena_wasm_hash(env: Env, wasm_hash: BytesN<32>) -> Result<(), Error> {
         let admin = require_admin(&env)?;
         admin.require_auth();
+        let previous_hash: Option<BytesN<32>> =
+            env.storage().instance().get(&ARENA_WASM_HASH_KEY);
         env.storage()
             .instance()
             .set(&ARENA_WASM_HASH_KEY, &wasm_hash);
+        env.events().publish(
+            (TOPIC_WASM_UPDATED,),
+            (EVENT_VERSION, previous_hash, wasm_hash),
+        );
         Ok(())
     }
 
@@ -268,7 +280,12 @@ impl FactoryContract {
         if min_stake <= 0 {
             return Err(Error::InvalidStakeAmount);
         }
+        let previous_min_stake = Self::get_min_stake(env.clone());
         env.storage().instance().set(&MIN_STAKE_KEY, &min_stake);
+        env.events().publish(
+            (TOPIC_MIN_STAKE_UPDATED,),
+            (EVENT_VERSION, previous_min_stake, min_stake),
+        );
         Ok(())
     }
 
@@ -388,7 +405,7 @@ impl FactoryContract {
         env.invoke_contract::<()>(
             &arena_address,
             &soroban_sdk::symbol_short!("init"),
-            soroban_sdk::vec![&env, round_speed.into_val(&env)],
+            soroban_sdk::vec![&env, round_speed.into_val(&env), stake.into_val(&env)],
         );
 
         env.invoke_contract::<()>(
@@ -435,16 +452,20 @@ impl FactoryContract {
     }
     /// Add a token to the supported currency list. Admin-only.
     pub fn add_supported_token(env: Env, token: Address) -> Result<(), Error> {
-        require_admin(&env)?;
+        let admin = require_admin(&env)?;
+        admin.require_auth();
         env.storage()
             .instance()
-            .set(&DataKey::SupportedToken(token), &true);
+            .set(&DataKey::SupportedToken(token.clone()), &true);
+        env.events()
+            .publish((TOPIC_TOKEN_ADDED,), (EVENT_VERSION, false, true, token));
         Ok(())
     }
 
     /// Remove a token from the supported currency list. Admin-only.
     pub fn remove_supported_token(env: Env, token: Address) -> Result<(), Error> {
-        require_admin(&env)?;
+        let admin = require_admin(&env)?;
+        admin.require_auth();
         env.storage()
             .instance()
             .remove(&DataKey::SupportedToken(token));

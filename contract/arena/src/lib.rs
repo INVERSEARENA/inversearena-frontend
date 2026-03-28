@@ -74,6 +74,8 @@ pub enum ArenaError {
     InvalidCapacity = 24,
     NoPendingUpgrade = 25,
     TimelockNotExpired = 26,
+    GameNotFinished = 27,
+    TokenConfigurationLocked = 28,
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -89,6 +91,7 @@ pub enum Choice {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArenaConfig {
     pub round_speed_in_ledgers: u32,
+    pub required_stake_amount: i128,
 }
 
 #[contracttype]
@@ -154,12 +157,19 @@ pub struct ArenaContract;
 
 #[contractimpl]
 impl ArenaContract {
-    pub fn init(env: Env, round_speed_in_ledgers: u32) -> Result<(), ArenaError> {
+    pub fn init(
+        env: Env,
+        round_speed_in_ledgers: u32,
+        required_stake_amount: i128,
+    ) -> Result<(), ArenaError> {
         if storage(&env).has(&DataKey::Config) {
             return Err(ArenaError::AlreadyInitialized);
         }
         if round_speed_in_ledgers == 0 || round_speed_in_ledgers > bounds::MAX_SPEED_LEDGERS {
             return Err(ArenaError::InvalidRoundSpeed);
+        }
+        if required_stake_amount <= 0 {
+            return Err(ArenaError::InvalidAmount);
         }
         env.storage()
             .instance()
@@ -168,6 +178,7 @@ impl ArenaContract {
             &DataKey::Config,
             &ArenaConfig {
                 round_speed_in_ledgers,
+                required_stake_amount,
             },
         );
         bump(&env, &DataKey::Config);
@@ -242,7 +253,7 @@ impl ArenaContract {
         env.storage().instance().get(&PAUSED_KEY).unwrap_or(false)
     }
 
-    pub fn set_token(env: Env, token: Address) {
+    pub fn set_token(env: Env, token: Address) -> Result<(), ArenaError> {
         // Admin configuration remains available during an emergency pause so the
         // token can be rotated before gameplay resumes.
         let admin: Address = env
@@ -251,7 +262,21 @@ impl ArenaContract {
             .get(&ADMIN_KEY)
             .expect("not initialized");
         admin.require_auth();
+        let survivor_count: u32 = env
+            .storage()
+            .instance()
+            .get(&SURVIVOR_COUNT_KEY)
+            .unwrap_or(0u32);
+        let prize_pool: i128 = env
+            .storage()
+            .instance()
+            .get(&PRIZE_POOL_KEY)
+            .unwrap_or(0i128);
+        if survivor_count > 0 || prize_pool > 0 {
+            return Err(ArenaError::TokenConfigurationLocked);
+        }
         env.storage().instance().set(&TOKEN_KEY, &token);
+        Ok(())
     }
 
     pub fn set_capacity(env: Env, capacity: u32) -> Result<(), ArenaError> {
@@ -303,6 +328,10 @@ impl ArenaContract {
             return Err(ArenaError::GameAlreadyFinished);
         }
         if amount <= 0 {
+            return Err(ArenaError::InvalidAmount);
+        }
+        let required_stake_amount = get_config(&env)?.required_stake_amount;
+        if amount != required_stake_amount {
             return Err(ArenaError::InvalidAmount);
         }
         let survivor_key = DataKey::Survivor(player.clone());
@@ -587,6 +616,9 @@ impl ArenaContract {
         env.storage()
             .instance()
             .set(&SURVIVOR_COUNT_KEY, &updated_survivor_count);
+        if updated_survivor_count <= 1 {
+            env.storage().instance().set(&GAME_FINISHED_KEY, &true);
+        }
 
         round.finished = true;
 
@@ -623,6 +655,14 @@ impl ArenaContract {
     pub fn claim(env: Env, winner: Address) -> Result<i128, ArenaError> {
         require_not_paused(&env)?;
         winner.require_auth();
+        if !env
+            .storage()
+            .instance()
+            .get::<_, bool>(&GAME_FINISHED_KEY)
+            .unwrap_or(false)
+        {
+            return Err(ArenaError::GameNotFinished);
+        }
         // Verify caller is the address designated by set_winner(); any other
         // survivor could otherwise pass require_auth() with their own address
         // and drain the prize pool.
