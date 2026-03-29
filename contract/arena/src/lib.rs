@@ -39,6 +39,7 @@ const TOPIC_ROUND_TIMEOUT: Symbol = symbol_short!("R_TOUT");
 const TOPIC_ROUND_RESOLVED: Symbol = symbol_short!("RSLVD");
 const TOPIC_WINNER_SET: Symbol = symbol_short!("WIN_SET");
 const TOPIC_CLAIM: Symbol = symbol_short!("CLAIM");
+const TOPIC_LEAVE: Symbol = symbol_short!("LEAVE");
 
 const EVENT_VERSION: u32 = 1;
 
@@ -379,6 +380,48 @@ impl ArenaContract {
             &amount,
         );
         Ok(())
+    }
+
+    pub fn leave(env: Env, player: Address) -> Result<i128, ArenaError> {
+        player.require_auth();
+        require_not_paused(&env)?;
+        // Only allowed before round 1 starts
+        let round = get_round(&env)?;
+        if round.round_number != 0 {
+            return Err(ArenaError::RoundAlreadyActive);
+        }
+        let survivor_key = DataKey::Survivor(player.clone());
+        if !storage(&env).has(&survivor_key) {
+            return Err(ArenaError::NotASurvivor);
+        }
+        let config = get_config(&env)?;
+        let refund = config.required_stake_amount;
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&TOKEN_KEY)
+            .ok_or(ArenaError::TokenNotSet)?;
+        // CEI: effects before interaction
+        storage(&env).remove(&survivor_key);
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&SURVIVOR_COUNT_KEY)
+            .unwrap_or(0u32);
+        env.storage()
+            .instance()
+            .set(&SURVIVOR_COUNT_KEY, &count.saturating_sub(1));
+        let pool: i128 = env
+            .storage()
+            .instance()
+            .get(&PRIZE_POOL_KEY)
+            .unwrap_or(0i128);
+        env.storage()
+            .instance()
+            .set(&PRIZE_POOL_KEY, &(pool - refund));
+        token::Client::new(&env, &token).transfer(&env.current_contract_address(), &player, &refund);
+        env.events().publish((TOPIC_LEAVE,), (player, refund));
+        Ok(refund)
     }
 
     pub fn start_round(env: Env) -> Result<RoundState, ArenaError> {
