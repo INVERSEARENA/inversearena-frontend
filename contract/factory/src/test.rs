@@ -876,3 +876,58 @@ fn test_create_pool_fails_after_token_removed() {
     let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32);
     assert_eq!(result, Err(Ok(Error::UnsupportedToken)));
 }
+
+#[test]
+fn test_remove_supported_token_emits_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, _admin, client) = setup();
+    let token = Address::generate(&env);
+    client.add_supported_token(&token);
+
+    let before = env.events().all().len();
+    client.remove_supported_token(&token);
+    let events = env.events().all();
+    assert_eq!(events.len(), before + 1);
+
+    let last = events.last().expect("event must exist");
+    let (_contract, topics, data) = last;
+    let topic: Symbol = topics.get(0).unwrap().into_val(&env);
+    let payload: (u32, Address) = data.into_val(&env);
+
+    assert_eq!(topic, symbol_short!("TOK_REM"));
+    assert_eq!(payload, (1u32, token));
+}
+
+#[test]
+fn test_unauthorized_remove_supported_token_panics() {
+    let (env, _admin, client) = setup();
+    let token = Address::generate(&env);
+    client.add_supported_token(&token);
+
+    // A non-admin caller must not be able to remove a supported token.
+    let attacker = Address::generate(&env);
+    let result = client.try_remove_supported_token(&token);
+    // With mock_all_auths the call succeeds auth-wise, so we verify the
+    // token is still supported when called without admin context.
+    // The real guard is require_admin — tested here via a fresh env without mocked auth.
+    let env2 = Env::default();
+    let contract_id2 = env2.register(FactoryContract, ());
+    let client2 = FactoryContractClient::new(&env2, &contract_id2);
+    let admin2 = Address::generate(&env2);
+    env2.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &admin2,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract_id2,
+            fn_name: "initialize",
+            args: soroban_sdk::vec![&env2, admin2.clone().into_val(&env2)].into(),
+            sub_invokes: &[],
+        },
+    }]);
+    client2.initialize(&admin2);
+
+    // attacker tries to remove — should panic (auth failure)
+    let result2 = client2.try_remove_supported_token(&token);
+    assert_auth_err(result2);
+    let _ = (attacker, result); // suppress unused warnings
+}

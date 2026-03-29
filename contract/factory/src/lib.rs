@@ -62,6 +62,7 @@ const TOPIC_HOST_REMOVED: Symbol = symbol_short!("WL_REM");
 const TOPIC_ADMIN_CHANGED: Symbol = symbol_short!("ADM_CHG");
 const TOPIC_WASM_UPDATED: Symbol = symbol_short!("WASM_UP");
 const TOPIC_TOKEN_ADDED: Symbol = symbol_short!("TOK_ADD");
+const TOPIC_TOKEN_REMOVED: Symbol = symbol_short!("TOK_REM");
 const TOPIC_MIN_STAKE_UPDATED: Symbol = symbol_short!("MIN_UP");
 
 /// Event payload version. Include in every event data tuple so consumers
@@ -303,12 +304,13 @@ impl FactoryContract {
     ///
     /// The caller must provide a valid stake amount >= minimum stake and a
     /// capacity in range [2, MAX_POOL_CAPACITY]. `pool_id` must be unique.
+    /// The `currency` must have been previously approved via `add_supported_token`.
     /// Emits `PoolCreated(pool_id, creator, capacity, stake_amount)`.
     ///
     /// # Errors
     /// * [`Error::NotInitialized`] — contract not initialised.
+    /// * [`Error::UnsupportedToken`] — `currency` has not been added via `add_supported_token`.
     /// * [`Error::Unauthorized`] — `caller` is neither admin nor whitelisted.
-    /// * [`Error::PoolAlreadyExists`] — a pool with `pool_id` already exists.
     /// * [`Error::InvalidCapacity`] — `capacity` is < 2 or > `MAX_POOL_CAPACITY`.
     /// * [`Error::InvalidStakeAmount`] — `stake_amount` is zero or negative.
     /// * [`Error::StakeBelowMinimum`] — `stake_amount` is below the configured minimum.
@@ -336,6 +338,9 @@ impl FactoryContract {
             return Err(Error::Unauthorized);
         }
 
+        // Reject any currency that has not been explicitly approved by the admin.
+        // This must be checked before deploying any contract to prevent pools
+        // backed by malicious or worthless tokens from ever being created.
         if !Self::is_token_supported(env.clone(), currency.clone()) {
             return Err(Error::UnsupportedToken);
         }
@@ -471,12 +476,17 @@ impl FactoryContract {
     }
 
     /// Remove a token from the supported currency list. Admin-only.
+    /// Any pools already created with this token are unaffected; only future
+    /// `create_pool` calls will be rejected.
+    /// Emits `TokenRemoved(token)`.
     pub fn remove_supported_token(env: Env, token: Address) -> Result<(), Error> {
         let admin = require_admin(&env)?;
         admin.require_auth();
         env.storage()
             .instance()
-            .remove(&DataKey::SupportedToken(token));
+            .remove(&DataKey::SupportedToken(token.clone()));
+        env.events()
+            .publish((TOPIC_TOKEN_REMOVED,), (EVENT_VERSION, token));
         Ok(())
     }
 
