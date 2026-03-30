@@ -13,6 +13,7 @@ const PENDING_HASH_KEY: Symbol = symbol_short!("P_HASH");
 const EXECUTE_AFTER_KEY: Symbol = symbol_short!("P_AFTER");
 const SURVIVOR_COUNT_KEY: Symbol = symbol_short!("S_COUNT");
 const CAPACITY_KEY: Symbol = symbol_short!("CAPACITY");
+const PRIZE_POOL_KEY: Symbol = symbol_short!("PRIZE");
 // ── Timelock constant: 48 hours in seconds ────────────────────────────────────
 
 const TIMELOCK_PERIOD: u64 = 48 * 60 * 60;
@@ -336,14 +337,22 @@ impl ArenaContract {
             .map(|r| r.round_number)
             .unwrap_or(0u32);
 
+        let prize_pool: i128 = env
+            .storage()
+            .instance()
+            .get(&PRIZE_POOL_KEY)
+            .unwrap_or(0i128);
+
         ArenaState {
             survivors_count,
             max_capacity,
             round_number,
-            // The contract uses per-player Winner records rather than a global
-            // prize pool, so these aggregate financials are not tracked on-chain.
-            current_stake: 0,
-            potential_payout: 0,
+            current_stake: prize_pool,
+            potential_payout: if survivors_count > 0 {
+                prize_pool / survivors_count as i128
+            } else {
+                prize_pool
+            },
         }
     }
 
@@ -371,6 +380,16 @@ impl ArenaContract {
         env.storage()
             .instance()
             .set(&SURVIVOR_COUNT_KEY, &(count + 1));
+
+        // Accumulate prize pool for get_arena_state().
+        let pool: i128 = env
+            .storage()
+            .instance()
+            .get(&PRIZE_POOL_KEY)
+            .unwrap_or(0i128);
+        env.storage()
+            .instance()
+            .set(&PRIZE_POOL_KEY, &(pool + amount));
 
         Ok(())
     }

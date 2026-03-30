@@ -48,6 +48,7 @@ File: `contract/arena/src/lib.rs`
 | `P_AFTER` | `u64` | Earliest timestamp at which `execute_upgrade` may be called |
 | `S_COUNT` | `u32` | Running total of players registered via `join`; read by `get_arena_state` |
 | `CAPACITY` | `u32` | Maximum player capacity set by admin via `set_capacity`; read by `get_arena_state` |
+| `PRIZE` | `i128` | Cumulative prize pool — sum of all `amount` values passed to `join`; read by `get_arena_state` |
 
 ### Factory Contract
 
@@ -82,11 +83,20 @@ No custom Soroban storage keys are currently defined or used.
 | `propose_upgrade` ¹ | `ADMIN` (instance) | `P_HASH`, `P_AFTER` (instance) | — |
 | `execute_upgrade` ¹ | `ADMIN`, `P_AFTER`, `P_HASH` (instance) | removes `P_HASH`, `P_AFTER` (instance) | — |
 | `cancel_upgrade` ¹ | `ADMIN`, `P_HASH` (instance) | removes `P_HASH`, `P_AFTER` (instance) | — |
-| `join` | `Survivor(player)`, `S_COUNT` (instance) | `Survivor(player)`, `S_COUNT` (instance) | `Survivor(player)` |
+| `join` | `Survivor(player)`, `S_COUNT`, `PRIZE` (instance) | `Survivor(player)`, `S_COUNT`, `PRIZE` (instance) | `Survivor(player)` |
 | `set_capacity` | `ADMIN` (instance) | `CAPACITY` (instance) | — |
-| `get_arena_state` | `S_COUNT`, `CAPACITY` (instance), `Round` | — | — |
+| `get_arena_state` | `S_COUNT`, `CAPACITY`, `PRIZE` (instance), `Round` | — | — |
 
 ¹ Exempt from the global pause check — see [Emergency Pause Policy](#emergency-pause-policy) below.
+
+### `ArenaState` field semantics
+
+`get_arena_state()` returns an `ArenaState` struct. Two financial fields deserve explicit documentation:
+
+| Field | Value | Semantics |
+| --- | --- | --- |
+| `current_stake` | `PRIZE` (total pool) | Sum of all `amount` values accumulated via `join()`. Represents the total value locked in the arena. |
+| `potential_payout` | `PRIZE / S_COUNT` | Per-survivor expected payout — `current_stake` divided by the number of current survivors. When no survivors have joined (`S_COUNT == 0`), falls back to `current_stake` (i.e. 0 before any players join). |
 
 ## TTL Policy Baseline
 

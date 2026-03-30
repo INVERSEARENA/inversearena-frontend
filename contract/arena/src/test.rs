@@ -1491,3 +1491,39 @@ fn get_arena_state_is_pure_read() {
     let state_b = client.get_arena_state();
     assert_eq!(state_a, state_b, "repeated calls must return identical state");
 }
+
+/// `potential_payout` equals `prize_pool / survivors_count` and `current_stake`
+/// equals the total prize pool accumulated from all `join()` calls.
+#[test]
+fn get_arena_state_potential_payout_divides_by_survivors() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = create_client(&env);
+
+    let player_a = Address::generate(&env);
+    let player_b = Address::generate(&env);
+    let player_c = Address::generate(&env);
+
+    // Before any joins: both fields are 0 (no pool, no survivors).
+    let state = client.get_arena_state();
+    assert_eq!(state.current_stake, 0);
+    assert_eq!(state.potential_payout, 0);
+
+    // One survivor with stake 300: potential_payout == current_stake.
+    client.join(&player_a, &300i128);
+    let state = client.get_arena_state();
+    assert_eq!(state.current_stake, 300);
+    assert_eq!(state.potential_payout, 300); // 300 / 1
+
+    // Two survivors (300 + 300 = 600): potential_payout is per-survivor share.
+    client.join(&player_b, &300i128);
+    let state = client.get_arena_state();
+    assert_eq!(state.current_stake, 600);
+    assert_eq!(state.potential_payout, 300); // 600 / 2
+
+    // Three survivors (600 + 300 = 900): per-survivor share is 300.
+    client.join(&player_c, &300i128);
+    let state = client.get_arena_state();
+    assert_eq!(state.current_stake, 900);
+    assert_eq!(state.potential_payout, 300); // 900 / 3
+}
