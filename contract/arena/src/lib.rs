@@ -815,6 +815,26 @@ impl ArenaContract {
                 &Symbol::new(&env, "decrement_participation"),
                 Vec::from_array(&env, [(&winner).into_val(&env)]),
             );
+
+            // Best-effort stats update callback for leaderboard accounting.
+            // Arena currently does not persist a participant list, so winner-only
+            // update is sent here as a minimal completion signal.
+            let players = Vec::from_array(&env, [winner.clone()]);
+            let rounds_survived = Vec::from_array(&env, [0u32]);
+            let _stats_update_result: Result<(), soroban_sdk::Error> = env.invoke_contract(
+                &factory,
+                &Symbol::new(&env, "update_arena_status"),
+                Vec::from_array(
+                    &env,
+                    [
+                        (&winner).into_val(&env),
+                        (&players).into_val(&env),
+                        (&rounds_survived).into_val(&env),
+                        (&0i128).into_val(&env),
+                        (&prize).into_val(&env),
+                    ],
+                ),
+            );
         }
         
         env.events()

@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    Address, BytesN, Env, IntoVal, Symbol, contract, contracterror, contractimpl, contracttype,
+    Address, BytesN, Env, IntoVal, Symbol, Vec, contract, contracterror, contractimpl, contracttype,
     symbol_short, xdr::ToXdr,
 };
 
@@ -33,6 +33,17 @@ pub struct ArenaMetadata {
     pub stake_amount: i128,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlayerStats {
+    pub arenas_entered: u32,
+    pub arenas_won: u32,
+    pub total_rounds_survived: u32,
+    pub total_entry_fees_paid: i128,
+    pub total_winnings: i128,
+    pub win_rate_bps: u32,
+}
+
 // ── Capacity limits ───────────────────────────────────────────────────────────
 
 const MAX_POOL_CAPACITY: u32 = 256;
@@ -43,6 +54,7 @@ const MAX_PAGE_SIZE: u32 = 50;
 pub enum DataKey {
     SupportedToken(Address),
     Pool(u32),
+    PlayerStats(Address),
 }
 
 // ── Timelock constant: 48 hours in seconds ────────────────────────────────────
@@ -73,6 +85,7 @@ const TOPIC_MIN_STAKE_UPDATED: Symbol = symbol_short!("MIN_UP");
 const TOPIC_PARTICIPATION_INCREMENTED: Symbol = symbol_short!("PART_INC");
 const TOPIC_PARTICIPATION_DECREMENTED: Symbol = symbol_short!("PART_DEC");
 const TOPIC_PARTICIPATION_LIMIT_UPDATED: Symbol = symbol_short!("PART_UP");
+const TOPIC_PLAYER_STATS_UPDATED: Symbol = symbol_short!("P_STAT");
 
 /// Event payload version. Include in every event data tuple so consumers
 /// can detect schema changes without re-deploying indexers.
@@ -118,6 +131,8 @@ pub enum Error {
     UpgradeAlreadyPending = 14,
     /// Player has reached the maximum concurrent arena participations limit.
     ParticipationLimitExceeded = 15,
+    /// Invalid input for arena status update callback.
+    InvalidStatusInput = 16,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -408,6 +423,62 @@ impl FactoryContract {
     pub fn get_participation_count(env: Env, player: Address) -> u32 {
         let key = (ACTIVE_PARTICIPATIONS_PREFIX, player);
         env.storage().instance().get(&key).unwrap_or(0u32)
+    }
+
+    /// Return total arenas created so far.
+    pub fn total_arenas_created(env: Env) -> u32 {
+        env.storage().instance().get(&POOL_COUNT_KEY).unwrap_or(0u32)
+    }
+
+    /// Update player leaderboard stats for a completed arena.
+    ///
+    /// This callback is designed to be invoked by arena completion flows and
+    /// updates all participants atomically.
+    pub fn update_arena_status(
+        env: Env,
+        winner: Address,
+        players: Vec<Address>,
+        rounds_survived: Vec<u32>,
+        entry_fee: i128,
+        winnings: i128,
+    ) -> Result<(), Error> {
+        require_admin(&env)?;
+
+        if players.len() != rounds_survived.len() {
+            return Err(Error::InvalidStatusInput);
+        }
+
+        for i in 0..players.len() {
+            let player = players.get(i).ok_or(Error::InvalidStatusInput)?;
+            let survived = rounds_survived
+                .get(i)
+                .ok_or(Error::InvalidStatusInput)?;
+
+            let mut stats = read_player_stats(&env, player.clone());
+            stats.arenas_entered = stats.arenas_entered.saturating_add(1);
+            stats.total_rounds_survived = stats.total_rounds_survived.saturating_add(survived);
+            stats.total_entry_fees_paid = stats.total_entry_fees_paid.saturating_add(entry_fee);
+
+            if player == winner {
+                stats.arenas_won = stats.arenas_won.saturating_add(1);
+                stats.total_winnings = stats.total_winnings.saturating_add(winnings);
+            }
+
+            stats.win_rate_bps = compute_win_rate_bps(stats.arenas_won, stats.arenas_entered);
+            write_player_stats(&env, player.clone(), &stats);
+
+            env.events().publish(
+                (TOPIC_PLAYER_STATS_UPDATED,),
+                (EVENT_VERSION, player, stats.arenas_entered, stats.arenas_won, stats.win_rate_bps),
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Return player stats or a zero-value record when the player has no history.
+    pub fn get_player_stats(env: Env, player: Address) -> PlayerStats {
+        read_player_stats(&env, player)
     }
 
     /// Create a new pool (arena). Only admin or whitelisted hosts can call this.
@@ -785,6 +856,38 @@ fn require_admin(env: &Env) -> Result<Address, Error> {
         .instance()
         .get(&ADMIN_KEY)
         .ok_or(Error::NotInitialized)
+}
+
+fn zero_player_stats() -> PlayerStats {
+    PlayerStats {
+        arenas_entered: 0,
+        arenas_won: 0,
+        total_rounds_survived: 0,
+        total_entry_fees_paid: 0,
+        total_winnings: 0,
+        win_rate_bps: 0,
+    }
+}
+
+fn compute_win_rate_bps(arenas_won: u32, arenas_entered: u32) -> u32 {
+    if arenas_entered == 0 {
+        0
+    } else {
+        ((arenas_won as u64 * 10_000u64) / arenas_entered as u64) as u32
+    }
+}
+
+fn read_player_stats(env: &Env, player: Address) -> PlayerStats {
+    env.storage()
+        .persistent()
+        .get::<_, PlayerStats>(&DataKey::PlayerStats(player))
+        .unwrap_or_else(zero_player_stats)
+}
+
+fn write_player_stats(env: &Env, player: Address, stats: &PlayerStats) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::PlayerStats(player), stats);
 }
 
 #[cfg(test)]

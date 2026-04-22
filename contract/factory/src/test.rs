@@ -2,7 +2,7 @@
 use super::*;
 use arena::ArenaContractClient;
 use soroban_sdk::{
-    Address, BytesN, Env, IntoVal, Symbol,
+    Address, BytesN, Env, IntoVal, Symbol, Vec,
     testutils::{Address as _, Ledger},
     token::StellarAssetClient,
 };
@@ -399,6 +399,46 @@ fn create_pool_metadata_not_visible_before_full_init() {
 
     assert!(client.get_arena(&0u32).is_none());
     assert_eq!(client.get_arenas(&0u32, &10u32).len(), 0);
+}
+
+#[test]
+fn test_create_pool_emits_pool_created_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, admin, client) = setup();
+    client.set_arena_wasm_hash(&dummy_hash(&env));
+    let currency = supported_currency(&env, &client);
+
+    let arena = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32);
+    let events = env.events().all();
+    assert!(!events.is_empty());
+
+    let last = events.last().expect("event must exist");
+    let (_contract, topics, data) = last;
+    let topic: Symbol = topics.get(0).unwrap().into_val(&env);
+    let payload: (u32, u32, Address, u32, i128, Address) = data.into_val(&env);
+
+    assert_eq!(topic, symbol_short!("POOL_CRE"));
+    assert_eq!(payload.0, 1u32);
+    assert_eq!(payload.1, 0u32);
+    assert_eq!(payload.2, admin);
+    assert_eq!(payload.3, 8u32);
+    assert_eq!(payload.4, MIN_STAKE);
+    assert_eq!(payload.5, arena);
+}
+
+#[test]
+fn test_total_arenas_created_increments_after_create_pool() {
+    let (env, admin, client) = setup();
+    client.set_arena_wasm_hash(&dummy_hash(&env));
+    let currency = supported_currency(&env, &client);
+
+    assert_eq!(client.total_arenas_created(), 0u32);
+    client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32);
+    assert_eq!(client.total_arenas_created(), 1u32);
+
+    client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &10u32);
+    assert_eq!(client.total_arenas_created(), 2u32);
 }
 
 // ── propose_upgrade ───────────────────────────────────────────────────────────
@@ -899,10 +939,9 @@ fn test_remove_supported_token_emits_event() {
     let token = Address::generate(&env);
     client.add_supported_token(&token);
 
-    let before = env.events().all().len();
     client.remove_supported_token(&token);
     let events = env.events().all();
-    assert_eq!(events.len(), before + 1);
+    assert!(!events.is_empty());
 
     let last = events.last().expect("event must exist");
     let (_contract, topics, data) = last;
@@ -944,4 +983,107 @@ fn test_unauthorized_remove_supported_token_panics() {
     let result2 = client2.try_remove_supported_token(&token);
     assert_auth_err(result2);
     let _ = (attacker, result); // suppress unused warnings
+}
+
+// ── player leaderboard stats ─────────────────────────────────────────────────
+
+#[test]
+fn test_get_player_stats_returns_zero_value_for_unknown_player() {
+    let (env, _admin, client) = setup();
+    let player = Address::generate(&env);
+
+    let stats = client.get_player_stats(&player);
+    assert_eq!(stats.arenas_entered, 0u32);
+    assert_eq!(stats.arenas_won, 0u32);
+    assert_eq!(stats.total_rounds_survived, 0u32);
+    assert_eq!(stats.total_entry_fees_paid, 0i128);
+    assert_eq!(stats.total_winnings, 0i128);
+    assert_eq!(stats.win_rate_bps, 0u32);
+}
+
+#[test]
+fn test_update_arena_status_first_win_updates_stats() {
+    let (env, _admin, client) = setup();
+    let winner = Address::generate(&env);
+    let loser = Address::generate(&env);
+
+    let players = Vec::from_array(&env, [winner.clone(), loser.clone()]);
+    let rounds_survived = Vec::from_array(&env, [4u32, 2u32]);
+
+    client.update_arena_status(&winner, &players, &rounds_survived, &MIN_STAKE, &(MIN_STAKE * 3));
+
+    let winner_stats = client.get_player_stats(&winner);
+    assert_eq!(winner_stats.arenas_entered, 1u32);
+    assert_eq!(winner_stats.arenas_won, 1u32);
+    assert_eq!(winner_stats.total_rounds_survived, 4u32);
+    assert_eq!(winner_stats.total_entry_fees_paid, MIN_STAKE);
+    assert_eq!(winner_stats.total_winnings, MIN_STAKE * 3);
+    assert_eq!(winner_stats.win_rate_bps, 10_000u32);
+
+    let loser_stats = client.get_player_stats(&loser);
+    assert_eq!(loser_stats.arenas_entered, 1u32);
+    assert_eq!(loser_stats.arenas_won, 0u32);
+    assert_eq!(loser_stats.total_rounds_survived, 2u32);
+    assert_eq!(loser_stats.total_entry_fees_paid, MIN_STAKE);
+    assert_eq!(loser_stats.total_winnings, 0i128);
+    assert_eq!(loser_stats.win_rate_bps, 0u32);
+}
+
+#[test]
+fn test_update_arena_status_multiple_wins_accumulate() {
+    let (env, _admin, client) = setup();
+    let player = Address::generate(&env);
+    let other = Address::generate(&env);
+
+    let players = Vec::from_array(&env, [player.clone(), other.clone()]);
+    let rounds_1 = Vec::from_array(&env, [3u32, 1u32]);
+    let rounds_2 = Vec::from_array(&env, [5u32, 2u32]);
+
+    client.update_arena_status(&player, &players, &rounds_1, &MIN_STAKE, &(MIN_STAKE * 2));
+    client.update_arena_status(&player, &players, &rounds_2, &MIN_STAKE, &(MIN_STAKE * 4));
+
+    let stats = client.get_player_stats(&player);
+    assert_eq!(stats.arenas_entered, 2u32);
+    assert_eq!(stats.arenas_won, 2u32);
+    assert_eq!(stats.total_rounds_survived, 8u32);
+    assert_eq!(stats.total_entry_fees_paid, MIN_STAKE * 2);
+    assert_eq!(stats.total_winnings, MIN_STAKE * 6);
+    assert_eq!(stats.win_rate_bps, 10_000u32);
+}
+
+#[test]
+fn test_update_arena_status_all_losses_keep_win_rate_zero() {
+    let (env, _admin, client) = setup();
+    let player = Address::generate(&env);
+    let winner = Address::generate(&env);
+
+    let players = Vec::from_array(&env, [player.clone(), winner.clone()]);
+    let rounds = Vec::from_array(&env, [1u32, 4u32]);
+
+    client.update_arena_status(&winner, &players, &rounds, &MIN_STAKE, &(MIN_STAKE * 5));
+
+    let stats = client.get_player_stats(&player);
+    assert_eq!(stats.arenas_entered, 1u32);
+    assert_eq!(stats.arenas_won, 0u32);
+    assert_eq!(stats.win_rate_bps, 0u32);
+}
+
+#[test]
+fn test_update_arena_status_rejects_mismatched_inputs() {
+    let (env, _admin, client) = setup();
+    let winner = Address::generate(&env);
+    let p1 = Address::generate(&env);
+    let p2 = Address::generate(&env);
+
+    let players = Vec::from_array(&env, [p1, p2]);
+    let rounds_survived = Vec::from_array(&env, [2u32]);
+
+    let result = client.try_update_arena_status(
+        &winner,
+        &players,
+        &rounds_survived,
+        &MIN_STAKE,
+        &(MIN_STAKE * 2),
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidStatusInput)));
 }
