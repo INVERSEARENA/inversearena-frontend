@@ -21,6 +21,7 @@ const PRIZE_POOL_KEY: Symbol = symbol_short!("PRIZE_P");
 const GAME_STATUS_KEY: Symbol = symbol_short!("G_STATUS");
 const GAME_FINISHED_KEY: Symbol = symbol_short!("G_FIN");
 const WINNER_SET_KEY: Symbol = symbol_short!("W_SET");
+const STATE_KEY: Symbol = symbol_short!("STATE");
 
 // ── Timelock: 48 hours in seconds ─────────────────────────────────────────────
 const TIMELOCK_PERIOD: u64 = 48 * 60 * 60;
@@ -41,6 +42,7 @@ const TOPIC_ROUND_RESOLVED: Symbol = symbol_short!("RSLVD");
 const TOPIC_WINNER_SET: Symbol = symbol_short!("WIN_SET");
 const TOPIC_CLAIM: Symbol = symbol_short!("CLAIM");
 const TOPIC_LEAVE: Symbol = symbol_short!("LEAVE");
+const TOPIC_STATE_CHANGED: Symbol = symbol_short!("ST_CHG");
 
 const EVENT_VERSION: u32 = 1;
 
@@ -121,11 +123,39 @@ pub struct ArenaStateView {
     pub potential_payout: i128,
 }
 
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UserStateView {
     pub is_active: bool,
     pub has_won: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ArenaState {
+    Pending,
+    Active,
+    Completed,
+    Cancelled,
+}
+
+impl ArenaState {
+    pub fn is_terminal_state(&self) -> bool {
+        matches!(self, ArenaState::Completed | ArenaState::Cancelled)
+    }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArenaStateChanged {
+    pub old_state: ArenaState,
+    pub new_state: ArenaState,
+}
+
+macro_rules! assert_state {
+    ($current:expr, $expected:pat) => {
+        match $current {
+            $expected => {},
+            _ => panic!("Invalid state transition: current state {:?} is not allowed for this operation", $current),
+        }
+    };
 }
 
 #[contracttype]
@@ -152,6 +182,7 @@ enum DataKey {
     Eliminated(Address),
     PrizeClaimed(Address),
     Winner(Address),
+    State,
 }
 
 
@@ -200,6 +231,7 @@ impl ArenaContract {
             },
         );
         bump(&env, &DataKey::Round);
+        set_state(&env, ArenaState::Pending);
         Ok(())
     }
 
@@ -305,6 +337,8 @@ impl ArenaContract {
         yield_comp: i128,
     ) -> Result<(), ArenaError> {
         require_not_paused(&env)?;
+        let current_state = get_state(&env);
+        assert_state!(current_state, ArenaState::Active);
         let admin = Self::admin(env.clone());
         admin.require_auth();
         if !storage(&env).has(&DataKey::Survivor(player.clone())) {
@@ -343,6 +377,8 @@ impl ArenaContract {
     pub fn join(env: Env, player: Address, amount: i128) -> Result<(), ArenaError> {
         player.require_auth();
         require_not_paused(&env)?;
+        let current_state = get_state(&env);
+        assert_state!(current_state, ArenaState::Pending);
         // Ensure the arena has been configured before accepting deposits
         let config = get_config(&env)?;
         if env
@@ -408,6 +444,8 @@ impl ArenaContract {
     pub fn leave(env: Env, player: Address) -> Result<i128, ArenaError> {
         player.require_auth();
         require_not_paused(&env)?;
+        let current_state = get_state(&env);
+        assert_state!(current_state, ArenaState::Pending);
         // Only allowed before round 1 starts
         let round = get_round(&env)?;
         if round.round_number != 0 {
@@ -449,6 +487,8 @@ impl ArenaContract {
 
     pub fn start_round(env: Env) -> Result<RoundState, ArenaError> {
         require_not_paused(&env)?;
+        let current_state = get_state(&env);
+        assert_state!(current_state, ArenaState::Pending | ArenaState::Active);
         if env
             .storage()
             .instance()
@@ -500,6 +540,11 @@ impl ArenaContract {
 
         storage(&env).set(&DataKey::Round, &next_round);
         bump(&env, &DataKey::Round);
+
+        if next_round.round_number == 1 {
+            set_state(&env, ArenaState::Active);
+        }
+
         env.events().publish(
             (TOPIC_ROUND_STARTED,),
             (
@@ -519,6 +564,8 @@ impl ArenaContract {
         choice: Choice,
     ) -> Result<(), ArenaError> {
         require_not_paused(&env)?;
+        let current_state = get_state(&env);
+        assert_state!(current_state, ArenaState::Active);
         env.storage()
             .instance()
             .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
@@ -584,6 +631,8 @@ impl ArenaContract {
 
     pub fn timeout_round(env: Env) -> Result<RoundState, ArenaError> {
         require_not_paused(&env)?;
+        let current_state = get_state(&env);
+        assert_state!(current_state, ArenaState::Active);
         env.storage()
             .instance()
             .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
@@ -621,6 +670,8 @@ impl ArenaContract {
 
     pub fn resolve_round(env: Env) -> Result<RoundState, ArenaError> {
         require_not_paused(&env)?;
+        let current_state = get_state(&env);
+        assert_state!(current_state, ArenaState::Active);
         env.storage()
             .instance()
             .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
@@ -703,6 +754,10 @@ impl ArenaContract {
         storage(&env).set(&DataKey::Round, &round);
         bump(&env, &DataKey::Round);
 
+        if round.finished {
+            set_state(&env, ArenaState::Completed);
+        }
+
         env.events().publish(
             (TOPIC_ROUND_RESOLVED,),
             (
@@ -721,6 +776,8 @@ impl ArenaContract {
 
     pub fn claim(env: Env, winner: Address) -> Result<i128, ArenaError> {
         require_not_paused(&env)?;
+        let current_state = get_state(&env);
+        assert_state!(current_state, ArenaState::Completed);
         winner.require_auth();
         if !env
             .storage()
@@ -930,6 +987,25 @@ impl ArenaContract {
             _ => None,
         }
     }
+
+    pub fn cancel_arena(env: Env) -> Result<(), ArenaError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN_KEY)
+            .ok_or(ArenaError::NotInitialized)?;
+        admin.require_auth();
+
+        let current_state = get_state(&env);
+        assert_state!(current_state, ArenaState::Pending | ArenaState::Active);
+
+        set_state(&env, ArenaState::Cancelled);
+        Ok(())
+    }
+
+    pub fn state(env: Env) -> ArenaState {
+        get_state(&env)
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -986,6 +1062,27 @@ fn outcome_symbol(outcome: &Option<Choice>) -> Symbol {
     }
 }
 
+fn get_state(env: &Env) -> ArenaState {
+    storage(env)
+        .get(&DataKey::State)
+        .unwrap_or(ArenaState::Pending)
+}
+
+fn set_state(env: &Env, new_state: ArenaState) {
+    let old_state = get_state(env);
+    if old_state == new_state {
+        return;
+    }
+    storage(env).set(&DataKey::State, &new_state);
+    env.events().publish(
+        (TOPIC_STATE_CHANGED,),
+        ArenaStateChanged {
+            old_state,
+            new_state,
+        },
+    );
+}
+
 fn bump(env: &Env, key: &DataKey) {
     env.storage()
         .persistent()
@@ -996,5 +1093,7 @@ fn bump(env: &Env, key: &DataKey) {
 mod abi_guard;
 #[cfg(all(test, feature = "integration-tests"))]
 mod integration_tests;
+#[cfg(test)]
+mod state_machine_tests;
 #[cfg(test)]
 mod test;
