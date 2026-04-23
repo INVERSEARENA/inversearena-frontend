@@ -20,6 +20,7 @@ fn test_initial_state_is_pending() {
     client.initialize(&admin);
     let deadline = env.ledger().timestamp() + 7200;
     client.init(&5, &100, &deadline);
+    client.init(&5, &100);
     assert_eq!(client.state(), ArenaState::Pending);
 }
 
@@ -58,6 +59,7 @@ fn test_cannot_join_after_active() {
     client.set_token(&token_id);
     let deadline = env.ledger().timestamp() + 7200;
     client.init(&5, &100, &deadline);
+    client.init(&5, &100);
 
     let p1 = Address::generate(&env);
     let p2 = Address::generate(&env);

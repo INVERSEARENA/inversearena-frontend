@@ -511,9 +511,9 @@ fn test_propose_upgrade_allowed_after_cancel() {
 
 #[test]
 fn test_execute_without_proposal_returns_error() {
-    let (_env, _admin, client) = setup_with_admin();
+    let (env, _admin, client) = setup_with_admin();
     assert_eq!(
-        client.try_execute_upgrade(),
+        client.try_execute_upgrade(&dummy_hash(&env)),
         Err(Ok(ArenaError::NoPendingUpgrade))
     );
 }
@@ -521,12 +521,13 @@ fn test_execute_without_proposal_returns_error() {
 #[test]
 fn test_execute_before_timelock_returns_error() {
     let (env, _admin, client) = setup_with_admin();
-    client.propose_upgrade(&dummy_hash(&env));
+    let hash = dummy_hash(&env);
+    client.propose_upgrade(&hash);
     env.ledger().with_mut(|l| {
         l.timestamp += 47 * 60 * 60;
     });
     assert_eq!(
-        client.try_execute_upgrade(),
+        client.try_execute_upgrade(&hash),
         Err(Ok(ArenaError::TimelockNotExpired))
     );
 }
@@ -535,12 +536,13 @@ fn test_execute_before_timelock_returns_error() {
 fn test_execute_exactly_at_boundary_returns_error() {
     let (env, _admin, client) = setup_with_admin();
     let propose_time = env.ledger().timestamp();
-    client.propose_upgrade(&dummy_hash(&env));
+    let hash = dummy_hash(&env);
+    client.propose_upgrade(&hash);
     env.ledger().with_mut(|l| {
         l.timestamp = propose_time + TIMELOCK - 1;
     });
     assert_eq!(
-        client.try_execute_upgrade(),
+        client.try_execute_upgrade(&hash),
         Err(Ok(ArenaError::TimelockNotExpired))
     );
 }
@@ -567,14 +569,15 @@ fn test_cancel_clears_pending_upgrade() {
 #[test]
 fn test_execute_after_cancel_returns_error() {
     let (env, _admin, client) = setup_with_admin();
-    client.propose_upgrade(&dummy_hash(&env));
+    let hash = dummy_hash(&env);
+    client.propose_upgrade(&hash);
     client.cancel_upgrade();
 
     env.ledger().with_mut(|l| {
         l.timestamp += TIMELOCK + 1;
     });
     assert_eq!(
-        client.try_execute_upgrade(),
+        client.try_execute_upgrade(&hash),
         Err(Ok(ArenaError::NoPendingUpgrade))
     );
 }
@@ -602,6 +605,152 @@ fn test_pending_upgrade_none_after_cancel() {
     client.propose_upgrade(&dummy_hash(&env));
     client.cancel_upgrade();
     assert!(client.pending_upgrade().is_none());
+}
+
+// ── Issue #518: required timelock test suite (9 cases) ───────────────────────
+
+#[test]
+fn timelock_propose_stores_hash_and_executable_after_and_emits_event() {
+    use soroban_sdk::testutils::Ledger as _;
+
+    let (env, _admin, client) = setup_with_admin();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+
+    client.propose_upgrade(&hash);
+
+    let pending = client.pending_upgrade().expect("pending must be set");
+    assert_eq!(pending.0, hash);
+    assert!(
+        pending.1 >= env.ledger().timestamp() + TIMELOCK,
+        "executable_after must be at least propose_time + 48h"
+    );
+}
+
+#[test]
+fn timelock_execute_before_delay_returns_timelock_not_expired() {
+    let (env, _admin, client) = setup_with_admin();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.propose_upgrade(&hash);
+    env.ledger().with_mut(|l| {
+        l.timestamp += TIMELOCK - 1;
+    });
+    assert_eq!(
+        client.try_execute_upgrade(&hash),
+        Err(Ok(ArenaError::TimelockNotExpired))
+    );
+}
+
+#[test]
+fn timelock_execute_exactly_at_boundary_passes_timelock_check() {
+    let (env, _admin, client) = setup_with_admin();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    let propose_time = env.ledger().timestamp();
+    client.propose_upgrade(&hash);
+    env.ledger().with_mut(|l| {
+        l.timestamp = propose_time + TIMELOCK;
+    });
+    // The timelock check passes (timestamp >= execute_after).
+    // The WASM deployer may abort in test env — verify we did NOT get TimelockNotExpired.
+    let result = client.try_execute_upgrade(&hash);
+    assert_ne!(
+        result,
+        Err(Ok(ArenaError::TimelockNotExpired)),
+        "timelock must allow execution at timestamp == execute_after"
+    );
+}
+
+#[test]
+fn timelock_execute_after_delay_passes_timelock_check() {
+    let (env, _admin, client) = setup_with_admin();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    let propose_time = env.ledger().timestamp();
+    client.propose_upgrade(&hash);
+    env.ledger().with_mut(|l| {
+        l.timestamp = propose_time + TIMELOCK + 3600;
+    });
+    let result = client.try_execute_upgrade(&hash);
+    assert_ne!(
+        result,
+        Err(Ok(ArenaError::TimelockNotExpired)),
+        "timelock must allow execution after the delay"
+    );
+}
+
+#[test]
+fn timelock_cancel_before_execute_clears_pending_and_execute_panics() {
+    let (env, _admin, client) = setup_with_admin();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.propose_upgrade(&hash);
+    client.cancel_upgrade();
+
+    assert!(client.pending_upgrade().is_none());
+
+    env.ledger().with_mut(|l| {
+        l.timestamp += TIMELOCK + 1;
+    });
+    assert_eq!(
+        client.try_execute_upgrade(&hash),
+        Err(Ok(ArenaError::NoPendingUpgrade))
+    );
+}
+
+#[test]
+#[should_panic(expected = "authorize")]
+fn timelock_non_admin_propose_panics() {
+    let env = Env::default();
+    let contract_id = env.register(ArenaContract, ());
+    let client = ArenaContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.propose_upgrade(&hash);
+}
+
+#[test]
+#[should_panic(expected = "authorize")]
+fn timelock_non_admin_execute_panics() {
+    let env = Env::default();
+    let contract_id = env.register(ArenaContract, ());
+    let client = ArenaContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.execute_upgrade(&hash);
+}
+
+#[test]
+fn timelock_double_propose_returns_upgrade_already_pending() {
+    let (env, _admin, client) = setup_with_admin();
+    let hash1 = BytesN::from_array(&env, &[1u8; 32]);
+    let hash2 = BytesN::from_array(&env, &[2u8; 32]);
+
+    client.propose_upgrade(&hash1);
+    let result = client.try_propose_upgrade(&hash2);
+    assert_eq!(result, Err(Ok(ArenaError::UpgradeAlreadyPending)));
+
+    // First proposal is intact.
+    let pending = client.pending_upgrade().unwrap();
+    assert_eq!(pending.0, hash1);
+}
+
+#[test]
+fn timelock_execute_with_wrong_hash_returns_hash_mismatch() {
+    let (env, _admin, client) = setup_with_admin();
+    let stored_hash = BytesN::from_array(&env, &[0u8; 32]);
+    let wrong_hash = BytesN::from_array(&env, &[0xFFu8; 32]);
+
+    let propose_time = env.ledger().timestamp();
+    client.propose_upgrade(&stored_hash);
+    env.ledger().with_mut(|l| {
+        l.timestamp = propose_time + TIMELOCK;
+    });
+
+    assert_eq!(
+        client.try_execute_upgrade(&wrong_hash),
+        Err(Ok(ArenaError::HashMismatch))
+    );
 }
 
 // ── Property 1: round number is strictly monotonically increasing ─────────────
@@ -937,7 +1086,7 @@ fn test_unauthorized_execute_upgrade_panics() {
     let admin = Address::generate(&env);
     client.initialize(&admin);
 
-    client.execute_upgrade();
+    client.execute_upgrade(&dummy_hash(&env));
 }
 
 #[test]

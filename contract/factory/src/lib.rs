@@ -161,6 +161,8 @@ pub enum Error {
     NoPendingFeeUpdate = 20,
     /// Provided fee exceeds `MAX_WIN_FEE_BPS` (2000).
     FeeTooHigh = 21,
+    /// The hash provided to `execute_upgrade` does not match the stored proposal hash.
+    HashMismatch = 17,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -808,7 +810,7 @@ impl FactoryContract {
     ///
     /// # Events
     /// Emits `UpgradeExecuted(new_wasm_hash)`.
-    pub fn execute_upgrade(env: Env) -> Result<(), Error> {
+    pub fn execute_upgrade(env: Env, expected_hash: BytesN<32>) -> Result<(), Error> {
         let admin = require_admin(&env)?;
         admin.require_auth();
 
@@ -830,11 +832,15 @@ impl FactoryContract {
             return Err(Error::TimelockNotExpired);
         }
 
-        let new_wasm_hash: BytesN<32> = env
+        let stored_hash: BytesN<32> = env
             .storage()
             .instance()
             .get(&PENDING_HASH_KEY)
             .ok_or(Error::MalformedUpgradeState)?;
+
+        if stored_hash != expected_hash {
+            return Err(Error::HashMismatch);
+        }
 
         // Clear pending state before upgrading.
         env.storage().instance().remove(&PENDING_HASH_KEY);
@@ -842,10 +848,10 @@ impl FactoryContract {
 
         env.events().publish(
             (TOPIC_UPGRADE_EXECUTED,),
-            (EVENT_VERSION, new_wasm_hash.clone()),
+            (EVENT_VERSION, stored_hash.clone()),
         );
 
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        env.deployer().update_current_contract_wasm(stored_hash);
         Ok(())
     }
 

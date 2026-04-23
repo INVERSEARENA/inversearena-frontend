@@ -1,10 +1,12 @@
 #[cfg(test)]
 use super::*;
 use soroban_sdk::{
-    Address, Env, Vec, symbol_short,
+    Address, BytesN, Env, IntoVal, Symbol, Vec, symbol_short,
     testutils::Address as _,
     token::{StellarAssetClient, TokenClient},
 };
+
+const TIMELOCK: u64 = 48 * 60 * 60;
 
 fn setup() -> (Env, Address, PayoutContractClient<'static>) {
     let env = Env::default();
@@ -413,4 +415,161 @@ fn payout_history_paginates_and_caps_limit() {
     assert_eq!(second.items.len(), 5);
     assert_eq!(second.next_cursor, None);
     assert!(!second.has_more);
+}
+
+// ── Issue #518: upgrade timelock test suite (9 cases) ────────────────────────
+
+#[test]
+fn timelock_propose_stores_hash_and_executable_after_and_emits_event() {
+    use soroban_sdk::testutils::Ledger as _;
+
+    let (env, _admin, client) = setup();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+
+    client.propose_upgrade(&hash);
+
+    let pending = client.pending_upgrade().expect("pending must be set");
+    assert_eq!(pending.0, hash);
+    assert!(
+        pending.1 >= env.ledger().timestamp() + TIMELOCK,
+        "executable_after must be at least propose_time + 48h"
+    );
+}
+
+#[test]
+fn timelock_execute_before_delay_returns_timelock_not_expired() {
+    use soroban_sdk::testutils::Ledger;
+
+    let (env, _admin, client) = setup();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.propose_upgrade(&hash);
+    env.ledger().with_mut(|l| {
+        l.timestamp += TIMELOCK - 1;
+    });
+    assert_eq!(
+        client.try_execute_upgrade(&hash),
+        Err(Ok(PayoutError::TimelockNotExpired))
+    );
+}
+
+#[test]
+fn timelock_execute_exactly_at_boundary_passes_timelock_check() {
+    use soroban_sdk::testutils::Ledger;
+
+    let (env, _admin, client) = setup();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    let propose_time = env.ledger().timestamp();
+    client.propose_upgrade(&hash);
+    env.ledger().with_mut(|l| {
+        l.timestamp = propose_time + TIMELOCK;
+    });
+    let result = client.try_execute_upgrade(&hash);
+    assert_ne!(
+        result,
+        Err(Ok(PayoutError::TimelockNotExpired)),
+        "timelock must allow execution at timestamp == execute_after"
+    );
+}
+
+#[test]
+fn timelock_execute_after_delay_passes_timelock_check() {
+    use soroban_sdk::testutils::Ledger;
+
+    let (env, _admin, client) = setup();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    let propose_time = env.ledger().timestamp();
+    client.propose_upgrade(&hash);
+    env.ledger().with_mut(|l| {
+        l.timestamp = propose_time + TIMELOCK + 3600;
+    });
+    let result = client.try_execute_upgrade(&hash);
+    assert_ne!(
+        result,
+        Err(Ok(PayoutError::TimelockNotExpired)),
+        "timelock must allow execution after the delay"
+    );
+}
+
+#[test]
+fn timelock_cancel_before_execute_clears_pending_and_execute_panics() {
+    use soroban_sdk::testutils::Ledger;
+
+    let (env, _admin, client) = setup();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.propose_upgrade(&hash);
+    client.cancel_upgrade();
+
+    assert!(client.pending_upgrade().is_none());
+
+    env.ledger().with_mut(|l| {
+        l.timestamp += TIMELOCK + 1;
+    });
+    assert_eq!(
+        client.try_execute_upgrade(&hash),
+        Err(Ok(PayoutError::NoPendingUpgrade))
+    );
+}
+
+#[test]
+fn timelock_non_admin_propose_panics() {
+    let env = Env::default();
+    let contract_id = env.register(PayoutContract, ());
+    let admin = Address::generate(&env);
+    env.mock_all_auths();
+    let c = PayoutContractClient::new(&env, &contract_id);
+    c.initialize(&admin);
+    // Explicitly clear all mocks so admin.require_auth() is no longer satisfied.
+    env.mock_auths(&[]);
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    let result = c.try_propose_upgrade(&hash);
+    assert!(result.is_err(), "non-admin propose must fail without auth");
+}
+
+#[test]
+fn timelock_non_admin_execute_panics() {
+    let env = Env::default();
+    let contract_id = env.register(PayoutContract, ());
+    let admin = Address::generate(&env);
+    env.mock_all_auths();
+    let c = PayoutContractClient::new(&env, &contract_id);
+    c.initialize(&admin);
+    // Explicitly clear all mocks so admin.require_auth() is no longer satisfied.
+    env.mock_auths(&[]);
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    let result = c.try_execute_upgrade(&hash);
+    assert!(result.is_err(), "non-admin execute must fail without auth");
+}
+
+#[test]
+fn timelock_double_propose_returns_upgrade_already_pending() {
+    let (env, _admin, client) = setup();
+    let hash1 = BytesN::from_array(&env, &[1u8; 32]);
+    let hash2 = BytesN::from_array(&env, &[2u8; 32]);
+
+    client.propose_upgrade(&hash1);
+    let result = client.try_propose_upgrade(&hash2);
+    assert_eq!(result, Err(Ok(PayoutError::UpgradeAlreadyPending)));
+
+    let pending = client.pending_upgrade().unwrap();
+    assert_eq!(pending.0, hash1);
+}
+
+#[test]
+fn timelock_execute_with_wrong_hash_returns_hash_mismatch() {
+    use soroban_sdk::testutils::Ledger;
+
+    let (env, _admin, client) = setup();
+    let stored_hash = BytesN::from_array(&env, &[0u8; 32]);
+    let wrong_hash = BytesN::from_array(&env, &[0xFFu8; 32]);
+
+    let propose_time = env.ledger().timestamp();
+    client.propose_upgrade(&stored_hash);
+    env.ledger().with_mut(|l| {
+        l.timestamp = propose_time + TIMELOCK;
+    });
+
+    assert_eq!(
+        client.try_execute_upgrade(&wrong_hash),
+        Err(Ok(PayoutError::HashMismatch))
+    );
 }

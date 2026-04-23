@@ -1,7 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    Address, Env, Symbol, contract, contracterror, contractimpl, contracttype, symbol_short, token,
+    Address, BytesN, Env, Symbol, contract, contracterror, contractimpl, contracttype, symbol_short,
+    token,
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -11,6 +12,12 @@ const PAUSED_KEY: Symbol = symbol_short!("PAUSED");
 const TOKEN_KEY: Symbol = symbol_short!("TOKEN");
 pub const TOTAL_STAKED_KEY: Symbol = symbol_short!("TSTAKE");
 const TOTAL_SHARES_KEY: Symbol = symbol_short!("TSHARES");
+const PENDING_HASH_KEY: Symbol = symbol_short!("P_HASH");
+const EXECUTE_AFTER_KEY: Symbol = symbol_short!("P_AFTER");
+
+// ── Timelock: 48 hours in seconds ─────────────────────────────────────────────
+const TIMELOCK_PERIOD: u64 = 48 * 60 * 60;
+const EVENT_VERSION: u32 = 1;
 
 // ── Event topics ──────────────────────────────────────────────────────────────
 
@@ -18,6 +25,9 @@ const TOPIC_PAUSED: Symbol = symbol_short!("PAUSED");
 const TOPIC_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
 const TOPIC_STAKE: Symbol = symbol_short!("STAKED");
 const TOPIC_UNSTAKE: Symbol = symbol_short!("UNSTAKED");
+const TOPIC_UPGRADE_PROPOSED: Symbol = symbol_short!("UP_PROP");
+const TOPIC_UPGRADE_EXECUTED: Symbol = symbol_short!("UP_EXEC");
+const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("UP_CANC");
 
 // ── Error codes ───────────────────────────────────────────────────────────────
 
@@ -31,6 +41,10 @@ pub enum StakingError {
     InvalidAmount = 4,
     InsufficientShares = 5,
     ZeroShares = 6,
+    NoPendingUpgrade = 7,
+    TimelockNotExpired = 8,
+    UpgradeAlreadyPending = 9,
+    HashMismatch = 10,
 }
 
 // ── Storage key schema ────────────────────────────────────────────────────────
@@ -333,6 +347,74 @@ impl StakingContract {
             .publish((TOPIC_UNSTAKE,), (staker, tokens_returned, shares));
 
         Ok(tokens_returned)
+    }
+
+    // ── Upgrade timelock ─────────────────────────────────────────────────────
+
+    pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), StakingError> {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        if env.storage().instance().has(&PENDING_HASH_KEY) {
+            return Err(StakingError::UpgradeAlreadyPending);
+        }
+        let execute_after: u64 = env.ledger().timestamp() + TIMELOCK_PERIOD;
+        env.storage().instance().set(&PENDING_HASH_KEY, &new_wasm_hash);
+        env.storage().instance().set(&EXECUTE_AFTER_KEY, &execute_after);
+        env.events().publish(
+            (TOPIC_UPGRADE_PROPOSED,),
+            (EVENT_VERSION, new_wasm_hash, execute_after),
+        );
+        Ok(())
+    }
+
+    pub fn execute_upgrade(env: Env, expected_hash: BytesN<32>) -> Result<(), StakingError> {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        let execute_after: u64 = env
+            .storage()
+            .instance()
+            .get(&EXECUTE_AFTER_KEY)
+            .ok_or(StakingError::NoPendingUpgrade)?;
+        if env.ledger().timestamp() < execute_after {
+            return Err(StakingError::TimelockNotExpired);
+        }
+        let stored_hash: BytesN<32> = env
+            .storage()
+            .instance()
+            .get(&PENDING_HASH_KEY)
+            .ok_or(StakingError::NoPendingUpgrade)?;
+        if stored_hash != expected_hash {
+            return Err(StakingError::HashMismatch);
+        }
+        env.storage().instance().remove(&PENDING_HASH_KEY);
+        env.storage().instance().remove(&EXECUTE_AFTER_KEY);
+        env.events().publish(
+            (TOPIC_UPGRADE_EXECUTED,),
+            (EVENT_VERSION, stored_hash.clone()),
+        );
+        env.deployer().update_current_contract_wasm(stored_hash);
+        Ok(())
+    }
+
+    pub fn cancel_upgrade(env: Env) -> Result<(), StakingError> {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        if !env.storage().instance().has(&PENDING_HASH_KEY) {
+            return Err(StakingError::NoPendingUpgrade);
+        }
+        env.storage().instance().remove(&PENDING_HASH_KEY);
+        env.storage().instance().remove(&EXECUTE_AFTER_KEY);
+        env.events().publish((TOPIC_UPGRADE_CANCELLED,), (EVENT_VERSION,));
+        Ok(())
+    }
+
+    pub fn pending_upgrade(env: Env) -> Option<(BytesN<32>, u64)> {
+        let hash: Option<BytesN<32>> = env.storage().instance().get(&PENDING_HASH_KEY);
+        let after: Option<u64> = env.storage().instance().get(&EXECUTE_AFTER_KEY);
+        match (hash, after) {
+            (Some(h), Some(a)) => Some((h, a)),
+            _ => None,
+        }
     }
 }
 

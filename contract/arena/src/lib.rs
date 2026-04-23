@@ -97,6 +97,7 @@ pub enum ArenaError {
     DeadlineTooSoon = 42,
     DeadlineTooFar = 43,
     DeadlineNotReached = 44,
+    HashMismatch = 45,
 }
 
 #[contracttype]
@@ -1104,8 +1105,12 @@ impl ArenaContract {
         Ok(())
     }
 
-    pub fn execute_upgrade(env: Env) -> Result<(), ArenaError> {
-        let admin = Self::admin(env.clone());
+    pub fn execute_upgrade(env: Env, expected_hash: BytesN<32>) -> Result<(), ArenaError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN_KEY)
+            .ok_or(ArenaError::NotInitialized)?;
         admin.require_auth();
         let execute_after: u64 = env
             .storage()
@@ -1115,14 +1120,21 @@ impl ArenaContract {
         if env.ledger().timestamp() <= execute_after {
             return Err(ArenaError::TimelockNotExpired);
         }
-        let new_wasm_hash: BytesN<32> = env
+        let stored_hash: BytesN<32> = env
             .storage()
             .instance()
             .get(&PENDING_HASH_KEY)
             .ok_or(ArenaError::NoPendingUpgrade)?;
+        if stored_hash != expected_hash {
+            return Err(ArenaError::HashMismatch);
+        }
         env.storage().instance().remove(&PENDING_HASH_KEY);
         env.storage().instance().remove(&EXECUTE_AFTER_KEY);
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        env.events().publish(
+            (TOPIC_UPGRADE_EXECUTED,),
+            (EVENT_VERSION, stored_hash.clone()),
+        );
+        env.deployer().update_current_contract_wasm(stored_hash);
         Ok(())
     }
 

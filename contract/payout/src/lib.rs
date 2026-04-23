@@ -9,10 +9,18 @@ const ADMIN_KEY: Symbol = symbol_short!("ADMIN");
 const TREASURY_KEY: Symbol = symbol_short!("TREAS");
 const PAUSED_KEY: Symbol = symbol_short!("PAUSED");
 const PAYOUT_COUNT_KEY: Symbol = symbol_short!("P_COUNT");
+const PENDING_HASH_KEY: Symbol = symbol_short!("P_HASH");
+const EXECUTE_AFTER_KEY: Symbol = symbol_short!("P_AFTER");
 const TOPIC_PAYOUT_EXECUTED: Symbol = symbol_short!("PAYOUT");
 const TOPIC_DUST_COLLECTED: Symbol = symbol_short!("DUST");
 const TOPIC_PAUSED: Symbol = symbol_short!("PAUSED");
 const TOPIC_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
+const TOPIC_UPGRADE_PROPOSED: Symbol = symbol_short!("UP_PROP");
+const TOPIC_UPGRADE_EXECUTED: Symbol = symbol_short!("UP_EXEC");
+const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("UP_CANC");
+
+const TIMELOCK_PERIOD: u64 = 48 * 60 * 60;
+const EVENT_VERSION: u32 = 1;
 
 // ── TTL constants ─────────────────────────────────────────────────────────────
 const PAYOUT_TTL_THRESHOLD: u32 = 100_000;
@@ -69,6 +77,10 @@ pub enum PayoutError {
     TreasuryNotSet = 5,
     /// Contract is paused; write operations are disabled.
     Paused = 6,
+    NoPendingUpgrade = 7,
+    TimelockNotExpired = 8,
+    UpgradeAlreadyPending = 9,
+    HashMismatch = 10,
 }
 
 #[contract]
@@ -357,6 +369,74 @@ impl PayoutContract {
     /// Return whether the contract is currently paused.
     pub fn is_paused(env: Env) -> bool {
         env.storage().instance().get(&PAUSED_KEY).unwrap_or(false)
+    }
+
+    // ── Upgrade timelock ─────────────────────────────────────────────────────
+
+    pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), PayoutError> {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        if env.storage().instance().has(&PENDING_HASH_KEY) {
+            return Err(PayoutError::UpgradeAlreadyPending);
+        }
+        let execute_after: u64 = env.ledger().timestamp() + TIMELOCK_PERIOD;
+        env.storage().instance().set(&PENDING_HASH_KEY, &new_wasm_hash);
+        env.storage().instance().set(&EXECUTE_AFTER_KEY, &execute_after);
+        env.events().publish(
+            (TOPIC_UPGRADE_PROPOSED,),
+            (EVENT_VERSION, new_wasm_hash, execute_after),
+        );
+        Ok(())
+    }
+
+    pub fn execute_upgrade(env: Env, expected_hash: BytesN<32>) -> Result<(), PayoutError> {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        let execute_after: u64 = env
+            .storage()
+            .instance()
+            .get(&EXECUTE_AFTER_KEY)
+            .ok_or(PayoutError::NoPendingUpgrade)?;
+        if env.ledger().timestamp() < execute_after {
+            return Err(PayoutError::TimelockNotExpired);
+        }
+        let stored_hash: BytesN<32> = env
+            .storage()
+            .instance()
+            .get(&PENDING_HASH_KEY)
+            .ok_or(PayoutError::NoPendingUpgrade)?;
+        if stored_hash != expected_hash {
+            return Err(PayoutError::HashMismatch);
+        }
+        env.storage().instance().remove(&PENDING_HASH_KEY);
+        env.storage().instance().remove(&EXECUTE_AFTER_KEY);
+        env.events().publish(
+            (TOPIC_UPGRADE_EXECUTED,),
+            (EVENT_VERSION, stored_hash.clone()),
+        );
+        env.deployer().update_current_contract_wasm(stored_hash);
+        Ok(())
+    }
+
+    pub fn cancel_upgrade(env: Env) -> Result<(), PayoutError> {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        if !env.storage().instance().has(&PENDING_HASH_KEY) {
+            return Err(PayoutError::NoPendingUpgrade);
+        }
+        env.storage().instance().remove(&PENDING_HASH_KEY);
+        env.storage().instance().remove(&EXECUTE_AFTER_KEY);
+        env.events().publish((TOPIC_UPGRADE_CANCELLED,), (EVENT_VERSION,));
+        Ok(())
+    }
+
+    pub fn pending_upgrade(env: Env) -> Option<(BytesN<32>, u64)> {
+        let hash: Option<BytesN<32>> = env.storage().instance().get(&PENDING_HASH_KEY);
+        let after: Option<u64> = env.storage().instance().get(&EXECUTE_AFTER_KEY);
+        match (hash, after) {
+            (Some(h), Some(a)) => Some((h, a)),
+            _ => None,
+        }
     }
 }
 
