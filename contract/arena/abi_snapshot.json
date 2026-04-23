@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "contract": "arena",
   "source_sha256": "31d12f33a2d56fe19c8693a588ab0e85540d0e8c58fa5948036b457588a4342e",
   "generator": "contract/scripts/generate_abi_snapshots.sh",
@@ -49,7 +49,8 @@
     "DeadlineTooSoon": 42,
     "DeadlineTooFar": 43,
     "DeadlineNotReached": 44,
-    "HashMismatch": 45
+    "HashMismatch": 45,
+    "InvalidGracePeriod": 46
   },
   "event_topics": [
     "UP_PROP",
@@ -90,6 +91,7 @@
     "cancel_upgrade",
     "pending_upgrade",
     "set_max_rounds",
+    "set_grace_period_seconds",
     "is_cancelled",
     "leave",
     "get_user_state",

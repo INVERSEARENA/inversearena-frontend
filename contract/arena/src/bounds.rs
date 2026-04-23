@@ -56,3 +56,9 @@ pub const MIN_MAX_ROUNDS: u32 = 1;
 /// Maximum configurable value for `max_rounds`. Keeps game duration bounded to
 /// prevent indefinite fund locking.
 pub const MAX_MAX_ROUNDS: u32 = 100;
+
+/// Default grace period (seconds) for late choice submission.
+pub const DEFAULT_GRACE_PERIOD_SECONDS: u64 = 10;
+
+/// Maximum grace period (seconds) allowed by admin configuration.
+pub const MAX_GRACE_PERIOD_SECONDS: u64 = 30;

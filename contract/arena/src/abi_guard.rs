@@ -62,6 +62,7 @@ fn arena_error_codes_match_abi_snapshot() {
         ("DeadlineTooFar", ArenaError::DeadlineTooFar),
         ("DeadlineNotReached", ArenaError::DeadlineNotReached),
         ("HashMismatch", ArenaError::HashMismatch),
+        ("InvalidGracePeriod", ArenaError::InvalidGracePeriod),
     ];
 
     assert_eq!(
@@ -119,6 +120,7 @@ fn exported_functions_match_abi_snapshot() {
         "cancel_upgrade",
         "pending_upgrade",
         "set_max_rounds",
+        "set_grace_period_seconds",
         "is_cancelled",
         "leave",
         "get_user_state",

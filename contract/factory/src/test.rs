@@ -42,7 +42,10 @@ fn dummy_hash(env: &Env) -> BytesN<32> {
 
 /// Generate a fresh address and register it as a supported token.
 fn supported_currency(env: &Env, client: &FactoryContractClient<'static>) -> Address {
-    let currency = Address::generate(env);
+    let token_admin = Address::generate(env);
+    let currency = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
     client.add_supported_token(&currency);
     currency
 }
@@ -1059,7 +1062,7 @@ fn test_create_pool_rejects_unsupported_token() {
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = Address::generate(&env); // not added via add_supported_token
     let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &(env.ledger().timestamp() + 7200));
-    assert_eq!(result, Err(Ok(Error::UnsupportedToken)));
+    assert_eq!(result, Err(Ok(Error::TokenNotAllowed)));
 }
 
 #[test]
@@ -1078,7 +1081,7 @@ fn test_create_pool_fails_after_token_removed() {
     client.add_supported_token(&currency);
     client.remove_supported_token(&currency);
     let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &(env.ledger().timestamp() + 7200));
-    assert_eq!(result, Err(Ok(Error::UnsupportedToken)));
+    assert_eq!(result, Err(Ok(Error::TokenNotAllowed)));
 }
 
 #[test]
