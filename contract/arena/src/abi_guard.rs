@@ -58,6 +58,10 @@ fn arena_error_codes_match_abi_snapshot() {
         ("RevealDeadlinePassed", ArenaError::RevealDeadlinePassed),
         ("CommitDeadlinePassed", ArenaError::CommitDeadlinePassed),
         ("AlreadyCommitted", ArenaError::AlreadyCommitted),
+        ("DeadlineTooSoon", ArenaError::DeadlineTooSoon),
+        ("DeadlineTooFar", ArenaError::DeadlineTooFar),
+        ("DeadlineNotReached", ArenaError::DeadlineNotReached),
+        ("HashMismatch", ArenaError::HashMismatch),
     ];
 
     assert_eq!(
@@ -122,6 +126,8 @@ fn exported_functions_match_abi_snapshot() {
         "set_metadata",
         "get_metadata",
         "state",
+        "get_arena_state_view",
+        "init_factory",
     ];
 
     assert_eq!(

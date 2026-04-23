@@ -88,6 +88,9 @@
                 },
                 {
                   "u32": 10
+                },
+                {
+                  "bool": false
                 }
               ]
             }
@@ -122,6 +125,9 @@
                 },
                 {
                   "u32": 10
+                },
+                {
+                  "bool": false
                 }
               ]
             }
@@ -156,6 +162,9 @@
                 },
                 {
                   "u32": 10
+                },
+                {
+                  "bool": false
                 }
               ]
             }
@@ -190,6 +199,9 @@
                 },
                 {
                   "u32": 10
+                },
+                {
+                  "bool": false
                 }
               ]
             }
@@ -224,6 +236,9 @@
                 },
                 {
                   "u32": 10
+                },
+                {
+                  "bool": false
                 }
               ]
             }
@@ -298,6 +313,14 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "is_private"
+                      },
+                      "val": {
+                        "bool": false
                       }
                     },
                     {
@@ -383,6 +406,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "is_private"
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "pool_id"
                       },
                       "val": {
@@ -460,6 +491,14 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "is_private"
+                      },
+                      "val": {
+                        "bool": false
                       }
                     },
                     {
@@ -545,6 +584,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "is_private"
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "pool_id"
                       },
                       "val": {
@@ -622,6 +669,14 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "is_private"
+                      },
+                      "val": {
+                        "bool": false
                       }
                     },
                     {
@@ -1058,6 +1113,14 @@
                           "map": [
                             {
                               "key": {
+                                "symbol": "is_private"
+                              },
+                              "val": {
+                                "bool": false
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "max_rounds"
                               },
                               "val": {
@@ -1073,6 +1136,14 @@
                                   "hi": 0,
                                   "lo": 10000000
                                 }
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "round_duration_seconds"
+                              },
+                              "val": {
+                                "u64": 0
                               }
                             },
                             {
@@ -1130,6 +1201,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "commit_deadline_ledger"
+                              },
+                              "val": {
+                                "u32": 0
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "finished"
                               },
                               "val": {
@@ -1146,10 +1225,10 @@
                             },
                             {
                               "key": {
-                                "symbol": "round_deadline_ledger"
+                                "symbol": "round_deadline"
                               },
                               "val": {
-                                "u32": 0
+                                "u64": 0
                               }
                             },
                             {
@@ -1158,6 +1237,14 @@
                               },
                               "val": {
                                 "u32": 0
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "round_start"
+                              },
+                              "val": {
+                                "u64": 0
                               }
                             },
                             {
@@ -1194,7 +1281,7 @@
             },
             "ext": "v0"
           },
-          518400
+          120960
         ]
       ],
       [
@@ -1248,6 +1335,14 @@
                           "map": [
                             {
                               "key": {
+                                "symbol": "is_private"
+                              },
+                              "val": {
+                                "bool": false
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "max_rounds"
                               },
                               "val": {
@@ -1263,6 +1358,14 @@
                                   "hi": 0,
                                   "lo": 10000000
                                 }
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "round_duration_seconds"
+                              },
+                              "val": {
+                                "u64": 0
                               }
                             },
                             {
@@ -1320,6 +1423,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "commit_deadline_ledger"
+                              },
+                              "val": {
+                                "u32": 0
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "finished"
                               },
                               "val": {
@@ -1336,10 +1447,10 @@
                             },
                             {
                               "key": {
-                                "symbol": "round_deadline_ledger"
+                                "symbol": "round_deadline"
                               },
                               "val": {
-                                "u32": 0
+                                "u64": 0
                               }
                             },
                             {
@@ -1348,6 +1459,14 @@
                               },
                               "val": {
                                 "u32": 0
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "round_start"
+                              },
+                              "val": {
+                                "u64": 0
                               }
                             },
                             {
@@ -1384,7 +1503,7 @@
             },
             "ext": "v0"
           },
-          518400
+          120960
         ]
       ],
       [
@@ -1438,6 +1557,14 @@
                           "map": [
                             {
                               "key": {
+                                "symbol": "is_private"
+                              },
+                              "val": {
+                                "bool": false
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "max_rounds"
                               },
                               "val": {
@@ -1453,6 +1580,14 @@
                                   "hi": 0,
                                   "lo": 10000000
                                 }
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "round_duration_seconds"
+                              },
+                              "val": {
+                                "u64": 0
                               }
                             },
                             {
@@ -1510,6 +1645,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "commit_deadline_ledger"
+                              },
+                              "val": {
+                                "u32": 0
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "finished"
                               },
                               "val": {
@@ -1526,10 +1669,10 @@
                             },
                             {
                               "key": {
-                                "symbol": "round_deadline_ledger"
+                                "symbol": "round_deadline"
                               },
                               "val": {
-                                "u32": 0
+                                "u64": 0
                               }
                             },
                             {
@@ -1538,6 +1681,14 @@
                               },
                               "val": {
                                 "u32": 0
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "round_start"
+                              },
+                              "val": {
+                                "u64": 0
                               }
                             },
                             {
@@ -1574,7 +1725,7 @@
             },
             "ext": "v0"
           },
-          518400
+          120960
         ]
       ],
       [
@@ -1628,6 +1779,14 @@
                           "map": [
                             {
                               "key": {
+                                "symbol": "is_private"
+                              },
+                              "val": {
+                                "bool": false
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "max_rounds"
                               },
                               "val": {
@@ -1643,6 +1802,14 @@
                                   "hi": 0,
                                   "lo": 10000000
                                 }
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "round_duration_seconds"
+                              },
+                              "val": {
+                                "u64": 0
                               }
                             },
                             {
@@ -1700,6 +1867,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "commit_deadline_ledger"
+                              },
+                              "val": {
+                                "u32": 0
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "finished"
                               },
                               "val": {
@@ -1716,10 +1891,10 @@
                             },
                             {
                               "key": {
-                                "symbol": "round_deadline_ledger"
+                                "symbol": "round_deadline"
                               },
                               "val": {
-                                "u32": 0
+                                "u64": 0
                               }
                             },
                             {
@@ -1728,6 +1903,14 @@
                               },
                               "val": {
                                 "u32": 0
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "round_start"
+                              },
+                              "val": {
+                                "u64": 0
                               }
                             },
                             {
@@ -1764,7 +1947,7 @@
             },
             "ext": "v0"
           },
-          518400
+          120960
         ]
       ],
       [
@@ -1818,6 +2001,14 @@
                           "map": [
                             {
                               "key": {
+                                "symbol": "is_private"
+                              },
+                              "val": {
+                                "bool": false
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "max_rounds"
                               },
                               "val": {
@@ -1833,6 +2024,14 @@
                                   "hi": 0,
                                   "lo": 10000000
                                 }
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "round_duration_seconds"
+                              },
+                              "val": {
+                                "u64": 0
                               }
                             },
                             {
@@ -1890,6 +2089,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "commit_deadline_ledger"
+                              },
+                              "val": {
+                                "u32": 0
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "finished"
                               },
                               "val": {
@@ -1906,10 +2113,10 @@
                             },
                             {
                               "key": {
-                                "symbol": "round_deadline_ledger"
+                                "symbol": "round_deadline"
                               },
                               "val": {
-                                "u32": 0
+                                "u64": 0
                               }
                             },
                             {
@@ -1918,6 +2125,14 @@
                               },
                               "val": {
                                 "u32": 0
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "round_start"
+                              },
+                              "val": {
+                                "u64": 0
                               }
                             },
                             {
@@ -1954,7 +2169,7 @@
             },
             "ext": "v0"
           },
-          518400
+          120960
         ]
       ],
       [
@@ -1975,7 +2190,7 @@
             },
             "ext": "v0"
           },
-          518400
+          120960
         ]
       ]
     ]

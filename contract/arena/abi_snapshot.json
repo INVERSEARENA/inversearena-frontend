@@ -1,5 +1,8 @@
 {
   "schema_version": "1.0.0",
+  "contract": "arena",
+  "source_sha256": "31d12f33a2d56fe19c8693a588ab0e85540d0e8c58fa5948036b457588a4342e",
+  "generator": "contract/scripts/generate_abi_snapshots.sh",
   "breaking_change_ack": "Bump schema_version and document in release notes when entrypoints, events, or error ordinals change.",
   "arena_error": {
     "AlreadyInitialized": 1,
@@ -42,7 +45,11 @@
     "CommitmentMismatch": 38,
     "RevealDeadlinePassed": 39,
     "CommitDeadlinePassed": 40,
-    "AlreadyCommitted": 41
+    "AlreadyCommitted": 41,
+    "DeadlineTooSoon": 42,
+    "DeadlineTooFar": 43,
+    "DeadlineNotReached": 44,
+    "HashMismatch": 45
   },
   "event_topics": [
     "UP_PROP",
@@ -89,6 +96,8 @@
     "get_full_state",
     "set_metadata",
     "get_metadata",
-    "state"
+    "state",
+    "get_arena_state_view",
+    "init_factory"
   ]
 }

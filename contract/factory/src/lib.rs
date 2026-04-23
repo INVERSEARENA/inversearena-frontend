@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    Address, BytesN, Env, IntoVal, String, Symbol, contract, contracterror, contractimpl,
+    Address, BytesN, Env, IntoVal, String, Symbol, Vec, contract, contracterror, contractimpl,
     contracttype, symbol_short, xdr::ToXdr,
 };
 
@@ -20,8 +20,21 @@ const POOL_COUNT_KEY: Symbol = symbol_short!("P_CNT");
 const SCHEMA_VERSION_KEY: Symbol = symbol_short!("S_VER");
 const PAUSED_KEY: Symbol = symbol_short!("PAUSED");
 
+// ── Fee timelock storage keys ─────────────────────────────────────────────────
+const WIN_FEE_BPS_KEY: Symbol = symbol_short!("FEE_BPS");
+const PENDING_FEE_KEY: Symbol = symbol_short!("P_FEE");
+const FEE_AFTER_KEY: Symbol = symbol_short!("F_AFTER");
+
 /// Current schema version. Bump this when storage layout changes.
 const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+// ── Fee constants ─────────────────────────────────────────────────────────────
+/// 24-hour timelock for fee config changes (seconds).
+const FEE_TIMELOCK_PERIOD: u64 = 24 * 60 * 60;
+/// Default platform win fee: 2% (200 basis points).
+pub const DEFAULT_WIN_FEE_BPS: u32 = 200;
+/// Maximum allowed win fee: 20% (2000 basis points).
+pub const MAX_WIN_FEE_BPS: u32 = 2_000;
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -30,6 +43,10 @@ pub struct ArenaMetadata {
     pub creator: Address,
     pub capacity: u32,
     pub stake_amount: i128,
+    /// Platform win fee in basis points, snapshotted at arena creation time.
+    /// Payout uses this value, not the current global fee, so fee changes
+    /// cannot retroactively affect active arenas.
+    pub win_fee_bps: u32,
 }
 
 #[contracttype]
@@ -46,6 +63,7 @@ pub enum ArenaStatus {
 pub struct ArenaRef {
     pub contract: Address,
     pub status: ArenaStatus,
+    pub host: Address,
 }
 
 // ── Capacity limits ───────────────────────────────────────────────────────────
@@ -59,6 +77,7 @@ pub enum DataKey {
     SupportedToken(Address),
     Pool(u32),
     ArenaRef(u64),
+    ArenaWhitelist(u64, Address),
 }
 
 // ── Timelock constant: 48 hours in seconds ────────────────────────────────────
@@ -84,6 +103,9 @@ const TOPIC_TOKEN_REMOVED: Symbol = symbol_short!("TOK_REM");
 const TOPIC_MIN_STAKE_UPDATED: Symbol = symbol_short!("MIN_UP");
 const TOPIC_PAUSED: Symbol = symbol_short!("PAUSED");
 const TOPIC_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
+const TOPIC_FEE_QUEUED: Symbol = symbol_short!("FEE_Q");
+const TOPIC_FEE_EXECUTED: Symbol = symbol_short!("FEE_EX");
+const TOPIC_FEE_CANCELLED: Symbol = symbol_short!("FEE_CAN");
 
 /// Event payload version. Include in every event data tuple so consumers
 /// can detect schema changes without re-deploying indexers.
@@ -131,6 +153,18 @@ pub enum Error {
     Paused = 15,
     /// The requested arena was not found.
     ArenaNotFound = 16,
+    /// Provided WASM hash does not match the stored pending hash.
+    HashMismatch = 17,
+    /// `execute_fee_update` called before the 24-hour fee timelock has elapsed.
+    FeeTimelockNotExpired = 18,
+    /// `propose_fee_update` called while a pending fee update already exists.
+    FeeAlreadyPending = 19,
+    /// `execute_fee_update` or `cancel_fee_update` with no pending fee update.
+    NoPendingFeeUpdate = 20,
+    /// Provided fee exceeds `MAX_WIN_FEE_BPS` (2000).
+    FeeTooHigh = 21,
+    /// The hash provided to `execute_upgrade` does not match the stored proposal hash.
+    HashMismatch = 17,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -158,6 +192,9 @@ impl FactoryContract {
         env.storage()
             .instance()
             .set(&MIN_STAKE_KEY, &DEFAULT_MIN_STAKE);
+        env.storage()
+            .instance()
+            .set(&WIN_FEE_BPS_KEY, &DEFAULT_WIN_FEE_BPS);
         env.storage()
             .instance()
             .set(&SCHEMA_VERSION_KEY, &CURRENT_SCHEMA_VERSION);
@@ -257,7 +294,7 @@ impl FactoryContract {
     ///
     /// # Errors
     /// * [`Error::NotInitialized`] — contract not initialised.
-    pub fn add_to_whitelist(env: Env, host: Address) -> Result<(), Error> {
+    pub fn add_host_to_whitelist(env: Env, host: Address) -> Result<(), Error> {
         let admin = require_admin(&env)?;
         admin.require_auth();
         let key = (WHITELIST_PREFIX, host.clone());
@@ -272,7 +309,7 @@ impl FactoryContract {
     ///
     /// # Errors
     /// * [`Error::NotInitialized`] — contract not initialised.
-    pub fn remove_from_whitelist(env: Env, host: Address) -> Result<(), Error> {
+    pub fn remove_host_from_whitelist(env: Env, host: Address) -> Result<(), Error> {
         let admin = require_admin(&env)?;
         admin.require_auth();
         let key = (WHITELIST_PREFIX, host.clone());
@@ -286,7 +323,7 @@ impl FactoryContract {
     ///
     /// # Errors
     /// * [`Error::NotInitialized`] — contract not initialised.
-    pub fn is_whitelisted(env: Env, host: Address) -> Result<bool, Error> {
+    pub fn is_host_whitelisted(env: Env, host: Address) -> Result<bool, Error> {
         let key = (WHITELIST_PREFIX, host);
         Ok(env.storage().instance().get(&key).unwrap_or(false))
     }
@@ -320,6 +357,114 @@ impl FactoryContract {
             .unwrap_or(DEFAULT_MIN_STAKE)
     }
 
+    // ── Fee timelock ──────────────────────────────────────────────────────────
+
+    /// Return the current effective platform win fee in basis points.
+    /// Defaults to `DEFAULT_WIN_FEE_BPS` (200 = 2%) until first explicit set.
+    pub fn current_fee_bps(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&WIN_FEE_BPS_KEY)
+            .unwrap_or(DEFAULT_WIN_FEE_BPS)
+    }
+
+    /// Queue a platform fee update. The new fee takes effect only after the
+    /// 24-hour timelock via `execute_fee_update`. Admin-only.
+    ///
+    /// # Errors
+    /// * [`Error::FeeAlreadyPending`] — a fee update is already queued.
+    /// * [`Error::FeeTooHigh`] — `new_fee_bps` exceeds `MAX_WIN_FEE_BPS`.
+    ///
+    /// # Events
+    /// Emits `FeeUpdateQueued { current_fee, new_fee, effective_at }`.
+    pub fn propose_fee_update(env: Env, new_fee_bps: u32) -> Result<(), Error> {
+        let admin = require_admin(&env)?;
+        admin.require_auth();
+
+        if env.storage().instance().has(&PENDING_FEE_KEY) {
+            return Err(Error::FeeAlreadyPending);
+        }
+        if new_fee_bps > MAX_WIN_FEE_BPS {
+            return Err(Error::FeeTooHigh);
+        }
+
+        let effective_at: u64 = env.ledger().timestamp() + FEE_TIMELOCK_PERIOD;
+        let current_fee = Self::current_fee_bps(env.clone());
+
+        env.storage().instance().set(&PENDING_FEE_KEY, &new_fee_bps);
+        env.storage().instance().set(&FEE_AFTER_KEY, &effective_at);
+
+        env.events().publish(
+            (TOPIC_FEE_QUEUED,),
+            (EVENT_VERSION, current_fee, new_fee_bps, effective_at),
+        );
+        Ok(())
+    }
+
+    /// Apply the queued fee update after the 24-hour timelock. Admin-only.
+    ///
+    /// # Errors
+    /// * [`Error::NoPendingFeeUpdate`] — no fee update is queued.
+    /// * [`Error::FeeTimelockNotExpired`] — called before the timelock elapsed.
+    pub fn execute_fee_update(env: Env) -> Result<(), Error> {
+        let admin = require_admin(&env)?;
+        admin.require_auth();
+
+        let new_fee: u32 = env
+            .storage()
+            .instance()
+            .get(&PENDING_FEE_KEY)
+            .ok_or(Error::NoPendingFeeUpdate)?;
+        let effective_at: u64 = env
+            .storage()
+            .instance()
+            .get(&FEE_AFTER_KEY)
+            .ok_or(Error::NoPendingFeeUpdate)?;
+
+        if env.ledger().timestamp() < effective_at {
+            return Err(Error::FeeTimelockNotExpired);
+        }
+
+        env.storage().instance().remove(&PENDING_FEE_KEY);
+        env.storage().instance().remove(&FEE_AFTER_KEY);
+        env.storage().instance().set(&WIN_FEE_BPS_KEY, &new_fee);
+
+        env.events()
+            .publish((TOPIC_FEE_EXECUTED,), (EVENT_VERSION, new_fee));
+        Ok(())
+    }
+
+    /// Cancel a queued fee update. Admin-only.
+    ///
+    /// # Errors
+    /// * [`Error::NoPendingFeeUpdate`] — no fee update to cancel.
+    pub fn cancel_fee_update(env: Env) -> Result<(), Error> {
+        let admin = require_admin(&env)?;
+        admin.require_auth();
+
+        if !env.storage().instance().has(&PENDING_FEE_KEY) {
+            return Err(Error::NoPendingFeeUpdate);
+        }
+
+        env.storage().instance().remove(&PENDING_FEE_KEY);
+        env.storage().instance().remove(&FEE_AFTER_KEY);
+
+        env.events()
+            .publish((TOPIC_FEE_CANCELLED,), (EVENT_VERSION,));
+        Ok(())
+    }
+
+    /// Return the pending fee and the timestamp when it becomes effective,
+    /// or `None` if no fee update is queued.
+    pub fn pending_fee_update(env: Env) -> Option<(u32, u64)> {
+        let fee: Option<u32> = env.storage().instance().get(&PENDING_FEE_KEY);
+        let after: Option<u64> = env.storage().instance().get(&FEE_AFTER_KEY);
+        match (fee, after) {
+            (Some(f), Some(a)) => Some((f, a)),
+            _ => None,
+        }
+    }
+
     /// Create a new pool (arena). Only admin or whitelisted hosts can call this.
     ///
     /// The caller must provide a valid stake amount >= minimum stake and a
@@ -342,6 +487,7 @@ impl FactoryContract {
         currency: Address,
         round_speed: u32,
         capacity: u32,
+        join_deadline: u64,
     ) -> Result<Address, Error> {
         let admin = require_admin(&env)?;
         require_not_paused(&env)?;
@@ -353,7 +499,7 @@ impl FactoryContract {
         // Use invoker() for authorization check.
         // For Soroban 20+, env.invoker() is preferred over passing Address.
         let is_admin = caller == admin;
-        let is_whitelisted = Self::is_whitelisted(env.clone(), caller.clone())?;
+        let is_whitelisted = Self::is_host_whitelisted(env.clone(), caller.clone())?;
 
         if !is_admin && !is_whitelisted {
             return Err(Error::Unauthorized);
@@ -395,6 +541,7 @@ impl FactoryContract {
             creator: caller.clone(),
             capacity,
             stake_amount: stake,
+            win_fee_bps: Self::current_fee_bps(env.clone()),
         };
 
         // ── Deployment ──────────────────────────────────────────────────────────
@@ -426,10 +573,17 @@ impl FactoryContract {
         // Note: __constructor runs at deploy time (deploy_v2/register_at), so
         // there is no separate initialize() call needed here.
 
+        let fee_snapshot = Self::current_fee_bps(env.clone());
         env.invoke_contract::<()>(
             &arena_address,
-            &soroban_sdk::symbol_short!("init"),
-            soroban_sdk::vec![&env, round_speed.into_val(&env), stake.into_val(&env)],
+            &soroban_sdk::Symbol::new(&env, "init_with_fee"),
+            soroban_sdk::vec![
+                &env,
+                round_speed.into_val(&env),
+                stake.into_val(&env),
+                join_deadline.into_val(&env),
+                fee_snapshot.into_val(&env),
+            ],
         );
 
         env.invoke_contract::<()>(
@@ -522,6 +676,7 @@ impl FactoryContract {
         let arena_ref = ArenaRef {
             contract: arena_address,
             status: ArenaStatus::Pending,
+            host: host.clone(),
         };
         env.storage().persistent().set(&DataKey::ArenaRef(arena_id), &arena_ref);
     }
@@ -534,7 +689,79 @@ impl FactoryContract {
             .ok_or(Error::ArenaNotFound)
     }
 
-    /// Update the status of an arena. Callable only by the Arena contract itself.
+    /// Add addresses to the private arena whitelist. Host-only.
+    ///
+    /// Only the host (creator) of the arena may call this. Requires auth from
+    /// the host address. The arena must have been registered via
+    /// `set_arena_metadata` before this can be called.
+    ///
+    /// # Errors
+    /// * [`Error::ArenaNotFound`] — no arena registered for `arena_id`.
+    /// * [`Error::Unauthorized`]  — caller is not the arena host.
+    pub fn add_to_whitelist(env: Env, arena_id: u64, addresses: Vec<Address>) -> Result<(), Error> {
+        let arena_ref: ArenaRef = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ArenaRef(arena_id))
+            .ok_or(Error::ArenaNotFound)?;
+
+        // Only the host (pool creator) may manage the whitelist.
+        arena_ref.host.require_auth();
+
+        for address in addresses.iter() {
+            env.storage()
+                .persistent()
+                .set(&DataKey::ArenaWhitelist(arena_id, address.clone()), &true);
+        }
+
+        env.events()
+            .publish((TOPIC_ARENA_WL_ADD,), (EVENT_VERSION, arena_id));
+        Ok(())
+    }
+
+    /// Remove addresses from the private arena whitelist. Host-only.
+    ///
+    /// Only the host (creator) of the arena may call this.
+    ///
+    /// # Errors
+    /// * [`Error::ArenaNotFound`] — no arena registered for `arena_id`.
+    /// * [`Error::Unauthorized`]  — caller is not the arena host.
+    pub fn remove_from_whitelist(
+        env: Env,
+        arena_id: u64,
+        addresses: Vec<Address>,
+    ) -> Result<(), Error> {
+        let arena_ref: ArenaRef = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ArenaRef(arena_id))
+            .ok_or(Error::ArenaNotFound)?;
+
+        // Only the host (pool creator) may manage the whitelist.
+        arena_ref.host.require_auth();
+
+        for address in addresses.iter() {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::ArenaWhitelist(arena_id, address));
+        }
+
+        env.events()
+            .publish((TOPIC_ARENA_WL_REM,), (EVENT_VERSION, arena_id));
+        Ok(())
+    }
+
+    /// Check whether `player` is on the whitelist for `arena_id`.
+    ///
+    /// Returns `false` if the arena does not exist or the player is not listed.
+    /// This is a read-only view — no auth required.
+    pub fn is_whitelisted(env: Env, arena_id: u64, player: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ArenaWhitelist(arena_id, player))
+            .unwrap_or(false)
+    }
+
     pub fn update_arena_status(env: Env, arena_id: u64, status: ArenaStatus) -> Result<(), Error> {
         let mut arena_ref: ArenaRef = env
             .storage()
@@ -645,7 +872,7 @@ impl FactoryContract {
     ///
     /// # Events
     /// Emits `UpgradeExecuted(new_wasm_hash)`.
-    pub fn execute_upgrade(env: Env) -> Result<(), Error> {
+    pub fn execute_upgrade(env: Env, expected_hash: BytesN<32>) -> Result<(), Error> {
         let admin = require_admin(&env)?;
         admin.require_auth();
 
@@ -667,11 +894,15 @@ impl FactoryContract {
             return Err(Error::TimelockNotExpired);
         }
 
-        let new_wasm_hash: BytesN<32> = env
+        let stored_hash: BytesN<32> = env
             .storage()
             .instance()
             .get(&PENDING_HASH_KEY)
             .ok_or(Error::MalformedUpgradeState)?;
+
+        if stored_hash != expected_hash {
+            return Err(Error::HashMismatch);
+        }
 
         // Clear pending state before upgrading.
         env.storage().instance().remove(&PENDING_HASH_KEY);
@@ -679,10 +910,10 @@ impl FactoryContract {
 
         env.events().publish(
             (TOPIC_UPGRADE_EXECUTED,),
-            (EVENT_VERSION, new_wasm_hash.clone()),
+            (EVENT_VERSION, stored_hash.clone()),
         );
 
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        env.deployer().update_current_contract_wasm(stored_hash);
         Ok(())
     }
 

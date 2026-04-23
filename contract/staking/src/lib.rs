@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    Address, Env, Symbol, contract, contracterror, contractimpl, contracttype, symbol_short,
+    Address, BytesN, Env, Symbol, contract, contracterror, contractimpl, contracttype, symbol_short,
     token,
 };
 
@@ -12,6 +12,12 @@ const PAUSED_KEY: Symbol = symbol_short!("PAUSED");
 const TOKEN_KEY: Symbol = symbol_short!("TOKEN");
 pub const TOTAL_STAKED_KEY: Symbol = symbol_short!("TSTAKE");
 const TOTAL_SHARES_KEY: Symbol = symbol_short!("TSHARES");
+const PENDING_HASH_KEY: Symbol = symbol_short!("P_HASH");
+const EXECUTE_AFTER_KEY: Symbol = symbol_short!("P_AFTER");
+
+// ── Timelock: 48 hours in seconds ─────────────────────────────────────────────
+const TIMELOCK_PERIOD: u64 = 48 * 60 * 60;
+const EVENT_VERSION: u32 = 1;
 
 // ── Event topics ──────────────────────────────────────────────────────────────
 
@@ -19,6 +25,9 @@ const TOPIC_PAUSED: Symbol = symbol_short!("PAUSED");
 const TOPIC_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
 const TOPIC_STAKE: Symbol = symbol_short!("STAKED");
 const TOPIC_UNSTAKE: Symbol = symbol_short!("UNSTAKED");
+const TOPIC_UPGRADE_PROPOSED: Symbol = symbol_short!("UP_PROP");
+const TOPIC_UPGRADE_EXECUTED: Symbol = symbol_short!("UP_EXEC");
+const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("UP_CANC");
 
 // ── Error codes ───────────────────────────────────────────────────────────────
 
@@ -32,6 +41,10 @@ pub enum StakingError {
     InvalidAmount = 4,
     InsufficientShares = 5,
     ZeroShares = 6,
+    NoPendingUpgrade = 7,
+    TimelockNotExpired = 8,
+    UpgradeAlreadyPending = 9,
+    HashMismatch = 10,
 }
 
 // ── Storage key schema ────────────────────────────────────────────────────────
@@ -53,6 +66,16 @@ enum DataKey {
 pub struct StakePosition {
     pub amount: i128,
     pub shares: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StakerStats {
+    pub staked_amount: i128,
+    pub pending_rewards: i128,
+    pub unlock_at: u64,
+    pub total_claimed_rewards: i128,
+    pub stake_share_bps: u32,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -121,10 +144,7 @@ impl StakingContract {
 
     /// Return whether the contract is currently paused.
     pub fn is_paused(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&PAUSED_KEY)
-            .unwrap_or(false)
+        env.storage().instance().get(&PAUSED_KEY).unwrap_or(false)
     }
 
     // ── Query functions ───────────────────────────────────────────────────────
@@ -150,12 +170,37 @@ impl StakingContract {
         env.storage()
             .persistent()
             .get(&DataKey::Position(staker))
-            .unwrap_or(StakePosition { amount: 0, shares: 0 })
+            .unwrap_or(StakePosition {
+                amount: 0,
+                shares: 0,
+            })
     }
 
     /// Return the token amount currently staked by `staker`.
     pub fn staked_balance(env: Env, staker: Address) -> i128 {
         Self::get_position(env, staker).amount
+    }
+
+    pub fn get_staker_stats(env: Env, staker: Address) -> StakerStats {
+        let position = Self::get_position(env.clone(), staker);
+        let total_staked = Self::total_staked(env.clone());
+        let stake_share_bps = if total_staked <= 0 || position.amount <= 0 {
+            0
+        } else {
+            position
+                .amount
+                .checked_mul(10_000)
+                .and_then(|v| v.checked_div(total_staked))
+                .unwrap_or(0) as u32
+        };
+
+        StakerStats {
+            staked_amount: position.amount,
+            pending_rewards: 0,
+            unlock_at: 0,
+            total_claimed_rewards: 0,
+            stake_share_bps,
+        }
     }
 
     // ── Staking ───────────────────────────────────────────────────────────────
@@ -182,16 +227,8 @@ impl StakingContract {
 
         let token_contract = get_token_contract(&env)?;
 
-        let total_staked: i128 = env
-            .storage()
-            .instance()
-            .get(&TOTAL_STAKED_KEY)
-            .unwrap_or(0);
-        let total_shares: i128 = env
-            .storage()
-            .instance()
-            .get(&TOTAL_SHARES_KEY)
-            .unwrap_or(0);
+        let total_staked: i128 = env.storage().instance().get(&TOTAL_STAKED_KEY).unwrap_or(0);
+        let total_shares: i128 = env.storage().instance().get(&TOTAL_SHARES_KEY).unwrap_or(0);
 
         let shares_minted = if total_staked == 0 || total_shares == 0 {
             amount
@@ -214,7 +251,10 @@ impl StakingContract {
             .storage()
             .persistent()
             .get(&DataKey::Position(staker.clone()))
-            .unwrap_or(StakePosition { amount: 0, shares: 0 });
+            .unwrap_or(StakePosition {
+                amount: 0,
+                shares: 0,
+            });
         position.amount += amount;
         position.shares += shares_minted;
         env.storage()
@@ -262,21 +302,16 @@ impl StakingContract {
             .storage()
             .persistent()
             .get(&DataKey::Position(staker.clone()))
-            .unwrap_or(StakePosition { amount: 0, shares: 0 });
+            .unwrap_or(StakePosition {
+                amount: 0,
+                shares: 0,
+            });
         if position.shares < shares {
             return Err(StakingError::InsufficientShares);
         }
 
-        let total_staked: i128 = env
-            .storage()
-            .instance()
-            .get(&TOTAL_STAKED_KEY)
-            .unwrap_or(0);
-        let total_shares: i128 = env
-            .storage()
-            .instance()
-            .get(&TOTAL_SHARES_KEY)
-            .unwrap_or(0);
+        let total_staked: i128 = env.storage().instance().get(&TOTAL_STAKED_KEY).unwrap_or(0);
+        let total_shares: i128 = env.storage().instance().get(&TOTAL_SHARES_KEY).unwrap_or(0);
 
         let tokens_returned = shares
             .checked_mul(total_staked)
@@ -310,6 +345,74 @@ impl StakingContract {
 
         Ok(tokens_returned)
     }
+
+    // ── Upgrade timelock ─────────────────────────────────────────────────────
+
+    pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), StakingError> {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        if env.storage().instance().has(&PENDING_HASH_KEY) {
+            return Err(StakingError::UpgradeAlreadyPending);
+        }
+        let execute_after: u64 = env.ledger().timestamp() + TIMELOCK_PERIOD;
+        env.storage().instance().set(&PENDING_HASH_KEY, &new_wasm_hash);
+        env.storage().instance().set(&EXECUTE_AFTER_KEY, &execute_after);
+        env.events().publish(
+            (TOPIC_UPGRADE_PROPOSED,),
+            (EVENT_VERSION, new_wasm_hash, execute_after),
+        );
+        Ok(())
+    }
+
+    pub fn execute_upgrade(env: Env, expected_hash: BytesN<32>) -> Result<(), StakingError> {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        let execute_after: u64 = env
+            .storage()
+            .instance()
+            .get(&EXECUTE_AFTER_KEY)
+            .ok_or(StakingError::NoPendingUpgrade)?;
+        if env.ledger().timestamp() < execute_after {
+            return Err(StakingError::TimelockNotExpired);
+        }
+        let stored_hash: BytesN<32> = env
+            .storage()
+            .instance()
+            .get(&PENDING_HASH_KEY)
+            .ok_or(StakingError::NoPendingUpgrade)?;
+        if stored_hash != expected_hash {
+            return Err(StakingError::HashMismatch);
+        }
+        env.storage().instance().remove(&PENDING_HASH_KEY);
+        env.storage().instance().remove(&EXECUTE_AFTER_KEY);
+        env.events().publish(
+            (TOPIC_UPGRADE_EXECUTED,),
+            (EVENT_VERSION, stored_hash.clone()),
+        );
+        env.deployer().update_current_contract_wasm(stored_hash);
+        Ok(())
+    }
+
+    pub fn cancel_upgrade(env: Env) -> Result<(), StakingError> {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        if !env.storage().instance().has(&PENDING_HASH_KEY) {
+            return Err(StakingError::NoPendingUpgrade);
+        }
+        env.storage().instance().remove(&PENDING_HASH_KEY);
+        env.storage().instance().remove(&EXECUTE_AFTER_KEY);
+        env.events().publish((TOPIC_UPGRADE_CANCELLED,), (EVENT_VERSION,));
+        Ok(())
+    }
+
+    pub fn pending_upgrade(env: Env) -> Option<(BytesN<32>, u64)> {
+        let hash: Option<BytesN<32>> = env.storage().instance().get(&PENDING_HASH_KEY);
+        let after: Option<u64> = env.storage().instance().get(&EXECUTE_AFTER_KEY);
+        match (hash, after) {
+            (Some(h), Some(a)) => Some((h, a)),
+            _ => None,
+        }
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -322,12 +425,7 @@ fn get_token_contract(env: &Env) -> Result<Address, StakingError> {
 }
 
 fn require_not_paused(env: &Env) -> Result<(), StakingError> {
-    if env
-        .storage()
-        .instance()
-        .get(&PAUSED_KEY)
-        .unwrap_or(false)
-    {
+    if env.storage().instance().get(&PAUSED_KEY).unwrap_or(false) {
         return Err(StakingError::Paused);
     }
     Ok(())

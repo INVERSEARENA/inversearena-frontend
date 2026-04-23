@@ -44,6 +44,30 @@ Codes are grouped by **range** so each crate can reserve a band. Implement new v
 | 100 | `InvalidStakeForPool` | Stake rules not met | Stake amount does not meet the rules for creating a pool. |
 | 101 | `UnsupportedToken` | Token not whitelisted | This token is not supported for pool creation. |
 
+### Factory contract — Rust `Error` (`contract/factory`)
+
+The factory contract uses `#[contracterror]` with explicit `repr(u32)` values. These are the codes emitted by `FactoryContract`:
+
+| Code | Variant | Meaning |
+|------|---------|---------|
+| 1 | `NotInitialized` | `initialize` not called |
+| 2 | `AlreadyInitialized` | `initialize` called twice |
+| 3 | `Unauthorized` | Caller lacks permission |
+| 4 | `NoPendingUpgrade` | No upgrade proposal exists |
+| 5 | `TimelockNotExpired` | Upgrade timelock not elapsed |
+| 6 | `StakeBelowMinimum` | Stake below configured minimum |
+| 7 | `HostNotWhitelisted` | Caller not on host whitelist |
+| 8 | `InvalidStakeAmount` | Stake is zero or negative |
+| 9 | `PoolAlreadyExists` | Duplicate pool_id |
+| 10 | `InvalidCapacity` | Capacity out of range |
+| 11 | `WasmHashNotSet` | Arena WASM hash not configured |
+| 12 | `MalformedUpgradeState` | Partial upgrade state |
+| 13 | `UnsupportedToken` | Token not approved |
+| 14 | `UpgradeAlreadyPending` | Duplicate upgrade proposal |
+| 15 | `Paused` | Contract paused |
+| 16 | `ArenaNotFound` | Arena not registered |
+| 17 | `NotWhitelisted` | Player not on private arena whitelist |
+
 ### Arena (pool) — `200`–`299`
 
 | Code | Name | Meaning | User-facing message |
@@ -98,6 +122,7 @@ The arena pool contract uses `#[contracterror]` with **explicit** `repr(u32)` va
 | 19 | `TokenNotSet` | Token not configured |
 | 20 | `MaxSubmissionsPerRound` | Per-round submission bound (`contract/BOUNDS.md`) |
 | 21 | `PlayerEliminated` | Eliminated player attempted action |
+| 42 | `NotWhitelisted` | Non-whitelisted player attempted to join a private arena |
 | 22 | `WrongRoundNumber` | Submitted for wrong round |
 | 23 | `NotEnoughPlayers` | Too few players to start/resolve round |
 | 24 | `InvalidCapacity` | `set_capacity` value out of `[MIN, MAX]` range |

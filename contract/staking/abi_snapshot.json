@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.0.0",
+  "contract": "staking",
+  "source_sha256": "a396f6ca11ee74c4b3ebac4fd218bb03362d1f34471b252ba113f6345b310ccb",
+  "generator": "contract/scripts/generate_abi_snapshots.sh",
+  "note": "Snapshot is regenerated from the built Soroban WASM and source hash."
+}

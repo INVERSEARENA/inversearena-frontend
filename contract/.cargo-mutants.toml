@@ -1,0 +1,49 @@
+# cargo-mutants configuration for Inverse Arena contracts
+# https://mutants.rs/configuration.html
+#
+# Run with:
+#   cargo mutants --package arena --test-tool cargo \
+#     --file src/lib.rs \
+#     -- --ignore-rust-version
+#
+# CI requirement: 0 surviving mutants in the critical function list below.
+
+[mutants]
+# Minimum mutation score required (percentage of mutants killed).
+# A surviving mutant in the critical list is a CI failure.
+minimum_test_count = 1
+
+# Paths to mutate — focus on the critical safety guards.
+# Expanding to payout and staking is recommended once baseline is established.
+include_globs = [
+    "arena/src/lib.rs",
+    "payout/src/lib.rs",
+    "staking/src/lib.rs",
+]
+
+# Functions that must achieve 100% mutation kill rate.
+# These are the 7 critical guards from issue #516.
+[[critical_functions]]
+name = "pause"
+file = "arena/src/lib.rs"
+reason = "Mutation 1: admin.require_auth() removal would allow any caller to pause"
+
+[[critical_functions]]
+name = "join"
+file = "arena/src/lib.rs"
+reason = "Mutation 2: removing require_not_paused would allow joins when paused; Mutation 7: exact-fee check"
+
+[[critical_functions]]
+name = "resolve_round"
+file = "arena/src/lib.rs"
+reason = "Mutation 3: <= vs < in deadline check; Mutation 5: minority-vs-majority"
+
+[[critical_functions]]
+name = "initialize"
+file = "arena/src/lib.rs"
+reason = "Mutation 4: double-init guard prevents admin hijacking"
+
+[[critical_functions]]
+name = "distribute_winnings"
+file = "payout/src/lib.rs"
+reason = "Mutation 6: double-payout guard prevents economic double-spend"
