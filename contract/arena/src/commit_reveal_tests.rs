@@ -151,6 +151,8 @@ fn test_reveal_after_deadline() {
     
     client.commit_choice(&player1, &1, &commitment);
     
+    set_ledger_sequence(&env, round.round_deadline_ledger + 11); // past reveal deadline (commit_deadline + round_speed)
+    client.reveal_choice(&player1, &1, &Choice::Heads, &nonce);
     set_ledger_sequence(&env, round.round_deadline_ledger + 1);
     client.reveal_choice(&player1, &1, &Choice::Heads, &Bytes::from_slice(&env, &nonce.to_array()));
 }

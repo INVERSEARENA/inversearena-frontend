@@ -736,10 +736,10 @@
                             },
                             {
                               "key": {
-                                "symbol": "reveal_deadline_ledger"
+                                "symbol": "round_deadline"
                               },
                               "val": {
-                                "u32": 0
+                                "u64": 0
                               }
                             },
                             {
@@ -800,7 +800,11 @@
             },
             "ext": "v0"
           },
+<<<<<<< HEAD
           120960
+=======
+          1036800
+>>>>>>> 08f1e14 (update test failing)
         ]
       ],
       [
@@ -958,10 +962,10 @@
                             },
                             {
                               "key": {
-                                "symbol": "reveal_deadline_ledger"
+                                "symbol": "round_deadline"
                               },
                               "val": {
-                                "u32": 0
+                                "u64": 0
                               }
                             },
                             {
@@ -1022,7 +1026,11 @@
             },
             "ext": "v0"
           },
+<<<<<<< HEAD
           120960
+=======
+          1036800
+>>>>>>> 08f1e14 (update test failing)
         ]
       ],
       [
@@ -1043,7 +1051,11 @@
             },
             "ext": "v0"
           },
+<<<<<<< HEAD
           120960
+=======
+          1036800
+>>>>>>> 08f1e14 (update test failing)
         ]
       ]
     ]
