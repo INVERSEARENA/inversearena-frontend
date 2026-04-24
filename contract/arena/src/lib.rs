@@ -55,6 +55,7 @@ const TOPIC_WINNER_DECLARED: Symbol = symbol_short!("W_DECL");
 const TOPIC_ARENA_CANCELLED: Symbol = symbol_short!("A_CANC");
 const TOPIC_ARENA_EXPIRED: Symbol = symbol_short!("A_EXP");
 const TOPIC_ARENA_STARTED: Symbol = symbol_short!("A_START");
+const TOPIC_TIEBREAKER_USED: Symbol = symbol_short!("TIEBRK");
 
 const TOPIC_UPGRADE_PROPOSED: Symbol = symbol_short!("UP_PROP");
 const TOPIC_UPGRADE_EXECUTED: Symbol = symbol_short!("UP_EXEC");
@@ -302,6 +303,15 @@ pub struct ArenaStarted {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TiebreakerUsed {
+    pub arena_id: u64,
+    pub round: u32,
+    pub sequence: u32,
+    pub winning_side: Choice,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArenaSnapshot {
     pub arena_id: u64,
     pub state: ArenaState,
@@ -359,10 +369,6 @@ macro_rules! assert_state {
                 "Invalid state transition: current state {:?} is not allowed for this operation",
                 $current
             ),
-        }
-    };
-}
-
         }
     };
 }
@@ -607,6 +613,10 @@ impl ArenaContract {
         }
         let mut config = get_config(&env)?;
         config.max_rounds = max_rounds;
+        env.storage().instance().set(&DataKey::Config, &config);
+        Ok(())
+    }
+
     pub fn set_reserve_ratio_bps(env: Env, bps: u32) -> Result<(), ArenaError> {
         let admin = Self::admin(env.clone());
         admin.require_auth();
@@ -993,6 +1003,7 @@ impl ArenaContract {
             }
         }
         let resolution_outcome = choose_resolution_outcome(&env, heads, tails);
+        emit_tiebreaker_used_if_needed(&env, round.round_number, heads, tails, resolution_outcome);
         let mut survivor_count = 0u32;
         let mut eliminated_count = 0u32;
         for player in players.iter() {
@@ -1143,6 +1154,13 @@ impl ArenaContract {
         let mut round = get_round(&env)?;
         let resolution_outcome =
             choose_resolution_outcome(&env, state.heads_count, state.tails_count);
+        emit_tiebreaker_used_if_needed(
+            &env,
+            state.round_number,
+            state.heads_count,
+            state.tails_count,
+            resolution_outcome,
+        );
 
         let players = all_players(&env);
         let mut survivor_count = 0u32;
@@ -2050,15 +2068,46 @@ fn choose_resolution_outcome(env: &Env, heads: u32, tails: u32) -> ResolutionOut
         // If everyone piled onto the same side there is no meaningful
         // minority. Treat it as a draw and eliminate the whole field.
         (0, _) | (_, 0) => ResolutionOutcome::AllEliminated,
-        _ if heads == tails => {
-            if env.ledger().sequence() % 2 == 0 {
-                ResolutionOutcome::SurvivingChoice(Choice::Heads)
-            } else {
-                ResolutionOutcome::SurvivingChoice(Choice::Tails)
-            }
-        }
+        _ if heads == tails => ResolutionOutcome::SurvivingChoice(tiebreaker(env)),
         _ if heads < tails => ResolutionOutcome::SurvivingChoice(Choice::Heads),
         _ => ResolutionOutcome::SurvivingChoice(Choice::Tails),
+    }
+}
+
+/// Deterministic tiebreaker used only when Heads and Tails tallies are equal.
+///
+/// This is not cryptographic randomness. It's acceptable here because both
+/// sides already have equal support and this only selects one of two
+/// symmetric outcomes.
+fn tiebreaker(env: &Env) -> Choice {
+    if env.ledger().sequence() % 2 == 0 {
+        Choice::Heads
+    } else {
+        Choice::Tails
+    }
+}
+
+fn emit_tiebreaker_used_if_needed(
+    env: &Env,
+    round: u32,
+    heads: u32,
+    tails: u32,
+    outcome: ResolutionOutcome,
+) {
+    if heads == 0 || heads != tails {
+        return;
+    }
+    if let ResolutionOutcome::SurvivingChoice(winning_side) = outcome {
+        let arena_id: u64 = env.storage().instance().get(&DataKey::ArenaId).unwrap_or(0);
+        env.events().publish(
+            (TOPIC_TIEBREAKER_USED,),
+            TiebreakerUsed {
+                arena_id,
+                round,
+                sequence: env.ledger().sequence(),
+                winning_side,
+            },
+        );
     }
 }
 
