@@ -1,14 +1,8 @@
 #![no_std]
 
-<<<<<<< feat/close-473-479-484
-use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
-    Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Vec,
-=======
 use soroban_sdk::{IntoVal,
     Address, Bytes, BytesN, Env, String, Symbol, Vec, contract, contracterror, contractimpl,
     contracttype, panic_with_error, symbol_short, token,
->>>>>>> main
 };
 
 mod bounds;
@@ -66,8 +60,6 @@ const TOPIC_UPGRADE_PROPOSED: Symbol = symbol_short!("UP_PROP");
 const TOPIC_UPGRADE_EXECUTED: Symbol = symbol_short!("UP_EXEC");
 const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("UP_CANC");
 
-<<<<<<< feat/close-473-479-484
-=======
 const TOPIC_YIELD_HARVESTED: Symbol = symbol_short!("Y_HARV");
 const TOPIC_VAULT_FALLBACK: Symbol = symbol_short!("V_FALL");
 const TOPIC_ADMIN_PROPOSED: Symbol = symbol_short!("AD_PROP");
@@ -77,7 +69,6 @@ const TOPIC_ADMIN_CANCELLED: Symbol = symbol_short!("AD_CANC");
 
 
 
->>>>>>> main
 const EVENT_VERSION: u32 = 1;
 
 // ── Error codes ───────────────────────────────────────────────────────────────
@@ -86,7 +77,6 @@ const EVENT_VERSION: u32 = 1;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum ArenaError {
-    AlreadyInitialized = 1,
     InvalidRoundSpeed = 2,
     RoundAlreadyActive = 3,
     NoActiveRound = 4,
@@ -136,10 +126,8 @@ pub enum ArenaError {
     BatchAlreadyInProgress = 48,
     NoBatchInProgress = 49,
     BatchNotComplete = 50,
+    U = 51,
     Unauthorized = 51,
-    NoPendingAdminTransfer = 52,
-    AdminTransferExpired = 53,
-    VaultNotSet = 54,
 }
 
 #[contracttype]
@@ -322,8 +310,6 @@ pub struct ArenaSnapshot {
     pub potential_payout: i128,
 }
 
-<<<<<<< feat/close-473-479-484
-=======
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct YieldHarvested {
@@ -388,7 +374,6 @@ macro_rules! assert_is_survivor {
 
 
 
->>>>>>> main
 #[contracttype]
 #[derive(Clone)]
 enum DataKey {
