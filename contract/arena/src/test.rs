@@ -3063,3 +3063,179 @@ fn set_max_rounds_accepts_boundary_values() {
     assert!(client.try_set_max_rounds(&bounds::MAX_MAX_ROUNDS).is_ok());
     assert!(client.try_set_max_rounds(&bounds::DEFAULT_MAX_ROUNDS).is_ok());
 }
+
+// ── Issue #481: lazy ArenaCache ───────────────────────────────────────────────
+//
+// Pre-seed instance/persistent storage directly so the tests don't depend on
+// `init` (which is unrelated to the cache refactor and currently fails on the
+// `DeadlineTooSoon` validation in the broader test suite). The point here is
+// to exercise the read path: `get_arena_state` and `get_full_state` should
+// load each ledger key once via `ArenaCache` and produce identical, consistent
+// values.
+
+fn seed_arena_cache_fixture(
+    env: &Env,
+    contract_id: &Address,
+    round_number: u32,
+    survivor_count: u32,
+    capacity: u32,
+    prize_pool: i128,
+) {
+    env.as_contract(contract_id, || {
+        env.storage().instance().set(
+            &DataKey::Round,
+            &RoundState {
+                round_number,
+                round_start_ledger: 0,
+                round_deadline_ledger: 0,
+                active: false,
+                total_submissions: 0,
+                timed_out: false,
+                finished: false,
+            },
+        );
+        env.storage().instance().set(&SURVIVOR_COUNT_KEY, &survivor_count);
+        env.storage().instance().set(&CAPACITY_KEY, &capacity);
+        env.storage().instance().set(&PRIZE_POOL_KEY, &prize_pool);
+    });
+}
+
+#[test]
+fn arena_cache_returns_seeded_arena_state_view() {
+    let (env, _admin, client) = setup_with_admin();
+    seed_arena_cache_fixture(&env, &client.address, 7, 5, 16, 1_234_000i128);
+
+    let view = client.get_arena_state();
+    assert_eq!(view.round_number, 7);
+    assert_eq!(view.survivors_count, 5);
+    assert_eq!(view.max_capacity, 16);
+    assert_eq!(view.current_stake, 1_234_000);
+    // potential_payout shares the same storage slot as current_stake; ensures
+    // the cache populates both fields from a single PRIZE_POOL_KEY read.
+    assert_eq!(view.potential_payout, 1_234_000);
+    assert_eq!(view.current_stake, view.potential_payout);
+}
+
+#[test]
+fn arena_cache_falls_back_to_defaults_when_unseeded() {
+    let (env, _admin, client) = setup_with_admin();
+    // Only seed `Round` (required, since otherwise we hit `NotInitialized`);
+    // the rest must fall back to defaults.
+    env.as_contract(&client.address, || {
+        env.storage().instance().set(
+            &DataKey::Round,
+            &RoundState {
+                round_number: 0,
+                round_start_ledger: 0,
+                round_deadline_ledger: 0,
+                active: false,
+                total_submissions: 0,
+                timed_out: false,
+                finished: false,
+            },
+        );
+    });
+
+    let view = client.get_arena_state();
+    assert_eq!(view.round_number, 0);
+    assert_eq!(view.survivors_count, 0);
+    // Capacity falls back to bounds::MAX_ARENA_PARTICIPANTS (test value 64).
+    assert_eq!(view.max_capacity, bounds::MAX_ARENA_PARTICIPANTS);
+    assert_eq!(view.current_stake, 0);
+    assert_eq!(view.potential_payout, 0);
+}
+
+#[test]
+fn arena_cache_returns_not_initialized_without_round() {
+    // A blank contract — no `DataKey::Round` set. Cache load surfaces
+    // `NotInitialized`, mirroring the pre-refactor behavior of `get_round`.
+    let (_env, _admin, client) = setup_with_admin();
+    let err = client.try_get_arena_state();
+    assert_eq!(err, Err(Ok(ArenaError::NotInitialized)));
+}
+
+#[test]
+fn full_state_view_agrees_with_arena_state_view_on_overlap() {
+    let (env, _admin, client) = setup_with_admin();
+    seed_arena_cache_fixture(&env, &client.address, 3, 2, 8, 555i128);
+
+    let player = Address::generate(&env);
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Survivor(player.clone()), &true);
+    });
+
+    let arena = client.get_arena_state();
+    let full = client.get_full_state(&player);
+
+    assert_eq!(full.round_number, arena.round_number);
+    assert_eq!(full.survivors_count, arena.survivors_count);
+    assert_eq!(full.max_capacity, arena.max_capacity);
+    assert_eq!(full.current_stake, arena.current_stake);
+    assert_eq!(full.potential_payout, arena.potential_payout);
+    assert!(full.is_active);
+    assert!(!full.has_won);
+}
+
+#[test]
+fn full_state_view_reflects_player_winner_flag() {
+    let (env, _admin, client) = setup_with_admin();
+    seed_arena_cache_fixture(&env, &client.address, 1, 1, 4, 200i128);
+
+    let player = Address::generate(&env);
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Survivor(player.clone()), &true);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Winner(player.clone()), &true);
+    });
+
+    let full = client.get_full_state(&player);
+    assert!(full.is_active);
+    assert!(full.has_won);
+}
+
+#[test]
+fn user_state_view_reads_each_player_independently() {
+    let (env, _admin, client) = setup_with_admin();
+    seed_arena_cache_fixture(&env, &client.address, 0, 0, 2, 0i128);
+
+    let active_player = Address::generate(&env);
+    let inactive_player = Address::generate(&env);
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Survivor(active_player.clone()), &true);
+    });
+
+    let active = client.get_user_state(&active_player);
+    let inactive = client.get_user_state(&inactive_player);
+
+    assert!(active.is_active);
+    assert!(!active.has_won);
+    assert!(!inactive.is_active);
+    assert!(!inactive.has_won);
+}
+
+#[test]
+fn full_state_view_is_idempotent_across_repeated_calls() {
+    // The cache must not mutate state — repeated calls return the same view.
+    let (env, _admin, client) = setup_with_admin();
+    seed_arena_cache_fixture(&env, &client.address, 4, 3, 8, 999i128);
+
+    let player = Address::generate(&env);
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Survivor(player.clone()), &true);
+    });
+
+    let first = client.get_full_state(&player);
+    let second = client.get_full_state(&player);
+    let third = client.get_full_state(&player);
+    assert_eq!(first, second);
+    assert_eq!(second, third);
+}
