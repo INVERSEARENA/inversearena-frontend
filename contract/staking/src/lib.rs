@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
-    Address, BytesN, Env, Symbol,
+    Address, BytesN, Env, Symbol, contract, contracterror, contractimpl, contracttype,
+    panic_with_error, symbol_short, token,
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -14,14 +14,21 @@ const PAUSED_KEY: Symbol = symbol_short!("PAUSED");
 
 const ADMIN_TRANSFER_EXPIRY: u64 = 7 * 24 * 60 * 60;
 const TOKEN_KEY: Symbol = symbol_short!("TOKEN");
+const FACTORY_KEY: Symbol = symbol_short!("FACTRY");
 pub const TOTAL_STAKED_KEY: Symbol = symbol_short!("TSTAKE");
 const TOTAL_SHARES_KEY: Symbol = symbol_short!("TSHARES");
 const PENDING_HASH_KEY: Symbol = symbol_short!("P_HASH");
 const EXECUTE_AFTER_KEY: Symbol = symbol_short!("P_AFTER");
+const LOCK_PERIOD_KEY: Symbol = symbol_short!("LOCK_SEC");
+const MIN_STAKE_KEY: Symbol = symbol_short!("MIN_STK");
+const REWARD_PER_SHARE_KEY: Symbol = symbol_short!("RWD_PSH");
+const REWARD_POOL_KEY: Symbol = symbol_short!("RWD_POOL");
+const UNALLOCATED_REWARDS_KEY: Symbol = symbol_short!("RWD_UNA");
 
 // ── Timelock: 48 hours in seconds ─────────────────────────────────────────────
 const TIMELOCK_PERIOD: u64 = 48 * 60 * 60;
 const EVENT_VERSION: u32 = 1;
+const PRECISION: i128 = 1_000_000_000_000_000_000;
 
 // ── Event topics ──────────────────────────────────────────────────────────────
 
@@ -35,6 +42,9 @@ const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("UP_CANC");
 const TOPIC_ADMIN_PROPOSED: Symbol = symbol_short!("AD_PROP");
 const TOPIC_ADMIN_ACCEPTED: Symbol = symbol_short!("AD_DONE");
 const TOPIC_ADMIN_CANCELLED: Symbol = symbol_short!("AD_CANC");
+const TOPIC_REWARDS_DEPOSITED: Symbol = symbol_short!("RWD_DEP");
+const TOPIC_REWARDS_CLAIMED: Symbol = symbol_short!("RWD_CLM");
+const TOPIC_COMPOUNDED: Symbol = symbol_short!("CMPND");
 
 // ── Error codes ───────────────────────────────────────────────────────────────
 
@@ -55,6 +65,10 @@ pub enum StakingError {
     NoPendingAdminTransfer = 11,
     AdminTransferExpired = 12,
     Unauthorized = 13,
+    LockedStake = 14,
+    StillLocked = 15,
+    InsufficientBalance = 16,
+    NothingToCompound = 17,
 }
 
 // ── Storage key schema ────────────────────────────────────────────────────────
@@ -63,6 +77,12 @@ pub enum StakingError {
 #[derive(Clone)]
 enum DataKey {
     Position(Address),
+    HostLock(Address, u64),
+    HostLockedTotal(Address),
+    RewardDebt(Address),
+    PendingRewards(Address),
+    StakedAt(Address),
+    TotalClaimedRewards(Address),
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -110,6 +130,13 @@ impl StakingContract {
         admin.require_auth();
         env.storage().instance().set(&ADMIN_KEY, &admin);
         env.storage().instance().set(&TOKEN_KEY, &token);
+        env.storage().instance().set(&LOCK_PERIOD_KEY, &0u64);
+        env.storage().instance().set(&MIN_STAKE_KEY, &1i128);
+        env.storage().instance().set(&REWARD_PER_SHARE_KEY, &0i128);
+        env.storage().instance().set(&REWARD_POOL_KEY, &0i128);
+        env.storage()
+            .instance()
+            .set(&UNALLOCATED_REWARDS_KEY, &0i128);
     }
 
     /// Return the current admin address.
@@ -126,6 +153,41 @@ impl StakingContract {
             .instance()
             .get(&TOKEN_KEY)
             .unwrap_or_else(|| panic_with_error!(&env, StakingError::NotInitialized))
+    }
+
+    /// Admin-only: configure factory contract that can lock/release host stake.
+    pub fn set_factory(env: Env, factory: Address) {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        env.storage().instance().set(&FACTORY_KEY, &factory);
+    }
+
+    pub fn factory(env: Env) -> Option<Address> {
+        env.storage().instance().get(&FACTORY_KEY)
+    }
+
+    pub fn set_lock_period_seconds(env: Env, seconds: u64) {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        env.storage().instance().set(&LOCK_PERIOD_KEY, &seconds);
+    }
+
+    pub fn lock_period_seconds(env: Env) -> u64 {
+        env.storage().instance().get(&LOCK_PERIOD_KEY).unwrap_or(0)
+    }
+
+    pub fn set_min_stake(env: Env, min_stake: i128) -> Result<(), StakingError> {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        if min_stake <= 0 {
+            return Err(StakingError::InvalidAmount);
+        }
+        env.storage().instance().set(&MIN_STAKE_KEY, &min_stake);
+        Ok(())
+    }
+
+    pub fn min_stake(env: Env) -> i128 {
+        env.storage().instance().get(&MIN_STAKE_KEY).unwrap_or(1)
     }
 
     // ── Pause mechanism ──────────────────────────────────────────────────────
@@ -192,8 +254,20 @@ impl StakingContract {
     }
 
     pub fn get_staker_stats(env: Env, staker: Address) -> StakerStats {
-        let position = Self::get_position(env.clone(), staker);
+        let position = Self::get_position(env.clone(), staker.clone());
         let total_staked = Self::total_staked(env.clone());
+        let pending_rewards = pending_rewards_of(&env, &staker, &position);
+        let staked_at: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::StakedAt(staker.clone()))
+            .unwrap_or(0);
+        let unlock_at = staked_at.saturating_add(Self::lock_period_seconds(env.clone()));
+        let total_claimed_rewards: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TotalClaimedRewards(staker.clone()))
+            .unwrap_or(0);
         let stake_share_bps = if total_staked <= 0 || position.amount <= 0 {
             0
         } else {
@@ -206,11 +280,71 @@ impl StakingContract {
 
         StakerStats {
             staked_amount: position.amount,
-            pending_rewards: 0,
-            unlock_at: 0,
-            total_claimed_rewards: 0,
+            pending_rewards,
+            unlock_at,
+            total_claimed_rewards,
             stake_share_bps,
         }
+    }
+
+    /// Returns currently available host stake (staked minus locked amount).
+    pub fn get_host_stake(env: Env, host: Address) -> i128 {
+        let total = Self::staked_balance(env.clone(), host.clone());
+        let locked: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HostLockedTotal(host))
+            .unwrap_or(0);
+        total.saturating_sub(locked)
+    }
+
+    /// Lock host stake for an arena so host cannot withdraw below reserved amount.
+    pub fn lock_host_stake(
+        env: Env,
+        host: Address,
+        arena_id: u64,
+        amount: i128,
+    ) -> Result<(), StakingError> {
+        if amount <= 0 {
+            return Err(StakingError::InvalidAmount);
+        }
+        let available = Self::get_host_stake(env.clone(), host.clone());
+        if available < amount {
+            return Err(StakingError::InsufficientShares);
+        }
+        let lock_key = DataKey::HostLock(host.clone(), arena_id);
+        if env.storage().persistent().has(&lock_key) {
+            return Ok(());
+        }
+        env.storage().persistent().set(&lock_key, &amount);
+        let current_locked: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HostLockedTotal(host.clone()))
+            .unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&DataKey::HostLockedTotal(host), &(current_locked + amount));
+        Ok(())
+    }
+
+    /// Release previously locked host stake for an arena.
+    pub fn release_host_stake(env: Env, host: Address, arena_id: u64) -> Result<(), StakingError> {
+        let lock_key = DataKey::HostLock(host.clone(), arena_id);
+        let Some(locked_amount) = env.storage().persistent().get::<_, i128>(&lock_key) else {
+            return Ok(());
+        };
+        env.storage().persistent().remove(&lock_key);
+        let current_locked: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HostLockedTotal(host.clone()))
+            .unwrap_or(0);
+        let next_locked = current_locked.saturating_sub(locked_amount);
+        env.storage()
+            .persistent()
+            .set(&DataKey::HostLockedTotal(host), &next_locked);
+        Ok(())
     }
 
     // ── Staking ───────────────────────────────────────────────────────────────
@@ -237,6 +371,16 @@ impl StakingContract {
 
         let token_contract = get_token_contract(&env)?;
 
+        let mut position: StakePosition = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Position(staker.clone()))
+            .unwrap_or(StakePosition {
+                amount: 0,
+                shares: 0,
+            });
+        accrue_rewards(&env, &staker, &position)?;
+
         let total_staked: i128 = env.storage().instance().get(&TOTAL_STAKED_KEY).unwrap_or(0);
         let total_shares: i128 = env.storage().instance().get(&TOTAL_SHARES_KEY).unwrap_or(0);
 
@@ -256,20 +400,17 @@ impl StakingContract {
         env.storage()
             .instance()
             .set(&TOTAL_SHARES_KEY, &(total_shares + shares_minted));
-
-        let mut position: StakePosition = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Position(staker.clone()))
-            .unwrap_or(StakePosition {
-                amount: 0,
-                shares: 0,
-            });
         position.amount += amount;
         position.shares += shares_minted;
         env.storage()
             .persistent()
             .set(&DataKey::Position(staker.clone()), &position);
+        env.storage().persistent().set(
+            &DataKey::StakedAt(staker.clone()),
+            &env.ledger().timestamp(),
+        );
+        sync_reward_debt(&env, &staker)?;
+        distribute_unallocated_rewards(&env)?;
 
         // Interaction: transfer tokens into the contract.
         token::Client::new(&env, &token_contract).transfer(
@@ -297,14 +438,14 @@ impl StakingContract {
     ///
     /// # Authorization
     /// Requires `staker.require_auth()`.
-    pub fn unstake(env: Env, staker: Address, shares: i128) -> Result<i128, StakingError> {
+    pub fn unstake(env: Env, staker: Address, amount: i128) -> Result<i128, StakingError> {
         require_not_paused(&env)?;
         staker.require_auth();
 
-        if shares == 0 {
+        if amount == 0 {
             return Err(StakingError::ZeroShares);
         }
-        if shares < 0 {
+        if amount < 0 {
             return Err(StakingError::InvalidAmount);
         }
 
@@ -316,44 +457,231 @@ impl StakingContract {
                 amount: 0,
                 shares: 0,
             });
-        if position.shares < shares {
-            return Err(StakingError::InsufficientShares);
+        if position.amount < amount {
+            return Err(StakingError::InsufficientBalance);
         }
+
+        let staked_at: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::StakedAt(staker.clone()))
+            .unwrap_or(0);
+        let unlock_at = staked_at.saturating_add(Self::lock_period_seconds(env.clone()));
+        if env.ledger().timestamp() < unlock_at {
+            return Err(StakingError::StillLocked);
+        }
+
+        accrue_rewards(&env, &staker, &position)?;
 
         let total_staked: i128 = env.storage().instance().get(&TOTAL_STAKED_KEY).unwrap_or(0);
         let total_shares: i128 = env.storage().instance().get(&TOTAL_SHARES_KEY).unwrap_or(0);
 
-        let tokens_returned = shares
-            .checked_mul(total_staked)
-            .and_then(|v| v.checked_div(total_shares))
-            .unwrap_or(shares);
+        let shares_to_burn = if amount == position.amount {
+            position.shares
+        } else {
+            amount
+                .checked_mul(total_shares)
+                .and_then(|v| v.checked_div(total_staked))
+                .unwrap_or(0)
+                .max(1)
+                .min(position.shares)
+        };
+
+        let currently_locked: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HostLockedTotal(staker.clone()))
+            .unwrap_or(0);
+        if position.amount.saturating_sub(amount) < currently_locked {
+            return Err(StakingError::LockedStake);
+        }
 
         let token_contract = get_token_contract(&env)?;
 
         // CEI: update state before token transfer.
-        position.shares -= shares;
-        position.amount = position.amount.saturating_sub(tokens_returned);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Position(staker.clone()), &position);
+        position.shares = position.shares.saturating_sub(shares_to_burn);
+        position.amount = position.amount.saturating_sub(amount);
+        if position.shares == 0 || position.amount == 0 {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Position(staker.clone()));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::RewardDebt(staker.clone()));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::StakedAt(staker.clone()));
+        } else {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Position(staker.clone()), &position);
+            sync_reward_debt(&env, &staker)?;
+        }
         env.storage()
             .instance()
-            .set(&TOTAL_STAKED_KEY, &(total_staked - tokens_returned));
+            .set(&TOTAL_STAKED_KEY, &(total_staked - amount));
         env.storage()
             .instance()
-            .set(&TOTAL_SHARES_KEY, &(total_shares - shares));
+            .set(&TOTAL_SHARES_KEY, &(total_shares - shares_to_burn));
 
         // Interaction: transfer tokens back to staker.
         token::Client::new(&env, &token_contract).transfer(
             &env.current_contract_address(),
             &staker,
-            &tokens_returned,
+            &amount,
         );
 
         env.events()
-            .publish((TOPIC_UNSTAKE,), (staker, tokens_returned, shares));
+            .publish((TOPIC_UNSTAKE,), (staker, amount, position.amount));
 
-        Ok(tokens_returned)
+        Ok(amount)
+    }
+
+    pub fn deposit_rewards(env: Env, from: Address, amount: i128) -> Result<(), StakingError> {
+        require_not_paused(&env)?;
+        from.require_auth();
+        if amount <= 0 {
+            return Err(StakingError::InvalidAmount);
+        }
+
+        let admin = Self::admin(env.clone());
+        let factory = Self::factory(env.clone());
+        let is_authorized = from == admin || factory.as_ref().is_some_and(|f| *f == from);
+        if !is_authorized {
+            return Err(StakingError::Unauthorized);
+        }
+
+        let token_contract = get_token_contract(&env)?;
+        token::Client::new(&env, &token_contract).transfer(
+            &from,
+            &env.current_contract_address(),
+            &amount,
+        );
+
+        let reward_pool: i128 = env.storage().instance().get(&REWARD_POOL_KEY).unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&REWARD_POOL_KEY, &(reward_pool + amount));
+
+        let total_shares = Self::total_shares(env.clone());
+        if total_shares > 0 {
+            let reward_per_share = env
+                .storage()
+                .instance()
+                .get(&REWARD_PER_SHARE_KEY)
+                .unwrap_or(0i128);
+            let delta = amount
+                .checked_mul(PRECISION)
+                .and_then(|v| v.checked_div(total_shares))
+                .unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&REWARD_PER_SHARE_KEY, &(reward_per_share + delta));
+        } else {
+            let unallocated: i128 = env
+                .storage()
+                .instance()
+                .get(&UNALLOCATED_REWARDS_KEY)
+                .unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&UNALLOCATED_REWARDS_KEY, &(unallocated + amount));
+        }
+
+        env.events()
+            .publish((TOPIC_REWARDS_DEPOSITED,), (from, amount));
+        Ok(())
+    }
+
+    pub fn claim_rewards(env: Env, staker: Address) -> Result<i128, StakingError> {
+        require_not_paused(&env)?;
+        staker.require_auth();
+
+        let position = Self::get_position(env.clone(), staker.clone());
+        accrue_rewards(&env, &staker, &position)?;
+
+        let claim_key = DataKey::PendingRewards(staker.clone());
+        let claimable: i128 = env.storage().persistent().get(&claim_key).unwrap_or(0);
+        if claimable <= 0 {
+            return Ok(0);
+        }
+
+        let token_contract = get_token_contract(&env)?;
+        let pool: i128 = env.storage().instance().get(&REWARD_POOL_KEY).unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&REWARD_POOL_KEY, &pool.saturating_sub(claimable));
+        env.storage().persistent().set(&claim_key, &0i128);
+
+        let total_claimed_key = DataKey::TotalClaimedRewards(staker.clone());
+        let total_claimed: i128 = env
+            .storage()
+            .persistent()
+            .get(&total_claimed_key)
+            .unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&total_claimed_key, &(total_claimed + claimable));
+
+        token::Client::new(&env, &token_contract).transfer(
+            &env.current_contract_address(),
+            &staker,
+            &claimable,
+        );
+        env.events()
+            .publish((TOPIC_REWARDS_CLAIMED,), (staker, claimable));
+        Ok(claimable)
+    }
+
+    pub fn compound(env: Env, staker: Address) -> Result<i128, StakingError> {
+        require_not_paused(&env)?;
+        staker.require_auth();
+
+        let mut position = Self::get_position(env.clone(), staker.clone());
+        accrue_rewards(&env, &staker, &position)?;
+
+        let pending_key = DataKey::PendingRewards(staker.clone());
+        let pending: i128 = env.storage().persistent().get(&pending_key).unwrap_or(0);
+        if pending <= 0 {
+            return Err(StakingError::NothingToCompound);
+        }
+        if pending < Self::min_stake(env.clone()) && position.amount <= 0 {
+            return Err(StakingError::InvalidAmount);
+        }
+
+        let total_staked = Self::total_staked(env.clone());
+        let total_shares = Self::total_shares(env.clone());
+        let shares_minted = if total_staked == 0 || total_shares == 0 {
+            pending
+        } else {
+            pending
+                .checked_mul(total_shares)
+                .and_then(|v| v.checked_div(total_staked))
+                .unwrap_or(pending)
+        };
+
+        position.amount += pending;
+        position.shares += shares_minted;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Position(staker.clone()), &position);
+        env.storage().persistent().set(&pending_key, &0i128);
+
+        let reward_pool: i128 = env.storage().instance().get(&REWARD_POOL_KEY).unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&REWARD_POOL_KEY, &reward_pool.saturating_sub(pending));
+        env.storage()
+            .instance()
+            .set(&TOTAL_STAKED_KEY, &(total_staked + pending));
+        env.storage()
+            .instance()
+            .set(&TOTAL_SHARES_KEY, &(total_shares + shares_minted));
+        sync_reward_debt(&env, &staker)?;
+
+        env.events()
+            .publish((TOPIC_COMPOUNDED,), (staker, pending, position.amount));
+        Ok(pending)
     }
 
     // ── Upgrade timelock ─────────────────────────────────────────────────────
@@ -487,7 +815,8 @@ impl StakingContract {
         }
         env.storage().instance().remove(&PENDING_ADMIN_KEY);
         env.storage().instance().remove(&ADMIN_EXPIRY_KEY);
-        env.events().publish((TOPIC_ADMIN_CANCELLED,), (EVENT_VERSION,));
+        env.events()
+            .publish((TOPIC_ADMIN_CANCELLED,), (EVENT_VERSION,));
         Ok(())
     }
 
@@ -515,6 +844,109 @@ fn require_not_paused(env: &Env) -> Result<(), StakingError> {
     if env.storage().instance().get(&PAUSED_KEY).unwrap_or(false) {
         return Err(StakingError::Paused);
     }
+    Ok(())
+}
+
+fn pending_rewards_of(env: &Env, staker: &Address, position: &StakePosition) -> i128 {
+    let pending: i128 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PendingRewards(staker.clone()))
+        .unwrap_or(0);
+    if position.shares <= 0 {
+        return pending;
+    }
+
+    let reward_per_share: i128 = env
+        .storage()
+        .instance()
+        .get(&REWARD_PER_SHARE_KEY)
+        .unwrap_or(0);
+    let reward_debt: i128 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::RewardDebt(staker.clone()))
+        .unwrap_or(0);
+    let delta = reward_per_share.saturating_sub(reward_debt);
+    if delta <= 0 {
+        return pending;
+    }
+    let accrued = position
+        .shares
+        .checked_mul(delta)
+        .and_then(|v| v.checked_div(PRECISION))
+        .unwrap_or(0);
+    pending.saturating_add(accrued)
+}
+
+fn accrue_rewards(
+    env: &Env,
+    staker: &Address,
+    position: &StakePosition,
+) -> Result<(), StakingError> {
+    distribute_unallocated_rewards(env)?;
+    let pending = pending_rewards_of(env, staker, position);
+    env.storage()
+        .persistent()
+        .set(&DataKey::PendingRewards(staker.clone()), &pending);
+    sync_reward_debt(env, staker)?;
+    Ok(())
+}
+
+fn sync_reward_debt(env: &Env, staker: &Address) -> Result<(), StakingError> {
+    let position: StakePosition = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Position(staker.clone()))
+        .unwrap_or(StakePosition {
+            amount: 0,
+            shares: 0,
+        });
+    if position.shares <= 0 {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::RewardDebt(staker.clone()));
+        return Ok(());
+    }
+    let reward_per_share: i128 = env
+        .storage()
+        .instance()
+        .get(&REWARD_PER_SHARE_KEY)
+        .unwrap_or(0);
+    env.storage()
+        .persistent()
+        .set(&DataKey::RewardDebt(staker.clone()), &reward_per_share);
+    Ok(())
+}
+
+fn distribute_unallocated_rewards(env: &Env) -> Result<(), StakingError> {
+    let unallocated: i128 = env
+        .storage()
+        .instance()
+        .get(&UNALLOCATED_REWARDS_KEY)
+        .unwrap_or(0);
+    if unallocated <= 0 {
+        return Ok(());
+    }
+    let total_shares: i128 = env.storage().instance().get(&TOTAL_SHARES_KEY).unwrap_or(0);
+    if total_shares <= 0 {
+        return Ok(());
+    }
+    let reward_per_share: i128 = env
+        .storage()
+        .instance()
+        .get(&REWARD_PER_SHARE_KEY)
+        .unwrap_or(0);
+    let delta = unallocated
+        .checked_mul(PRECISION)
+        .and_then(|v| v.checked_div(total_shares))
+        .ok_or(StakingError::InvalidAmount)?;
+    env.storage()
+        .instance()
+        .set(&REWARD_PER_SHARE_KEY, &(reward_per_share + delta));
+    env.storage()
+        .instance()
+        .set(&UNALLOCATED_REWARDS_KEY, &0i128);
     Ok(())
 }
 

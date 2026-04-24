@@ -84,6 +84,17 @@ fn advance_ledger_with_auth(env: &Env, sequence_number: u32) {
     env.mock_all_auths();
 }
 
+fn advance_past_resolution_window(env: &Env, round: &RoundState) {
+    let resolve_at = round
+        .round_deadline_ledger
+        .checked_add(grace_period_to_ledgers(
+            bounds::DEFAULT_GRACE_PERIOD_SECONDS,
+        ))
+        .expect("resolution ledger overflow in test")
+        + 1;
+    set_ledger_sequence(env, resolve_at);
+}
+
 /// Run N complete round cycles (start → timeout) and return observed round
 /// numbers in order.
 fn run_cycles(env: &Env, client: &ArenaContractClient, _round_speed: u32, cycles: u32) -> Vec<u32> {
@@ -189,13 +200,7 @@ fn setup_game(
 
 fn setup_finished_game_with_winner(
     prize_amount: i128,
-) -> (
-    Env,
-    Address,
-    ArenaContractClient<'static>,
-    Address,
-    Address,
-) {
+) -> (Env, Address, ArenaContractClient<'static>, Address, Address) {
     let (env, admin, client, token_id, players) = setup_game(5, 3);
     let asset = StellarAssetClient::new(&env, &token_id);
     let existing_pool = TEST_REQUIRED_STAKE * players.len() as i128;
@@ -207,11 +212,11 @@ fn setup_finished_game_with_winner(
     }
 
     set_ledger_sequence(&env, 1);
-    client.start_round();
-    client.submit_choice(&players[0], &1u32, &Choice::Heads);
-    client.submit_choice(&players[1], &1u32, &Choice::Tails);
-    client.submit_choice(&players[2], &1u32, &Choice::Tails);
-    set_ledger_sequence(&env, 7);
+    let round = client.start_round();
+    client.submit_choice(&players[0], &round.round_number, &Choice::Heads);
+    client.submit_choice(&players[1], &round.round_number, &Choice::Tails);
+    client.submit_choice(&players[2], &round.round_number, &Choice::Tails);
+    advance_past_resolution_window(&env, &round);
     client.resolve_round();
 
     let winner = players[0].clone();
@@ -259,7 +264,11 @@ fn test_init_above_max_round_speed_returns_invalid() {
     let env = make_env();
     let client = create_client(&env);
     assert_eq!(
-        client.try_init(&(bounds::MAX_SPEED_LEDGERS + 1), &TEST_REQUIRED_STAKE, &3600),
+        client.try_init(
+            &(bounds::MAX_SPEED_LEDGERS + 1),
+            &TEST_REQUIRED_STAKE,
+            &3600
+        ),
         Err(Ok(ArenaError::InvalidRoundSpeed))
     );
 }
@@ -1072,7 +1081,9 @@ fn test_unauthorized_propose_upgrade_panics() {
     let admin = Address::generate(&env);
     let contract_id = env.register(ArenaContract, (&admin,));
     env.as_contract(&contract_id, || {
-        env.storage().instance().set(&symbol_short!("ADMIN"), &admin);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("ADMIN"), &admin);
     });
     let client = ArenaContractClient::new(&env, &contract_id);
     client.propose_upgrade(&dummy_hash(&env));
@@ -1096,7 +1107,9 @@ fn test_unauthorized_cancel_upgrade_panics() {
     let admin = Address::generate(&env);
     let contract_id = env.register(ArenaContract, (&admin,));
     env.as_contract(&contract_id, || {
-        env.storage().instance().set(&symbol_short!("ADMIN"), &admin);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("ADMIN"), &admin);
     });
     let client = ArenaContractClient::new(&env, &contract_id);
     client.cancel_upgrade();
@@ -2549,20 +2562,19 @@ fn run_resolution_scenario(
     let (env, _admin, client, _token_id, players) = setup_game(5, total);
 
     set_ledger_sequence(&env, 100);
-    client.start_round();
+    let round = client.start_round();
 
     let heads_players: Vec<Address> = players[..heads_count as usize].to_vec();
     let tails_players: Vec<Address> = players[heads_count as usize..].to_vec();
 
     for p in &heads_players {
-        client.submit_choice(p, &1, &Choice::Heads);
+        client.submit_choice(p, &round.round_number, &Choice::Heads);
     }
     for p in &tails_players {
-        client.submit_choice(p, &1, &Choice::Tails);
+        client.submit_choice(p, &round.round_number, &Choice::Tails);
     }
 
-    // Advance past the round deadline (round_speed = 5, started at 100)
-    set_ledger_sequence(&env, 106);
+    advance_past_resolution_window(&env, &round);
 
     (env, client, heads_players, tails_players)
 }
@@ -2573,8 +2585,7 @@ fn run_resolution_scenario(
 fn resolve_round_tie_2_players_exactly_one_survives() {
     // Seed PRNG so the tie-break is deterministic: seed [0;32] → gen() & 1 == 0
     // → Heads survives (see choose_surviving_side).
-    let (env, client, heads_players, tails_players) =
-        run_resolution_scenario(1, 1);
+    let (env, client, heads_players, tails_players) = run_resolution_scenario(1, 1);
 
     seed_contract_prng(&env, &client.address, [0u8; 32]);
 
@@ -2601,8 +2612,7 @@ fn resolve_round_tie_2_players_exactly_one_survives() {
 #[test]
 fn resolve_round_minority_tails_survives() {
     // 3 Heads vs 1 Tails → Tails is the minority → Tails survives (no tie-break needed).
-    let (_env, client, heads_players, tails_players) =
-        run_resolution_scenario(3, 1);
+    let (_env, client, heads_players, tails_players) = run_resolution_scenario(3, 1);
 
     client.resolve_round();
 
@@ -2641,8 +2651,7 @@ fn resolve_round_tie_emits_rslvd_event_with_correct_counts() {
 
 #[test]
 fn resolve_round_3_heads_7_tails_heads_survive() {
-    let (_env, client, heads_players, tails_players) =
-        run_resolution_scenario(3, 7);
+    let (_env, client, heads_players, tails_players) = run_resolution_scenario(3, 7);
 
     client.resolve_round();
 
@@ -2684,8 +2693,7 @@ fn resolve_round_3_heads_7_tails_event_payload_correct() {
 
 #[test]
 fn resolve_round_minority_survivor_count_matches_heads_count() {
-    let (_env, client, heads_players, _tails_players) =
-        run_resolution_scenario(3, 7);
+    let (_env, client, heads_players, _tails_players) = run_resolution_scenario(3, 7);
 
     client.resolve_round();
 
@@ -2765,8 +2773,7 @@ fn resolve_round_all_same_choice_emits_rslvd_with_zero_eliminated() {
 #[test]
 fn resolve_round_produces_single_survivor() {
     // 1 Heads vs 3 Tails → Heads (minority) is the sole survivor.
-    let (_env, client, heads_players, tails_players) =
-        run_resolution_scenario(1, 3);
+    let (_env, client, heads_players, tails_players) = run_resolution_scenario(1, 3);
 
     client.resolve_round();
 
@@ -2792,8 +2799,7 @@ fn resolve_round_single_survivor_cannot_submit_next_round_as_eliminated() {
     // Verify that eliminated players are correctly blocked in the next round.
     // Use 2 heads vs 4 tails so that 2 heads players survive after resolution,
     // giving us enough players (>= 2) to start round 2.
-    let (env, client, _heads_players, tails_players) =
-        run_resolution_scenario(2, 4);
+    let (env, client, _heads_players, tails_players) = run_resolution_scenario(2, 4);
 
     client.resolve_round();
 
@@ -2866,8 +2872,7 @@ fn resolve_round_minority_wins_parameterized() {
     ];
 
     for &(h, t, expected_survivors) in cases {
-        let (_env, client, heads_players, tails_players) =
-            run_resolution_scenario(h, t);
+        let (_env, client, heads_players, tails_players) = run_resolution_scenario(h, t);
 
         client.resolve_round();
 
@@ -2896,6 +2901,215 @@ fn resolve_round_minority_wins_parameterized() {
                 "({h}H vs {t}T): majority player must be eliminated"
             );
         }
+    }
+}
+
+// ── Issue #474: comprehensive round resolution coverage ───────────────────────
+
+fn seed_single_survivor_active_round() -> (Env, ArenaContractClient<'static>, Address, RoundState) {
+    let (env, _admin, client) = setup_with_admin();
+    let lone_survivor = Address::generate(&env);
+    let round = RoundState {
+        round_number: 7,
+        round_start_ledger: 500,
+        round_deadline_ledger: 505,
+        active: true,
+        total_submissions: 0,
+        timed_out: false,
+        finished: false,
+    };
+
+    env.as_contract(&client.address, || {
+        env.storage().instance().set(
+            &DataKey::Config,
+            &ArenaConfig {
+                round_speed_in_ledgers: 5,
+                required_stake_amount: TEST_REQUIRED_STAKE,
+                max_rounds: bounds::DEFAULT_MAX_ROUNDS,
+                winner_yield_share_bps: DEFAULT_WINNER_YIELD_SHARE_BPS,
+                grace_period_seconds: bounds::DEFAULT_GRACE_PERIOD_SECONDS,
+                join_deadline: 3_600,
+                win_fee_bps: 0,
+                is_private: false,
+            },
+        );
+        env.storage().instance().set(&DataKey::Round, &round);
+        env.storage().instance().set(&SURVIVOR_COUNT_KEY, &1u32);
+        env.storage()
+            .instance()
+            .set(&STATE_KEY, &ArenaState::Active);
+
+        let mut players = soroban_sdk::Vec::new(&env);
+        players.push_back(lone_survivor.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::AllPlayers, &players);
+
+        let survivor_key = DataKey::Survivor(lone_survivor.clone());
+        env.storage().persistent().set(&survivor_key, &true);
+        bump(&env, &survivor_key);
+    });
+
+    (env, client, lone_survivor, round)
+}
+
+#[test]
+fn issue_474_resolve_round_handles_normal_4v2_split() {
+    let (_env, client, heads_players, tails_players) = run_resolution_scenario(4, 2);
+
+    let resolved = client.resolve_round();
+
+    assert!(resolved.finished);
+    assert_eq!(client.get_arena_state().survivors_count, 2);
+    for player in &heads_players {
+        assert!(!client.get_user_state(player).is_active);
+    }
+    for player in &tails_players {
+        assert!(client.get_user_state(player).is_active);
+    }
+}
+
+#[test]
+fn issue_474_resolve_round_handles_normal_1v5_split() {
+    let (_env, client, heads_players, tails_players) = run_resolution_scenario(1, 5);
+
+    let resolved = client.resolve_round();
+
+    assert!(resolved.finished);
+    assert_eq!(client.get_arena_state().survivors_count, 1);
+    assert!(client.get_user_state(&heads_players[0]).is_active);
+    for player in &tails_players {
+        assert!(!client.get_user_state(player).is_active);
+    }
+}
+
+#[test]
+fn issue_474_exact_tie_is_deterministic_for_same_ledger_sequence() {
+    let (_env_a, client_a, heads_a, tails_a) = run_resolution_scenario(2, 2);
+    let (_env_b, client_b, heads_b, tails_b) = run_resolution_scenario(2, 2);
+
+    client_a.resolve_round();
+    client_b.resolve_round();
+
+    assert_eq!(client_a.get_arena_state().survivors_count, 2);
+    assert_eq!(client_b.get_arena_state().survivors_count, 2);
+
+    for (left, right) in heads_a.iter().zip(heads_b.iter()) {
+        assert_eq!(
+            client_a.get_user_state(&left).is_active,
+            client_b.get_user_state(&right).is_active
+        );
+    }
+    for (left, right) in tails_a.iter().zip(tails_b.iter()) {
+        assert_eq!(
+            client_a.get_user_state(&left).is_active,
+            client_b.get_user_state(&right).is_active
+        );
+    }
+}
+
+#[test]
+fn issue_474_all_same_choice_eliminates_everyone_and_completes_arena() {
+    let (env, _admin, client, _token_id, players) = setup_game(5, 6);
+
+    set_ledger_sequence(&env, 200);
+    let round = client.start_round();
+    for player in &players {
+        client.submit_choice(player, &round.round_number, &Choice::Heads);
+    }
+    advance_past_resolution_window(&env, &round);
+
+    let resolved = client.resolve_round();
+
+    assert!(resolved.finished);
+    assert_eq!(client.get_arena_state().survivors_count, 0);
+    assert_eq!(client.state(), ArenaState::Completed);
+    for player in &players {
+        assert!(!client.get_user_state(player).is_active);
+    }
+}
+
+#[test]
+fn issue_474_single_survivor_before_resolve_completes_without_crashing() {
+    let (env, client, lone_survivor, round) = seed_single_survivor_active_round();
+    advance_past_resolution_window(&env, &round);
+
+    let resolved = client.resolve_round();
+
+    assert_eq!(resolved.round_number, round.round_number);
+    assert!(resolved.finished);
+    assert!(!resolved.active);
+    assert_eq!(client.get_arena_state().survivors_count, 1);
+    assert_eq!(client.state(), ArenaState::Completed);
+    assert!(client.get_user_state(&lone_survivor).is_active);
+}
+
+#[test]
+fn issue_474_large_64_player_resolution_fits_default_budget() {
+    let (env, _admin, client, _token_id, players) = setup_game(5, 64);
+
+    set_ledger_sequence(&env, 300);
+    let round = client.start_round();
+    for (index, player) in players.iter().enumerate() {
+        let choice = if index < 32 {
+            Choice::Heads
+        } else {
+            Choice::Tails
+        };
+        client.submit_choice(player, &round.round_number, &choice);
+    }
+    advance_past_resolution_window(&env, &round);
+
+    let resolved = client.resolve_round();
+
+    assert!(
+        resolved.finished,
+        "resolution should finish under the default budget"
+    );
+    assert_eq!(client.get_arena_state().survivors_count, 32);
+}
+
+#[test]
+fn issue_474_round_progression_carries_state_from_round_1_to_round_7() {
+    let (env, _admin, client, _token_id, players) = setup_game(5, 6);
+    let mut next_start = 400u32;
+
+    for expected_round in 1..=6u32 {
+        set_ledger_sequence(&env, next_start);
+        let round = client.start_round();
+        assert_eq!(round.round_number, expected_round);
+
+        advance_past_resolution_window(&env, &round);
+        let resolved = client.resolve_round();
+
+        assert_eq!(resolved.round_number, expected_round);
+        assert_eq!(client.get_arena_state().survivors_count, 6);
+        next_start = round.round_deadline_ledger
+            + grace_period_to_ledgers(bounds::DEFAULT_GRACE_PERIOD_SECONDS)
+            + 10;
+    }
+
+    set_ledger_sequence(&env, next_start);
+    let round_seven = client.start_round();
+    assert_eq!(round_seven.round_number, 7);
+
+    for player in &players[0..4] {
+        client.submit_choice(player, &round_seven.round_number, &Choice::Heads);
+    }
+    for player in &players[4..6] {
+        client.submit_choice(player, &round_seven.round_number, &Choice::Tails);
+    }
+    advance_past_resolution_window(&env, &round_seven);
+
+    let resolved = client.resolve_round();
+
+    assert_eq!(resolved.round_number, 7);
+    assert_eq!(client.get_arena_state().survivors_count, 2);
+    for player in &players[0..4] {
+        assert!(!client.get_user_state(player).is_active);
+    }
+    for player in &players[4..6] {
+        assert!(client.get_user_state(player).is_active);
     }
 }
 
@@ -3064,7 +3278,11 @@ fn set_max_rounds_accepts_boundary_values() {
     client.init(&5u32, &TEST_REQUIRED_STAKE, &3600);
     assert!(client.try_set_max_rounds(&bounds::MIN_MAX_ROUNDS).is_ok());
     assert!(client.try_set_max_rounds(&bounds::MAX_MAX_ROUNDS).is_ok());
-    assert!(client.try_set_max_rounds(&bounds::DEFAULT_MAX_ROUNDS).is_ok());
+    assert!(
+        client
+            .try_set_max_rounds(&bounds::DEFAULT_MAX_ROUNDS)
+            .is_ok()
+    );
 }
 
 // ── Issue #470: role-based access control ─────────────────────────────────────
@@ -3253,7 +3471,9 @@ fn seed_arena_cache_fixture(
                 finished: false,
             },
         );
-        env.storage().instance().set(&SURVIVOR_COUNT_KEY, &survivor_count);
+        env.storage()
+            .instance()
+            .set(&SURVIVOR_COUNT_KEY, &survivor_count);
         env.storage().instance().set(&CAPACITY_KEY, &capacity);
         env.storage().instance().set(&PRIZE_POOL_KEY, &prize_pool);
     });
