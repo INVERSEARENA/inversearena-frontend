@@ -4,12 +4,20 @@ use soroban_sdk::{
     Address, BytesN, Env, Symbol, contract, contracterror, contractimpl, contracttype,
     panic_with_error, symbol_short, token,
 };
+#[path = "../../shared/admin_transfer.rs"]
+mod admin_transfer_utils;
 #[path = "../../shared/upgrade.rs"]
 mod upgrade_utils;
+use admin_transfer_utils::{
+    AdminTransferErrors, AdminTransferKeys, accept_admin_transfer as accept_admin_transfer_flow,
+    cancel_admin_transfer as cancel_admin_transfer_flow,
+    pending_admin_transfer as pending_admin_transfer_flow,
+    propose_admin_transfer as propose_admin_transfer_flow,
+};
 use upgrade_utils::{
-    ExecuteTimePolicy, UpgradeErrors, UpgradeKeys, UpgradeTopics, cancel_upgrade as cancel_upgrade_flow,
-    execute_upgrade as execute_upgrade_flow, pending_upgrade as pending_upgrade_flow,
-    propose_upgrade as propose_upgrade_flow,
+    ExecuteTimePolicy, UpgradeErrors, UpgradeKeys, UpgradeTopics,
+    cancel_upgrade as cancel_upgrade_flow, execute_upgrade as execute_upgrade_flow,
+    pending_upgrade as pending_upgrade_flow, propose_upgrade as propose_upgrade_flow,
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -163,9 +171,7 @@ impl StakingContract {
         env.storage().instance().set(&TOKEN_KEY, &token);
         env.storage().instance().set(&LOCK_PERIOD_KEY, &0u64);
         env.storage().instance().set(&MIN_STAKE_KEY, &1i128);
-        env.storage()
-            .instance()
-            .set(&MAX_STAKE_KEY, &i128::MAX);
+        env.storage().instance().set(&MAX_STAKE_KEY, &i128::MAX);
         env.storage().instance().set(&REWARDS_ENABLED_KEY, &true);
         env.storage().instance().set(&REWARD_PER_SHARE_KEY, &0i128);
         env.storage().instance().set(&REWARD_POOL_KEY, &0i128);
@@ -230,7 +236,11 @@ impl StakingContract {
             token_address: Self::token(env.clone()),
             min_stake: Self::min_stake(env.clone()),
             lock_period_seconds: Self::lock_period_seconds(env.clone()),
-            max_stake_per_address: env.storage().instance().get(&MAX_STAKE_KEY).unwrap_or(i128::MAX),
+            max_stake_per_address: env
+                .storage()
+                .instance()
+                .get(&MAX_STAKE_KEY)
+                .unwrap_or(i128::MAX),
             rewards_enabled: env
                 .storage()
                 .instance()
@@ -248,8 +258,12 @@ impl StakingContract {
         if config.max_stake_per_address < config.min_stake {
             return Err(StakingError::InvalidAmount);
         }
-        env.storage().instance().set(&TOKEN_KEY, &config.token_address);
-        env.storage().instance().set(&MIN_STAKE_KEY, &config.min_stake);
+        env.storage()
+            .instance()
+            .set(&TOKEN_KEY, &config.token_address);
+        env.storage()
+            .instance()
+            .set(&MIN_STAKE_KEY, &config.min_stake);
         env.storage()
             .instance()
             .set(&LOCK_PERIOD_KEY, &config.lock_period_seconds);
@@ -259,7 +273,8 @@ impl StakingContract {
         env.storage()
             .instance()
             .set(&REWARDS_ENABLED_KEY, &config.rewards_enabled);
-        env.events().publish((TOPIC_CONFIG_UPDATED,), (EVENT_VERSION, config));
+        env.events()
+            .publish((TOPIC_CONFIG_UPDATED,), (EVENT_VERSION, config));
         Ok(())
     }
 
@@ -410,7 +425,12 @@ impl StakingContract {
     }
 
     /// Release previously locked host stake for an arena.
-    pub fn release_host_stake(env: Env, caller: Address, host: Address, arena_id: u64) -> Result<(), StakingError> {
+    pub fn release_host_stake(
+        env: Env,
+        caller: Address,
+        host: Address,
+        arena_id: u64,
+    ) -> Result<(), StakingError> {
         caller.require_auth();
         let admin = Self::admin(env.clone());
         let factory = Self::factory(env.clone());
@@ -475,7 +495,11 @@ impl StakingContract {
 
         let total_staked: i128 = env.storage().instance().get(&TOTAL_STAKED_KEY).unwrap_or(0);
         let total_shares: i128 = env.storage().instance().get(&TOTAL_SHARES_KEY).unwrap_or(0);
-        let max_stake: i128 = env.storage().instance().get(&MAX_STAKE_KEY).unwrap_or(i128::MAX);
+        let max_stake: i128 = env
+            .storage()
+            .instance()
+            .get(&MAX_STAKE_KEY)
+            .unwrap_or(i128::MAX);
         let new_balance = position
             .amount
             .checked_add(amount)
@@ -883,9 +907,16 @@ impl StakingContract {
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), StakingError> {
         let admin = Self::admin(env.clone());
         admin.require_auth();
-        let expires_at = env.ledger().timestamp() + ADMIN_TRANSFER_EXPIRY;
-        env.storage().instance().set(&PENDING_ADMIN_KEY, &new_admin);
-        env.storage().instance().set(&ADMIN_EXPIRY_KEY, &expires_at);
+        let expires_at = propose_admin_transfer_flow(
+            &env,
+            AdminTransferKeys {
+                admin: &ADMIN_KEY,
+                pending_admin: &PENDING_ADMIN_KEY,
+                admin_expiry: &ADMIN_EXPIRY_KEY,
+            },
+            &new_admin,
+            ADMIN_TRANSFER_EXPIRY,
+        );
         env.events().publish(
             (TOPIC_ADMIN_PROPOSED,),
             (EVENT_VERSION, admin, new_admin, expires_at),
@@ -897,28 +928,21 @@ impl StakingContract {
     /// within 7 days.
     pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), StakingError> {
         new_admin.require_auth();
-        let pending: Address = env
-            .storage()
-            .instance()
-            .get(&PENDING_ADMIN_KEY)
-            .ok_or(StakingError::NoPendingAdminTransfer)?;
-        if pending != new_admin {
-            return Err(StakingError::Unauthorized);
-        }
-        let expires_at: u64 = env
-            .storage()
-            .instance()
-            .get(&ADMIN_EXPIRY_KEY)
-            .ok_or(StakingError::NoPendingAdminTransfer)?;
-        if env.ledger().timestamp() > expires_at {
-            env.storage().instance().remove(&PENDING_ADMIN_KEY);
-            env.storage().instance().remove(&ADMIN_EXPIRY_KEY);
-            return Err(StakingError::AdminTransferExpired);
-        }
         let old_admin = Self::admin(env.clone());
-        env.storage().instance().set(&ADMIN_KEY, &new_admin);
-        env.storage().instance().remove(&PENDING_ADMIN_KEY);
-        env.storage().instance().remove(&ADMIN_EXPIRY_KEY);
+        accept_admin_transfer_flow(
+            &env,
+            AdminTransferKeys {
+                admin: &ADMIN_KEY,
+                pending_admin: &PENDING_ADMIN_KEY,
+                admin_expiry: &ADMIN_EXPIRY_KEY,
+            },
+            &new_admin,
+            AdminTransferErrors {
+                no_pending: StakingError::NoPendingAdminTransfer,
+                unauthorized: StakingError::Unauthorized,
+                expired: StakingError::AdminTransferExpired,
+            },
+        )?;
         env.events().publish(
             (TOPIC_ADMIN_ACCEPTED,),
             (EVENT_VERSION, old_admin, new_admin),
@@ -930,11 +954,15 @@ impl StakingContract {
     pub fn cancel_admin_transfer(env: Env) -> Result<(), StakingError> {
         let admin = Self::admin(env.clone());
         admin.require_auth();
-        if !env.storage().instance().has(&PENDING_ADMIN_KEY) {
-            return Err(StakingError::NoPendingAdminTransfer);
-        }
-        env.storage().instance().remove(&PENDING_ADMIN_KEY);
-        env.storage().instance().remove(&ADMIN_EXPIRY_KEY);
+        cancel_admin_transfer_flow(
+            &env,
+            AdminTransferKeys {
+                admin: &ADMIN_KEY,
+                pending_admin: &PENDING_ADMIN_KEY,
+                admin_expiry: &ADMIN_EXPIRY_KEY,
+            },
+            StakingError::NoPendingAdminTransfer,
+        )?;
         env.events()
             .publish((TOPIC_ADMIN_CANCELLED,), (EVENT_VERSION,));
         Ok(())
@@ -942,12 +970,14 @@ impl StakingContract {
 
     /// Return the pending admin address and expiry timestamp, or `None` if none.
     pub fn pending_admin_transfer(env: Env) -> Option<(Address, u64)> {
-        let addr: Option<Address> = env.storage().instance().get(&PENDING_ADMIN_KEY);
-        let exp: Option<u64> = env.storage().instance().get(&ADMIN_EXPIRY_KEY);
-        match (addr, exp) {
-            (Some(a), Some(e)) => Some((a, e)),
-            _ => None,
-        }
+        pending_admin_transfer_flow(
+            &env,
+            AdminTransferKeys {
+                admin: &ADMIN_KEY,
+                pending_admin: &PENDING_ADMIN_KEY,
+                admin_expiry: &ADMIN_EXPIRY_KEY,
+            },
+        )
     }
 }
 

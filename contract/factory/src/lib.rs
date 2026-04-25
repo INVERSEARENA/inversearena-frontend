@@ -4,16 +4,24 @@ use soroban_sdk::{
     Address, BytesN, Env, IntoVal, String, Symbol, Vec, contract, contracterror, contractimpl,
     contracttype, symbol_short, token, xdr::ToXdr,
 };
+#[path = "../../shared/admin_transfer.rs"]
+mod admin_transfer_utils;
 #[path = "../../shared/upgrade.rs"]
 mod upgrade_utils;
+use admin_transfer_utils::{
+    AdminTransferErrors, AdminTransferKeys, accept_admin_transfer as accept_admin_transfer_flow,
+    cancel_admin_transfer as cancel_admin_transfer_flow,
+    pending_admin_transfer as pending_admin_transfer_flow,
+    propose_admin_transfer as propose_admin_transfer_flow,
+};
 use upgrade_utils::{
-    ExecuteTimePolicy, UpgradeErrors, UpgradeKeys, UpgradeTopics, cancel_upgrade as cancel_upgrade_flow,
-    execute_upgrade as execute_upgrade_flow, pending_upgrade as pending_upgrade_flow,
-    propose_upgrade as propose_upgrade_flow,
+    ExecuteTimePolicy, UpgradeErrors, UpgradeKeys, UpgradeTopics,
+    cancel_upgrade as cancel_upgrade_flow, execute_upgrade as execute_upgrade_flow,
+    pending_upgrade as pending_upgrade_flow, propose_upgrade as propose_upgrade_flow,
 };
 
 #[cfg(test)]
-use arena::ArenaContract; 
+use arena::ArenaContract;
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
 
@@ -716,7 +724,11 @@ impl FactoryContract {
         if amount <= 0 {
             return Ok(());
         }
-        let current: i128 = env.storage().instance().get(&WIN_FEE_ACCUM_KEY).unwrap_or(0i128);
+        let current: i128 = env
+            .storage()
+            .instance()
+            .get(&WIN_FEE_ACCUM_KEY)
+            .unwrap_or(0i128);
         let next = current
             .checked_add(amount)
             .ok_or(Error::ArithmeticOverflow)?;
@@ -733,7 +745,11 @@ impl FactoryContract {
             .instance()
             .get(&CREATION_FEE_ACCUM_KEY)
             .unwrap_or(0i128);
-        let win_fee_accum: i128 = env.storage().instance().get(&WIN_FEE_ACCUM_KEY).unwrap_or(0i128);
+        let win_fee_accum: i128 = env
+            .storage()
+            .instance()
+            .get(&WIN_FEE_ACCUM_KEY)
+            .unwrap_or(0i128);
         let total = creation_fee_accum
             .checked_add(win_fee_accum)
             .ok_or(Error::ArithmeticOverflow)?;
@@ -746,7 +762,9 @@ impl FactoryContract {
             .get(&CREATION_TOKEN_KEY)
             .unwrap_or(env.current_contract_address());
         token::Client::new(&env, &token).transfer(&env.current_contract_address(), &to, &total);
-        env.storage().instance().set(&CREATION_FEE_ACCUM_KEY, &0i128);
+        env.storage()
+            .instance()
+            .set(&CREATION_FEE_ACCUM_KEY, &0i128);
         env.storage().instance().set(&WIN_FEE_ACCUM_KEY, &0i128);
         env.events()
             .publish((TOPIC_FEES_WITHDRAWN,), (EVENT_VERSION, total, to));
@@ -956,11 +974,13 @@ impl FactoryContract {
 
         // Persist metadata only after deployment and all init calls succeed.
         let pool_key = DataKey::Pool(pool_id);
-        env.storage()
-            .persistent()
-            .set(&pool_key, &metadata);
-        env.storage().persistent().extend_ttl(&pool_key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
-        
+        env.storage().persistent().set(&pool_key, &metadata);
+        env.storage().persistent().extend_ttl(
+            &pool_key,
+            REGISTRY_TTL_THRESHOLD,
+            REGISTRY_TTL_EXTEND_TO,
+        );
+
         let arena_key = DataKey::ArenaRef(pool_id as u64);
         env.storage().persistent().set(
             &arena_key,
@@ -970,7 +990,11 @@ impl FactoryContract {
                 host: caller.clone(),
             },
         );
-        env.storage().persistent().extend_ttl(&arena_key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
+        env.storage().persistent().extend_ttl(
+            &arena_key,
+            REGISTRY_TTL_THRESHOLD,
+            REGISTRY_TTL_EXTEND_TO,
+        );
 
         // Increment the pool counter.
         env.storage()
@@ -1088,11 +1112,14 @@ impl FactoryContract {
 
     pub fn get_arena_ref(env: Env, arena_id: u64) -> Result<ArenaRef, Error> {
         let key = DataKey::ArenaRef(arena_id);
-        let arena_ref = env.storage()
+        let arena_ref = env
+            .storage()
             .persistent()
             .get(&key)
             .ok_or(Error::ArenaNotFound)?;
-        env.storage().persistent().extend_ttl(&key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
         Ok(arena_ref)
     }
 
@@ -1112,17 +1139,23 @@ impl FactoryContract {
             .persistent()
             .get(&ref_key)
             .ok_or(Error::ArenaNotFound)?;
-        env.storage().persistent().extend_ttl(&ref_key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
+        env.storage().persistent().extend_ttl(
+            &ref_key,
+            REGISTRY_TTL_THRESHOLD,
+            REGISTRY_TTL_EXTEND_TO,
+        );
 
         // Only the host (pool creator) may manage the whitelist.
         arena_ref.host.require_auth();
 
         for address in addresses.iter() {
             let wl_key = DataKey::ArenaWhitelist(arena_id, address.clone());
-            env.storage()
-                .persistent()
-                .set(&wl_key, &true);
-            env.storage().persistent().extend_ttl(&wl_key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
+            env.storage().persistent().set(&wl_key, &true);
+            env.storage().persistent().extend_ttl(
+                &wl_key,
+                REGISTRY_TTL_THRESHOLD,
+                REGISTRY_TTL_EXTEND_TO,
+            );
         }
 
         env.events()
@@ -1148,7 +1181,11 @@ impl FactoryContract {
             .persistent()
             .get(&ref_key)
             .ok_or(Error::ArenaNotFound)?;
-        env.storage().persistent().extend_ttl(&ref_key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
+        env.storage().persistent().extend_ttl(
+            &ref_key,
+            REGISTRY_TTL_THRESHOLD,
+            REGISTRY_TTL_EXTEND_TO,
+        );
 
         // Only the host (pool creator) may manage the whitelist.
         arena_ref.host.require_auth();
@@ -1170,12 +1207,13 @@ impl FactoryContract {
     /// This is a read-only view — no auth required.
     pub fn is_whitelisted(env: Env, arena_id: u64, player: Address) -> bool {
         let key = DataKey::ArenaWhitelist(arena_id, player);
-        let result = env.storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(false);
+        let result = env.storage().persistent().get(&key).unwrap_or(false);
         if result {
-            env.storage().persistent().extend_ttl(&key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
+            env.storage().persistent().extend_ttl(
+                &key,
+                REGISTRY_TTL_THRESHOLD,
+                REGISTRY_TTL_EXTEND_TO,
+            );
         }
         result
     }
@@ -1192,10 +1230,12 @@ impl FactoryContract {
         arena_ref.contract.require_auth();
 
         arena_ref.status = status;
-        env.storage()
-            .persistent()
-            .set(&ref_key, &arena_ref);
-        env.storage().persistent().extend_ttl(&ref_key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
+        env.storage().persistent().set(&ref_key, &arena_ref);
+        env.storage().persistent().extend_ttl(
+            &ref_key,
+            REGISTRY_TTL_THRESHOLD,
+            REGISTRY_TTL_EXTEND_TO,
+        );
 
         // Release host stake when arena reaches terminal status.
         if status == ArenaStatus::Completed || status == ArenaStatus::Cancelled {
@@ -1430,7 +1470,11 @@ impl FactoryContract {
         let key = DataKey::Pool(pool_id);
         let result = env.storage().persistent().get(&key);
         if result.is_some() {
-            env.storage().persistent().extend_ttl(&key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
+            env.storage().persistent().extend_ttl(
+                &key,
+                REGISTRY_TTL_THRESHOLD,
+                REGISTRY_TTL_EXTEND_TO,
+            );
         }
         result
     }
@@ -1505,9 +1549,16 @@ impl FactoryContract {
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
         let admin = require_admin(&env)?;
         admin.require_auth();
-        let expires_at = env.ledger().timestamp() + ADMIN_TRANSFER_EXPIRY;
-        env.storage().instance().set(&PENDING_ADMIN_KEY, &new_admin);
-        env.storage().instance().set(&ADMIN_EXPIRY_KEY, &expires_at);
+        let expires_at = propose_admin_transfer_flow(
+            &env,
+            AdminTransferKeys {
+                admin: &ADMIN_KEY,
+                pending_admin: &PENDING_ADMIN_KEY,
+                admin_expiry: &ADMIN_EXPIRY_KEY,
+            },
+            &new_admin,
+            ADMIN_TRANSFER_EXPIRY,
+        );
         env.events().publish(
             (TOPIC_ADMIN_PROPOSED,),
             (EVENT_VERSION, admin, new_admin, expires_at),
@@ -1519,28 +1570,21 @@ impl FactoryContract {
     /// within 7 days of the proposal.
     pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), Error> {
         new_admin.require_auth();
-        let pending: Address = env
-            .storage()
-            .instance()
-            .get(&PENDING_ADMIN_KEY)
-            .ok_or(Error::NoPendingAdminTransfer)?;
-        if pending != new_admin {
-            return Err(Error::Unauthorized);
-        }
-        let expires_at: u64 = env
-            .storage()
-            .instance()
-            .get(&ADMIN_EXPIRY_KEY)
-            .ok_or(Error::NoPendingAdminTransfer)?;
-        if env.ledger().timestamp() > expires_at {
-            env.storage().instance().remove(&PENDING_ADMIN_KEY);
-            env.storage().instance().remove(&ADMIN_EXPIRY_KEY);
-            return Err(Error::AdminTransferExpired);
-        }
         let old_admin = require_admin(&env)?;
-        env.storage().instance().set(&ADMIN_KEY, &new_admin);
-        env.storage().instance().remove(&PENDING_ADMIN_KEY);
-        env.storage().instance().remove(&ADMIN_EXPIRY_KEY);
+        accept_admin_transfer_flow(
+            &env,
+            AdminTransferKeys {
+                admin: &ADMIN_KEY,
+                pending_admin: &PENDING_ADMIN_KEY,
+                admin_expiry: &ADMIN_EXPIRY_KEY,
+            },
+            &new_admin,
+            AdminTransferErrors {
+                no_pending: Error::NoPendingAdminTransfer,
+                unauthorized: Error::Unauthorized,
+                expired: Error::AdminTransferExpired,
+            },
+        )?;
         env.events().publish(
             (TOPIC_ADMIN_ACCEPTED,),
             (EVENT_VERSION, old_admin, new_admin),
@@ -1552,11 +1596,15 @@ impl FactoryContract {
     pub fn cancel_admin_transfer(env: Env) -> Result<(), Error> {
         let admin = require_admin(&env)?;
         admin.require_auth();
-        if !env.storage().instance().has(&PENDING_ADMIN_KEY) {
-            return Err(Error::NoPendingAdminTransfer);
-        }
-        env.storage().instance().remove(&PENDING_ADMIN_KEY);
-        env.storage().instance().remove(&ADMIN_EXPIRY_KEY);
+        cancel_admin_transfer_flow(
+            &env,
+            AdminTransferKeys {
+                admin: &ADMIN_KEY,
+                pending_admin: &PENDING_ADMIN_KEY,
+                admin_expiry: &ADMIN_EXPIRY_KEY,
+            },
+            Error::NoPendingAdminTransfer,
+        )?;
         env.events()
             .publish((TOPIC_ADMIN_CANCELLED,), (EVENT_VERSION,));
         Ok(())
@@ -1564,12 +1612,14 @@ impl FactoryContract {
 
     /// Return the pending admin address and expiry timestamp, or `None` if none.
     pub fn pending_admin_transfer(env: Env) -> Option<(Address, u64)> {
-        let addr: Option<Address> = env.storage().instance().get(&PENDING_ADMIN_KEY);
-        let exp: Option<u64> = env.storage().instance().get(&ADMIN_EXPIRY_KEY);
-        match (addr, exp) {
-            (Some(a), Some(e)) => Some((a, e)),
-            _ => None,
-        }
+        pending_admin_transfer_flow(
+            &env,
+            AdminTransferKeys {
+                admin: &ADMIN_KEY,
+                pending_admin: &PENDING_ADMIN_KEY,
+                admin_expiry: &ADMIN_EXPIRY_KEY,
+            },
+        )
     }
 }
 
@@ -1645,7 +1695,9 @@ fn load_arena_summary(env: &Env, arena_id: u64) -> Option<ArenaSummary> {
     let key = DataKey::ArenaRef(arena_id);
     let arena_ref: Option<ArenaRef> = env.storage().persistent().get(&key);
     if arena_ref.is_some() {
-        env.storage().persistent().extend_ttl(&key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
     }
     arena_ref.map(|entry| ArenaSummary {
         arena_id,

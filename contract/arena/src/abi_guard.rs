@@ -44,7 +44,10 @@ fn arena_error_codes_match_abi_snapshot() {
         ("NoPendingUpgrade", ArenaError::NoPendingUpgrade),
         ("TimelockNotExpired", ArenaError::TimelockNotExpired),
         ("GameNotFinished", ArenaError::GameNotFinished),
-        ("TokenConfigurationLocked", ArenaError::TokenConfigurationLocked),
+        (
+            "TokenConfigurationLocked",
+            ArenaError::TokenConfigurationLocked,
+        ),
         ("UpgradeAlreadyPending", ArenaError::UpgradeAlreadyPending),
         ("WinnerAlreadySet", ArenaError::WinnerAlreadySet),
         ("WinnerNotSet", ArenaError::WinnerNotSet),
@@ -165,8 +168,7 @@ fn event_topics_match_abi_snapshot() {
 
     let expected: &[&str] = &[
         "UP_PROP", "UP_EXEC", "UP_CANC", "PAUSED", "UNPAUSED", "R_START", "R_TOUT", "RSLVD",
-        "WIN_SET", "CLAIM",
-        "Y_HARV", "V_FALL", "AD_PROP", "AD_DONE", "AD_CANC",
+        "WIN_SET", "CLAIM", "Y_HARV", "V_FALL", "AD_PROP", "AD_DONE", "AD_CANC",
     ];
 
     assert_eq!(

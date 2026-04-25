@@ -200,7 +200,14 @@ fn test_admin_can_create_pool() {
     client.set_arena_wasm_hash(&wasm_hash);
     let stake = MIN_STAKE + 1_000_000;
     let currency = supported_currency(&env, &client);
-    client.create_pool(&admin, &stake, &currency, &10u32, &8u32, &(env.ledger().timestamp() + 7200));
+    client.create_pool(
+        &admin,
+        &stake,
+        &currency,
+        &10u32,
+        &8u32,
+        &(env.ledger().timestamp() + 7200),
+    );
 }
 
 #[test]
@@ -214,7 +221,14 @@ fn test_whitelisted_host_can_create_pool() {
     client.set_arena_wasm_hash(&wasm_hash);
     let stake = MIN_STAKE + 1_000_000;
     let currency = supported_currency(&env, &client);
-    client.create_pool(&host, &stake, &currency, &10u32, &8u32, &(env.ledger().timestamp() + 7200));
+    client.create_pool(
+        &host,
+        &stake,
+        &currency,
+        &10u32,
+        &8u32,
+        &(env.ledger().timestamp() + 7200),
+    );
 }
 
 #[test]
@@ -225,7 +239,14 @@ fn test_unauthorized_caller_returns_unauthorized() {
     let unauthorized = Address::generate(&env);
     let stake = MIN_STAKE + 1_000_000;
     let currency = Address::generate(&env);
-    let result = client.try_create_pool(&unauthorized, &stake, &currency, &10u32, &8u32, &(env.ledger().timestamp() + 7200));
+    let result = client.try_create_pool(
+        &unauthorized,
+        &stake,
+        &currency,
+        &10u32,
+        &8u32,
+        &(env.ledger().timestamp() + 7200),
+    );
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }
 
@@ -253,7 +274,14 @@ fn test_create_pool_allows_whitelisted_host_in_mock_auth_env() {
     let stake = MIN_STAKE + 1_000_000;
     let currency = Address::generate(&env);
     client.add_supported_token(&currency);
-    let result = client.try_create_pool(&host, &stake, &currency, &10u32, &8u32, &(env.ledger().timestamp() + 7200));
+    let result = client.try_create_pool(
+        &host,
+        &stake,
+        &currency,
+        &10u32,
+        &8u32,
+        &(env.ledger().timestamp() + 7200),
+    );
 
     assert!(result.is_ok());
 }
@@ -266,7 +294,14 @@ fn test_create_pool_with_stake_equal_to_minimum_succeeds() {
     let wasm_hash = dummy_hash(&env);
     client.set_arena_wasm_hash(&wasm_hash);
     let currency = supported_currency(&env, &client);
-    client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &(env.ledger().timestamp() + 7200));
+    client.create_pool(
+        &admin,
+        &MIN_STAKE,
+        &currency,
+        &10u32,
+        &8u32,
+        &(env.ledger().timestamp() + 7200),
+    );
 }
 
 #[test]
@@ -276,7 +311,14 @@ fn test_create_pool_with_stake_below_minimum_returns_stake_below_minimum() {
     client.set_arena_wasm_hash(&wasm_hash);
     let stake = MIN_STAKE - 1;
     let currency = supported_currency(&env, &client);
-    let result = client.try_create_pool(&admin, &stake, &currency, &10u32, &8u32, &(env.ledger().timestamp() + 7200));
+    let result = client.try_create_pool(
+        &admin,
+        &stake,
+        &currency,
+        &10u32,
+        &8u32,
+        &(env.ledger().timestamp() + 7200),
+    );
     assert_eq!(result, Err(Ok(Error::StakeBelowMinimum)));
 }
 
@@ -286,7 +328,14 @@ fn test_create_pool_with_zero_stake_returns_invalid_stake_amount() {
     let wasm_hash = dummy_hash(&env);
     client.set_arena_wasm_hash(&wasm_hash);
     let currency = supported_currency(&env, &client);
-    let result = client.try_create_pool(&admin, &0, &currency, &10u32, &8u32, &(env.ledger().timestamp() + 7200));
+    let result = client.try_create_pool(
+        &admin,
+        &0,
+        &currency,
+        &10u32,
+        &8u32,
+        &(env.ledger().timestamp() + 7200),
+    );
     assert_eq!(result, Err(Ok(Error::InvalidStakeAmount)));
 }
 
@@ -296,7 +345,14 @@ fn test_create_pool_with_negative_stake_returns_invalid_stake_amount() {
     let wasm_hash = dummy_hash(&env);
     client.set_arena_wasm_hash(&wasm_hash);
     let currency = supported_currency(&env, &client);
-    let result = client.try_create_pool(&admin, &-1000, &currency, &10u32, &8u32, &(env.ledger().timestamp() + 7200));
+    let result = client.try_create_pool(
+        &admin,
+        &-1000,
+        &currency,
+        &10u32,
+        &8u32,
+        &(env.ledger().timestamp() + 7200),
+    );
     assert_eq!(result, Err(Ok(Error::InvalidStakeAmount)));
 }
 
@@ -305,7 +361,14 @@ fn test_create_pool_without_wasm_hash_returns_wasm_hash_not_set() {
     let (env, admin, client) = setup();
     let stake = MIN_STAKE + 1_000_000;
     let currency = supported_currency(&env, &client);
-    let result = client.try_create_pool(&admin, &stake, &currency, &10u32, &8u32, &(env.ledger().timestamp() + 7200));
+    let result = client.try_create_pool(
+        &admin,
+        &stake,
+        &currency,
+        &10u32,
+        &8u32,
+        &(env.ledger().timestamp() + 7200),
+    );
     assert_eq!(result, Err(Ok(Error::WasmHashNotSet)));
 }
 
@@ -316,7 +379,14 @@ fn test_create_pool_with_capacity_one_returns_invalid_capacity() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
-    let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &10u32, &1u32, &(env.ledger().timestamp() + 7200));
+    let result = client.try_create_pool(
+        &admin,
+        &MIN_STAKE,
+        &currency,
+        &10u32,
+        &1u32,
+        &(env.ledger().timestamp() + 7200),
+    );
     assert_eq!(result, Err(Ok(Error::InvalidCapacity)));
 }
 
@@ -325,7 +395,14 @@ fn test_create_pool_with_capacity_two_succeeds() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
-    client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &2u32, &(env.ledger().timestamp() + 7200));
+    client.create_pool(
+        &admin,
+        &MIN_STAKE,
+        &currency,
+        &10u32,
+        &2u32,
+        &(env.ledger().timestamp() + 7200),
+    );
 }
 
 #[test]
@@ -333,7 +410,14 @@ fn test_create_pool_with_max_capacity_succeeds() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
-    client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &MAX_CAPACITY, &(env.ledger().timestamp() + 7200));
+    client.create_pool(
+        &admin,
+        &MIN_STAKE,
+        &currency,
+        &10u32,
+        &MAX_CAPACITY,
+        &(env.ledger().timestamp() + 7200),
+    );
 }
 
 #[test]
@@ -341,7 +425,14 @@ fn test_create_pool_with_zero_capacity_returns_invalid_capacity() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
-    let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &10u32, &0u32, &(env.ledger().timestamp() + 7200));
+    let result = client.try_create_pool(
+        &admin,
+        &MIN_STAKE,
+        &currency,
+        &10u32,
+        &0u32,
+        &(env.ledger().timestamp() + 7200),
+    );
     assert_eq!(result, Err(Ok(Error::InvalidCapacity)));
 }
 
@@ -350,7 +441,14 @@ fn test_create_pool_exceeding_max_capacity_returns_exceeds_player_cap() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
-    let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &10u32, &(MAX_CAPACITY + 1), &(env.ledger().timestamp() + 7200));
+    let result = client.try_create_pool(
+        &admin,
+        &MIN_STAKE,
+        &currency,
+        &10u32,
+        &(MAX_CAPACITY + 1),
+        &(env.ledger().timestamp() + 7200),
+    );
     assert_eq!(result, Err(Ok(Error::ExceedsPlayerCap)));
 }
 
@@ -485,8 +583,22 @@ fn test_create_pool_increments_id() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
-    let pool1 = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &(env.ledger().timestamp() + 7200));
-    let pool2 = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &(env.ledger().timestamp() + 7200));
+    let pool1 = client.create_pool(
+        &admin,
+        &MIN_STAKE,
+        &currency,
+        &10u32,
+        &8u32,
+        &(env.ledger().timestamp() + 7200),
+    );
+    let pool2 = client.create_pool(
+        &admin,
+        &MIN_STAKE,
+        &currency,
+        &10u32,
+        &8u32,
+        &(env.ledger().timestamp() + 7200),
+    );
     assert_ne!(pool1, pool2);
 }
 
@@ -501,7 +613,14 @@ fn test_create_pool_deploys_interactive_arena() {
     let currency = supported_currency(&env, &client);
     let round_speed = 10u32;
 
-    let arena_addr = client.create_pool(&admin, &MIN_STAKE, &currency, &round_speed, &8u32, &(env.ledger().timestamp() + 7200));
+    let arena_addr = client.create_pool(
+        &admin,
+        &MIN_STAKE,
+        &currency,
+        &round_speed,
+        &8u32,
+        &(env.ledger().timestamp() + 7200),
+    );
 
     // Wrap the returned address in an ArenaContractClient and call it.
     let env_s: &'static Env = unsafe { &*(&env as *const Env) };
@@ -523,7 +642,14 @@ fn create_pool_arena_is_immediately_joinable() {
     let token = StellarAssetClient::new(&env, &currency);
     client.add_supported_token(&currency);
 
-    let arena_addr = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &(env.ledger().timestamp() + 7200));
+    let arena_addr = client.create_pool(
+        &admin,
+        &MIN_STAKE,
+        &currency,
+        &10u32,
+        &8u32,
+        &(env.ledger().timestamp() + 7200),
+    );
 
     let env_s: &'static Env = unsafe { &*(&env as *const Env) };
     let arena = ArenaContractClient::new(env_s, &arena_addr);
@@ -543,8 +669,22 @@ fn test_create_pool_two_pools_have_independent_state() {
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
 
-    let addr1 = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &(env.ledger().timestamp() + 7200));
-    let addr2 = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &(env.ledger().timestamp() + 7200));
+    let addr1 = client.create_pool(
+        &admin,
+        &MIN_STAKE,
+        &currency,
+        &10u32,
+        &8u32,
+        &(env.ledger().timestamp() + 7200),
+    );
+    let addr2 = client.create_pool(
+        &admin,
+        &MIN_STAKE,
+        &currency,
+        &10u32,
+        &8u32,
+        &(env.ledger().timestamp() + 7200),
+    );
     assert_ne!(addr1, addr2);
 
     let env_s: &'static Env = unsafe { &*(&env as *const Env) };
@@ -563,7 +703,14 @@ fn create_pool_metadata_not_visible_before_full_init() {
     let currency = supported_currency(&env, &client);
 
     // round_speed = 0 makes arena.init fail; metadata must not become visible.
-    let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &0u32, &8u32, &(env.ledger().timestamp() + 7200));
+    let result = client.try_create_pool(
+        &admin,
+        &MIN_STAKE,
+        &currency,
+        &0u32,
+        &8u32,
+        &(env.ledger().timestamp() + 7200),
+    );
     assert!(result.is_err());
 
     assert!(client.get_arena(&0u32).is_none());
@@ -604,7 +751,10 @@ fn create_pool_rejects_join_deadline_that_is_too_close() {
         &(env.ledger().timestamp() + 3599),
     );
 
-    assert!(result.is_err(), "join deadlines under one hour out must be rejected");
+    assert!(
+        result.is_err(),
+        "join deadlines under one hour out must be rejected"
+    );
     assert!(client.get_arena(&0u32).is_none());
 }
 
@@ -615,16 +765,12 @@ fn create_pool_accepts_join_deadline_at_factory_boundary() {
     let currency = supported_currency(&env, &client);
     let join_deadline = env.ledger().timestamp() + 3600;
 
-    let arena_addr = client.create_pool(
-        &admin,
-        &MIN_STAKE,
-        &currency,
-        &10u32,
-        &8u32,
-        &join_deadline,
-    );
+    let arena_addr =
+        client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &join_deadline);
 
-    let metadata = client.get_arena(&0u32).expect("metadata must only exist after success");
+    let metadata = client
+        .get_arena(&0u32)
+        .expect("metadata must only exist after success");
     assert_eq!(metadata.pool_id, 0);
 
     let arena = ArenaContractClient::new(&env, &arena_addr);
@@ -1045,9 +1191,13 @@ fn test_unauthorized_whitelist_panics() {
         );
     });
     // An attacker (not the host) must fail auth on add_to_whitelist.
-    assert_auth_err(client.try_add_to_whitelist(&0u64, &soroban_sdk::vec![&env, Address::generate(&env)]));
+    assert_auth_err(
+        client.try_add_to_whitelist(&0u64, &soroban_sdk::vec![&env, Address::generate(&env)]),
+    );
     // And on remove_from_whitelist.
-    assert_auth_err(client.try_remove_from_whitelist(&0u64, &soroban_sdk::vec![&env, Address::generate(&env)]));
+    assert_auth_err(
+        client.try_remove_from_whitelist(&0u64, &soroban_sdk::vec![&env, Address::generate(&env)]),
+    );
 }
 
 #[test]
@@ -1109,7 +1259,14 @@ fn test_get_arena() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
-    client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &10u32, &(env.ledger().timestamp() + 7200));
+    client.create_pool(
+        &admin,
+        &MIN_STAKE,
+        &currency,
+        &10u32,
+        &10u32,
+        &(env.ledger().timestamp() + 7200),
+    );
 
     let arena = client.get_arena(&0u32).unwrap();
     assert_eq!(arena.pool_id, 0);
@@ -1125,7 +1282,14 @@ fn test_get_arenas_pagination() {
     let currency = supported_currency(&env, &client);
 
     for _ in 0..5 {
-        client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &10u32, &(env.ledger().timestamp() + 7200));
+        client.create_pool(
+            &admin,
+            &MIN_STAKE,
+            &currency,
+            &10u32,
+            &10u32,
+            &(env.ledger().timestamp() + 7200),
+        );
     }
 
     let all = client.get_arenas(&0u32, &10u32);
@@ -1301,7 +1465,14 @@ fn test_create_pool_rejects_unsupported_token() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = Address::generate(&env); // not added via add_supported_token
-    let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &(env.ledger().timestamp() + 7200));
+    let result = client.try_create_pool(
+        &admin,
+        &MIN_STAKE,
+        &currency,
+        &10u32,
+        &8u32,
+        &(env.ledger().timestamp() + 7200),
+    );
     assert_eq!(result, Err(Ok(Error::TokenNotAllowed)));
 }
 
@@ -1310,7 +1481,14 @@ fn test_create_pool_succeeds_after_token_added() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
-    client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &(env.ledger().timestamp() + 7200));
+    client.create_pool(
+        &admin,
+        &MIN_STAKE,
+        &currency,
+        &10u32,
+        &8u32,
+        &(env.ledger().timestamp() + 7200),
+    );
 }
 
 #[test]
@@ -1320,7 +1498,14 @@ fn test_create_pool_fails_after_token_removed() {
     let currency = Address::generate(&env);
     client.add_supported_token(&currency);
     client.remove_supported_token(&currency);
-    let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &(env.ledger().timestamp() + 7200));
+    let result = client.try_create_pool(
+        &admin,
+        &MIN_STAKE,
+        &currency,
+        &10u32,
+        &8u32,
+        &(env.ledger().timestamp() + 7200),
+    );
     assert_eq!(result, Err(Ok(Error::TokenNotAllowed)));
 }
 
@@ -1476,6 +1661,35 @@ fn read_functions_unaffected_by_factory_pause() {
     assert!(client.is_paused());
 }
 
+#[test]
+fn pause_allows_factory_admin_transfer_controls() {
+    let (env, _admin, client) = setup();
+    let new_admin = Address::generate(&env);
+
+    client.pause();
+    assert!(client.is_paused());
+
+    client.propose_admin(&new_admin);
+    assert_eq!(client.pending_admin_transfer().unwrap().0, new_admin);
+    client.accept_admin(&new_admin);
+
+    assert_eq!(client.admin(), new_admin);
+}
+
+#[test]
+fn pause_allows_factory_upgrade_governance() {
+    let (env, _admin, client) = setup();
+    let hash = dummy_hash(&env);
+
+    client.pause();
+    assert!(client.is_paused());
+
+    client.propose_upgrade(&hash);
+    assert_eq!(client.pending_upgrade().unwrap().0, hash);
+    assert!(client.try_cancel_upgrade().is_ok());
+    assert!(client.pending_upgrade().is_none());
+}
+
 // ── Arena Status Tracking ─────────────────────────────────────────────────────
 
 #[test]
@@ -1499,7 +1713,14 @@ fn test_update_arena_status_success_and_auth() {
     let currency = supported_currency(&env, &client);
 
     // Create pool will internally call set_arena_metadata, setting status to Pending
-    let arena_addr = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &10u32, &(env.ledger().timestamp() + 7200));
+    let arena_addr = client.create_pool(
+        &admin,
+        &MIN_STAKE,
+        &currency,
+        &10u32,
+        &10u32,
+        &(env.ledger().timestamp() + 7200),
+    );
 
     // We must call set_arena_metadata to initialize the ArenaRef mapping
     env.mock_all_auths_allowing_non_root_auth();
@@ -1524,7 +1745,12 @@ fn test_update_arena_status_success_and_auth() {
         invoke: &soroban_sdk::testutils::MockAuthInvoke {
             contract: &contract_id,
             fn_name: "update_arena_status",
-            args: soroban_sdk::vec![&env, 0u64.into_val(&env), crate::ArenaStatus::Active.into_val(&env)].into(),
+            args: soroban_sdk::vec![
+                &env,
+                0u64.into_val(&env),
+                crate::ArenaStatus::Active.into_val(&env)
+            ]
+            .into(),
             sub_invokes: &[],
         },
     }]);
@@ -1592,7 +1818,9 @@ fn fee_propose_stores_pending_and_effective_at() {
 
     client.propose_fee_update(&new_fee);
 
-    let pending = client.pending_fee_update().expect("pending fee must be set");
+    let pending = client
+        .pending_fee_update()
+        .expect("pending fee must be set");
     assert_eq!(pending.0, new_fee);
     assert!(
         pending.1 >= env.ledger().timestamp() + FEE_TIMELOCK,
@@ -1655,7 +1883,11 @@ fn fee_cancel_clears_pending_and_fee_unchanged() {
     client.cancel_fee_update();
 
     assert!(client.pending_fee_update().is_none());
-    assert_eq!(client.current_fee_bps(), 200u32, "fee must remain unchanged after cancel");
+    assert_eq!(
+        client.current_fee_bps(),
+        200u32,
+        "fee must remain unchanged after cancel"
+    );
 }
 
 #[test]
@@ -1709,7 +1941,10 @@ fn fee_non_admin_propose_fails() {
     let c = FactoryContractClient::new(&env, &contract_id);
     env.mock_auths(&[]);
     let result = c.try_propose_fee_update(&300u32);
-    assert!(result.is_err(), "non-admin must not be able to propose a fee update");
+    assert!(
+        result.is_err(),
+        "non-admin must not be able to propose a fee update"
+    );
 }
 
 #[test]
@@ -1725,7 +1960,10 @@ fn fee_non_admin_execute_fails() {
     });
     env.mock_auths(&[]);
     let result = c.try_execute_fee_update();
-    assert!(result.is_err(), "non-admin must not be able to execute a fee update");
+    assert!(
+        result.is_err(),
+        "non-admin must not be able to execute a fee update"
+    );
 }
 
 #[test]
@@ -1735,10 +1973,20 @@ fn fee_snapshot_stored_in_arena_metadata() {
     let currency = supported_currency(&env, &client);
     let host = admin.clone();
 
-    let arena_addr = client.create_pool(&host, &MIN_STAKE, &currency, &5u32, &4u32, &(env.ledger().timestamp() + 7200));
+    let arena_addr = client.create_pool(
+        &host,
+        &MIN_STAKE,
+        &currency,
+        &5u32,
+        &4u32,
+        &(env.ledger().timestamp() + 7200),
+    );
     let pool_id = 0u32;
     let metadata = client.get_arena(&pool_id).expect("arena must exist");
-    assert_eq!(metadata.win_fee_bps, 200u32, "fee snapshot must equal 200 at creation");
+    assert_eq!(
+        metadata.win_fee_bps, 200u32,
+        "fee snapshot must equal 200 at creation"
+    );
 
     client.propose_fee_update(&500u32);
     env.ledger().with_mut(|l| {
@@ -1753,9 +2001,19 @@ fn fee_snapshot_stored_in_arena_metadata() {
         "fee snapshot in arena metadata must not change when global fee is updated"
     );
 
-    let arena_addr2 = client.create_pool(&host, &MIN_STAKE, &currency, &5u32, &4u32, &(env.ledger().timestamp() + 7200));
+    let arena_addr2 = client.create_pool(
+        &host,
+        &MIN_STAKE,
+        &currency,
+        &5u32,
+        &4u32,
+        &(env.ledger().timestamp() + 7200),
+    );
     let metadata2 = client.get_arena(&1u32).expect("second arena must exist");
-    assert_eq!(metadata2.win_fee_bps, 500u32, "new arena must snapshot the current 500 bps fee");
+    assert_eq!(
+        metadata2.win_fee_bps, 500u32,
+        "new arena must snapshot the current 500 bps fee"
+    );
     let _ = (arena_addr, arena_addr2);
 }
 
@@ -1800,7 +2058,10 @@ fn creation_fee_admin_update_emits_event_and_updates_config() {
         assert_eq!(payload.3, fee_token);
         found = true;
     }
-    assert!(found, "expected FeeConfigUpdated (CRF_UP) event from factory");
+    assert!(
+        found,
+        "expected FeeConfigUpdated (CRF_UP) event from factory"
+    );
 }
 
 #[test]

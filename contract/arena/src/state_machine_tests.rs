@@ -28,7 +28,9 @@ fn test_transition_pending_to_active() {
     let (env, client) = setup_env();
     let admin = Address::generate(&env);
     let token_admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
     client.set_token(&token_id);
     let deadline = env.ledger().timestamp() + 7200;
     client.init(&2, &100, &deadline);
@@ -52,7 +54,9 @@ fn test_cannot_join_after_active() {
     let (env, client) = setup_env();
     let admin = Address::generate(&env);
     let token_admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
     client.set_token(&token_id);
     let deadline = env.ledger().timestamp() + 7200;
     client.init(&2, &100, &deadline);
@@ -78,7 +82,9 @@ fn test_transition_active_to_completed() {
     let (env, client) = setup_env();
     let admin = Address::generate(&env);
     let token_admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
     client.set_token(&token_id);
     let deadline = env.ledger().timestamp() + 7200;
     client.init(&2, &100, &deadline);
@@ -121,7 +127,9 @@ fn test_cannot_start_after_completed() {
     let (env, client) = setup_env();
     let admin = Address::generate(&env);
     let token_admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
     client.set_token(&token_id);
     let deadline = env.ledger().timestamp() + 7200;
     client.init(&2, &100, &deadline);

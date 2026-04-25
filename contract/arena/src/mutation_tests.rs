@@ -46,11 +46,19 @@ fn setup_initialized() -> (Env, Address, ArenaContractClient<'static>) {
 fn setup_game(
     player_count: u32,
     round_speed: u32,
-) -> (Env, Address, ArenaContractClient<'static>, Address, std::vec::Vec<Address>) {
+) -> (
+    Env,
+    Address,
+    ArenaContractClient<'static>,
+    Address,
+    std::vec::Vec<Address>,
+) {
     let (env, admin, client) = setup_initialized();
 
     let token_admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
     let sac = StellarAssetClient::new(&env, &token_id);
 
     let deadline = env.ledger().timestamp() + 7200;
@@ -109,7 +117,9 @@ fn mutation2_join_blocked_when_paused() {
     let (env, _admin, client) = setup_initialized();
 
     let token_admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
     StellarAssetClient::new(&env, &token_id).mint(&Address::generate(&env), &100);
 
     let deadline = env.ledger().timestamp() + 7200;
@@ -179,7 +189,8 @@ fn mutation4_double_initialize_panics() {
     let attacker = Address::generate(&env);
 
     // Second initialize must panic with "already initialized".
-    let result: Result<(), Result<crate::ArenaError, soroban_sdk::InvokeError>> = Err(Ok(crate::ArenaError::AlreadyInitialized));
+    let result: Result<(), Result<crate::ArenaError, soroban_sdk::InvokeError>> =
+        Err(Ok(crate::ArenaError::AlreadyInitialized));
     assert!(
         result.is_err(),
         "second initialize() must fail; removing the guard would allow admin hijacking"
@@ -247,7 +258,9 @@ fn mutation6_double_join_idempotency_guard() {
     let (env, _admin, client) = setup_initialized();
 
     let token_admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
     let sac = StellarAssetClient::new(&env, &token_id);
 
     let deadline = env.ledger().timestamp() + 7200;
@@ -279,7 +292,9 @@ fn mutation7_exact_entry_fee_enforced() {
     let (env, _admin, client) = setup_initialized();
 
     let token_admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
     let sac = StellarAssetClient::new(&env, &token_id);
 
     let required = 100i128;

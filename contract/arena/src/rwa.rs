@@ -26,11 +26,7 @@ use soroban_sdk::IntoVal;
 /// - `withdraw(shares: i128) -> i128`                 — burns shares, returns tokens.
 pub trait RwaVaultAdapter {
     fn deposit(env: &soroban_sdk::Env, amount: i128, vault_address: soroban_sdk::Address) -> i128;
-    fn withdraw(
-        env: &soroban_sdk::Env,
-        shares: i128,
-        vault_address: soroban_sdk::Address,
-    ) -> i128;
+    fn withdraw(env: &soroban_sdk::Env, shares: i128, vault_address: soroban_sdk::Address) -> i128;
     fn get_balance(env: &soroban_sdk::Env, vault_address: soroban_sdk::Address) -> i128;
 }
 
@@ -61,11 +57,7 @@ impl RwaVaultAdapter for OndoUsdyAdapter {
         )
     }
 
-    fn withdraw(
-        env: &soroban_sdk::Env,
-        shares: i128,
-        vault_address: soroban_sdk::Address,
-    ) -> i128 {
+    fn withdraw(env: &soroban_sdk::Env, shares: i128, vault_address: soroban_sdk::Address) -> i128 {
         env.invoke_contract(
             &vault_address,
             &soroban_sdk::Symbol::new(env, "withdraw"),

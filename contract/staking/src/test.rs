@@ -42,6 +42,44 @@ fn setup() -> (
     )
 }
 
+fn assert_pool_invariants(client: &StakingContractClient<'_>, tracked: &[Address]) {
+    let total_staked = client.total_staked();
+    let total_shares = client.total_shares();
+
+    assert!(total_staked >= 0, "total_staked must never be negative");
+    assert!(total_shares >= 0, "total_shares must never be negative");
+
+    if total_staked == 0 {
+        assert_eq!(
+            total_shares, 0,
+            "total_shares must be zero when total_staked is zero"
+        );
+    }
+    if total_shares == 0 {
+        assert_eq!(
+            total_staked, 0,
+            "total_staked must be zero when total_shares is zero"
+        );
+    }
+
+    let mut sum_amounts = 0i128;
+    let mut sum_shares = 0i128;
+    for staker in tracked {
+        let pos = client.get_position(staker);
+        sum_amounts += pos.amount;
+        sum_shares += pos.shares;
+    }
+
+    assert_eq!(
+        sum_amounts, total_staked,
+        "position amounts must match total_staked"
+    );
+    assert_eq!(
+        sum_shares, total_shares,
+        "position shares must match total_shares"
+    );
+}
+
 // ── Issue #499: constructor-based init guard tests ───────────────────────────
 
 #[test]
@@ -270,6 +308,42 @@ fn unstake_rejects_zero_shares() {
     );
 }
 
+#[test]
+fn invariants_hold_across_stake_unstake_claim_and_compound() {
+    let (env, admin, staker1, client, _token_client) = setup();
+    let staker2 = Address::generate(&env);
+    let token_admin = token::StellarAssetClient::new(&env, &client.token());
+    token_admin.mint(&staker2, &1_000_000_000i128);
+    token_admin.mint(&admin, &1_000_000_000i128);
+
+    let tracked = [staker1.clone(), staker2.clone()];
+
+    client.stake(&staker1, &400_000_000i128);
+    assert_pool_invariants(&client, &tracked);
+
+    client.stake(&staker2, &200_000_000i128);
+    assert_pool_invariants(&client, &tracked);
+
+    client.deposit_rewards(&admin, &120_000_000i128);
+    assert_pool_invariants(&client, &tracked);
+
+    let _claimed = client.claim_rewards(&staker1);
+    assert_pool_invariants(&client, &tracked);
+
+    client.deposit_rewards(&admin, &80_000_000i128);
+    assert_pool_invariants(&client, &tracked);
+
+    let _compounded = client.compound(&staker2);
+    assert_pool_invariants(&client, &tracked);
+
+    let _unstaked_partial = client.unstake(&staker1, &100_000_000i128);
+    assert_pool_invariants(&client, &tracked);
+
+    let staker2_full = client.get_position(&staker2).amount;
+    let _unstaked_full = client.unstake(&staker2, &staker2_full);
+    assert_pool_invariants(&client, &[staker1]);
+}
+
 // ── Issue #388: stake/unstake events ─────────────────────────────────────────
 
 #[test]
@@ -412,6 +486,35 @@ fn read_functions_unaffected_by_pause() {
     assert_eq!(client.total_shares(), 1_000i128);
     assert_eq!(client.staked_balance(&staker), 1_000i128);
     assert!(client.get_position(&staker).shares > 0);
+}
+
+#[test]
+fn pause_allows_staking_admin_transfer_controls() {
+    let (env, _admin, _staker, client, _token_client) = setup();
+    let new_admin = Address::generate(&env);
+
+    client.pause();
+    assert!(client.is_paused());
+
+    client.propose_admin(&new_admin);
+    assert_eq!(client.pending_admin_transfer().unwrap().0, new_admin);
+    client.accept_admin(&new_admin);
+
+    assert_eq!(client.admin(), new_admin);
+}
+
+#[test]
+fn pause_allows_staking_upgrade_governance() {
+    let (env, _admin, _staker, client, _token_client) = setup();
+    let hash = BytesN::from_array(&env, &[9u8; 32]);
+
+    client.pause();
+    assert!(client.is_paused());
+
+    client.propose_upgrade(&hash);
+    assert_eq!(client.pending_upgrade().unwrap().0, hash);
+    client.cancel_upgrade();
+    assert!(client.pending_upgrade().is_none());
 }
 
 // ── Issue #518: upgrade timelock test suite (9 cases) ────────────────────────
@@ -626,7 +729,10 @@ fn update_config_requires_positive_min_stake() {
         max_stake_per_address: 1_000_000_000,
         rewards_enabled: true,
     };
-    assert_eq!(client.try_update_config(&cfg), Err(Ok(StakingError::InvalidAmount)));
+    assert_eq!(
+        client.try_update_config(&cfg),
+        Err(Ok(StakingError::InvalidAmount))
+    );
 }
 
 #[test]
@@ -640,7 +746,10 @@ fn stake_rejects_below_min_and_above_max() {
         rewards_enabled: true,
     };
     client.update_config(&cfg);
-    assert_eq!(client.try_stake(&staker, &99), Err(Ok(StakingError::BelowMinStake)));
+    assert_eq!(
+        client.try_stake(&staker, &99),
+        Err(Ok(StakingError::BelowMinStake))
+    );
     client.stake(&staker, &100);
     assert_eq!(
         client.try_stake(&staker, &60),

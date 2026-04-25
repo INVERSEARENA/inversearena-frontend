@@ -41,8 +41,12 @@ pub fn propose_upgrade<E: Copy>(
     }
 
     let execute_after = env.ledger().timestamp() + timelock_period;
-    env.storage().instance().set(keys.pending_hash, new_wasm_hash);
-    env.storage().instance().set(keys.execute_after, &execute_after);
+    env.storage()
+        .instance()
+        .set(keys.pending_hash, new_wasm_hash);
+    env.storage()
+        .instance()
+        .set(keys.execute_after, &execute_after);
     env.events().publish(
         (topics.proposed.clone(),),
         (event_version, new_wasm_hash.clone(), execute_after),
@@ -93,8 +97,10 @@ pub fn execute_upgrade<E: Copy>(
 
     env.storage().instance().remove(keys.pending_hash);
     env.storage().instance().remove(keys.execute_after);
-    env.events()
-        .publish((topics.executed.clone(),), (event_version, stored_hash.clone()));
+    env.events().publish(
+        (topics.executed.clone(),),
+        (event_version, stored_hash.clone()),
+    );
     Ok(stored_hash)
 }
 

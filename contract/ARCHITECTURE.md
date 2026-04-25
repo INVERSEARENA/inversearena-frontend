@@ -165,6 +165,20 @@ Trust notes:
 | Distribute winnings | No | No | Yes | No | No |
 | Stake XLM | No | No | No | Yes | No |
 
+## Pause Exemption Matrix
+
+Emergency pause blocks normal state transitions, but some admin recovery controls are intentionally pause-exempt so incident response can proceed without unpausing first.
+
+| Contract | Functions blocked while paused | Pause-exempt controls |
+| --- | --- | --- |
+| `arena` | Gameplay state transitions (`join`, `start_round`, `submit_choice`, `timeout_round`, `resolve_round`, `cancel_arena`) | `pause`, `unpause`, `set_token`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade`, `propose_admin`, `accept_admin`, `cancel_admin_transfer` |
+| `factory` | Pool/token policy writes (`create_pool`, `add_supported_token`, `remove_supported_token`, `set_min_stake`, other write paths guarded by `require_not_paused`) | `pause`, `unpause`, `set_admin`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade`, `propose_admin`, `accept_admin`, `cancel_admin_transfer` |
+| `payout` | Payout execution flows (`distribute_winnings`, `distribute_prize`) | `pause`, `unpause`, `set_currency_token`, `set_treasury`, `emergency_recover_tokens`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade`, `propose_admin`, `accept_admin`, `cancel_admin_transfer` |
+| `staking` | User staking/reward flows (`stake`, `unstake`, `deposit_rewards`, `claim_rewards`, `compound`) | `pause`, `unpause`, config/admin endpoints, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade`, `propose_admin`, `accept_admin`, `cancel_admin_transfer` |
+
+Operational note:
+- `payout.set_currency_token` is intentionally pause-exempt so compromised currency integrations can be rotated during an active incident.
+
 ## Security Review Notes
 
 - The contracts do not currently form a single centralized permission layer; each contract carries its own admin state and must be reviewed independently.

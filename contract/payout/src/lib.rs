@@ -1,15 +1,23 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
-    Address, BytesN, Env, IntoVal, Symbol, Vec,
+    Address, BytesN, Env, IntoVal, Symbol, Vec, contract, contracterror, contractimpl,
+    contracttype, panic_with_error, symbol_short, token,
 };
+#[path = "../../shared/admin_transfer.rs"]
+mod admin_transfer_utils;
 #[path = "../../shared/upgrade.rs"]
 mod upgrade_utils;
+use admin_transfer_utils::{
+    AdminTransferErrors, AdminTransferKeys, accept_admin_transfer as accept_admin_transfer_flow,
+    cancel_admin_transfer as cancel_admin_transfer_flow,
+    pending_admin_transfer as pending_admin_transfer_flow,
+    propose_admin_transfer as propose_admin_transfer_flow,
+};
 use upgrade_utils::{
-    ExecuteTimePolicy, UpgradeErrors, UpgradeKeys, UpgradeTopics, cancel_upgrade as cancel_upgrade_flow,
-    execute_upgrade as execute_upgrade_flow, pending_upgrade as pending_upgrade_flow,
-    propose_upgrade as propose_upgrade_flow,
+    ExecuteTimePolicy, UpgradeErrors, UpgradeKeys, UpgradeTopics,
+    cancel_upgrade as cancel_upgrade_flow, execute_upgrade as execute_upgrade_flow,
+    pending_upgrade as pending_upgrade_flow, propose_upgrade as propose_upgrade_flow,
 };
 
 const ADMIN_KEY: Symbol = symbol_short!("ADMIN");
@@ -27,6 +35,7 @@ const TOPIC_DUST_COLLECTED: Symbol = symbol_short!("DUST");
 const TOPIC_RECOVERY: Symbol = symbol_short!("RECOVER");
 const TOPIC_PAUSED: Symbol = symbol_short!("PAUSED");
 const TOPIC_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
+const TOPIC_CURRENCY_TOKEN_SET: Symbol = symbol_short!("TOK_SET");
 const TOPIC_UPGRADE_PROPOSED: Symbol = symbol_short!("UP_PROP");
 const TOPIC_UPGRADE_EXECUTED: Symbol = symbol_short!("UP_EXEC");
 const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("UP_CANC");
@@ -191,18 +200,14 @@ impl PayoutContract {
     /// Admin-only. Used so `distribute_winnings` can transfer tokens on-chain.
     pub fn set_currency_token(env: Env, symbol: Symbol, token_address: Address) {
         let admin = Self::admin(env.clone());
-        if env
-            .storage()
-            .instance()
-            .get::<_, bool>(&PAUSED_KEY)
-            .unwrap_or(false)
-        {
-            panic_with_error!(&env, PayoutError::Paused);
-        }
         admin.require_auth();
         env.storage()
             .instance()
-            .set(&DataKey::CurrencyToken(symbol), &token_address);
+            .set(&DataKey::CurrencyToken(symbol.clone()), &token_address);
+        env.events().publish(
+            (TOPIC_CURRENCY_TOKEN_SET,),
+            (EVENT_VERSION, symbol, token_address),
+        );
     }
 
     /// Distribute a payout to a single winner.
@@ -681,9 +686,16 @@ impl PayoutContract {
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), PayoutError> {
         let admin = Self::admin(env.clone());
         admin.require_auth();
-        let expires_at = env.ledger().timestamp() + ADMIN_TRANSFER_EXPIRY;
-        env.storage().instance().set(&PENDING_ADMIN_KEY, &new_admin);
-        env.storage().instance().set(&ADMIN_EXPIRY_KEY, &expires_at);
+        let expires_at = propose_admin_transfer_flow(
+            &env,
+            AdminTransferKeys {
+                admin: &ADMIN_KEY,
+                pending_admin: &PENDING_ADMIN_KEY,
+                admin_expiry: &ADMIN_EXPIRY_KEY,
+            },
+            &new_admin,
+            ADMIN_TRANSFER_EXPIRY,
+        );
         env.events().publish(
             (TOPIC_ADMIN_PROPOSED,),
             (EVENT_VERSION, admin, new_admin, expires_at),
@@ -695,28 +707,21 @@ impl PayoutContract {
     /// within 7 days.
     pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), PayoutError> {
         new_admin.require_auth();
-        let pending: Address = env
-            .storage()
-            .instance()
-            .get(&PENDING_ADMIN_KEY)
-            .ok_or(PayoutError::NoPendingAdminTransfer)?;
-        if pending != new_admin {
-            return Err(PayoutError::Unauthorized);
-        }
-        let expires_at: u64 = env
-            .storage()
-            .instance()
-            .get(&ADMIN_EXPIRY_KEY)
-            .ok_or(PayoutError::NoPendingAdminTransfer)?;
-        if env.ledger().timestamp() > expires_at {
-            env.storage().instance().remove(&PENDING_ADMIN_KEY);
-            env.storage().instance().remove(&ADMIN_EXPIRY_KEY);
-            return Err(PayoutError::AdminTransferExpired);
-        }
         let old_admin = Self::admin(env.clone());
-        env.storage().instance().set(&ADMIN_KEY, &new_admin);
-        env.storage().instance().remove(&PENDING_ADMIN_KEY);
-        env.storage().instance().remove(&ADMIN_EXPIRY_KEY);
+        accept_admin_transfer_flow(
+            &env,
+            AdminTransferKeys {
+                admin: &ADMIN_KEY,
+                pending_admin: &PENDING_ADMIN_KEY,
+                admin_expiry: &ADMIN_EXPIRY_KEY,
+            },
+            &new_admin,
+            AdminTransferErrors {
+                no_pending: PayoutError::NoPendingAdminTransfer,
+                unauthorized: PayoutError::Unauthorized,
+                expired: PayoutError::AdminTransferExpired,
+            },
+        )?;
         env.events().publish(
             (TOPIC_ADMIN_ACCEPTED,),
             (EVENT_VERSION, old_admin, new_admin),
@@ -728,23 +733,30 @@ impl PayoutContract {
     pub fn cancel_admin_transfer(env: Env) -> Result<(), PayoutError> {
         let admin = Self::admin(env.clone());
         admin.require_auth();
-        if !env.storage().instance().has(&PENDING_ADMIN_KEY) {
-            return Err(PayoutError::NoPendingAdminTransfer);
-        }
-        env.storage().instance().remove(&PENDING_ADMIN_KEY);
-        env.storage().instance().remove(&ADMIN_EXPIRY_KEY);
-        env.events().publish((TOPIC_ADMIN_CANCELLED,), (EVENT_VERSION,));
+        cancel_admin_transfer_flow(
+            &env,
+            AdminTransferKeys {
+                admin: &ADMIN_KEY,
+                pending_admin: &PENDING_ADMIN_KEY,
+                admin_expiry: &ADMIN_EXPIRY_KEY,
+            },
+            PayoutError::NoPendingAdminTransfer,
+        )?;
+        env.events()
+            .publish((TOPIC_ADMIN_CANCELLED,), (EVENT_VERSION,));
         Ok(())
     }
 
     /// Return the pending admin address and expiry timestamp, or `None` if none.
     pub fn pending_admin_transfer(env: Env) -> Option<(Address, u64)> {
-        let addr: Option<Address> = env.storage().instance().get(&PENDING_ADMIN_KEY);
-        let exp: Option<u64> = env.storage().instance().get(&ADMIN_EXPIRY_KEY);
-        match (addr, exp) {
-            (Some(a), Some(e)) => Some((a, e)),
-            _ => None,
-        }
+        pending_admin_transfer_flow(
+            &env,
+            AdminTransferKeys {
+                admin: &ADMIN_KEY,
+                pending_admin: &PENDING_ADMIN_KEY,
+                admin_expiry: &ADMIN_EXPIRY_KEY,
+            },
+        )
     }
 }
 
@@ -785,5 +797,6 @@ fn record_receipt(
 }
 
 #[cfg(test)]
+mod snapshot_test;
+#[cfg(test)]
 mod test;
-#[cfg(test)] mod snapshot_test;

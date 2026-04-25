@@ -46,6 +46,44 @@ fn setup() -> (
     )
 }
 
+fn assert_pool_invariants(client: &StakingContractClient<'_>, tracked: &[Address]) {
+    let total_staked = client.total_staked();
+    let total_shares = client.total_shares();
+
+    assert!(total_staked >= 0, "total_staked must never be negative");
+    assert!(total_shares >= 0, "total_shares must never be negative");
+
+    if total_staked == 0 {
+        assert_eq!(
+            total_shares, 0,
+            "total_shares must be zero when total_staked is zero"
+        );
+    }
+    if total_shares == 0 {
+        assert_eq!(
+            total_staked, 0,
+            "total_staked must be zero when total_shares is zero"
+        );
+    }
+
+    let mut sum_amounts = 0i128;
+    let mut sum_shares = 0i128;
+    for staker in tracked {
+        let pos = client.get_position(staker);
+        sum_amounts += pos.amount;
+        sum_shares += pos.shares;
+    }
+
+    assert_eq!(
+        sum_amounts, total_staked,
+        "position amounts must match total_staked"
+    );
+    assert_eq!(
+        sum_shares, total_shares,
+        "position shares must match total_shares"
+    );
+}
+
 #[test]
 fn integration_deploys_and_initializes() {
     let (_env, admin, _staker1, _staker2, client, token_client) = setup();
@@ -108,4 +146,36 @@ fn integration_stake_flow_and_yield_mimic() {
 
     // Token balances moved into the staking contract.
     assert_eq!(token_client.balance(&contract_address), amount1 + amount2);
+}
+
+#[test]
+fn integration_invariants_hold_across_state_transitions() {
+    let (env, admin, staker1, staker2, client, _token_client) = setup();
+    let token_admin = token::StellarAssetClient::new(&env, &client.token());
+    token_admin.mint(&admin, &1_000_000_000i128);
+
+    let tracked = [staker1.clone(), staker2.clone()];
+
+    client.stake(&staker1, &300_000_000i128);
+    assert_pool_invariants(&client, &tracked);
+
+    client.stake(&staker2, &150_000_000i128);
+    assert_pool_invariants(&client, &tracked);
+
+    client.deposit_rewards(&admin, &90_000_000i128);
+    assert_pool_invariants(&client, &tracked);
+
+    let _claimed = client.claim_rewards(&staker1);
+    assert_pool_invariants(&client, &tracked);
+
+    client.deposit_rewards(&admin, &60_000_000i128);
+    let _compounded = client.compound(&staker2);
+    assert_pool_invariants(&client, &tracked);
+
+    let _unstaked_partial = client.unstake(&staker1, &50_000_000i128);
+    assert_pool_invariants(&client, &tracked);
+
+    let staker2_full = client.get_position(&staker2).amount;
+    let _unstaked_full = client.unstake(&staker2, &staker2_full);
+    assert_pool_invariants(&client, &[staker1]);
 }
