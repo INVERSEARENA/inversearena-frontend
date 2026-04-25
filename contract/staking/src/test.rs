@@ -663,3 +663,150 @@ fn test_unauthorized_host_stake_methods() {
         Err(Ok(StakingError::Unauthorized))
     );
 }
+
+// ── Lock-period boundary tests ────────────────────────────────────────────────
+//
+// The unstake lock check is:  if ledger.timestamp() < unlock_at { StillLocked }
+// where unlock_at = staked_at + lock_period_seconds.
+//
+// Three deterministic boundary points are exercised for each scenario:
+//   unlock_at - 1  →  StillLocked  (one second before unlock)
+//   unlock_at      →  allowed      (exact unlock moment)
+//   unlock_at + 1  →  allowed      (one second after unlock)
+
+fn setup_with_lock(lock_secs: u64) -> (
+    Env,
+    Address,
+    Address,
+    StakingContractClient<'static>,
+    token::StellarAssetClient<'static>,
+) {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let staker = Address::generate(&env);
+    let asset = env.register_stellar_asset_contract_v2(admin.clone());
+    let token_address = asset.address();
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+    token_admin_client.mint(&staker, &1_000_000_000i128);
+
+    let contract_id = env.register(StakingContract, (&admin, &token_address));
+
+    let env_static: &'static Env = unsafe { &*(&env as *const Env) };
+    let client = StakingContractClient::new(env_static, &contract_id);
+    let token_admin_static = token::StellarAssetClient::new(env_static, &token_address);
+
+    client.set_lock_period_seconds(&lock_secs);
+
+    (env, admin, staker, client, token_admin_static)
+}
+
+#[test]
+fn unstake_one_second_before_unlock_is_rejected() {
+    use soroban_sdk::testutils::Ledger;
+
+    let lock_secs: u64 = 3_600; // 1 hour
+    let (env, _admin, staker, client, _token_admin) = setup_with_lock(lock_secs);
+
+    // Record staked_at by staking at the current ledger timestamp.
+    let staked_at = env.ledger().timestamp();
+    client.stake(&staker, &100_000_000i128);
+
+    let unlock_at = staked_at + lock_secs;
+
+    // Advance to unlock_at - 1 (one second before unlock).
+    env.ledger().with_mut(|l| {
+        l.timestamp = unlock_at - 1;
+    });
+
+    assert_eq!(
+        client.try_unstake(&staker, &100_000_000i128),
+        Err(Ok(StakingError::StillLocked)),
+        "unstake must be rejected one second before unlock_at"
+    );
+}
+
+#[test]
+fn unstake_exactly_at_unlock_is_allowed() {
+    use soroban_sdk::testutils::Ledger;
+
+    let lock_secs: u64 = 3_600;
+    let (env, _admin, staker, client, _token_admin) = setup_with_lock(lock_secs);
+
+    let staked_at = env.ledger().timestamp();
+    client.stake(&staker, &100_000_000i128);
+
+    let unlock_at = staked_at + lock_secs;
+
+    // Advance to exactly unlock_at.
+    env.ledger().with_mut(|l| {
+        l.timestamp = unlock_at;
+    });
+
+    let result = client.try_unstake(&staker, &100_000_000i128);
+    assert!(
+        result.is_ok(),
+        "unstake must succeed at exactly unlock_at, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn unstake_one_second_after_unlock_is_allowed() {
+    use soroban_sdk::testutils::Ledger;
+
+    let lock_secs: u64 = 3_600;
+    let (env, _admin, staker, client, _token_admin) = setup_with_lock(lock_secs);
+
+    let staked_at = env.ledger().timestamp();
+    client.stake(&staker, &100_000_000i128);
+
+    let unlock_at = staked_at + lock_secs;
+
+    // Advance to unlock_at + 1.
+    env.ledger().with_mut(|l| {
+        l.timestamp = unlock_at + 1;
+    });
+
+    let result = client.try_unstake(&staker, &100_000_000i128);
+    assert!(
+        result.is_ok(),
+        "unstake must succeed one second after unlock_at, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn unstake_with_zero_lock_period_is_always_allowed() {
+    // lock_period_seconds == 0 means unlock_at == staked_at, so any timestamp >= staked_at passes.
+    let (_env, _admin, staker, client, _token_admin) = setup_with_lock(0);
+
+    client.stake(&staker, &100_000_000i128);
+
+    // No ledger advancement — timestamp is still staked_at, which equals unlock_at.
+    let result = client.try_unstake(&staker, &100_000_000i128);
+    assert!(
+        result.is_ok(),
+        "unstake must succeed immediately when lock_period_seconds is 0, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn get_staker_stats_unlock_at_reflects_lock_period() {
+    use soroban_sdk::testutils::Ledger;
+
+    let lock_secs: u64 = 7_200; // 2 hours
+    let (env, _admin, staker, client, _token_admin) = setup_with_lock(lock_secs);
+
+    let staked_at = env.ledger().timestamp();
+    client.stake(&staker, &100_000_000i128);
+
+    let stats = client.get_staker_stats(&staker);
+    assert_eq!(
+        stats.unlock_at,
+        staked_at + lock_secs,
+        "unlock_at in StakerStats must equal staked_at + lock_period_seconds"
+    );
+}
