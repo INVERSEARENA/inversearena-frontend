@@ -6,12 +6,34 @@ use std::vec::Vec;
 use super::*;
 use proptest::prelude::*;
 use soroban_sdk::{
-    Address, Bytes, BytesN, Env, IntoVal,
+    Address, Bytes, BytesN, Env, IntoVal, Symbol, contract, contractimpl, contracttype,
     testutils::{Address as _, Ledger as _, LedgerInfo},
     token::StellarAssetClient,
 };
 
 const TEST_REQUIRED_STAKE: i128 = 100i128;
+
+#[contracttype]
+#[derive(Clone)]
+enum MockFactoryKey {
+    Whitelisted(u64, Address),
+}
+
+#[contract]
+struct MockWhitelistFactory;
+
+#[contractimpl]
+impl MockWhitelistFactory {
+    pub fn set_whitelisted(env: Env, arena_id: u64, player: Address, allowed: bool) {
+        let key = MockFactoryKey::Whitelisted(arena_id, player);
+        env.storage().persistent().set(&key, &allowed);
+    }
+
+    pub fn is_whitelisted(env: Env, arena_id: u64, player: Address) -> bool {
+        let key = MockFactoryKey::Whitelisted(arena_id, player);
+        env.storage().persistent().get(&key).unwrap_or(false)
+    }
+}
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -223,6 +245,33 @@ fn setup_finished_game_with_winner(
     client.set_winner(&winner, &prize_amount, &0i128);
 
     (env, admin, client, token_id, winner)
+}
+
+fn setup_private_arena_with_mock_factory() -> (Env, ArenaContractClient<'static>, Address, Address, u64) {
+    let (env, admin, client) = setup_with_admin();
+    let (_asset, token_id) = setup_token(&env, &admin);
+    client.set_token(&token_id);
+    client.init(&5, &TEST_REQUIRED_STAKE, &(env.ledger().timestamp() + 3600));
+
+    let mock_factory = env.register(MockWhitelistFactory, ());
+    let arena_id = 42u64;
+    client.init_factory(&mock_factory, &admin);
+
+    env.as_contract(&client.address, || {
+        let mut config: ArenaConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .expect("arena config must exist");
+        config.is_private = true;
+        env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .set(&DataKey::FactoryAddress, &mock_factory);
+        env.storage().instance().set(&DataKey::ArenaId, &arena_id);
+    });
+
+    (env, client, token_id, mock_factory, arena_id)
 }
 
 // ── round_speed bounds ────────────────────────────────────────────────────────
@@ -1991,6 +2040,78 @@ fn join_rejects_amounts_that_do_not_match_required_stake() {
 
     let err = client.try_join(&player, &(TEST_REQUIRED_STAKE - 1));
     assert_eq!(err, Err(Ok(ArenaError::InvalidAmount)));
+}
+
+#[test]
+fn private_arena_join_rejects_non_whitelisted_player() {
+    let (env, client, token_id, _factory, _arena_id) = setup_private_arena_with_mock_factory();
+    let token = StellarAssetClient::new(&env, &token_id);
+    let intruder = Address::generate(&env);
+    token.mint(&intruder, &(TEST_REQUIRED_STAKE * 10));
+
+    let err = client.try_join(&intruder, &TEST_REQUIRED_STAKE);
+    assert_eq!(err, Err(Ok(ArenaError::NotWhitelisted)));
+}
+
+#[test]
+fn private_arena_whitelist_updates_apply_without_stale_cache() {
+    let (env, client, token_id, factory, arena_id) = setup_private_arena_with_mock_factory();
+    let token = StellarAssetClient::new(&env, &token_id);
+    let whitelisted_player = Address::generate(&env);
+    let revoked_player = Address::generate(&env);
+    token.mint(&whitelisted_player, &(TEST_REQUIRED_STAKE * 10));
+    token.mint(&revoked_player, &(TEST_REQUIRED_STAKE * 10));
+
+    let set_method = Symbol::new(&env, "set_whitelisted");
+    let check_method = Symbol::new(&env, "is_whitelisted");
+    // Player is initially allowed and can join.
+    env.invoke_contract::<()>(
+        &factory,
+        &set_method,
+        soroban_sdk::vec![
+            &env,
+            arena_id.into_val(&env),
+            whitelisted_player.clone().into_val(&env),
+            true.into_val(&env),
+        ],
+    );
+    assert!(client.try_join(&whitelisted_player, &TEST_REQUIRED_STAKE).is_ok());
+
+    // Read path returns true, then host revokes access; join must fail immediately.
+    env.invoke_contract::<()>(
+        &factory,
+        &set_method,
+        soroban_sdk::vec![
+            &env,
+            arena_id.into_val(&env),
+            revoked_player.clone().into_val(&env),
+            true.into_val(&env),
+        ],
+    );
+    let initially_whitelisted: bool = env.invoke_contract(
+        &factory,
+        &check_method,
+        soroban_sdk::vec![
+            &env,
+            arena_id.into_val(&env),
+            revoked_player.clone().into_val(&env),
+        ],
+    );
+    assert!(initially_whitelisted);
+
+    env.invoke_contract::<()>(
+        &factory,
+        &set_method,
+        soroban_sdk::vec![
+            &env,
+            arena_id.into_val(&env),
+            revoked_player.clone().into_val(&env),
+            false.into_val(&env),
+        ],
+    );
+
+    let err = client.try_join(&revoked_player, &TEST_REQUIRED_STAKE);
+    assert_eq!(err, Err(Ok(ArenaError::NotWhitelisted)));
 }
 
 #[test]

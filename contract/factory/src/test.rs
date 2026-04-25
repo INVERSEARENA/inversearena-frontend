@@ -129,6 +129,29 @@ fn test_remove_from_whitelist() {
 }
 
 #[test]
+fn test_whitelist_entries_are_scoped_per_arena_id() {
+    let (env, _admin, client) = setup();
+    let host = Address::generate(&env);
+    let arena_a: u64 = 10;
+    let arena_b: u64 = 11;
+    inject_arena_ref(&env, &client.address, arena_a, &host);
+    inject_arena_ref(&env, &client.address, arena_b, &host);
+
+    let player = Address::generate(&env);
+    client.add_to_whitelist(&arena_a, &soroban_sdk::vec![&env, player.clone()]);
+
+    assert!(client.is_whitelisted(&arena_a, &player));
+    assert!(
+        !client.is_whitelisted(&arena_b, &player),
+        "whitelist entry from one arena must not authorize joins in another arena"
+    );
+
+    client.remove_from_whitelist(&arena_a, &soroban_sdk::vec![&env, player.clone()]);
+    assert!(!client.is_whitelisted(&arena_a, &player));
+    assert!(!client.is_whitelisted(&arena_b, &player));
+}
+
+#[test]
 fn test_is_whitelisted_when_not_initialized_returns_not_initialized() {
     let env = Env::default();
     env.mock_all_auths();
