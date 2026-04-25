@@ -1690,20 +1690,9 @@ fn creation_fee_admin_update_emits_event_and_updates_config() {
 fn creation_fee_non_admin_set_panics() {
     // Use real auth behavior (no env.mock_all_auths()) so require_auth panics.
     let env = Env::default();
-    let contract_id = env.register(FactoryContract, ());
-    let client = FactoryContractClient::new(&env, &contract_id);
-
     let admin = Address::generate(&env);
-    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
-        address: &admin,
-        invoke: &soroban_sdk::testutils::MockAuthInvoke {
-            contract: &contract_id,
-            fn_name: "initialize",
-            args: soroban_sdk::vec![&env, admin.clone().into_val(&env)].into(),
-            sub_invokes: &[],
-        },
-    }]);
-    client.initialize(&admin);
+    let contract_id = env.register(FactoryContract, (&admin,));
+    let client = FactoryContractClient::new(&env, &contract_id);
 
     // Now attempt set_creation_fee with no auths -> should abort.
     env.mock_auths(&[]);

@@ -647,3 +647,19 @@ fn stake_rejects_below_min_and_above_max() {
         Err(Ok(StakingError::ExceedsMaxStake))
     );
 }
+
+#[test]
+fn test_unauthorized_host_stake_methods() {
+    let (env, _admin, staker, client, _token) = setup();
+    let attacker = soroban_sdk::Address::generate(&env);
+
+    assert_eq!(
+        client.try_lock_host_stake(&attacker, &staker, &1u64, &100i128),
+        Err(Ok(StakingError::Unauthorized))
+    );
+
+    assert_eq!(
+        client.try_release_host_stake(&attacker, &staker, &1u64),
+        Err(Ok(StakingError::Unauthorized))
+    );
+}

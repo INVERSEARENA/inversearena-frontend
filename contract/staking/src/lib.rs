@@ -367,10 +367,18 @@ impl StakingContract {
     /// Lock host stake for an arena so host cannot withdraw below reserved amount.
     pub fn lock_host_stake(
         env: Env,
+        caller: Address,
         host: Address,
         arena_id: u64,
         amount: i128,
     ) -> Result<(), StakingError> {
+        caller.require_auth();
+        let admin = Self::admin(env.clone());
+        let factory = Self::factory(env.clone());
+        let is_authorized = caller == admin || factory.as_ref().is_some_and(|f| *f == caller);
+        if !is_authorized {
+            return Err(StakingError::Unauthorized);
+        }
         if amount <= 0 {
             return Err(StakingError::InvalidAmount);
         }
@@ -395,7 +403,14 @@ impl StakingContract {
     }
 
     /// Release previously locked host stake for an arena.
-    pub fn release_host_stake(env: Env, host: Address, arena_id: u64) -> Result<(), StakingError> {
+    pub fn release_host_stake(env: Env, caller: Address, host: Address, arena_id: u64) -> Result<(), StakingError> {
+        caller.require_auth();
+        let admin = Self::admin(env.clone());
+        let factory = Self::factory(env.clone());
+        let is_authorized = caller == admin || factory.as_ref().is_some_and(|f| *f == caller);
+        if !is_authorized {
+            return Err(StakingError::Unauthorized);
+        }
         let lock_key = DataKey::HostLock(host.clone(), arena_id);
         let Some(locked_amount) = env.storage().persistent().get::<_, i128>(&lock_key) else {
             return Ok(());

@@ -133,10 +133,6 @@ pub enum PayoutError {
     AdminTransferExpired = 12,
     Unauthorized = 13,
     NotInitialized = 14,
-    NotInitialized = 11,
-    NoPendingAdminTransfer = 12,
-    AdminTransferExpired = 13,
-    Unauthorized = 14,
     RecoveryAmountInvalid = 15,
     ArithmeticOverflow = 16,
 }

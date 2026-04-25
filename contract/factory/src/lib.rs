@@ -147,6 +147,8 @@ pub enum DataKey {
 // ── Timelock constant: 48 hours in seconds ────────────────────────────────────
 
 const TIMELOCK_PERIOD: u64 = 48 * 60 * 60;
+const REGISTRY_TTL_THRESHOLD: u32 = 100_000;
+const REGISTRY_TTL_EXTEND_TO: u32 = 535_680;
 
 // ── Minimum stake: 10 XLM in stroops ──────────────────────────────────────────
 
@@ -946,17 +948,22 @@ impl FactoryContract {
         );
 
         // Persist metadata only after deployment and all init calls succeed.
+        let pool_key = DataKey::Pool(pool_id);
         env.storage()
             .persistent()
-            .set(&DataKey::Pool(pool_id), &metadata);
+            .set(&pool_key, &metadata);
+        env.storage().persistent().extend_ttl(&pool_key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
+        
+        let arena_key = DataKey::ArenaRef(pool_id as u64);
         env.storage().persistent().set(
-            &DataKey::ArenaRef(pool_id as u64),
+            &arena_key,
             &ArenaRef {
                 contract: arena_address.clone(),
                 status: ArenaStatus::Pending,
                 host: caller.clone(),
             },
         );
+        env.storage().persistent().extend_ttl(&arena_key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
 
         // Increment the pool counter.
         env.storage()
@@ -982,6 +989,7 @@ impl FactoryContract {
             &soroban_sdk::Symbol::new(&env, "lock_host_stake"),
             soroban_sdk::vec![
                 &env,
+                env.current_contract_address().into_val(&env),
                 caller.clone().into_val(&env),
                 (pool_id as u64).into_val(&env),
                 Self::get_min_host_stake(env.clone()).into_val(&env),
@@ -1070,17 +1078,21 @@ impl FactoryContract {
             status: ArenaStatus::Pending,
             host: host.clone(),
         };
+        let ref_key = DataKey::ArenaRef(arena_id);
         env.storage()
             .persistent()
-            .set(&DataKey::ArenaRef(arena_id), &arena_ref);
+            .set(&ref_key, &arena_ref);
+        env.storage().persistent().extend_ttl(&ref_key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
     }
 
-    /// Retrieve the ArenaRef for a given arena_id.
     pub fn get_arena_ref(env: Env, arena_id: u64) -> Result<ArenaRef, Error> {
-        env.storage()
+        let key = DataKey::ArenaRef(arena_id);
+        let arena_ref = env.storage()
             .persistent()
-            .get(&DataKey::ArenaRef(arena_id))
-            .ok_or(Error::ArenaNotFound)
+            .get(&key)
+            .ok_or(Error::ArenaNotFound)?;
+        env.storage().persistent().extend_ttl(&key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
+        Ok(arena_ref)
     }
 
     /// Add addresses to the private arena whitelist. Host-only.
@@ -1093,19 +1105,23 @@ impl FactoryContract {
     /// * [`Error::ArenaNotFound`] — no arena registered for `arena_id`.
     /// * [`Error::Unauthorized`]  — caller is not the arena host.
     pub fn add_to_whitelist(env: Env, arena_id: u64, addresses: Vec<Address>) -> Result<(), Error> {
+        let ref_key = DataKey::ArenaRef(arena_id);
         let arena_ref: ArenaRef = env
             .storage()
             .persistent()
-            .get(&DataKey::ArenaRef(arena_id))
+            .get(&ref_key)
             .ok_or(Error::ArenaNotFound)?;
+        env.storage().persistent().extend_ttl(&ref_key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
 
         // Only the host (pool creator) may manage the whitelist.
         arena_ref.host.require_auth();
 
         for address in addresses.iter() {
+            let wl_key = DataKey::ArenaWhitelist(arena_id, address.clone());
             env.storage()
                 .persistent()
-                .set(&DataKey::ArenaWhitelist(arena_id, address.clone()), &true);
+                .set(&wl_key, &true);
+            env.storage().persistent().extend_ttl(&wl_key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
         }
 
         env.events()
@@ -1125,11 +1141,13 @@ impl FactoryContract {
         arena_id: u64,
         addresses: Vec<Address>,
     ) -> Result<(), Error> {
+        let ref_key = DataKey::ArenaRef(arena_id);
         let arena_ref: ArenaRef = env
             .storage()
             .persistent()
-            .get(&DataKey::ArenaRef(arena_id))
+            .get(&ref_key)
             .ok_or(Error::ArenaNotFound)?;
+        env.storage().persistent().extend_ttl(&ref_key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
 
         // Only the host (pool creator) may manage the whitelist.
         arena_ref.host.require_auth();
@@ -1150,17 +1168,23 @@ impl FactoryContract {
     /// Returns `false` if the arena does not exist or the player is not listed.
     /// This is a read-only view — no auth required.
     pub fn is_whitelisted(env: Env, arena_id: u64, player: Address) -> bool {
-        env.storage()
+        let key = DataKey::ArenaWhitelist(arena_id, player);
+        let result = env.storage()
             .persistent()
-            .get(&DataKey::ArenaWhitelist(arena_id, player))
-            .unwrap_or(false)
+            .get(&key)
+            .unwrap_or(false);
+        if result {
+            env.storage().persistent().extend_ttl(&key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
+        }
+        result
     }
 
     pub fn update_arena_status(env: Env, arena_id: u64, status: ArenaStatus) -> Result<(), Error> {
+        let ref_key = DataKey::ArenaRef(arena_id);
         let mut arena_ref: ArenaRef = env
             .storage()
             .persistent()
-            .get(&DataKey::ArenaRef(arena_id))
+            .get(&ref_key)
             .ok_or(Error::ArenaNotFound)?;
 
         // Enforce that only the corresponding ArenaContract can update its status.
@@ -1169,7 +1193,8 @@ impl FactoryContract {
         arena_ref.status = status;
         env.storage()
             .persistent()
-            .set(&DataKey::ArenaRef(arena_id), &arena_ref);
+            .set(&ref_key, &arena_ref);
+        env.storage().persistent().extend_ttl(&ref_key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
 
         // Release host stake when arena reaches terminal status.
         if status == ArenaStatus::Completed || status == ArenaStatus::Cancelled {
@@ -1179,6 +1204,7 @@ impl FactoryContract {
                     &soroban_sdk::Symbol::new(&env, "release_host_stake"),
                     soroban_sdk::vec![
                         &env,
+                        env.current_contract_address().into_val(&env),
                         arena_ref.host.into_val(&env),
                         arena_id.into_val(&env),
                     ],
@@ -1415,7 +1441,12 @@ impl FactoryContract {
 
     /// Get metadata for a specific pool.
     pub fn get_arena(env: Env, pool_id: u32) -> Option<ArenaMetadata> {
-        env.storage().persistent().get(&DataKey::Pool(pool_id))
+        let key = DataKey::Pool(pool_id);
+        let result = env.storage().persistent().get(&key);
+        if result.is_some() {
+            env.storage().persistent().extend_ttl(&key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
+        }
+        result
     }
 
     /// Get a paginated list of arena metadata.
@@ -1625,7 +1656,11 @@ fn list_arenas_filtered(
 }
 
 fn load_arena_summary(env: &Env, arena_id: u64) -> Option<ArenaSummary> {
-    let arena_ref: Option<ArenaRef> = env.storage().persistent().get(&DataKey::ArenaRef(arena_id));
+    let key = DataKey::ArenaRef(arena_id);
+    let arena_ref: Option<ArenaRef> = env.storage().persistent().get(&key);
+    if arena_ref.is_some() {
+        env.storage().persistent().extend_ttl(&key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
+    }
     arena_ref.map(|entry| ArenaSummary {
         arena_id,
         contract: entry.contract,

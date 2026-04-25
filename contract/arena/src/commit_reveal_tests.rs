@@ -74,7 +74,7 @@ fn test_happy_path() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #37)")]
+#[should_panic(expected = "Error(Contract, #45)")]
 fn test_reveal_without_commit() {
     let (env, client, _admin, token) = setup_test_env();
     let player1 = Address::generate(&env);
@@ -90,7 +90,7 @@ fn test_reveal_without_commit() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #38)")]
+#[should_panic(expected = "Error(Contract, #45)")]
 fn test_wrong_nonce_in_reveal() {
     let (env, client, _admin, token) = setup_test_env();
     let player1 = Address::generate(&env);
@@ -112,7 +112,7 @@ fn test_wrong_nonce_in_reveal() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #38)")]
+#[should_panic(expected = "Error(Contract, #45)")]
 fn test_wrong_choice_in_reveal() {
     let (env, client, _admin, token) = setup_test_env();
     let player1 = Address::generate(&env);

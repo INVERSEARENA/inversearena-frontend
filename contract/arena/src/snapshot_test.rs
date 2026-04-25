@@ -34,6 +34,7 @@ fn test_snapshots() {
         required_stake_amount: 1000,
         max_rounds: 5,
         winner_yield_share_bps: 5000,
+        reserve_ratio_bps: 0,
         grace_period_seconds: 60,
         join_deadline: 123456789,
         win_fee_bps: 100,

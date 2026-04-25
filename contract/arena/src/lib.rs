@@ -130,6 +130,7 @@ pub enum ArenaError {
 
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
 pub enum Choice {
     Heads = 0,
     Tails = 1,
@@ -252,7 +253,7 @@ pub struct PlayerSnapshot {
     pub player: Address,
     pub status: PlayerStatus,
     pub eliminated_round: Option<u32>,
-    pub choice_this_round: Option<Choice>,
+    pub choice_this_round: Option<u32>,
     pub total_rounds_survived: u32,
 }
 
@@ -617,23 +618,16 @@ impl ArenaContract {
             return Err(ArenaError::InvalidAmount);
         }
         let mut config = get_config(&env)?;
+        if bps + config.reserve_ratio_bps > 10_000 {
+            return Err(ArenaError::InvalidAmount);
+        }
         config.winner_yield_share_bps = bps;
         env.storage().instance().set(&DataKey::Config, &config);
         env.storage().instance().set(&WINNER_SHARE_KEY, &bps);
         Ok(())
     }
 
-    pub fn set_max_rounds(env: Env, max_rounds: u32) -> Result<(), ArenaError> {
-        let admin = Self::admin(env.clone());
-        admin.require_auth();
-        if !(bounds::MIN_MAX_ROUNDS..=bounds::MAX_MAX_ROUNDS).contains(&max_rounds) {
-            return Err(ArenaError::InvalidMaxRounds);
-        }
-        let mut config = get_config(&env)?;
-        config.max_rounds = max_rounds;
-        env.storage().instance().set(&DataKey::Config, &config);
-        Ok(())
-    }
+
 
     pub fn set_reserve_ratio_bps(env: Env, bps: u32) -> Result<(), ArenaError> {
         let admin = Self::admin(env.clone());
@@ -642,6 +636,9 @@ impl ArenaContract {
             return Err(ArenaError::InvalidAmount);
         }
         let mut config = get_config(&env)?;
+        if bps + config.winner_yield_share_bps > 10_000 {
+            return Err(ArenaError::InvalidAmount);
+        }
         config.reserve_ratio_bps = bps;
         env.storage().instance().set(&DataKey::Config, &config);
         Ok(())
@@ -973,6 +970,17 @@ impl ArenaContract {
     ) -> Result<(), ArenaError> {
         player.require_auth();
         require_not_paused(&env)?;
+        let round = get_round(&env)?;
+        if !round.active {
+            return Err(ArenaError::NoActiveRound);
+        }
+        if env.ledger().sequence() > round.round_deadline_ledger {
+            return Err(ArenaError::NoActiveRound);
+        }
+        if round.round_number != round_number {
+            return Err(ArenaError::WrongRoundNumber);
+        }
+
         let key = DataKey::Commitment(round_number, player);
         if env.storage().persistent().has(&key) {
             return Err(ArenaError::AlreadyCommitted);
@@ -987,8 +995,27 @@ impl ArenaContract {
         player: Address,
         round_number: u32,
         choice: Choice,
-        _salt: Bytes,
+        salt: Bytes,
     ) -> Result<(), ArenaError> {
+        use soroban_sdk::xdr::ToXdr;
+        let key = DataKey::Commitment(round_number, player.clone());
+        let commitment: Option<BytesN<32>> = env.storage().persistent().get(&key);
+        if let Some(comm) = commitment {
+            let mut bytes = Bytes::new(&env);
+            let choice_byte: u8 = match choice {
+                Choice::Heads => 0,
+                Choice::Tails => 1,
+            };
+            bytes.append(&Bytes::from_array(&env, &[choice_byte]));
+            bytes.append(&salt);
+            bytes.append(&player.clone().to_xdr(&env));
+            let hash: BytesN<32> = env.crypto().sha256(&bytes).into();
+            if hash != comm {
+                return Err(ArenaError::HashMismatch);
+            }
+        } else {
+            return Err(ArenaError::HashMismatch);
+        }
         Self::submit_choice(env, player, round_number, choice)
     }
 
@@ -1428,7 +1455,7 @@ impl ArenaContract {
             get_round(&env).unwrap_or_else(|_| panic_with_error!(&env, ArenaError::NotInitialized));
         let eliminated_round: Option<u32> = persistent.get(&DataKey::ElimRound(player.clone()));
         let reveal_choice = !round.active || env.ledger().sequence() > round.round_deadline_ledger;
-        let choice_this_round = if reveal_choice && round.round_number > 0 {
+        let choice_this_round: Option<Choice> = if reveal_choice && round.round_number > 0 {
             persistent.get(&DataKey::Choices(0, round.round_number, player.clone()))
         } else {
             None
@@ -1452,7 +1479,10 @@ impl ArenaContract {
             player,
             status,
             eliminated_round,
-            choice_this_round,
+            choice_this_round: choice_this_round.map(|c| match c {
+                Choice::Heads => 0,
+                Choice::Tails => 1,
+            }),
             total_rounds_survived,
         }
     }
@@ -2090,7 +2120,7 @@ fn auto_deposit_entry_fees(env: &Env, arena_id: u64) -> Result<(), ArenaError> {
         .ok_or(ArenaError::InvalidAmount)?;
     let reserve_amount = total_depositable
         .checked_mul(config.reserve_ratio_bps as i128)
-        .and_then(|v| v.checked_div(BPS_DENOMINATOR))
+        .and_then(|v: i128| v.checked_div(BPS_DENOMINATOR))
         .ok_or(ArenaError::InvalidAmount)?;
     let deposit_amount = total_depositable.saturating_sub(reserve_amount);
     if deposit_amount <= 0 {

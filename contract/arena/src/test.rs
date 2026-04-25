@@ -2927,6 +2927,7 @@ fn seed_single_survivor_active_round() -> (Env, ArenaContractClient<'static>, Ad
                 required_stake_amount: TEST_REQUIRED_STAKE,
                 max_rounds: bounds::DEFAULT_MAX_ROUNDS,
                 winner_yield_share_bps: DEFAULT_WINNER_YIELD_SHARE_BPS,
+                reserve_ratio_bps: 0,
                 grace_period_seconds: bounds::DEFAULT_GRACE_PERIOD_SECONDS,
                 join_deadline: 3_600,
                 win_fee_bps: 0,
@@ -3643,5 +3644,38 @@ fn test_prize_pool_manipulation_protection() {
     
     // Verify that the actual token balance IS higher, but the contract doesn't use it
     assert_eq!(token_client.balance(&arena_id), 800); // 300 (joins) + 500 (attack)
+}
+
+// ── Yield split invariant tests ──────────────────────────────────────────────────
+
+#[test]
+fn test_yield_split_invariants() {
+    let (env, admin, client) = setup_with_admin();
+    let (_asset, token_id) = setup_token(&env, &admin);
+    client.set_token(&token_id);
+    client.init(&5, &10i128, &3600);
+
+    // Initial sum is 7_000 (winner) + 1_000 (reserve) = 8_000
+    
+    // Test setting winner share too high
+    let result = client.try_set_winner_yield_share_bps(&9_500); 
+    // 9_500 + 1_000 = 10_500 > 10_000, should fail
+    assert_eq!(result, Err(Ok(ArenaError::InvalidAmount)));
+    
+    // Test setting reserve too high
+    let result = client.try_set_reserve_ratio_bps(&3_500);
+    // 3_500 + 7_000 = 10_500 > 10_000, should fail
+    assert_eq!(result, Err(Ok(ArenaError::InvalidAmount)));
+    
+    // Setting both validly
+    assert!(client.try_set_winner_yield_share_bps(&6_000).is_ok());
+    // Current sum: 6_000 + 1_000 = 7_000
+    
+    assert!(client.try_set_reserve_ratio_bps(&4_000).is_ok());
+    // Current sum: 6_000 + 4_000 = 10_000 (ok)
+    
+    // Now try to exceed again
+    let result = client.try_set_winner_yield_share_bps(&6_001);
+    assert_eq!(result, Err(Ok(ArenaError::InvalidAmount)));
 }
 

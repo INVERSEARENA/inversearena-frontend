@@ -36,8 +36,6 @@ pub trait RwaVaultAdapter {
 
 pub struct OndoUsdyAdapter;
 
-use soroban_sdk::IntoVal;
-
 impl OndoUsdyAdapter {
     /// Backward compatible helper used by existing call sites.
     pub fn deposit_with_token(
