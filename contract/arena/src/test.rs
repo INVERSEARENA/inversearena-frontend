@@ -3422,6 +3422,132 @@ fn set_max_rounds_accepts_boundary_values() {
     );
 }
 
+// ── Issue #572: set_max_rounds config update regression tests ─────────────────
+
+/// Core regression: set_max_rounds must persist the new value so that get_config
+/// returns the updated cap. Prior tests only checked error returns, never the
+/// persisted state.
+#[test]
+fn set_max_rounds_persists_updated_value_to_config() {
+    let (env, admin, client) = setup_with_admin();
+    let (_asset, token_id) = setup_token(&env, &admin);
+    client.set_token(&token_id);
+    client.init(&5u32, &TEST_REQUIRED_STAKE, &3600);
+
+    let new_cap = bounds::MIN_MAX_ROUNDS + 3;
+    client.set_max_rounds(&new_cap);
+
+    let config = client.get_config();
+    assert_eq!(
+        config.max_rounds, new_cap,
+        "set_max_rounds must persist the new cap to config storage"
+    );
+}
+
+#[test]
+fn set_max_rounds_does_not_alter_other_config_fields() {
+    let (env, admin, client) = setup_with_admin();
+    let (_asset, token_id) = setup_token(&env, &admin);
+    client.set_token(&token_id);
+    client.init(&5u32, &TEST_REQUIRED_STAKE, &3600);
+
+    let before = client.get_config();
+    client.set_max_rounds(&(bounds::MIN_MAX_ROUNDS + 1));
+    let after = client.get_config();
+
+    assert_eq!(after.max_rounds, bounds::MIN_MAX_ROUNDS + 1);
+    assert_eq!(after.round_speed_in_ledgers, before.round_speed_in_ledgers);
+    assert_eq!(after.required_stake_amount, before.required_stake_amount);
+    assert_eq!(after.join_deadline, before.join_deadline);
+}
+
+#[test]
+fn set_max_rounds_repeated_update_reflects_last_value() {
+    let (env, admin, client) = setup_with_admin();
+    let (_asset, token_id) = setup_token(&env, &admin);
+    client.set_token(&token_id);
+    client.init(&5u32, &TEST_REQUIRED_STAKE, &3600);
+
+    client.set_max_rounds(&5u32);
+    client.set_max_rounds(&10u32);
+    client.set_max_rounds(&3u32);
+
+    let config = client.get_config();
+    assert_eq!(config.max_rounds, 3u32, "last set_max_rounds call wins");
+}
+
+#[test]
+fn set_max_rounds_non_admin_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(ArenaContract, (&admin,));
+    let c = ArenaContractClient::new(&env, &contract_id);
+    let (_asset, token_id) = setup_token(&env, &admin);
+    c.set_token(&token_id);
+    c.init(&5u32, &TEST_REQUIRED_STAKE, &3600);
+
+    env.mock_auths(&[]);
+    let result = c.try_set_max_rounds(&5u32);
+    assert!(result.is_err(), "non-admin must not be able to set_max_rounds");
+}
+
+#[test]
+fn set_max_rounds_blocked_when_paused() {
+    let (env, admin, client) = setup_with_admin();
+    let (_asset, token_id) = setup_token(&env, &admin);
+    client.set_token(&token_id);
+    client.init(&5u32, &TEST_REQUIRED_STAKE, &3600);
+
+    client.pause();
+    let result = client.try_set_max_rounds(&5u32);
+    assert_eq!(
+        result,
+        Err(Ok(ArenaError::Paused)),
+        "set_max_rounds must be blocked while the contract is paused"
+    );
+}
+
+#[test]
+fn set_max_rounds_fails_before_init() {
+    let (env, admin, client) = setup_with_admin();
+    let (_asset, token_id) = setup_token(&env, &admin);
+    client.set_token(&token_id);
+    // Intentionally skip client.init() — no config exists yet.
+    let result = client.try_set_max_rounds(&5u32);
+    assert!(
+        result.is_err(),
+        "set_max_rounds must fail when called before init"
+    );
+}
+
+#[test]
+fn set_max_rounds_emits_mx_round_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, admin, client) = setup_with_admin();
+    let (_asset, token_id) = setup_token(&env, &admin);
+    client.set_token(&token_id);
+    client.init(&5u32, &TEST_REQUIRED_STAKE, &3600);
+
+    let before = env.events().all().len();
+    client.set_max_rounds(&7u32);
+    let events = env.events().all();
+
+    assert!(
+        events.len() > before,
+        "set_max_rounds must emit at least one event"
+    );
+
+    let (_contract, topics, data) = events.last().unwrap();
+    let topic: Symbol = topics.get(0).unwrap().into_val(&env);
+    assert_eq!(topic, symbol_short!("MX_ROUND"), "event topic must be MX_ROUND");
+
+    let (version, emitted_max): (u32, u32) = data.into_val(&env);
+    assert_eq!(version, 1u32, "event version must be 1");
+    assert_eq!(emitted_max, 7u32, "event must carry the new max_rounds value");
+}
+
 // ── Issue #470: role-based access control ─────────────────────────────────────
 
 #[test]

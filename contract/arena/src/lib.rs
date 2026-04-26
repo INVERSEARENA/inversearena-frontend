@@ -1421,6 +1421,8 @@ impl ArenaContract {
         let mut config = get_config(&env)?;
         config.max_rounds = max_rounds;
         env.storage().instance().set(&DataKey::Config, &config);
+        env.events()
+            .publish((TOPIC_MAX_ROUNDS,), (EVENT_VERSION, max_rounds));
         Ok(())
     }
 
