@@ -379,6 +379,32 @@ impl PayoutContract {
         env.storage().persistent().get(&payout_key)
     }
 
+    /// **Deprecated** — use [`PayoutContract::distribute_split_payout`] for multi-winner
+    /// distributions.
+    ///
+    /// This function remains for backward compatibility only. It performs an equal split of
+    /// `total_prize` across all `winners` and routes any integer remainder (dust) to the
+    /// registered treasury address.
+    ///
+    /// # Migration
+    /// Replace `distribute_prize(game_id, total_prize, winners, currency)` with
+    /// `distribute_split_payout(game_id, winners, total_prize, currency)`.
+    ///
+    /// Key differences from `distribute_split_payout`:
+    /// - Dust goes to the treasury, not to the first winner.
+    /// - Per-winner receipts are **not** stored; only a batch marker is written.
+    /// - Requires a treasury address to be set via `set_treasury`.
+    ///
+    /// # Errors
+    /// * `AlreadyPaid`    — already distributed for `game_id`.
+    /// * `InvalidAmount`  — `total_prize` ≤ 0.
+    /// * `NoWinners`      — `winners` is empty.
+    /// * `TreasuryNotSet` — no treasury address registered.
+    /// * `Paused`         — contract is paused.
+    #[deprecated(
+        note = "Use `distribute_split_payout` instead; \
+                see the function doc comment for the migration guide."
+    )]
     pub fn distribute_prize(
         env: Env,
         game_id: u32,
@@ -460,14 +486,30 @@ impl PayoutContract {
             .get(&DataKey::ArenaPayout(arena_id))
     }
 
+    /// **Deprecated** — use [`PayoutContract::is_split_payout_distributed`] for the
+    /// canonical idempotency check that corresponds to `distribute_split_payout`.
+    #[deprecated(
+        note = "Use `is_split_payout_distributed` instead, which corresponds to the \
+                canonical `distribute_split_payout` entrypoint."
+    )]
     pub fn is_prize_distributed(env: Env, game_id: u32) -> bool {
         env.storage().instance().has(&DataKey::PrizePayout(game_id))
     }
 
-    /// Splits and transfers `total_amount` across `winners`.
-    ///
-    /// Remainder dust from integer division is sent to the first winner so
+    /// Canonical multi-winner distribution entrypoint. Splits `total_amount` across
+    /// `winners`; remainder dust from integer division is sent to the first winner so
     /// no funds are left stranded in the contract.
+    ///
+    /// Prefer this function over the deprecated `distribute_prize`. Unlike
+    /// `distribute_prize`, this function stores per-winner receipts (queryable via
+    /// `get_split_payout_receipt`), does not require a treasury to be configured, and
+    /// routes dust to the first winner rather than a separate treasury address.
+    ///
+    /// # Errors
+    /// * `AlreadyPaid`   — already distributed for `arena_id`.
+    /// * `InvalidAmount` — `total_amount` ≤ 0.
+    /// * `NoWinners`     — `winners` is empty.
+    /// * `Paused`        — contract is paused.
     pub fn distribute_split_payout(
         env: Env,
         arena_id: u32,
