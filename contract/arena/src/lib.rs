@@ -1145,18 +1145,16 @@ impl ArenaContract {
     ///
     /// # Errors
     /// * [`ArenaError::Paused`] — contract is paused.
+    /// * [`ArenaError::InvalidAmount`] — `batch_size` is zero or exceeds [`bounds::MAX_BATCH_SIZE`].
     /// * [`ArenaError::NoActiveRound`] — no round is currently active.
     /// * [`ArenaError::RoundDeadlineOverflow`] — deadline + grace overflows.
     /// * [`ArenaError::RoundStillOpen`] — the deadline (plus grace) hasn't elapsed.
     /// * [`ArenaError::BatchAlreadyInProgress`] — a batch is already pending.
-    ///
-    /// `batch_size == 0` is accepted but does no work; the caller is expected
-    /// to advance via `continue_resolution` with a positive batch size before
-    /// finalising. (Soroban's contract-error spec is capped at 50 variants,
-    /// so we omit a dedicated `InvalidBatchSize` error and leave the
-    /// degenerate case as a no-op rather than burn a code on it.)
     pub fn start_resolution(env: Env, batch_size: u32) -> Result<ResolutionState, ArenaError> {
         require_not_paused(&env)?;
+        if batch_size < bounds::MIN_BATCH_SIZE || batch_size > bounds::MAX_BATCH_SIZE {
+            return Err(ArenaError::InvalidAmount);
+        }
         let round = get_round(&env)?;
         let config = get_config(&env)?;
         if !round.active {
@@ -1194,11 +1192,13 @@ impl ArenaContract {
     ///
     /// # Errors
     /// * [`ArenaError::Paused`] — contract is paused.
+    /// * [`ArenaError::InvalidAmount`] — `batch_size` is zero or exceeds [`bounds::MAX_BATCH_SIZE`].
     /// * [`ArenaError::NoBatchInProgress`] — `start_resolution` hasn't run.
-    ///
-    /// `batch_size == 0` is accepted but does no work (see `start_resolution`).
     pub fn continue_resolution(env: Env, batch_size: u32) -> Result<ResolutionState, ArenaError> {
         require_not_paused(&env)?;
+        if batch_size < bounds::MIN_BATCH_SIZE || batch_size > bounds::MAX_BATCH_SIZE {
+            return Err(ArenaError::InvalidAmount);
+        }
         let mut state: ResolutionState = env
             .storage()
             .instance()

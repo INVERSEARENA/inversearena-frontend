@@ -45,6 +45,12 @@ const UNALLOCATED_REWARDS_KEY: Symbol = symbol_short!("RWD_UNA");
 // ── Timelock: 48 hours in seconds ─────────────────────────────────────────────
 const TIMELOCK_PERIOD: u64 = 48 * 60 * 60;
 const EVENT_VERSION: u32 = 1;
+
+// ── TTL constants for persistent stake/reward entries ─────────────────────────
+// Bump stake records when they have fewer than 7 days of life remaining,
+// extending to ~31 days (535_680 ledgers at ~5 s/ledger).
+const STAKING_TTL_THRESHOLD: u32 = 100_000;
+const STAKING_TTL_EXTEND_TO: u32 = 535_680;
 const PRECISION: i128 = 1_000_000_000_000_000_000;
 
 // ── Event topics ──────────────────────────────────────────────────────────────
@@ -417,14 +423,21 @@ impl StakingContract {
             return Ok(());
         }
         env.storage().persistent().set(&lock_key, &amount);
+        env.storage()
+            .persistent()
+            .extend_ttl(&lock_key, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
         let current_locked: i128 = env
             .storage()
             .persistent()
             .get(&DataKey::HostLockedTotal(host.clone()))
             .unwrap_or(0);
+        let locked_total_key = DataKey::HostLockedTotal(host);
         env.storage()
             .persistent()
-            .set(&DataKey::HostLockedTotal(host), &(current_locked + amount));
+            .set(&locked_total_key, &(current_locked + amount));
+        env.storage()
+            .persistent()
+            .extend_ttl(&locked_total_key, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
         Ok(())
     }
 
@@ -552,6 +565,7 @@ impl StakingContract {
         );
         sync_reward_debt(&env, &staker)?;
         distribute_unallocated_rewards(&env)?;
+        extend_staker_entry_ttl(&env, &staker);
 
         // Interaction: transfer tokens into the contract.
         token::Client::new(&env, &token_contract).transfer(
@@ -657,6 +671,7 @@ impl StakingContract {
                 .persistent()
                 .set(&DataKey::Position(staker.clone()), &position);
             sync_reward_debt(&env, &staker)?;
+            extend_staker_entry_ttl(&env, &staker);
         }
         env.storage()
             .instance()
@@ -753,6 +768,9 @@ impl StakingContract {
             .instance()
             .set(&REWARD_POOL_KEY, &pool.saturating_sub(claimable));
         env.storage().persistent().set(&claim_key, &0i128);
+        env.storage()
+            .persistent()
+            .extend_ttl(&claim_key, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
 
         let total_claimed_key = DataKey::TotalClaimedRewards(staker.clone());
         let total_claimed: i128 = env
@@ -763,6 +781,9 @@ impl StakingContract {
         env.storage()
             .persistent()
             .set(&total_claimed_key, &(total_claimed + claimable));
+        env.storage()
+            .persistent()
+            .extend_ttl(&total_claimed_key, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
 
         token::Client::new(&env, &token_contract).transfer(
             &env.current_contract_address(),
@@ -819,6 +840,7 @@ impl StakingContract {
             .instance()
             .set(&TOTAL_SHARES_KEY, &(total_shares + shares_minted));
         sync_reward_debt(&env, &staker)?;
+        extend_staker_entry_ttl(&env, &staker);
 
         env.events()
             .publish((TOPIC_COMPOUNDED,), (staker, pending, position.amount));
@@ -994,6 +1016,24 @@ fn get_token_contract(env: &Env) -> Result<Address, StakingError> {
         .ok_or(StakingError::NotInitialized)
 }
 
+fn extend_staker_entry_ttl(env: &Env, staker: &Address) {
+    macro_rules! bump {
+        ($key:expr) => {
+            let k = $key;
+            if env.storage().persistent().has(&k) {
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&k, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
+            }
+        };
+    }
+    bump!(DataKey::Position(staker.clone()));
+    bump!(DataKey::Stake(staker.clone()));
+    bump!(DataKey::StakedAt(staker.clone()));
+    bump!(DataKey::RewardDebt(staker.clone()));
+    bump!(DataKey::PendingRewards(staker.clone()));
+}
+
 fn require_not_paused(env: &Env) -> Result<(), StakingError> {
     if env.storage().instance().get(&PAUSED_KEY).unwrap_or(false) {
         return Err(StakingError::Paused);
@@ -1040,9 +1080,11 @@ fn accrue_rewards(
 ) -> Result<(), StakingError> {
     distribute_unallocated_rewards(env)?;
     let pending = pending_rewards_of(env, staker, position);
+    let pending_key = DataKey::PendingRewards(staker.clone());
+    env.storage().persistent().set(&pending_key, &pending);
     env.storage()
         .persistent()
-        .set(&DataKey::PendingRewards(staker.clone()), &pending);
+        .extend_ttl(&pending_key, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
     sync_reward_debt(env, staker)?;
     Ok(())
 }
@@ -1067,9 +1109,13 @@ fn sync_reward_debt(env: &Env, staker: &Address) -> Result<(), StakingError> {
         .instance()
         .get(&REWARD_PER_SHARE_KEY)
         .unwrap_or(0);
+    let reward_debt_key = DataKey::RewardDebt(staker.clone());
     env.storage()
         .persistent()
-        .set(&DataKey::RewardDebt(staker.clone()), &reward_per_share);
+        .set(&reward_debt_key, &reward_per_share);
+    env.storage()
+        .persistent()
+        .extend_ttl(&reward_debt_key, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
     Ok(())
 }
 

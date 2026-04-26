@@ -1048,3 +1048,128 @@ fn distribute_winnings_with_partial_token_mapping() {
         "payout should be recorded for currency2 even without token mapping"
     );
 }
+
+// ── Issue #590: payout event snapshot tests ───────────────────────────────────
+
+#[test]
+fn distribute_winnings_emits_payout_event_with_correct_schema() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, _admin, client, _, factory_client) = setup();
+
+    let winner = Address::generate(&env);
+    let caller = Address::generate(&env);
+    let ctx = symbol_short!("CTX");
+    let amount = 1_000i128;
+    let currency = symbol_short!("XLM");
+    factory_client.set_arena(&(42u32 as u64), &caller);
+
+    let before = env.events().all().len();
+    client.distribute_winnings(&caller, &ctx, &42u32, &1u32, &winner, &amount, &currency);
+    let events = env.events().all();
+    assert!(events.len() > before, "distribute_winnings must emit at least one event");
+
+    let (_contract, topics, data) = events.last().unwrap();
+    let topic: Symbol = topics.get(0).unwrap().into_val(&env);
+    assert_eq!(topic, symbol_short!("PAYOUT"), "topic must be PAYOUT");
+
+    // Schema: (winner: Address, winner_amount: i128, fee_amount: i128, currency: Symbol)
+    let (emitted_winner, emitted_amount, emitted_fee, emitted_currency): (Address, i128, i128, Symbol) =
+        data.into_val(&env);
+    assert_eq!(emitted_winner, winner);
+    assert_eq!(emitted_amount, amount);
+    assert_eq!(emitted_fee, 0i128);
+    assert_eq!(emitted_currency, currency);
+}
+
+#[test]
+fn set_currency_token_emits_tok_set_event_with_correct_schema() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, _admin, client, _, _factory_client) = setup();
+
+    let token_addr = Address::generate(&env);
+    let currency = symbol_short!("USDC");
+
+    let before = env.events().all().len();
+    client.set_currency_token(&currency, &token_addr);
+    let events = env.events().all();
+    assert!(events.len() > before, "set_currency_token must emit at least one event");
+
+    let (_contract, topics, data) = events.last().unwrap();
+    let topic: Symbol = topics.get(0).unwrap().into_val(&env);
+    assert_eq!(topic, symbol_short!("TOK_SET"), "topic must be TOK_SET");
+
+    // Schema: (v: u32, currency: Symbol, token_address: Address)
+    let (v, emitted_currency, emitted_token): (u32, Symbol, Address) = data.into_val(&env);
+    assert_eq!(v, 1u32, "event version must be 1");
+    assert_eq!(emitted_currency, currency);
+    assert_eq!(emitted_token, token_addr);
+}
+
+#[test]
+fn distribute_prize_emits_payout_and_dust_events() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, _admin, client, token_id, treasury, _, _factory_client) = setup_with_token();
+
+    let winners = {
+        let mut v = Vec::new(&env);
+        let w1 = Address::generate(&env);
+        let w2 = Address::generate(&env);
+        v.push_back(w1);
+        v.push_back(w2);
+        v
+    };
+    let total = 1_001i128; // dust = 1 (1001 / 2 = 500, remainder 1)
+
+    let before = env.events().all().len();
+    client.distribute_prize(&42u32, &total, &winners, &token_id);
+    let events = env.events().all();
+
+    // 2 winners + 1 dust = 3 new events
+    let new_count = events.len() - before;
+    assert!(new_count >= 3, "expected at least 3 new events (2 winner + 1 dust)");
+
+    // First winner event: topic = PAYOUT; schema: (winner: Address, share: i128, currency: Address)
+    let (_, topics, data) = events.get(before).unwrap();
+    let topic: Symbol = topics.get(0).unwrap().into_val(&env);
+    assert_eq!(topic, symbol_short!("PAYOUT"));
+    let (_w, share, _tok): (Address, i128, Address) = data.into_val(&env);
+    assert_eq!(share, 500i128);
+
+    // Last new event is the dust event: topic = DUST; schema: (treasury: Address, dust: i128, currency: Address)
+    let (_, dust_topics, dust_data) = events.get(before + new_count - 1).unwrap();
+    let dust_topic: Symbol = dust_topics.get(0).unwrap().into_val(&env);
+    assert_eq!(dust_topic, symbol_short!("DUST"), "remainder must emit DUST event");
+    let (recv, dust_amount, _tok): (Address, i128, Address) = dust_data.into_val(&env);
+    assert_eq!(recv, treasury);
+    assert_eq!(dust_amount, 1i128);
+}
+
+#[test]
+fn distribute_winnings_with_fee_emits_correct_amounts() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, _admin, client, _, factory_client) = setup();
+
+    factory_client.set_fee_bps(&500u32); // 5% fee
+    let winner = Address::generate(&env);
+    let caller = Address::generate(&env);
+    factory_client.set_arena(&(99u32 as u64), &caller);
+
+    let amount = 1_000i128;
+    let currency = symbol_short!("XLM");
+
+    client.distribute_winnings(
+        &caller, &symbol_short!("CTX"), &99u32, &1u32, &winner, &amount, &currency,
+    );
+
+    let events = env.events().all();
+    let (_contract, _topics, data) = events.last().unwrap();
+    let (_, winner_amount, fee_amount, _): (Address, i128, i128, Symbol) =
+        data.into_val(&env);
+
+    assert_eq!(fee_amount, 50i128, "5% of 1000 = 50");
+    assert_eq!(winner_amount, 950i128, "winner receives 950 after 5% fee");
+}

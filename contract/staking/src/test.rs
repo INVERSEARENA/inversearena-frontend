@@ -293,7 +293,7 @@ fn unstake_rejects_insufficient_shares() {
     client.stake(&staker, &100_000_000i128);
     assert_eq!(
         client.try_unstake(&staker, &999_999_999),
-        Err(Ok(StakingError::InsufficientShares))
+        Err(Ok(StakingError::InsufficientBalance))
     );
 }
 
@@ -751,8 +751,9 @@ fn stake_rejects_below_min_and_above_max() {
         Err(Ok(StakingError::BelowMinStake))
     );
     client.stake(&staker, &100);
+    // already at 100; staking 100 more would reach 200 > max_stake 150 → ExceedsMaxStake
     assert_eq!(
-        client.try_stake(&staker, &60),
+        client.try_stake(&staker, &100),
         Err(Ok(StakingError::ExceedsMaxStake))
     );
 }
@@ -815,6 +816,9 @@ fn test_non_factory_caller_rejected_after_factory_set() {
     assert_eq!(
         client.try_lock_host_stake(&attacker, &staker, &1u64, &100i128),
         Err(Ok(StakingError::Unauthorized))
+    );
+}
+
 // ── Lock-period boundary tests ────────────────────────────────────────────────
 //
 // The unstake lock check is:  if ledger.timestamp() < unlock_at { StillLocked }

@@ -3787,6 +3787,91 @@ fn test_prize_pool_manipulation_protection() {
 
 // ── Yield split invariant tests ──────────────────────────────────────────────────
 
+// ── Issue #591/#592: batch_size guardrail tests ───────────────────────────────
+
+fn setup_game_past_round_deadline(player_count: u32) -> (Env, ArenaContractClient<'static>) {
+    let (env, _admin, client, _token_id, _players) = setup_game(5, player_count);
+    set_ledger_sequence(&env, 1);
+    let round = client.start_round();
+    advance_past_resolution_window(&env, &round);
+    (env, client)
+}
+
+#[test]
+fn start_resolution_zero_batch_rejected() {
+    let (_env, _admin, client) = setup_with_admin();
+    assert_eq!(
+        client.try_start_resolution(&0),
+        Err(Ok(ArenaError::InvalidAmount))
+    );
+}
+
+#[test]
+fn start_resolution_oversized_batch_rejected() {
+    let (_env, _admin, client) = setup_with_admin();
+    assert_eq!(
+        client.try_start_resolution(&(bounds::MAX_BATCH_SIZE + 1)),
+        Err(Ok(ArenaError::InvalidAmount))
+    );
+}
+
+#[test]
+fn continue_resolution_zero_batch_rejected() {
+    let (_env, _admin, client) = setup_with_admin();
+    assert_eq!(
+        client.try_continue_resolution(&0),
+        Err(Ok(ArenaError::InvalidAmount))
+    );
+}
+
+#[test]
+fn continue_resolution_oversized_batch_rejected() {
+    let (_env, _admin, client) = setup_with_admin();
+    assert_eq!(
+        client.try_continue_resolution(&(bounds::MAX_BATCH_SIZE + 1)),
+        Err(Ok(ArenaError::InvalidAmount))
+    );
+}
+
+#[test]
+fn start_resolution_min_batch_size_accepted() {
+    let (_env, client) = setup_game_past_round_deadline(4);
+    let state = client.start_resolution(&bounds::MIN_BATCH_SIZE);
+    assert_eq!(
+        state.processed, bounds::MIN_BATCH_SIZE,
+        "MIN_BATCH_SIZE should process exactly MIN_BATCH_SIZE players"
+    );
+}
+
+#[test]
+fn start_resolution_max_batch_size_covers_all_players() {
+    let (_env, client) = setup_game_past_round_deadline(4);
+    let state = client.start_resolution(&bounds::MAX_BATCH_SIZE);
+    assert_eq!(
+        state.processed, 4,
+        "MAX_BATCH_SIZE >= player_count should process all 4 players in one call"
+    );
+}
+
+#[test]
+fn continue_resolution_min_batch_size_accepted() {
+    let (_env, client) = setup_game_past_round_deadline(4);
+    client.start_resolution(&bounds::MIN_BATCH_SIZE);
+    let result = client.try_continue_resolution(&bounds::MIN_BATCH_SIZE);
+    assert!(result.is_ok(), "MIN_BATCH_SIZE must be accepted by continue_resolution");
+}
+
+#[test]
+fn continue_resolution_max_batch_size_accepted() {
+    let (_env, client) = setup_game_past_round_deadline(4);
+    client.start_resolution(&bounds::MIN_BATCH_SIZE);
+    let state = client.continue_resolution(&bounds::MAX_BATCH_SIZE);
+    assert_eq!(
+        state.processed, 4,
+        "MAX_BATCH_SIZE continue_resolution should drain all remaining players"
+    );
+}
+
 #[test]
 fn test_yield_split_invariants() {
     let (env, admin, client) = setup_with_admin();

@@ -62,3 +62,18 @@ pub const DEFAULT_GRACE_PERIOD_SECONDS: u64 = 10;
 
 /// Maximum grace period (seconds) allowed by admin configuration.
 pub const MAX_GRACE_PERIOD_SECONDS: u64 = 30;
+
+/// Minimum batch_size accepted by `start_resolution` and `continue_resolution`.
+/// A batch of zero makes no forward progress and is rejected to prevent
+/// callers from accidentally stalling a batch.
+pub const MIN_BATCH_SIZE: u32 = 1;
+
+/// Maximum batch_size accepted by `start_resolution` and `continue_resolution`.
+/// Caps per-call compute budget: at mainnet ~5 s/ledger, 500 players per call
+/// keeps instruction usage well inside Soroban limits.
+/// Test value is small so boundary cases (MAX-1, MAX, MAX+1) stay fast in CI.
+#[cfg(test)]
+pub const MAX_BATCH_SIZE: u32 = 10;
+/// Maximum batch_size accepted by `start_resolution` and `continue_resolution`.
+#[cfg(not(test))]
+pub const MAX_BATCH_SIZE: u32 = 500;
