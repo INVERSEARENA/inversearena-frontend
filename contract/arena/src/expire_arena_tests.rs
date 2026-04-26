@@ -2,8 +2,8 @@
 
 use super::*;
 use soroban_sdk::{
-    Address, Env,
-    testutils::{Address as _, Ledger as _},
+    Address, Env, IntoVal, Symbol, symbol_short,
+    testutils::{Address as _, Events as _, Ledger as _},
 };
 
 fn setup_arena_env() -> (Env, ArenaContractClient<'static>, Address, Address) {
@@ -110,4 +110,121 @@ fn test_deadline_too_far_rejected() {
     let deadline = now + 700_000;
     let result = client.try_init(&10, &100, &deadline);
     assert_eq!(result, Err(Ok(ArenaError::DeadlineTooFar)));
+}
+
+// ── Issue #573: ArenaExpired event must carry the actual arena_id ─────────────
+
+/// Regression test: expire_arena previously emitted `arena_id: 0` regardless of
+/// the stored arena identifier. This test pins the correct value so that any future
+/// regression is caught immediately.
+#[test]
+fn expire_arena_event_carries_actual_arena_id() {
+    let (env, client, _admin, _token) = setup_arena_env();
+    let deadline = env.ledger().timestamp() + 7200;
+    client.init(&10, &100, &deadline);
+
+    // Seed the arena_id that would normally be written by the factory.
+    let expected_arena_id: u64 = 99;
+    env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .set(&DataKey::ArenaId, &expected_arena_id);
+    });
+
+    // Advance past the deadline so expire_arena succeeds.
+    env.ledger().with_mut(|l| {
+        l.timestamp = deadline + 1;
+    });
+
+    let before = env.events().all().len();
+    client.expire_arena();
+    let events = env.events().all();
+
+    assert!(
+        events.len() > before,
+        "expire_arena must emit at least one event"
+    );
+
+    let (_contract, topics, data) = events.last().unwrap();
+
+    // Assert topic is the canonical A_EXP symbol.
+    let topic: Symbol = topics.get(0).unwrap().into_val(&env);
+    assert_eq!(topic, symbol_short!("A_EXP"), "event topic must be A_EXP");
+
+    // Assert the payload carries the stored arena_id, not 0.
+    let payload: ArenaExpired = data.into_val(&env);
+    assert_eq!(
+        payload.arena_id, expected_arena_id,
+        "ArenaExpired.arena_id must equal the stored arena id (was hardcoded 0 before fix)"
+    );
+}
+
+#[test]
+fn expire_arena_event_arena_id_zero_when_no_arena_id_set() {
+    let (env, client, _admin, _token) = setup_arena_env();
+    let deadline = env.ledger().timestamp() + 7200;
+    client.init(&10, &100, &deadline);
+
+    // Do NOT set DataKey::ArenaId — storage returns None, unwrap_or(0) fires.
+    env.ledger().with_mut(|l| {
+        l.timestamp = deadline + 1;
+    });
+
+    client.expire_arena();
+
+    let (_contract, _topics, data) = env.events().all().last().unwrap();
+    let payload: ArenaExpired = data.into_val(&env);
+    assert_eq!(
+        payload.arena_id, 0,
+        "arena_id should default to 0 when DataKey::ArenaId is absent"
+    );
+}
+
+#[test]
+fn expire_arena_event_refunded_players_count_matches_actual_refunds() {
+    let (env, client, _admin, token_id) = setup_arena_env();
+    let deadline = env.ledger().timestamp() + 7200;
+    client.init(&10, &100, &deadline);
+
+    // Mint tokens for two players and have them join.
+    let token_client = token::StellarAssetClient::new(&env, &token_id);
+    let player1 = Address::generate(&env);
+    let player2 = Address::generate(&env);
+    token_client.mint(&player1, &200);
+    token_client.mint(&player2, &200);
+    client.join(&player1, &100);
+    client.join(&player2, &100);
+
+    env.ledger().with_mut(|l| {
+        l.timestamp = deadline + 1;
+    });
+
+    client.expire_arena();
+
+    let (_contract, _topics, data) = env.events().all().last().unwrap();
+    let payload: ArenaExpired = data.into_val(&env);
+    assert_eq!(
+        payload.refunded_players, 2,
+        "refunded_players count must equal the number of joined players"
+    );
+}
+
+#[test]
+fn expire_arena_event_refunded_players_zero_when_no_one_joined() {
+    let (env, client, _admin, _token) = setup_arena_env();
+    let deadline = env.ledger().timestamp() + 7200;
+    client.init(&10, &100, &deadline);
+
+    env.ledger().with_mut(|l| {
+        l.timestamp = deadline + 1;
+    });
+
+    client.expire_arena();
+
+    let (_contract, _topics, data) = env.events().all().last().unwrap();
+    let payload: ArenaExpired = data.into_val(&env);
+    assert_eq!(
+        payload.refunded_players, 0,
+        "refunded_players must be 0 when nobody joined"
+    );
 }
