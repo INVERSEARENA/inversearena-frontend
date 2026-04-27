@@ -604,7 +604,9 @@ impl FactoryContract {
     pub fn set_max_concurrent_arenas(env: Env, new_limit: u32) -> Result<(), Error> {
         let admin = require_admin(&env)?;
         admin.require_auth();
-        env.storage().instance().set(&PARTICIPATION_LIMIT_KEY, &new_limit);
+        env.storage()
+            .instance()
+            .set(&PARTICIPATION_LIMIT_KEY, &new_limit);
         Ok(())
     }
 
@@ -621,8 +623,7 @@ impl FactoryContract {
     /// Called by arena contract before accepting join.
     pub fn increment_participation(env: Env, player: Address) -> Result<(), Error> {
         let limit = Self::get_max_concurrent_arenas(env.clone());
-        let current = Self::get_player_stats(env.clone(), player.clone())
-            .arenas_entered;
+        let current = Self::get_player_stats(env.clone(), player.clone()).arenas_entered;
         if current >= limit {
             return Err(Error::ParticipationLimitReached);
         }
@@ -646,11 +647,9 @@ impl FactoryContract {
             stats.win_rate_bps = (stats.arenas_won * 10_000) / stats.arenas_entered;
         }
         env.storage().persistent().set(&key, &stats);
-        env.storage().persistent().extend_ttl(
-            &key,
-            REGISTRY_TTL_THRESHOLD,
-            REGISTRY_TTL_EXTEND_TO,
-        );
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
     }
 
     /// Record arena win for a player.
@@ -671,11 +670,9 @@ impl FactoryContract {
             stats.win_rate_bps = (stats.arenas_won * 10_000) / stats.arenas_entered;
         }
         env.storage().persistent().set(&key, &stats);
-        env.storage().persistent().extend_ttl(
-            &key,
-            REGISTRY_TTL_THRESHOLD,
-            REGISTRY_TTL_EXTEND_TO,
-        );
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
     }
 
     /// Decrement participation count when player is eliminated or arena completes.
@@ -1437,20 +1434,19 @@ impl FactoryContract {
 
             // Record win for winner.
             if let Some(winner_addr) = winner {
-let _pool_count: u32 = env
+                let _pool_count: u32 = env
                     .storage()
                     .instance()
                     .get(&POOL_COUNT_KEY)
                     .unwrap_or(0u32);
                 let arena_key = DataKey::Pool(arena_id as u32);
-                if let Some(meta) = env.storage().persistent().get::<_, ArenaMetadata>(&arena_key) {
+                if let Some(meta) = env
+                    .storage()
+                    .persistent()
+                    .get::<_, ArenaMetadata>(&arena_key)
+                {
                     let total_prize = meta.stake_amount * (meta.capacity as i128);
-                    Self::record_arena_win(
-                        env.clone(),
-                        winner_addr.clone(),
-                        total_prize,
-                        1u32,
-                    );
+                    Self::record_arena_win(env.clone(), winner_addr.clone(), total_prize, 1u32);
                 }
             }
 

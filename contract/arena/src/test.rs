@@ -247,7 +247,8 @@ fn setup_finished_game_with_winner(
     (env, admin, client, token_id, winner)
 }
 
-fn setup_private_arena_with_mock_factory() -> (Env, ArenaContractClient<'static>, Address, Address, u64) {
+fn setup_private_arena_with_mock_factory()
+-> (Env, ArenaContractClient<'static>, Address, Address, u64) {
     let (env, admin, client) = setup_with_admin();
     let (_asset, token_id) = setup_token(&env, &admin);
     client.set_token(&token_id);
@@ -2075,7 +2076,11 @@ fn private_arena_whitelist_updates_apply_without_stale_cache() {
             true.into_val(&env),
         ],
     );
-    assert!(client.try_join(&whitelisted_player, &TEST_REQUIRED_STAKE).is_ok());
+    assert!(
+        client
+            .try_join(&whitelisted_player, &TEST_REQUIRED_STAKE)
+            .is_ok()
+    );
 
     // Read path returns true, then host revokes access; join must fail immediately.
     env.invoke_contract::<()>(
@@ -3838,7 +3843,8 @@ fn start_resolution_min_batch_size_accepted() {
     let (_env, client) = setup_game_past_round_deadline(4);
     let state = client.start_resolution(&bounds::MIN_BATCH_SIZE);
     assert_eq!(
-        state.processed, bounds::MIN_BATCH_SIZE,
+        state.processed,
+        bounds::MIN_BATCH_SIZE,
         "MIN_BATCH_SIZE should process exactly MIN_BATCH_SIZE players"
     );
 }
@@ -3858,7 +3864,10 @@ fn continue_resolution_min_batch_size_accepted() {
     let (_env, client) = setup_game_past_round_deadline(4);
     client.start_resolution(&bounds::MIN_BATCH_SIZE);
     let result = client.try_continue_resolution(&bounds::MIN_BATCH_SIZE);
-    assert!(result.is_ok(), "MIN_BATCH_SIZE must be accepted by continue_resolution");
+    assert!(
+        result.is_ok(),
+        "MIN_BATCH_SIZE must be accepted by continue_resolution"
+    );
 }
 
 #[test]

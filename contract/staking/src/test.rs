@@ -829,7 +829,9 @@ fn test_non_factory_caller_rejected_after_factory_set() {
 //   unlock_at      →  allowed      (exact unlock moment)
 //   unlock_at + 1  →  allowed      (one second after unlock)
 
-fn setup_with_lock(lock_secs: u64) -> (
+fn setup_with_lock(
+    lock_secs: u64,
+) -> (
     Env,
     Address,
     Address,

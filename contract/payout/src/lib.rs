@@ -395,10 +395,8 @@ impl PayoutContract {
     /// * `NoWinners`      — `winners` is empty.
     /// * `TreasuryNotSet` — no treasury address registered.
     /// * `Paused`         — contract is paused.
-    #[deprecated(
-        note = "Use `distribute_split_payout` instead; \
-                see the function doc comment for the migration guide."
-    )]
+    #[deprecated(note = "Use `distribute_split_payout` instead; \
+                see the function doc comment for the migration guide.")]
     pub fn distribute_prize(
         env: Env,
         game_id: u32,

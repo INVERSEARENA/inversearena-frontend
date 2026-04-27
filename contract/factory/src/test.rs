@@ -1725,7 +1725,12 @@ fn test_get_arena_ref_not_found() {
 #[test]
 fn test_update_arena_status_not_found() {
     let (_env, _admin, client) = setup();
-    let result = client.try_update_arena_status(&999u64, &crate::ArenaStatus::Active, &None, &soroban_sdk::vec![&Env::default()]);
+    let result = client.try_update_arena_status(
+        &999u64,
+        &crate::ArenaStatus::Active,
+        &None,
+        &soroban_sdk::vec![&Env::default()],
+    );
     assert_eq!(result, Err(Ok(Error::ArenaNotFound)));
 }
 
@@ -1753,7 +1758,7 @@ fn test_update_arena_status_success_and_auth() {
         &String::from_str(&env, "Test Arena"),
         &None,
         &admin,
-);
+    );
 
     // Check initial status
     let arena_ref = client.get_arena_ref(&0u64);
@@ -1784,7 +1789,12 @@ fn test_update_arena_status_unauthorized() {
 
     // Now try to update_arena_status without mocking auth from arena_addr.
     // This should fail because update_arena_status requires arena_addr.require_auth().
-    let result = client.try_update_arena_status(&0u64, &crate::ArenaStatus::Active, &None, &soroban_sdk::vec![&Env::default()]);
+    let result = client.try_update_arena_status(
+        &0u64,
+        &crate::ArenaStatus::Active,
+        &None,
+        &soroban_sdk::vec![&Env::default()],
+    );
     assert_auth_err(result);
 }
 
@@ -2429,7 +2439,10 @@ fn player_stats_all_losses() {
 #[test]
 fn participation_limit_default_is_3() {
     let (_env, _admin, client) = setup();
-    assert_eq!(client.get_max_concurrent_arenas(), DEFAULT_MAX_CONCURRENT_ARENAS);
+    assert_eq!(
+        client.get_max_concurrent_arenas(),
+        DEFAULT_MAX_CONCURRENT_ARENAS
+    );
 }
 
 #[test]

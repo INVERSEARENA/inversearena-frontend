@@ -1202,15 +1202,22 @@ fn distribute_winnings_emits_payout_event_with_correct_schema() {
     let before = env.events().all().len();
     client.distribute_winnings(&caller, &ctx, &42u32, &1u32, &winner, &amount, &currency);
     let events = env.events().all();
-    assert!(events.len() > before, "distribute_winnings must emit at least one event");
+    assert!(
+        events.len() > before,
+        "distribute_winnings must emit at least one event"
+    );
 
     let (_contract, topics, data) = events.last().unwrap();
     let topic: Symbol = topics.get(0).unwrap().into_val(&env);
     assert_eq!(topic, symbol_short!("PAYOUT"), "topic must be PAYOUT");
 
     // Schema: (winner: Address, winner_amount: i128, fee_amount: i128, currency: Symbol)
-    let (emitted_winner, emitted_amount, emitted_fee, emitted_currency): (Address, i128, i128, Symbol) =
-        data.into_val(&env);
+    let (emitted_winner, emitted_amount, emitted_fee, emitted_currency): (
+        Address,
+        i128,
+        i128,
+        Symbol,
+    ) = data.into_val(&env);
     assert_eq!(emitted_winner, winner);
     assert_eq!(emitted_amount, amount);
     assert_eq!(emitted_fee, 0i128);
@@ -1229,7 +1236,10 @@ fn set_currency_token_emits_tok_set_event_with_correct_schema() {
     let before = env.events().all().len();
     client.set_currency_token(&currency, &token_addr);
     let events = env.events().all();
-    assert!(events.len() > before, "set_currency_token must emit at least one event");
+    assert!(
+        events.len() > before,
+        "set_currency_token must emit at least one event"
+    );
 
     let (_contract, topics, data) = events.last().unwrap();
     let topic: Symbol = topics.get(0).unwrap().into_val(&env);
@@ -1265,7 +1275,10 @@ fn distribute_prize_emits_payout_and_dust_events() {
 
     // 2 winners + 1 dust = 3 new events
     let new_count = events.len() - before;
-    assert!(new_count >= 3, "expected at least 3 new events (2 winner + 1 dust)");
+    assert!(
+        new_count >= 3,
+        "expected at least 3 new events (2 winner + 1 dust)"
+    );
 
     // First winner event: topic = PAYOUT; schema: (winner: Address, share: i128, currency: Address)
     let (_, topics, data) = events.get(before).unwrap();
@@ -1277,7 +1290,11 @@ fn distribute_prize_emits_payout_and_dust_events() {
     // Last new event is the dust event: topic = DUST; schema: (treasury: Address, dust: i128, currency: Address)
     let (_, dust_topics, dust_data) = events.get(before + new_count - 1).unwrap();
     let dust_topic: Symbol = dust_topics.get(0).unwrap().into_val(&env);
-    assert_eq!(dust_topic, symbol_short!("DUST"), "remainder must emit DUST event");
+    assert_eq!(
+        dust_topic,
+        symbol_short!("DUST"),
+        "remainder must emit DUST event"
+    );
     let (recv, dust_amount, _tok): (Address, i128, Address) = dust_data.into_val(&env);
     assert_eq!(recv, treasury);
     assert_eq!(dust_amount, 1i128);
@@ -1298,13 +1315,18 @@ fn distribute_winnings_with_fee_emits_correct_amounts() {
     let currency = symbol_short!("XLM");
 
     client.distribute_winnings(
-        &caller, &symbol_short!("CTX"), &99u32, &1u32, &winner, &amount, &currency,
+        &caller,
+        &symbol_short!("CTX"),
+        &99u32,
+        &1u32,
+        &winner,
+        &amount,
+        &currency,
     );
 
     let events = env.events().all();
     let (_contract, _topics, data) = events.last().unwrap();
-    let (_, winner_amount, fee_amount, _): (Address, i128, i128, Symbol) =
-        data.into_val(&env);
+    let (_, winner_amount, fee_amount, _): (Address, i128, i128, Symbol) = data.into_val(&env);
 
     assert_eq!(fee_amount, 50i128, "5% of 1000 = 50");
     assert_eq!(winner_amount, 950i128, "winner receives 950 after 5% fee");
