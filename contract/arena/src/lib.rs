@@ -828,10 +828,11 @@ impl ArenaContract {
             .instance()
             .set(&STATE_KEY, &ArenaState::Cancelled);
 
+        let arena_id: u64 = env.storage().instance().get(&DataKey::ArenaId).unwrap_or(0);
         env.events().publish(
             (TOPIC_ARENA_EXPIRED,),
             ArenaExpired {
-                arena_id: 0,
+                arena_id,
                 refunded_players: refunded_count,
             },
         );

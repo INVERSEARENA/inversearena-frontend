@@ -111,3 +111,41 @@ fn test_deadline_too_far_rejected() {
     let result = client.try_init(&10, &100, &deadline);
     assert_eq!(result, Err(Ok(ArenaError::DeadlineTooFar)));
 }
+
+#[test]
+fn test_expire_arena_emits_correct_arena_id() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, client, _admin, token_id) = setup_arena_env();
+    let deadline = env.ledger().timestamp() + 7200;
+    client.init(&10, &100, &deadline);
+
+    // Store a non-zero arena_id so we can verify it is emitted correctly.
+    let expected_arena_id: u64 = 42;
+    env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .set(&DataKey::ArenaId, &expected_arena_id);
+    });
+
+    // Advance past deadline and expire.
+    env.ledger().with_mut(|l| {
+        l.timestamp = deadline + 1;
+    });
+    client.expire_arena();
+
+    // The last event must be ArenaExpired with arena_id == 42, not 0.
+    let events = env.events().all();
+    let (_contract, topics, data) = events.last().unwrap();
+    let topic: soroban_sdk::Symbol = topics.get(0).unwrap().into_val(&env);
+    assert_eq!(
+        topic,
+        soroban_sdk::symbol_short!("A_EXP"),
+        "last event topic must be A_EXP"
+    );
+    let expired: ArenaExpired = data.into_val(&env);
+    assert_eq!(
+        expired.arena_id, expected_arena_id,
+        "ArenaExpired must carry the stored arena_id, not 0"
+    );
+}
