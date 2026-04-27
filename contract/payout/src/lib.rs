@@ -158,12 +158,6 @@ pub struct PayoutContract;
 
 #[contractimpl]
 impl PayoutContract {
-    /// Placeholder function — returns a fixed value for contract liveness checks.
-
-    pub fn hello(_env: Env) -> u32 {
-        789
-    }
-
     pub fn __constructor(env: Env, admin: Address) {
         admin.require_auth();
         env.storage().instance().set(&ADMIN_KEY, &admin);
