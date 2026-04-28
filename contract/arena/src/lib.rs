@@ -828,7 +828,12 @@ impl ArenaContract {
             .instance()
             .set(&STATE_KEY, &ArenaState::Cancelled);
 
-        let arena_id: u64 = env.storage().instance().get(&DataKey::ArenaId).unwrap_or(0);
+        let arena_id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ArenaId)
+            .unwrap_or(0);
+
         env.events().publish(
             (TOPIC_ARENA_EXPIRED,),
             ArenaExpired {
