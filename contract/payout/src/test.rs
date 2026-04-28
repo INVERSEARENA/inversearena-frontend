@@ -982,6 +982,62 @@ fn win_fee_bps_cases_0_200_1000() {
     run_case(12, 1_000, 1_000);
 }
 
+fn assert_payout_conservation(
+    client: &PayoutContractClient<'_>,
+    arena_id: u64,
+    total_prize_pool: i128,
+    operation: &str,
+) {
+    let receipt = client
+        .get_payout_by_arena(&arena_id)
+        .expect("payout receipt must exist for invariant check");
+    assert_eq!(
+        receipt.amount + receipt.fee,
+        total_prize_pool,
+        "payout invariant failed after {operation}: payout_amount({}) + platform_fee({}) != total_prize_pool({total_prize_pool})",
+        receipt.amount,
+        receipt.fee
+    );
+}
+
+#[test]
+fn issue_478_payout_amount_plus_fee_equals_total_prize_pool() {
+    let (env, _admin, client, token_id, _treasury, _factory_id, factory_client) = setup_with_token();
+    let currency = symbol_short!("USDC");
+    client.set_currency_token(&currency, &token_id);
+    let token = TokenClient::new(&env, &token_id);
+
+    let pool_id = 478u32;
+    let round_id = 1u32;
+    let amount = 12_345i128;
+    let fee_bps = 275u32;
+    let winner = Address::generate(&env);
+    let caller = Address::generate(&env);
+    factory_client.set_arena(&(pool_id as u64), &caller);
+    factory_client.set_fee_bps(&fee_bps);
+
+    let before_winner = token.balance(&winner);
+    let before_factory = token.balance(&factory_client.address);
+    client.distribute_winnings(
+        &caller,
+        &symbol_short!("INV478"),
+        &pool_id,
+        &round_id,
+        &winner,
+        &amount,
+        &currency,
+    );
+
+    let expected_fee = amount * (fee_bps as i128) / 10_000;
+    let expected_winner_amount = amount - expected_fee;
+    assert_eq!(token.balance(&winner), before_winner + expected_winner_amount);
+    assert_eq!(
+        token.balance(&factory_client.address),
+        before_factory + expected_fee
+    );
+    assert_payout_conservation(&client, pool_id as u64, amount, "distribute_winnings");
+}
+
 #[test]
 fn win_fee_overflow_guard_returns_error() {
     let (env, _admin, client, _token_id, _treasury, _factory_id, factory_client) =

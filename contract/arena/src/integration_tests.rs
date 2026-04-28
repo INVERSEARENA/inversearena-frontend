@@ -13,7 +13,7 @@ use std::vec;
 use factory::{FactoryContract, FactoryContractClient};
 use payout::{PayoutContract, PayoutContractClient};
 use soroban_sdk::{
-    Address, BytesN, Env,
+    Address, BytesN, Env, Symbol,
     testutils::{Address as _, Ledger, LedgerInfo},
     token::{StellarAssetClient, TokenClient},
 };
@@ -89,6 +89,56 @@ fn join_players(
         token.mint(player, &(stake * 10));
         arena.join(player, &stake);
     }
+}
+
+fn read_instance_i128(env: &Env, arena: &ArenaContractClient<'_>, key: &Symbol) -> i128 {
+    env.as_contract(&arena.address, || env.storage().instance().get(key).unwrap_or(0i128))
+}
+
+fn assert_arena_balance_invariant(
+    env: &Env,
+    arena: &ArenaContractClient<'_>,
+    token: &TokenClient<'_>,
+    sum_entry_fees: i128,
+    platform_fees_paid: i128,
+    operation: &str,
+) {
+    let contract_token_balance = token.balance(&arena.address);
+    let vault_shares_value = env.as_contract(&arena.address, || {
+        if env.storage().instance().has(&VAULT_SHARES_KEY) {
+            // In tests without a vault price feed, deposited principal is the
+            // best available proxy for current share value.
+            env.storage()
+                .instance()
+                .get(&VAULT_DEPOSITED_KEY)
+                .unwrap_or(0i128)
+        } else {
+            0i128
+        }
+    });
+    let yield_earned = read_instance_i128(env, arena, &YIELD_KEY);
+    let expected = sum_entry_fees + yield_earned - platform_fees_paid;
+
+    assert_eq!(
+        contract_token_balance + vault_shares_value,
+        expected,
+        "balance invariant failed after {operation}: contract_balance({contract_token_balance}) + vault_value({vault_shares_value}) != sum_entry_fees({sum_entry_fees}) + yield_earned({yield_earned}) - platform_fees_paid({platform_fees_paid})"
+    );
+}
+
+fn assert_player_count_invariant(
+    env: &Env,
+    arena: &ArenaContractClient<'_>,
+    initial_player_count: u32,
+    operation: &str,
+) {
+    let survivors = arena.get_arena_state().survivors_count;
+    let eliminated = get_eliminated(env).len();
+    assert_eq!(
+        survivors + eliminated,
+        initial_player_count,
+        "player-count invariant failed after {operation}: eliminated_count({eliminated}) + survivors_count({survivors}) != initial_player_count({initial_player_count})"
+    );
 }
 
 // ── AC: Full lifecycle runs without error ─────────────────────────────────────
@@ -238,6 +288,98 @@ fn lifecycle_full_game_resolve_round_to_claim() {
     assert_eq!(
         token_reader.balance(&winner),
         winner_balance_before_bonus + bonus_prize
+    );
+}
+
+#[test]
+fn issue_478_invariants_hold_after_join_resolve_and_payout_setup() {
+    let env = Env::default();
+    env.mock_all_auths();
+    set_seq(&env, 3_000);
+
+    let admin = Address::generate(&env);
+    let (_factory, _payout) = deploy_all(&env, &admin);
+
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token = StellarAssetClient::new(&env, &token_id);
+    let token_reader = TokenClient::new(&env, &token_id);
+
+    let stake = 10_000_000i128;
+    let arena = deploy_arena(&env, &admin, 5, stake, &token_id);
+    let players: std::vec::Vec<Address> = (0..6).map(|_| Address::generate(&env)).collect();
+    let initial_player_count = players.len() as u32;
+
+    let mut sum_entry_fees = 0i128;
+    for (idx, player) in players.iter().enumerate() {
+        token.mint(player, &(stake * 10));
+        arena.join(player, &stake);
+        sum_entry_fees += stake;
+        assert_arena_balance_invariant(
+            &env,
+            &arena,
+            &token_reader,
+            sum_entry_fees,
+            0,
+            &format!("join[{idx}]"),
+        );
+    }
+
+    set_seq(&env, 3_010);
+    let round_one = arena.start_round();
+    assert_eq!(round_one.round_number, 1);
+
+    for player in &players[0..4] {
+        arena.submit_choice(player, &1, &Choice::Heads);
+    }
+    for player in &players[4..6] {
+        arena.submit_choice(player, &1, &Choice::Tails);
+    }
+    set_seq(&env, 3_016);
+    arena.resolve_round();
+    assert_player_count_invariant(&env, &arena, initial_player_count, "resolve_round[1]");
+    assert_arena_balance_invariant(
+        &env,
+        &arena,
+        &token_reader,
+        sum_entry_fees,
+        0,
+        "resolve_round[1]",
+    );
+
+    set_seq(&env, 3_020);
+    let round_two = arena.start_round();
+    assert_eq!(round_two.round_number, 2);
+    let survivors = get_survivors(&env);
+    assert_eq!(survivors.len(), 2);
+    arena.submit_choice(&survivors.get(0).unwrap(), &2, &Choice::Heads);
+    arena.submit_choice(&survivors.get(1).unwrap(), &2, &Choice::Tails);
+    set_seq(&env, 3_026);
+    arena.resolve_round();
+    assert_player_count_invariant(&env, &arena, initial_player_count, "resolve_round[2]");
+    assert_arena_balance_invariant(
+        &env,
+        &arena,
+        &token_reader,
+        sum_entry_fees,
+        0,
+        "resolve_round[2]",
+    );
+
+    // Simulate harvested yield arriving before payout settlement.
+    let yield_earned = 1_500i128;
+    token.mint(&arena.address, &yield_earned);
+    let winner = get_survivors(&env).get(0).unwrap();
+    arena.set_winner(&winner, &sum_entry_fees, &yield_earned);
+    assert_arena_balance_invariant(
+        &env,
+        &arena,
+        &token_reader,
+        sum_entry_fees,
+        0,
+        "payout_setup",
     );
 }
 

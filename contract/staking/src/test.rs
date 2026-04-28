@@ -344,6 +344,23 @@ fn invariants_hold_across_stake_unstake_claim_and_compound() {
     assert_pool_invariants(&client, &[staker1]);
 }
 
+#[test]
+fn issue_478_total_staked_equals_sum_of_staker_balances() {
+    let (env, _admin, staker1, client, _token_client) = setup();
+    let staker2 = Address::generate(&env);
+    let token_admin = StellarAssetClient::new(&env, &client.token());
+    token_admin.mint(&staker2, &1_000_000_000i128);
+
+    client.stake(&staker1, &200_000_000i128);
+    assert_pool_invariants(&client, &[staker1.clone(), staker2.clone()]);
+
+    client.stake(&staker2, &300_000_000i128);
+    assert_pool_invariants(&client, &[staker1.clone(), staker2.clone()]);
+
+    client.unstake(&staker1, &50_000_000i128);
+    assert_pool_invariants(&client, &[staker1, staker2]);
+}
+
 // ── Issue #388: stake/unstake events ─────────────────────────────────────────
 
 #[test]
