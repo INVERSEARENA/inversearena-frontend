@@ -56,7 +56,8 @@ fn setup_arena(n: u32) -> (Env, ArenaContractClient<'static>, Address, std::vec:
     let asset = StellarAssetClient::new(&env, &token_id);
 
     client.set_token(&token_id);
-    client.init(&ROUND_SPEED, &STAKE, &3600);
+    let join_deadline = env.ledger().timestamp() + 7200;
+    client.init(&ROUND_SPEED, &STAKE, &join_deadline);
 
     let mut players = std::vec::Vec::new();
     for _ in 0..n {
@@ -152,31 +153,26 @@ fn submit_choice_event_does_not_reveal_choice_value() {
 
 #[test]
 fn eliminated_player_cannot_submit_in_next_round() {
-    let (env, client, token_id, players) = setup_arena(4);
+    let (env, client, _token, players) = setup_arena(4);
 
-    // Round 1: players[0..3] submit. players[0] picks minority side.
+    // Round 1: 2 Heads vs 2 Tails — a tie.
+    // The tiebreaker uses ledger_sequence % 2:
+    //   resolve at ledger 515 (odd) → Tails wins → players[0] and players[1] (Heads) are eliminated.
     set_seq(&env, 500);
     client.start_round();
 
     set_seq(&env, 505);
-    // players[0] picks Heads (minority — 1 vs 3 Tails)
-    client.submit_choice(&players[0], &1u32, &Choice::Heads);
-    client.submit_choice(&players[1], &1u32, &Choice::Tails);
-    client.submit_choice(&players[2], &1u32, &Choice::Tails);
-    client.submit_choice(&players[3], &1u32, &Choice::Tails);
+    client.submit_choice(&players[0], &1u32, &Choice::Heads); // eliminated
+    client.submit_choice(&players[1], &1u32, &Choice::Heads); // eliminated
+    client.submit_choice(&players[2], &1u32, &Choice::Tails); // survives
+    client.submit_choice(&players[3], &1u32, &Choice::Tails); // survives
 
-    set_seq(&env, 511);
-    client.timeout_round();
-
-    // Seed PRNG deterministically so Tails wins (3 Tails > 1 Heads).
-    use soroban_sdk::Bytes;
-    env.as_contract(&client.address, || {
-        env.prng().seed(Bytes::from_array(&env, &[0u8; 32]));
-    });
+    // Advance past the resolution window (deadline 510 + grace 2 ledgers).
+    set_seq(&env, 515); // 515 % 2 == 1 (odd) → tiebreaker picks Tails
     client.resolve_round();
 
-    // players[0] (Heads) is now eliminated.
-    // Round 2: start.
+    // players[0] and players[1] are eliminated; players[2] and players[3] survive.
+    // 2 survivors → start_round is allowed.
     set_seq(&env, 520);
     client.start_round();
 
@@ -197,10 +193,9 @@ fn submit_choice_after_deadline_returns_submission_window_closed() {
 
     set_seq(&env, 600);
     let round = client.start_round();
-    // deadline = 600 + 10 = 610
-
-    // One ledger past the deadline.
-    set_seq(&env, round.round_deadline_ledger + 1);
+    // deadline = 600 + 10 = 610; grace period adds ~2 ledgers (10s / 5s per ledger).
+    // Advance past both the deadline and the grace window.
+    set_seq(&env, round.round_deadline_ledger + 10);
     let result = client.try_submit_choice(&players[0], &1u32, &Choice::Heads);
 
     assert_eq!(
@@ -279,8 +274,8 @@ fn non_survivor_cannot_submit() {
 
     assert_eq!(
         result,
-        Err(Ok(ArenaError::NotASurvivor)),
-        "player who never joined must receive NotASurvivor"
+        Err(Ok(ArenaError::PlayerEliminated)),
+        "player who never joined must be rejected with PlayerEliminated"
     );
 }
 
@@ -300,5 +295,45 @@ fn wrong_round_number_rejected() {
         result,
         Err(Ok(ArenaError::WrongRoundNumber)),
         "submitting with wrong round number must be rejected"
+    );
+}
+
+// ── AC: Replay attack protection — stale (past) round rejected ────────────────
+
+#[test]
+fn stale_round_number_rejected() {
+    let (env, client, _token, players) = setup_arena(3);
+
+    set_seq(&env, 1200);
+    client.start_round(); // round_number = 1
+
+    set_seq(&env, 1205);
+    // Replaying with round 0 (a past round) must be rejected.
+    let result = client.try_submit_choice(&players[0], &0u32, &Choice::Heads);
+
+    assert_eq!(
+        result,
+        Err(Ok(ArenaError::WrongRoundNumber)),
+        "replayed submission from past round must be rejected with WrongRoundNumber"
+    );
+}
+
+// ── AC: Replay attack protection — future round rejected ──────────────────────
+
+#[test]
+fn future_round_number_rejected() {
+    let (env, client, _token, players) = setup_arena(3);
+
+    set_seq(&env, 1300);
+    client.start_round(); // round_number = 1
+
+    set_seq(&env, 1305);
+    // Submitting with a future round number must be rejected.
+    let result = client.try_submit_choice(&players[0], &99u32, &Choice::Heads);
+
+    assert_eq!(
+        result,
+        Err(Ok(ArenaError::WrongRoundNumber)),
+        "submission with future round number must be rejected with WrongRoundNumber"
     );
 }

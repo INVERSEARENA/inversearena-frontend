@@ -990,6 +990,10 @@ impl ArenaContract {
         env.storage().persistent().set(&players_key, &round_players);
         round.total_submissions += 1;
         env.storage().instance().set(&DataKey::Round, &round);
+        env.events().publish(
+            (TOPIC_CHOICE_SUBMITTED,),
+            (player, round_number, EVENT_VERSION),
+        );
         Ok(())
     }
 
@@ -2629,6 +2633,8 @@ fn get_eliminated(env: &Env) -> Vec<Address> {
 mod commit_reveal_tests;
 #[cfg(test)]
 mod expire_arena_tests;
+#[cfg(test)]
+mod submit_choice_tests;
 #[cfg(test)]
 mod mutation_tests;
 #[cfg(test)]
