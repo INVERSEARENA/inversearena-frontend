@@ -23,6 +23,7 @@ use upgrade_utils::{
 mod bounds;
 #[cfg(test)]
 mod invariants;
+use rwa::{OndoUsdyAdapter, RwaVaultAdapter};
 
 const ADMIN_KEY: Symbol = symbol_short!("ADMIN");
 const TOKEN_KEY: Symbol = symbol_short!("TOKEN");
@@ -47,6 +48,8 @@ const FALLBACK_VAULT_KEY: Symbol = symbol_short!("F_VAULT");
 const VAULT_ACTIVE_KEY: Symbol = symbol_short!("V_ACT");
 const VAULT_SHARES_KEY: Symbol = symbol_short!("V_SHARE");
 const VAULT_DEPOSITED_KEY: Symbol = symbol_short!("V_DEP");
+const PRIZE_CACHE_KEY: Symbol = symbol_short!("PP_CACHE");
+const PRIZE_CACHE_EXP_KEY: Symbol = symbol_short!("PP_EXP");
 
 const ADMIN_TRANSFER_EXPIRY: u64 = 7 * 24 * 60 * 60;
 
@@ -358,6 +361,15 @@ pub struct YieldHarvested {
     pub arena_id: u64,
     pub yield_earned: i128,
     pub final_prize_pool: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CurrentPrizePool {
+    pub principal: i128,
+    pub current_value: i128,
+    pub yield_earned: i128,
+    pub apy_bps: u32,
 }
 
 #[contracttype]
@@ -1451,6 +1463,66 @@ impl ArenaContract {
         Ok(cache.arena_state_view())
     }
 
+    /// Returns a live estimate of principal + accrued yield in the configured
+    /// RWA vault, with a short in-instance cache to reduce redundant
+    /// cross-contract reads during rapid simulation polling.
+    pub fn get_current_prize_pool(env: Env, _arena_id: u64) -> Result<CurrentPrizePool, ArenaError> {
+        let now_ledger = env.ledger().sequence();
+        if let Some(expiry) = env.storage().instance().get::<_, u32>(&PRIZE_CACHE_EXP_KEY) {
+            if now_ledger <= expiry {
+                if let Some(cached) = env
+                    .storage()
+                    .instance()
+                    .get::<_, CurrentPrizePool>(&PRIZE_CACHE_KEY)
+                {
+                    return Ok(cached);
+                }
+            }
+        }
+
+        let principal_from_deposit: i128 = env.storage().instance().get(&VAULT_DEPOSITED_KEY).unwrap_or(0);
+        let principal_from_pool: i128 = env.storage().instance().get(&PRIZE_POOL_KEY).unwrap_or(0);
+        let principal = if principal_from_deposit > 0 {
+            principal_from_deposit
+        } else {
+            principal_from_pool
+        };
+
+        let game_finished: bool = env.storage().instance().get(&GAME_FINISHED_KEY).unwrap_or(false);
+        let vault_active: bool = env.storage().instance().get(&VAULT_ACTIVE_KEY).unwrap_or(false);
+        let has_shares = env.storage().instance().has(&VAULT_SHARES_KEY);
+        let has_vault = env.storage().instance().has(&VAULT_ADDR_KEY);
+
+        let current_value = if game_finished {
+            principal_from_pool
+        } else if vault_active && has_shares && has_vault {
+            let vault_addr: Address = env
+                .storage()
+                .instance()
+                .get(&VAULT_ADDR_KEY)
+                .ok_or(ArenaError::VaultNotSet)?;
+            OndoUsdyAdapter::get_balance(&env, vault_addr)
+        } else {
+            principal_from_pool
+        };
+
+        let view = CurrentPrizePool {
+            principal,
+            current_value,
+            yield_earned: (current_value - principal).max(0),
+            // Optional vault APY hook can be added when all vault implementations
+            // expose a stable `get_apy_bps` method.
+            apy_bps: 0,
+        };
+
+        // ~5 ledgers cache window (roughly 25 seconds on Stellar).
+        env.storage().instance().set(&PRIZE_CACHE_KEY, &view);
+        env.storage()
+            .instance()
+            .set(&PRIZE_CACHE_EXP_KEY, &now_ledger.saturating_add(5));
+        Ok(view)
+    }
+
     pub fn get_user_state(env: Env, player: Address) -> UserStateView {
         PlayerCache::load(&env, &player).user_state_view()
     }
@@ -2350,6 +2422,78 @@ mod rwa;
 
 #[cfg(test)]
 mod abi_guard;
+
+#[cfg(test)]
+mod prize_pool_live_tests {
+    use super::*;
+    use soroban_sdk::{Address, Env, contract, contractimpl, symbol_short, testutils::Address as _};
+
+    const MOCK_BALANCE_KEY: Symbol = symbol_short!("BAL");
+    const MOCK_CALLS_KEY: Symbol = symbol_short!("CALLS");
+
+    #[contract]
+    pub struct MockVault;
+
+    #[contractimpl]
+    impl MockVault {
+        pub fn seed_balance(env: Env, balance: i128) {
+            env.storage().instance().set(&MOCK_BALANCE_KEY, &balance);
+            env.storage().instance().set(&MOCK_CALLS_KEY, &0u32);
+        }
+
+        pub fn get_balance(env: Env) -> i128 {
+            let base: i128 = env.storage().instance().get(&MOCK_BALANCE_KEY).unwrap_or(0);
+            let calls: u32 = env.storage().instance().get(&MOCK_CALLS_KEY).unwrap_or(0);
+            let next_calls = calls + 1;
+            env.storage().instance().set(&MOCK_CALLS_KEY, &next_calls);
+            base + (next_calls as i128 * 10)
+        }
+    }
+
+    #[test]
+    fn set_max_rounds_persists_config() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(ArenaContract, (&admin,));
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let deadline = env.ledger().timestamp() + 7_200;
+        client.init(&10u32, &100i128, &deadline);
+
+        client.set_max_rounds(&25u32);
+        let cfg = client.get_config().unwrap();
+        assert_eq!(cfg.max_rounds, 25);
+    }
+
+    #[test]
+    fn current_prize_pool_reads_live_vault_balance_with_short_cache() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(ArenaContract, (&admin,));
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let vault_id = env.register(MockVault, ());
+        let vault = MockVaultClient::new(&env, &vault_id);
+        vault.seed_balance(&1_000);
+
+        env.as_contract(&contract_id, || {
+            env.storage().instance().set(&PRIZE_POOL_KEY, &1_000i128);
+            env.storage().instance().set(&VAULT_DEPOSITED_KEY, &1_000i128);
+            env.storage().instance().set(&VAULT_ADDR_KEY, &vault_id);
+            env.storage().instance().set(&VAULT_ACTIVE_KEY, &true);
+            env.storage().instance().set(&VAULT_SHARES_KEY, &123i128);
+        });
+
+        let first = client.get_current_prize_pool(&1u64).unwrap();
+        assert_eq!(first.principal, 1_000);
+        assert_eq!(first.current_value, 1_010);
+        assert_eq!(first.yield_earned, 10);
+
+        // Cached response: should not increment vault call result immediately.
+        let second = client.get_current_prize_pool(&1u64).unwrap();
+        assert_eq!(second.current_value, 1_010);
+    }
+}
 
 #[cfg(test)]
 mod yield_share_tests {
