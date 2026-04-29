@@ -125,16 +125,6 @@ fn expire_arena_event_carries_actual_arena_id() {
 
     // Seed the arena_id that would normally be written by the factory.
     let expected_arena_id: u64 = 99;
-#[test]
-fn test_expire_arena_emits_correct_arena_id() {
-    use soroban_sdk::testutils::Events as _;
-
-    let (env, client, _admin, token_id) = setup_arena_env();
-    let deadline = env.ledger().timestamp() + 7200;
-    client.init(&10, &100, &deadline);
-
-    // Store a non-zero arena_id so we can verify it is emitted correctly.
-    let expected_arena_id: u64 = 42;
     env.as_contract(&client.address, || {
         env.storage()
             .instance()
@@ -236,24 +226,5 @@ fn expire_arena_event_refunded_players_zero_when_no_one_joined() {
     assert_eq!(
         payload.refunded_players, 0,
         "refunded_players must be 0 when nobody joined"
-    // Advance past deadline and expire.
-    env.ledger().with_mut(|l| {
-        l.timestamp = deadline + 1;
-    });
-    client.expire_arena();
-
-    // The last event must be ArenaExpired with arena_id == 42, not 0.
-    let events = env.events().all();
-    let (_contract, topics, data) = events.last().unwrap();
-    let topic: soroban_sdk::Symbol = topics.get(0).unwrap().into_val(&env);
-    assert_eq!(
-        topic,
-        soroban_sdk::symbol_short!("A_EXP"),
-        "last event topic must be A_EXP"
-    );
-    let expired: ArenaExpired = data.into_val(&env);
-    assert_eq!(
-        expired.arena_id, expected_arena_id,
-        "ArenaExpired must carry the stored arena_id, not 0"
     );
 }
