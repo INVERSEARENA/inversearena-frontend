@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { asyncHandler } from "../middleware/validate";
+import { auditLogMiddleware } from "../middleware/auditLog";
 import type { AdminController } from "../controllers/admin.controller";
 import type { RoundController } from "../controllers/round.controller";
 import type { RequestHandler } from "express";
@@ -10,6 +11,9 @@ export function createAdminRouter(
   authMiddleware: RequestHandler
 ): Router {
   const router = Router();
+
+  // Automatically audit every admin route response
+  router.use(auditLogMiddleware());
 
   // Token request: requires admin auth but no confirmation token
   router.post("/tokens/request", authMiddleware, asyncHandler(controller.requestToken));
