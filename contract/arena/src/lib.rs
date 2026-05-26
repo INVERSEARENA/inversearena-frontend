@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, token, Env};
+use soroban_sdk::{Env, contract, contractimpl, token};
 
 mod storage;
 mod types;
@@ -45,11 +45,7 @@ impl ArenaContract {
         let token_client = token::TokenClient::new(&env, &config.stake_token);
         let players = ArenaStorage::load_all_players(&env);
         for player in players.iter() {
-            token_client.transfer(
-                &env.current_contract_address(),
-                &player,
-                &config.entry_fee,
-            );
+            token_client.transfer(&env.current_contract_address(), &player, &config.entry_fee);
             env.events().publish(
                 (soroban_sdk::symbol_short!("refunded"), player.clone()),
                 config.entry_fee,
@@ -57,10 +53,8 @@ impl ArenaContract {
         }
 
         // Top-level cancellation event
-        env.events().publish(
-            (soroban_sdk::symbol_short!("cancelled"),),
-            (),
-        );
+        env.events()
+            .publish((soroban_sdk::symbol_short!("cancelled"),), ());
 
         Ok(())
     }

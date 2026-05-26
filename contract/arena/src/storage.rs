@@ -1,6 +1,6 @@
 #![allow(dead_code)]
-use soroban_sdk::{Address, Env, Vec, symbol_short};
 use crate::types::{ArenaConfig, ArenaError};
+use soroban_sdk::{Address, Env, Vec, symbol_short};
 
 const CONFIG_KEY: &str = "CONFIG";
 const PLAYERS_KEY: &str = "PLAYERS";

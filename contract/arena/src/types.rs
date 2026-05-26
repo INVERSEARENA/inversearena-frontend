@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use soroban_sdk::{contracttype, contracterror, Address};
+use soroban_sdk::{Address, contracterror, contracttype};
 
 /// Lifecycle state of an arena.
 ///
