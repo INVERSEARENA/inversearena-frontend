@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "crypto";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import type { AuthService } from "../services/authService";
 
@@ -44,13 +45,17 @@ export class ApiKeyAuthProvider implements AdminAuthProvider {
   constructor() {
     const key = process.env.ADMIN_API_KEY;
     if (!key) throw new Error("ADMIN_API_KEY environment variable is required");
+    if (key.length < 32) {
+      throw new Error("ADMIN_API_KEY must be at least 32 characters to resist brute-force and timing attacks");
+    }
     this.apiKey = key;
   }
 
   async isAdmin(req: Request): Promise<boolean> {
     const header = req.headers.authorization ?? "";
     const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-    return token === this.apiKey;
+    if (!token || token.length !== this.apiKey.length) return false;
+    return timingSafeEqual(Buffer.from(token), Buffer.from(this.apiKey));
   }
 
   getAdminId(req: Request): string {
