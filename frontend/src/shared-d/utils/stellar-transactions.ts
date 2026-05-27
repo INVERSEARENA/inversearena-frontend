@@ -14,9 +14,8 @@ import {
   StellarPublicKeySchema,
 } from "@/shared-d/utils/security-validation";
 import {
-  STELLAR_NETWORK,
-  TRANSACTION_CONFIG,
 } from "@/components/hook-d/arenaConstants";
+import { STELLAR_PLACEHOLDERS, stellarConfig } from "@/lib/stellarConfig";
 import {
   ContractError,
   ContractErrorCode,
@@ -59,19 +58,15 @@ export { ContractError, ContractErrorCode, parseContractError } from "@/shared-d
 export { ContractClientFactory } from "@/shared-d/utils/contract-client-factory";
 export type { ContractClientFactoryDeps } from "@/shared-d/utils/contract-client-factory";
 
-// Constants (Replace with real Contract IDs in production/env)
-export const FACTORY_CONTRACT_ID = STELLAR_NETWORK.CONTRACTS.FACTORY;
-export const XLM_CONTRACT_ID = STELLAR_NETWORK.CONTRACTS.XLM;
-export const USDC_CONTRACT_ID = STELLAR_NETWORK.CONTRACTS.USDC;
-
-const STAKING_CONTRACT_PLACEHOLDER =
-  STELLAR_NETWORK.CONTRACTS.STAKING_PLACEHOLDER;
+export const FACTORY_CONTRACT_ID = stellarConfig.factoryContractId;
+export const XLM_CONTRACT_ID = stellarConfig.xlmContractId;
+export const USDC_CONTRACT_ID = stellarConfig.usdcContractId;
 export const STAKING_CONTRACT_ID =
-  process.env.NEXT_PUBLIC_STAKING_CONTRACT_ID || STAKING_CONTRACT_PLACEHOLDER;
+  stellarConfig.stakingContractId ?? STELLAR_PLACEHOLDERS.stakingContractId;
 
-export const NETWORK_PASSPHRASE = STELLAR_NETWORK.PASSPHRASE;
-export const HORIZON_URL = STELLAR_NETWORK.HORIZON_URL.replace(/\/+$/, "");
-export const SOROBAN_RPC_URL = STELLAR_NETWORK.SOROBAN_RPC_URL;
+export const NETWORK_PASSPHRASE = stellarConfig.passphrase;
+export const HORIZON_URL = stellarConfig.horizonUrl;
+export const SOROBAN_RPC_URL = stellarConfig.sorobanRpcUrl;
 
 const defaultSorobanClients = new ContractClientFactory(SOROBAN_RPC_URL);
 
@@ -143,7 +138,7 @@ export async function buildStakeProtocolTransaction(
 
     if (
       !STAKING_CONTRACT_ID ||
-      STAKING_CONTRACT_ID === STAKING_CONTRACT_PLACEHOLDER ||
+      STAKING_CONTRACT_ID === STELLAR_PLACEHOLDERS.stakingContractId ||
       STAKING_CONTRACT_ID.includes("...")
     ) {
       throw new ContractError({
@@ -195,7 +190,7 @@ export async function buildUnstakeProtocolTransaction(
 
     if (
       !STAKING_CONTRACT_ID ||
-      STAKING_CONTRACT_ID === STAKING_CONTRACT_PLACEHOLDER ||
+      STAKING_CONTRACT_ID === STELLAR_PLACEHOLDERS.stakingContractId ||
       STAKING_CONTRACT_ID.includes("...")
     ) {
       throw new ContractError({

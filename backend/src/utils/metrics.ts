@@ -1,4 +1,5 @@
 import { Registry, Counter, Histogram, Gauge } from 'prom-client';
+import type { PrismaClient } from '@prisma/client';
 
 export const register = new Registry();
 
@@ -48,3 +49,43 @@ export const roundResolutionDuration = new Histogram({
   buckets: [0.1, 0.5, 1, 2, 5, 10],
   registers: [register],
 });
+
+export const arenaStateTransitionsTotal = new Counter({
+  name: 'inversearena_arena_state_transitions_total',
+  help: 'Total number of arena round state transitions',
+  labelNames: ['from_state', 'to_state'],
+  registers: [register],
+});
+
+export const arenasActiveGauge = new Gauge({
+  name: 'inversearena_arenas_active_total',
+  help: 'Number of arenas with an unresolved active round',
+  registers: [register],
+});
+
+export const playersEliminatedTotal = new Counter({
+  name: 'inversearena_players_eliminated_total',
+  help: 'Total players eliminated across all arenas',
+  registers: [register],
+});
+
+export const payoutsSuccessTotal = new Counter({
+  name: 'inversearena_payouts_success_total',
+  help: 'Total successful prize payouts',
+  labelNames: ['asset'],
+  registers: [register],
+});
+
+export async function refreshArenaMetrics(prisma: PrismaClient): Promise<void> {
+  const activeRounds = await prisma.round.findMany({
+    where: {
+      state: {
+        in: ['OPEN', 'CLOSED'],
+      },
+    },
+    distinct: ['arenaId'],
+    select: { arenaId: true },
+  });
+
+  arenasActiveGauge.set(activeRounds.length);
+}

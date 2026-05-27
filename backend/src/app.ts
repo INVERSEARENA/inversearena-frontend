@@ -19,7 +19,7 @@ import { UsersController } from "./controllers/users.controller";
 import { LeaderboardController } from "./controllers/leaderboard.controller";
 import { TransactionsController } from "./controllers/transactions.controller";
 import { RoundController } from "./controllers/round.controller";
-import { register } from "./utils/metrics";
+import { refreshArenaMetrics, register } from "./utils/metrics";
 import type { PaymentService } from "./services/paymentService";
 import type { PaymentWorker } from "./workers/paymentWorker";
 import type { TransactionRepository } from "./repositories/transactionRepository";
@@ -51,6 +51,11 @@ export function createApp(deps: AppDependencies): express.Application {
   });
 
   app.get("/metrics", async (_req, res) => {
+    try {
+      await refreshArenaMetrics(prisma);
+    } catch {
+      // Keep the metrics endpoint available even if the database is degraded.
+    }
     res.set("Content-Type", register.contentType);
     res.send(await register.metrics());
   });

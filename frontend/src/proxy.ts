@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseAllowedOrigins } from "@/shared-d/utils/security-validation";
-import { STELLAR_NETWORK } from "@/components/hook-d/arenaConstants";
+import { stellarConfig } from "@/lib/stellarConfig";
 
 function toOrigin(url: string): string {
   const candidate = url.trim();
@@ -13,8 +13,8 @@ function toOrigin(url: string): string {
 }
 
 function getNetworkConnectSources(): string[] {
-  const horizonOrigin = toOrigin(STELLAR_NETWORK.HORIZON_URL);
-  const sorobanOrigin = toOrigin(STELLAR_NETWORK.SOROBAN_RPC_URL);
+  const horizonOrigin = toOrigin(stellarConfig.horizonUrl);
+  const sorobanOrigin = toOrigin(stellarConfig.sorobanRpcUrl);
   return [horizonOrigin, sorobanOrigin];
 }
 

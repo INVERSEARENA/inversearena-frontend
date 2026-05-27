@@ -1,8 +1,14 @@
 import { PrismaClient } from '@prisma/client';
 import { RoundRepository } from '../repositories/roundRepository';
-import type { RoundInput, RoundResolution, Payout } from '../types/round';
+import type { RoundInput, RoundMetadata, RoundResolution, Payout } from '../types/round';
 import { RoundState } from '../types/round';
-import { roundResolutionsTotal, roundResolutionDuration } from '../utils/metrics';
+import {
+  arenaStateTransitionsTotal,
+  playersEliminatedTotal,
+  refreshArenaMetrics,
+  roundResolutionsTotal,
+  roundResolutionDuration,
+} from '../utils/metrics';
 
 export class RoundService {
   private roundRepo: RoundRepository;
@@ -15,58 +21,50 @@ export class RoundService {
     const start = Date.now();
 
     try {
-      const result = await this.prisma.$transaction(async (tx: any) => {
-        const round = await tx.round.findUnique({
-          where: { id: input.roundId },
-          include: { eliminationLogs: true },
-        });
+      const round = await this.roundRepo.findById(input.roundId);
+      if (!round) throw new Error('Round not found');
+      if (round.state !== RoundState.OPEN && round.state !== RoundState.CLOSED) {
+        throw new Error(`Round already in state: ${round.state}`);
+      }
 
-        if (!round) throw new Error('Round not found');
-        if (round.state !== RoundState.OPEN && round.state !== RoundState.CLOSED) {
-          throw new Error(`Round already in state: ${round.state}`);
-        }
+      const eliminatedPlayers = this.computeEliminations(
+        input.playerChoices,
+        input.oracleYield,
+        input.randomSeed
+      );
 
-        const eliminatedPlayers = this.computeEliminations(
-          input.playerChoices,
-          input.oracleYield,
-          input.randomSeed
-        );
+      const payouts = this.computePayouts(
+        input.playerChoices,
+        eliminatedPlayers,
+        input.oracleYield
+      );
 
-        const payouts = this.computePayouts(
-          input.playerChoices,
-          eliminatedPlayers,
-          input.oracleYield
-        );
+      const poolBalances = this.computePoolBalances(
+        input.playerChoices,
+        eliminatedPlayers
+      );
 
-        const poolBalances = this.computePoolBalances(
-          input.playerChoices,
-          eliminatedPlayers
-        );
+      const result = { eliminatedPlayers, payouts, poolBalances };
+      const metadata: RoundMetadata = {
+        playerChoices: input.playerChoices,
+        oracleYield: input.oracleYield,
+        randomSeed: input.randomSeed,
+        resolution: result,
+      };
 
-        await tx.eliminationLog.createMany({
-          data: eliminatedPlayers.map(userId => ({
-            roundId: input.roundId,
-            userId,
-            reason: 'ELIMINATED_BY_ROUND',
-          })),
-        });
+      await this.roundRepo.resolveAtomically(
+        input.roundId,
+        RoundState.RESOLVED,
+        result,
+        metadata
+      );
 
-        await tx.round.update({
-          where: { id: input.roundId },
-          data: { 
-            state: RoundState.RESOLVED,
-            metadata: {
-              playerChoices: input.playerChoices,
-              oracleYield: input.oracleYield,
-              randomSeed: input.randomSeed,
-              resolution: { eliminatedPlayers, payouts, poolBalances }
-            } as any,
-            updatedAt: new Date() 
-          },
-        });
-
-        return { eliminatedPlayers, payouts, poolBalances };
+      arenaStateTransitionsTotal.inc({
+        from_state: round.state,
+        to_state: RoundState.RESOLVED,
       });
+      playersEliminatedTotal.inc(eliminatedPlayers.length);
+      await refreshArenaMetrics(this.prisma);
 
       const duration = (Date.now() - start) / 1000;
       roundResolutionDuration.observe(duration);

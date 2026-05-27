@@ -13,6 +13,7 @@ import { z } from "zod";
 
 import { getPaymentConfig, type PaymentConfig } from "../config/paymentConfig";
 import type { TransactionRepository } from "../repositories/transactionRepository";
+import { payoutsSuccessTotal } from "../utils/metrics";
 import type {
   BuildPayoutResult,
   CreatePayoutRequest,
@@ -255,6 +256,7 @@ export class PaymentService {
     const onChain = await this.rpcServer.getTransaction(transaction.txHash);
 
     if (onChain.status === Api.GetTransactionStatus.SUCCESS) {
+      payoutsSuccessTotal.inc({ asset: transaction.asset });
       return this.transactions.update(transaction.id, {
         status: "confirmed",
         confirmedAt: new Date(),
