@@ -88,16 +88,17 @@ export class AuthService {
 
     const tokens = this.issueTokenPair(user._id.toString(), walletAddress);
 
-    return {
-      ...tokens,
-      user: {
-        id: user._id.toString(),
-        walletAddress: user.walletAddress,
-        displayName: user.displayName,
-        joinedAt: user.joinedAt,
-        lastLoginAt: user.lastLoginAt,
-      },
+    const authUser: AuthUser = {
+      id: user._id.toString(),
+      walletAddress: user.walletAddress,
+      joinedAt: user.joinedAt,
+      lastLoginAt: user.lastLoginAt,
+      ...(user.displayName !== undefined && user.displayName !== null
+        ? { displayName: user.displayName }
+        : {}),
     };
+
+    return { ...tokens, user: authUser };
   }
 
   async refreshTokens(refreshToken: string): Promise<TokenPair> {
@@ -139,12 +140,11 @@ export class AuthService {
     const accessPayload: JwtPayload = { sub: userId, wallet: walletAddress, type: "access" };
     const refreshPayload: JwtPayload = { sub: userId, wallet: walletAddress, type: "refresh" };
 
-    const accessToken = jwt.sign(accessPayload, secret, {
-      expiresIn: (process.env.JWT_EXPIRES_IN ?? "15m") as jwt.SignOptions["expiresIn"],
-    });
-    const refreshToken = jwt.sign(refreshPayload, secret, {
-      expiresIn: (process.env.JWT_REFRESH_EXPIRES_IN ?? "7d") as jwt.SignOptions["expiresIn"],
-    });
+    const accessExpiresIn = (process.env.JWT_EXPIRES_IN ?? "15m") as jwt.SignOptions["expiresIn"] & string;
+    const refreshExpiresIn = (process.env.JWT_REFRESH_EXPIRES_IN ?? "7d") as jwt.SignOptions["expiresIn"] & string;
+
+    const accessToken = jwt.sign(accessPayload, secret, { expiresIn: accessExpiresIn });
+    const refreshToken = jwt.sign(refreshPayload, secret, { expiresIn: refreshExpiresIn });
 
     return { accessToken, refreshToken };
   }

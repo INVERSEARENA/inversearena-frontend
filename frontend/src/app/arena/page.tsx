@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { ErrorBoundary } from "@/components/error-boundary/ErrorBoundary";
+import { ErrorFallback } from "@/components/error-boundary/ErrorFallback";
 import {
   Timer,
   ChoiceCard,
@@ -21,6 +23,14 @@ import {
 } from "@/shared-d/utils/stellar-transactions";
 
 export default function ArenaPage() {
+  return (
+    <ErrorBoundary fallback={<ErrorFallback context="arena" />}>
+      <ArenaGameView />
+    </ErrorBoundary>
+  );
+}
+
+function ArenaGameView() {
   const { isConnected, address, connect, signTransaction, refreshBalance } = useWallet();
   const [selectedChoice, setSelectedChoice] = useState<"heads" | "tails" | null>(null);
   const [isJoined, setIsJoined] = useState(false);

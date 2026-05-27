@@ -16,9 +16,9 @@ export function createArenasRouter(): Router {
    */
   router.get(
     "/:id/stats",
-    cacheMiddleware((req) => cacheKeys.arenaStats(req.params.id), cacheTTL.ARENA_STATS),
+    cacheMiddleware((req) => cacheKeys.arenaStats(req.params.id!), cacheTTL.ARENA_STATS),
     asyncHandler(async (req, res) => {
-      const { id } = req.params;
+      const id = req.params.id!;
 
       try {
         const stats = await statsService.getArenaStats(id);

@@ -119,7 +119,7 @@ export function useLiveTickerList<T>({ items, intervalMs }: UseLiveTickerListOpt
   }, [items.length, index]);
 
   return {
-    currentItem: items[index] || items[0],
+    currentItem: items[index] ?? items[0]!,
     index
   };
 }

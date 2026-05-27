@@ -3,7 +3,10 @@
  * Named “composer” here to avoid clashing with the SDK’s `TransactionBuilder` class.
  */
 import { Account, Contract, Transaction, TransactionBuilder } from "@stellar/stellar-sdk";
-import type { Operation } from "@stellar/stellar-sdk";
+// SDK integration boundary: Operation2<InvokeHostFunction> from Contract.call() is
+// structurally compatible with Operation but TypeScript's nominal check rejects it.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyOperation = any;
 import {
   encodeAddress,
   encodeAmount,
@@ -22,7 +25,7 @@ export function composeUnsignedTransaction(
     fee: string;
     networkPassphrase: string;
     timeout: number;
-    operation: Operation;
+    operation: AnyOperation;
   },
 ): Transaction {
   return new TransactionBuilder(account, {
@@ -46,7 +49,7 @@ export function buildCreatePoolCallOperation(
   factory: Contract,
   params: CreatePoolParamsValidated,
   tokenContractIds: { xlmContractId: string; usdcContractId: string },
-): Operation {
+): AnyOperation {
   const amountBigInt = BigInt(Math.floor(params.stakeAmount * 10_000_000));
   const currencyContractId =
     params.currency === "USDC"
@@ -68,7 +71,7 @@ export function buildStakeCallOperation(
   stakingContract: Contract,
   amountStroops: bigint,
   stakerPublicKey: string,
-): Operation {
+): AnyOperation {
   return stakingContract.call(
     "stake",
     encodeAddress(stakerPublicKey),
@@ -80,7 +83,7 @@ export function buildUnstakeCallOperation(
   stakingContract: Contract,
   sharesStroops: bigint,
   stakerPublicKey: string,
-): Operation {
+): AnyOperation {
   return stakingContract.call(
     "unstake",
     encodeAddress(stakerPublicKey),
@@ -88,7 +91,7 @@ export function buildUnstakeCallOperation(
   );
 }
 
-export function buildJoinCallOperation(poolContract: Contract): Operation {
+export function buildJoinCallOperation(poolContract: Contract): AnyOperation {
   return poolContract.call("join");
 }
 
@@ -96,7 +99,7 @@ export function buildSubmitChoiceCallOperation(
   poolContract: Contract,
   roundNumber: number,
   choice: "Heads" | "Tails",
-): Operation {
+): AnyOperation {
   return poolContract.call(
     "submit_choice",
     encodeRound(roundNumber),
@@ -104,20 +107,20 @@ export function buildSubmitChoiceCallOperation(
   );
 }
 
-export function buildClaimCallOperation(poolContract: Contract): Operation {
+export function buildClaimCallOperation(poolContract: Contract): AnyOperation {
   return poolContract.call("claim");
 }
 
 export function buildGetArenaStateCallOperation(
   arenaContract: Contract,
-): Operation {
+): AnyOperation {
   return arenaContract.call("get_arena_state");
 }
 
 export function buildGetUserStateCallOperation(
   arenaContract: Contract,
   userPublicKey: string,
-): Operation {
+): AnyOperation {
   return arenaContract.call(
     "get_user_state",
     encodeAddress(userPublicKey),
@@ -127,7 +130,7 @@ export function buildGetUserStateCallOperation(
 export function buildGetFullStateCallOperation(
   arenaContract: Contract,
   userPublicKey: string,
-): Operation {
+): AnyOperation {
   return arenaContract.call(
     "get_full_state",
     encodeAddress(userPublicKey),

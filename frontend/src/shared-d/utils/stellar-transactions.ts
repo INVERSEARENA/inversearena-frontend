@@ -411,9 +411,9 @@ export async function fetchArenaState(
       extractU32FromScVal(stateData, "survivors_count") || 0;
     const maxCapacity = extractU32FromScVal(stateData, "max_capacity") || 0;
     const roundNumber = extractU32FromScVal(stateData, "round_number") || 0;
-    const currentStake = extractI128FromScVal(stateData, "current_stake") || 0;
+    const currentStake = Number(extractI128FromScVal(stateData, "current_stake") ?? 0);
     const potentialPayout =
-      extractI128FromScVal(stateData, "potential_payout") || 0;
+      Number(extractI128FromScVal(stateData, "potential_payout") ?? 0);
     const isUserIn = extractBoolFromScVal(stateData, "is_active") || false;
     const hasWon = extractBoolFromScVal(stateData, "has_won") || false;
 

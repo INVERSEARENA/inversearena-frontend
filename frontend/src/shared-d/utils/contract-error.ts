@@ -112,9 +112,7 @@ export function parseContractError(
     const detail = extractSimulationDetail(error);
     return new ContractError({
       code: ContractErrorCode.SIMULATION_FAILED,
-      message: detail
-        ? `Contract simulation failed: ${detail}`
-        : undefined,
+      ...(detail ? { message: `Contract simulation failed: ${detail}` } : {}),
       fn,
       cause: error,
     });
@@ -185,7 +183,7 @@ export function parseContractError(
   // ── Fallback ─────────────────────────────────────────────────────
   return new ContractError({
     code: ContractErrorCode.UNKNOWN,
-    message: msg || undefined,
+    ...(msg ? { message: msg } : {}),
     fn,
     cause: error,
   });
@@ -266,7 +264,7 @@ function extractSimulationDetail(error: unknown): string | null {
 function parseHostError(raw: string): string {
   const contractMatch = raw.match(/Error\(Contract,\s*#(\d+)\)/);
   if (contractMatch) {
-    const code = Number.parseInt(contractMatch[1], 10);
+    const code = Number.parseInt(contractMatch[1]!, 10);
     return userMessageForContractPanicCode(code);
   }
 

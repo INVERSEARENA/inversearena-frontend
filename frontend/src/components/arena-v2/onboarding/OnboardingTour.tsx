@@ -77,13 +77,13 @@ export function OnboardingTour() {
 
   const currentStep = useMemo(() => STEPS[stepIndex], [stepIndex]);
 
-  if (!isOpen) {
+  if (!isOpen || currentStep === undefined) {
     return null;
   }
 
   return (
     <div className="fixed inset-0 z-[100]">
-      <UIHighlight anchors={currentStep.anchors} showPointers={currentStep.showPointers} />
+      <UIHighlight anchors={currentStep.anchors} {...(currentStep.showPointers !== undefined && { showPointers: currentStep.showPointers })} />
 
       <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4 sm:p-8">
         <AnimatePresence mode="wait" initial={false}>

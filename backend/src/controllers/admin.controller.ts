@@ -49,13 +49,13 @@ export class AdminController {
     const { token, targetStatus } = ForceResolveSchema.parse(req.body);
     const adminId = req.adminId!;
 
-    await this.adminService.verifyAndConsumeToken(token, "force_resolve", id, adminId);
+    await this.adminService.verifyAndConsumeToken(token, "force_resolve", id!, adminId);
 
     let transaction;
     try {
-      transaction = await this.transactions.update(id, {
+      transaction = await this.transactions.update(id!, {
         status: targetStatus,
-        confirmedAt: targetStatus === "confirmed" ? new Date() : undefined,
+        confirmedAt: targetStatus === "confirmed" ? new Date() : null,
         errorMessage: targetStatus === "failed" ? "Force-resolved by admin" : null,
         updatedAt: new Date(),
       });
@@ -64,22 +64,22 @@ export class AdminController {
         adminId,
         action: "force_resolve",
         resourceType: "transaction",
-        resourceId: id,
+        resourceId: id!,
         status: "success",
         metadata: { targetStatus },
-        ipAddress: req.ip,
-        userAgent: req.headers["user-agent"],
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
       });
     } catch (err) {
       await this.adminService.log({
         adminId,
         action: "force_resolve",
         resourceType: "transaction",
-        resourceId: id,
+        resourceId: id!,
         status: "failed",
         errorMessage: err instanceof Error ? err.message : "Unknown error",
-        ipAddress: req.ip,
-        userAgent: req.headers["user-agent"],
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
       });
       throw err;
     }
@@ -92,11 +92,11 @@ export class AdminController {
     const { token } = TokenOnlySchema.parse(req.body);
     const adminId = req.adminId!;
 
-    await this.adminService.verifyAndConsumeToken(token, "resubmit", id, adminId);
+    await this.adminService.verifyAndConsumeToken(token, "resubmit", id!, adminId);
 
     let transaction;
     try {
-      transaction = await this.transactions.update(id, {
+      transaction = await this.transactions.update(id!, {
         status: "queued",
         attempts: 0,
         errorMessage: null,
@@ -107,21 +107,21 @@ export class AdminController {
         adminId,
         action: "resubmit",
         resourceType: "transaction",
-        resourceId: id,
+        resourceId: id!,
         status: "success",
-        ipAddress: req.ip,
-        userAgent: req.headers["user-agent"],
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
       });
     } catch (err) {
       await this.adminService.log({
         adminId,
         action: "resubmit",
         resourceType: "transaction",
-        resourceId: id,
+        resourceId: id!,
         status: "failed",
         errorMessage: err instanceof Error ? err.message : "Unknown error",
-        ipAddress: req.ip,
-        userAgent: req.headers["user-agent"],
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
       });
       throw err;
     }
@@ -134,16 +134,16 @@ export class AdminController {
     const { token } = TokenOnlySchema.parse(req.body);
     const adminId = req.adminId!;
 
-    await this.adminService.verifyAndConsumeToken(token, "reindex_pool", id, adminId);
+    await this.adminService.verifyAndConsumeToken(token, "reindex_pool", id!, adminId);
 
     await this.adminService.log({
       adminId,
       action: "reindex_pool",
       resourceType: "pool",
-      resourceId: id,
+      resourceId: id!,
       status: "success",
-      ipAddress: req.ip,
-      userAgent: req.headers["user-agent"],
+      ...(req.ip !== undefined && { ipAddress: req.ip }),
+      ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
     });
 
     res.json({ message: "Pool reindex queued", poolId: id });
@@ -178,8 +178,8 @@ export class AdminController {
         resourceId: "global",
         status: "success",
         metadata: result,
-        ipAddress: req.ip,
-        userAgent: req.headers["user-agent"],
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
       });
     } catch (err) {
       await this.adminService.log({
@@ -189,8 +189,8 @@ export class AdminController {
         resourceId: "global",
         status: "failed",
         errorMessage: err instanceof Error ? err.message : "Unknown error",
-        ipAddress: req.ip,
-        userAgent: req.headers["user-agent"],
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
       });
       throw err;
     }

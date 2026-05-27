@@ -20,7 +20,7 @@ export async function fetchNetworkStats({ signal }: { signal: AbortSignal }): Pr
   });
 
   const loads: Array<'low' | 'medium' | 'high'> = ['low', 'medium', 'high'];
-  const randomLoad = loads[Math.floor(Math.random() * loads.length)];
+  const randomLoad = loads[Math.floor(Math.random() * loads.length)]!;
 
   return {
     globalPoolTotal: Math.round(randomVariation(1429082, 50000)),
