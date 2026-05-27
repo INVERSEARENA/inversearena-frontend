@@ -17,7 +17,7 @@ export class RoundRepository {
       id: round.id,
       arenaId: round.arenaId,
       roundNumber: round.roundNumber,
-      state: RoundState.OPEN,
+      state: round.state as RoundState,
       playerChoices: [],
       createdAt: round.createdAt,
       updatedAt: round.updatedAt,
@@ -35,7 +35,7 @@ export class RoundRepository {
       id: round.id,
       arenaId: round.arenaId,
       roundNumber: round.roundNumber,
-      state: RoundState.OPEN,
+      state: round.state as RoundState,
       playerChoices: [],
       createdAt: round.createdAt,
       updatedAt: round.updatedAt,
@@ -45,7 +45,7 @@ export class RoundRepository {
   async updateState(roundId: string, state: RoundState): Promise<void> {
     await this.prisma.round.update({
       where: { id: roundId },
-      data: { updatedAt: new Date() },
+      data: { state, updatedAt: new Date() },
     });
   }
 
