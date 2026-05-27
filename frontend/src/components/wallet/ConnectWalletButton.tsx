@@ -24,9 +24,15 @@ export const ConnectWalletButton = ({ className }: { className?: string }) => {
 
   if (status === 'error') {
     return (
-      <div>
-        <Button onClick={() => connect()} variant={buttonVariant} className={className}>Retry</Button>
-        {error && <p className="text-red-500 text-xs mt-1">{error}</p>}
+      <div className="flex items-center gap-3">
+        {error && (
+          <span className="hidden sm:inline text-red-400 text-xs max-w-[180px] truncate">
+            {error}
+          </span>
+        )}
+        <Button onClick={() => connect()} variant={buttonVariant} className={className}>
+          Retry
+        </Button>
       </div>
     );
   }
