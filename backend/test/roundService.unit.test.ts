@@ -13,9 +13,10 @@ const EPSILON = 1e-6;
 const service = new RoundService({} as any);
 const computeEliminations = (
   choices: PlayerChoice[],
+  allActivePlayerIds: string[],
   oracleYield: number,
   seed?: string
-): string[] => (service as any).computeEliminations(choices, oracleYield, seed);
+): string[] => (service as any).computeEliminations(choices, allActivePlayerIds, oracleYield, seed);
 const computePayouts = (
   choices: PlayerChoice[],
   eliminated: string[],
@@ -36,6 +37,10 @@ const playerChoicesArb = fc
     records.map((r, i): PlayerChoice => ({ userId: `user-${i}`, ...r }))
   );
 
+const allActivePlayersArb = fc
+  .array(fc.string({ minLength: 5, maxLength: 10 }), { minLength: 2, maxLength: 25 })
+  .map((ids) => ids.map((id, i) => `${id}-${i}`));
+
 const oracleYieldArb = fc.double({
   min: 0,
   max: 50,
@@ -43,11 +48,16 @@ const oracleYieldArb = fc.double({
   noDefaultInfinity: true,
 });
 
+function makeAllActiveIds(choices: PlayerChoice[]): string[] {
+  return choices.map(p => p.userId);
+}
+
 describe('RoundService.computePayouts invariants', () => {
   it('total payouts never exceed the total pool + yield (no funds created)', () => {
     fc.assert(
       fc.property(playerChoicesArb, oracleYieldArb, (playerChoices, oracleYield) => {
-        const eliminated = computeEliminations(playerChoices, oracleYield);
+        const allActive = makeAllActiveIds(playerChoices);
+        const eliminated = computeEliminations(playerChoices, allActive, oracleYield);
         const payouts = computePayouts(playerChoices, eliminated, oracleYield);
 
         const totalStakes = playerChoices.reduce((s, p) => s + p.stake, 0);
@@ -63,7 +73,8 @@ describe('RoundService.computePayouts invariants', () => {
   it('every winner receives at least their original stake back (no winner loses money)', () => {
     fc.assert(
       fc.property(playerChoicesArb, oracleYieldArb, (playerChoices, oracleYield) => {
-        const eliminated = computeEliminations(playerChoices, oracleYield);
+        const allActive = makeAllActiveIds(playerChoices);
+        const eliminated = computeEliminations(playerChoices, allActive, oracleYield);
         const payouts = computePayouts(playerChoices, eliminated, oracleYield);
 
         const stakeByUser = new Map(playerChoices.map((p) => [p.userId, p.stake]));
@@ -87,5 +98,79 @@ describe('RoundService.computePayouts invariants', () => {
       }),
       { numRuns: NUM_RUNS }
     );
+  });
+});
+
+describe('RoundService.computeEliminations — majority elimination', () => {
+  it('eliminates the majority side (heads majority)', () => {
+    const choices: PlayerChoice[] = [
+      { userId: 'a', choice: 'heads', stake: 100 },
+      { userId: 'b', choice: 'heads', stake: 100 },
+      { userId: 'c', choice: 'tails', stake: 100 },
+    ];
+    const eliminated = computeEliminations(choices, ['a', 'b', 'c'], 0);
+    expect(eliminated.sort()).toEqual(['a', 'b']);
+  });
+
+  it('eliminates the majority side (tails majority)', () => {
+    const choices: PlayerChoice[] = [
+      { userId: 'a', choice: 'heads', stake: 100 },
+      { userId: 'b', choice: 'tails', stake: 100 },
+      { userId: 'c', choice: 'tails', stake: 100 },
+    ];
+    const eliminated = computeEliminations(choices, ['a', 'b', 'c'], 0);
+    expect(eliminated.sort()).toEqual(['b', 'c']);
+  });
+
+  it('returns no eliminations on a tie', () => {
+    const choices: PlayerChoice[] = [
+      { userId: 'a', choice: 'heads', stake: 100 },
+      { userId: 'b', choice: 'tails', stake: 100 },
+    ];
+    const eliminated = computeEliminations(choices, ['a', 'b'], 0);
+    expect(eliminated).toEqual([]);
+  });
+
+  it('eliminates players who did not submit a choice', () => {
+    const choices: PlayerChoice[] = [
+      { userId: 'a', choice: 'heads', stake: 100 },
+    ];
+    const eliminated = computeEliminations(choices, ['a', 'b', 'c'], 0);
+    expect(eliminated.sort()).toEqual(['b', 'c']);
+  });
+
+  it('eliminates non-submitters plus majority when choices exist', () => {
+    const choices: PlayerChoice[] = [
+      { userId: 'a', choice: 'heads', stake: 100 },
+      { userId: 'b', choice: 'tails', stake: 100 },
+      { userId: 'c', choice: 'tails', stake: 100 },
+    ];
+    const eliminated = computeEliminations(choices, ['a', 'b', 'c', 'd'], 0);
+    expect(eliminated.sort()).toEqual(['b', 'c', 'd']);
+  });
+
+  it('handles single player remaining', () => {
+    const choices: PlayerChoice[] = [
+      { userId: 'a', choice: 'heads', stake: 100 },
+    ];
+    const eliminated = computeEliminations(choices, ['a'], 0);
+    expect(eliminated).toEqual([]); // lone player = minority
+  });
+
+  it('all abstain — no choices submitted, all eliminated', () => {
+    const eliminated = computeEliminations([], ['a', 'b', 'c'], 0);
+    expect(eliminated.sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('preserves oracleYield and randomSeed as metadata — elimination is count-based', () => {
+    // Different oracleYield/randomSeed should not affect elimination outcome
+    const choices: PlayerChoice[] = [
+      { userId: 'a', choice: 'heads', stake: 100 },
+      { userId: 'b', choice: 'tails', stake: 100 },
+      { userId: 'c', choice: 'tails', stake: 100 },
+    ];
+    const result1 = computeEliminations(choices, ['a', 'b', 'c'], 10, 'seed-a');
+    const result2 = computeEliminations(choices, ['a', 'b', 'c'], 50, 'seed-b');
+    expect(result1).toEqual(result2);
   });
 });

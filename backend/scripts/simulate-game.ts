@@ -53,7 +53,7 @@ interface RoundResult {
   round: number;
   choices: Record<string, Choice>;
   oracleYield: number;
-  winningChoice: Choice;
+  winningChoice: Choice | null;
   eliminated: number;
   survivors: number;
   eliminatedPlayers: SimulatedPlayer[];
@@ -121,15 +121,22 @@ function randomChoice(): Choice {
 function resolveRound(
   players: SimulatedPlayer[],
   choices: Record<string, Choice>,
-  oracleYield: number
-): { winningChoice: Choice; eliminated: SimulatedPlayer[] } {
-  // The oracle yield determines the winning side via parity (matches contract logic).
-  // Even truncated yield → "heads" wins; odd → "tails" wins.
-  const yieldFloor = Math.floor(oracleYield * 100);
-  const winningChoice: Choice = yieldFloor % 2 === 0 ? "heads" : "tails";
+  _oracleYield: number
+): { winningChoice: Choice | null; eliminated: SimulatedPlayer[] } {
+  const activePlayers = players.filter((p) => p.active);
+  const headCount = activePlayers.filter(
+    (p) => choices[p.keypair.publicKey()] === "heads"
+  ).length;
+  const tailCount = activePlayers.length - headCount;
 
-  const eliminated = players.filter(
-    (p) => p.active && choices[p.keypair.publicKey()] !== winningChoice
+  if (headCount === tailCount) {
+    return { winningChoice: null, eliminated: [] };
+  }
+
+  const winningChoice: Choice = headCount > tailCount ? "tails" : "heads";
+
+  const eliminated = activePlayers.filter(
+    (p) => choices[p.keypair.publicKey()] === winningChoice
   );
 
   return { winningChoice, eliminated };
@@ -292,7 +299,7 @@ async function runSimulation(options: {
     };
     roundResults.push(result);
 
-    console.log(`  Winning choice: ${winningChoice.toUpperCase()}`);
+    console.log(`  Winning choice: ${winningChoice ? winningChoice.toUpperCase() : "TIE (no elimination)"}`);
     console.log(
       `  Eliminated: ${eliminated.length} player(s) → ${eliminated.map((p) => `Player ${p.index}`).join(", ") || "none"}`
     );

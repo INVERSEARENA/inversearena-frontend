@@ -9,7 +9,7 @@ export class RoundController {
     try {
       const input: RoundInput = req.body;
 
-      if (!input.roundId || !input.playerChoices || input.oracleYield === undefined) {
+      if (!input.roundId || !input.playerChoices || !input.allActivePlayerIds || input.allActivePlayerIds.length === 0 || input.oracleYield === undefined) {
         res.status(400).json({ error: 'Missing required fields' });
         return;
       }

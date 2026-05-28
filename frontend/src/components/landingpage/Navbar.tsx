@@ -1,4 +1,5 @@
 import { ConnectWalletButton } from '@/components/wallet/ConnectWalletButton';
+import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import React from 'react';
 
 const Navbar = () => {
@@ -25,7 +26,10 @@ const Navbar = () => {
                         <a href="#yield" className="text-[10px] font-medium tracking-widest text-zinc-400 hover:text-white transition-colors uppercase">Win_Or_Lose</a>
                     </div>
 
-                    <ConnectWalletButton className="bg-[#39ff14] px-6 py-2 text-[10px] font-bold uppercase text-black hover:bg-white transition-all transform active:scale-95 rounded-none" />
+                    <div className="flex items-center gap-3">
+                      <ThemeToggle />
+                      <ConnectWalletButton className="bg-[#39ff14] px-6 py-2 text-[10px] font-bold uppercase text-black hover:bg-white transition-all transform active:scale-95 rounded-none" />
+                    </div>
                 </div>
             </div>
         </nav>

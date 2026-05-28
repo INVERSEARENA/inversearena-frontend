@@ -30,6 +30,7 @@ export class RoundService {
 
       const eliminatedPlayers = this.computeEliminations(
         input.playerChoices,
+        input.allActivePlayerIds,
         input.oracleYield,
         input.randomSeed
       );
@@ -87,33 +88,26 @@ export class RoundService {
 
   private computeEliminations(
     playerChoices: RoundInput['playerChoices'],
-    oracleYield: number,
-    randomSeed?: string
+    allActivePlayerIds: string[],
+    _oracleYield: number,
+    _randomSeed?: string
   ): string[] {
-    const eliminated: string[] = [];
-    
-    for (const player of playerChoices) {
-      const threshold = this.calculateThreshold(player.choice, oracleYield, randomSeed);
-      if (threshold < 0.5) {
-        eliminated.push(player.userId);
-      }
+    const headCount = playerChoices.filter(p => p.choice === 'heads').length;
+    const tailCount = playerChoices.filter(p => p.choice === 'tails').length;
+
+    if (headCount === tailCount) {
+      return allActivePlayerIds.filter(
+        id => !playerChoices.some(p => p.userId === id)
+      );
     }
 
-    return eliminated;
-  }
+    const majorityChoice = headCount > tailCount ? 'heads' : 'tails';
+    const submittedIds = new Set(playerChoices.map(p => p.userId));
 
-  private calculateThreshold(choice: string, oracleYield: number, seed?: string): number {
-    const hash = this.deterministicHash(choice + oracleYield.toString() + (seed || ''));
-    return (hash % 100) / 100;
-  }
-
-  private deterministicHash(input: string): number {
-    let hash = 0;
-    for (let i = 0; i < input.length; i++) {
-      hash = ((hash << 5) - hash) + input.charCodeAt(i);
-      hash = hash & hash;
-    }
-    return Math.abs(hash);
+    return [
+      ...playerChoices.filter(p => p.choice === majorityChoice).map(p => p.userId),
+      ...allActivePlayerIds.filter(id => !submittedIds.has(id)),
+    ];
   }
 
   private computePayouts(

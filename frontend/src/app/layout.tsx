@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { ThemeProvider } from "next-themes";
 import { ClientProviders } from "./ClientProviders";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { ServiceWorkerRegister } from "@/components/pwa/ServiceWorkerRegister";
@@ -44,7 +45,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <link
           href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@100..700&display=swap"
@@ -54,12 +55,14 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${pressStart2P.variable} ${spaceGrotesk.variable} antialiased`}
       >
-        <ServiceWorkerRegister />
-        <ErrorBoundary>
-          <ClientProviders>
-            {children}
-          </ClientProviders>
-        </ErrorBoundary>
+        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
+          <ServiceWorkerRegister />
+          <ErrorBoundary>
+            <ClientProviders>
+              {children}
+            </ClientProviders>
+          </ErrorBoundary>
+        </ThemeProvider>
       </body>
     </html>
   );

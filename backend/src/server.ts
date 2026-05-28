@@ -5,6 +5,7 @@ import { prisma } from "./db/prisma";
 import { SqlTransactionRepository } from "./repositories/sqlTransactionRepository";
 import { connectDB } from "./db/connection";
 import { MongoTransactionRepository } from "./repositories/mongoTransactionRepository";
+import { validateConfig } from "./config/validate";
 
 import { PaymentService } from "./services/paymentService";
 import { PaymentWorker } from "./workers/paymentWorker";
@@ -20,6 +21,7 @@ import { initSentry } from "./utils/sentry";
 const PORT = Number(process.env.PORT ?? 3001);
 
 async function main() {
+  validateConfig();
   initSentry();
   await connectDB();
    await redis.connect();
