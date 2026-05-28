@@ -28,6 +28,13 @@ pub struct ArenaConfig {
     pub player_count: u32,
 }
 
+/// Wrapper for a pending admin transfer proposal.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingAdmin {
+    pub new_admin: Address,
+}
+
 /// Per-player state stored in persistent storage, keyed by the player address.
 ///
 /// Returned (alongside the address) by `get_players` so indexers, analytics
@@ -56,4 +63,12 @@ pub enum ArenaError {
     CannotCancelStartedGame = 2,
     /// Arena configuration has not been initialised.
     NotInitialised = 3,
+    /// Arena is already initialised.
+    AlreadyInitialised = 4,
+    /// A pending admin transfer already exists.
+    TransferInProgress = 5,
+    /// No pending admin transfer to accept or cancel.
+    NoPendingTransfer = 6,
+    /// Proposed new admin is the same as the current admin.
+    CannotTransferToSelf = 7,
 }

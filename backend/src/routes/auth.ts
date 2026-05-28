@@ -19,6 +19,7 @@ export function createAuthRouter(
 
   // Protected — requires valid JWT
   router.get("/me", authMiddleware, asyncHandler(controller.me));
+  router.post("/logout", authMiddleware, asyncHandler(controller.logout));
 
   return router;
 }

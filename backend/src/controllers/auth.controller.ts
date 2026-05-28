@@ -45,6 +45,12 @@ export class AuthController {
     res.json(tokens);
   };
 
+  logout = async (req: Request, res: Response): Promise<void> => {
+    const { id } = req.user!;
+    await this.authService.logout(id);
+    res.json({ message: "Logged out successfully" });
+  };
+
   me = async (req: Request, res: Response): Promise<void> => {
     const { id } = req.user!;
     const user = await UserModel.findById(id).lean();

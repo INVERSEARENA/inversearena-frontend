@@ -5,7 +5,7 @@ mod storage;
 mod types;
 
 use storage::ArenaStorage;
-use types::{ArenaError, GameState, PlayerState};
+use types::{ArenaConfig, ArenaError, GameState, PendingAdmin, PlayerState};
 
 /// Number of players returned per `get_players` page.
 const PAGE_SIZE: u32 = 50;
@@ -24,6 +24,34 @@ pub struct ArenaContract;
 
 #[contractimpl]
 impl ArenaContract {
+    /// Initialise the arena with the given configuration.
+    ///
+    /// The caller becomes the initial admin. Can only be called once.
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        stake_token: Address,
+        entry_fee: i128,
+    ) -> Result<(), ArenaError> {
+        if ArenaStorage::has_config(&env) {
+            return Err(ArenaError::AlreadyInitialised);
+        }
+
+        let config = ArenaConfig {
+            admin,
+            stake_token,
+            entry_fee,
+            state: GameState::Open,
+            player_count: 0,
+        };
+        ArenaStorage::save_config(&env, &config);
+
+        env.events()
+            .publish((soroban_sdk::symbol_short!("init"),), ());
+
+        Ok(())
+    }
+
     /// Cancel an open arena and refund all joined players their entry fee.
     ///
     /// Only callable by the arena admin, and only while the game is still in
@@ -58,6 +86,87 @@ impl ArenaContract {
         // Top-level cancellation event
         env.events()
             .publish((soroban_sdk::symbol_short!("cancelled"),), ());
+
+        Ok(())
+    }
+
+    /// Propose transferring admin to a new address.
+    ///
+    /// The current admin initiates the transfer. The new admin must call
+    /// `accept_admin` to finalise. If a transfer is already pending, this
+    /// returns `TransferInProgress`.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+
+        // Require the caller to be the current admin
+        config.admin.require_auth();
+
+        // Cannot transfer to the same address
+        if new_admin == config.admin {
+            return Err(ArenaError::CannotTransferToSelf);
+        }
+
+        // Guard: no pending transfer already in-flight
+        if ArenaStorage::load_pending_admin(&env).is_some() {
+            return Err(ArenaError::TransferInProgress);
+        }
+
+        ArenaStorage::save_pending_admin(
+            &env,
+            &PendingAdmin {
+                new_admin: new_admin.clone(),
+            },
+        );
+
+        env.events().publish(
+            (soroban_sdk::symbol_short!("prop_adm"),),
+            (config.admin, new_admin),
+        );
+
+        Ok(())
+    }
+
+    /// Accept a pending admin transfer.
+    ///
+    /// Only the proposed new admin can call this. On success, the pending
+    /// transfer is cleared and the caller becomes the admin.
+    pub fn accept_admin(env: Env) -> Result<(), ArenaError> {
+        let pending = ArenaStorage::load_pending_admin(&env)
+            .ok_or(ArenaError::NoPendingTransfer)?;
+
+        // Require the caller to be the proposed new admin
+        pending.new_admin.require_auth();
+
+        let mut config = ArenaStorage::load_config(&env)?;
+        config.admin = pending.new_admin.clone();
+        ArenaStorage::save_config(&env, &config);
+        ArenaStorage::clear_pending_admin(&env);
+
+        env.events().publish(
+            (soroban_sdk::symbol_short!("adm_chg"),),
+            pending.new_admin,
+        );
+
+        Ok(())
+    }
+
+    /// Cancel a pending admin transfer.
+    ///
+    /// Only the current admin can cancel a pending proposal.
+    pub fn cancel_admin_transfer(env: Env) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+
+        // Require the caller to be the current admin
+        config.admin.require_auth();
+
+        if ArenaStorage::load_pending_admin(&env).is_none() {
+            return Err(ArenaError::NoPendingTransfer);
+        }
+
+        ArenaStorage::clear_pending_admin(&env);
+
+        env.events()
+            .publish((soroban_sdk::symbol_short!("can_adm"),), ());
 
         Ok(())
     }

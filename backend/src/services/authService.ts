@@ -1,8 +1,10 @@
-import { randomBytes } from "crypto";
+import { randomBytes, randomUUID } from "crypto";
+import { createHash } from "crypto";
 import jwt from "jsonwebtoken";
 import { Keypair } from "@stellar/stellar-sdk";
 import { NonceModel } from "../db/models/nonce.model";
 import { UserModel } from "../db/models/user.model";
+import { RefreshTokenModel } from "../db/models/refreshToken.model";
 import type { AuthUser, JwtPayload, TokenPair } from "../types/auth";
 
 const NONCE_PREFIX = "Sign this message to authenticate with InverseArena:\n";
@@ -20,6 +22,17 @@ function getJwtSecret(): string {
 function nonceTtlSeconds(): number {
   const val = Number(process.env.NONCE_TTL_SECONDS);
   return Number.isFinite(val) && val > 0 ? val : 300;
+}
+
+function refreshTokenTtlSeconds(): number {
+  const val = Number(process.env.JWT_REFRESH_EXPIRES_IN);
+  if (typeof val === "number" && Number.isFinite(val) && val > 0) return val;
+  // Default 7 days
+  return 7 * 24 * 60 * 60;
+}
+
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
 }
 
 function validateWalletAddress(walletAddress: string): void {
@@ -86,7 +99,7 @@ export class AuthService {
       { upsert: true, new: true }
     );
 
-    const tokens = this.issueTokenPair(user._id.toString(), walletAddress);
+    const tokens = await this.issueTokenPair(user._id.toString(), walletAddress);
 
     return {
       ...tokens,
@@ -114,7 +127,45 @@ export class AuthService {
       throw err;
     }
 
-    return this.issueTokenPair(payload.sub, payload.wallet);
+    const tokenHash = hashToken(refreshToken);
+    const storedToken = await RefreshTokenModel.findOne({ tokenHash });
+
+    if (!storedToken) {
+      const err = Object.assign(new Error("Refresh token has been revoked or expired"), { status: 401 });
+      throw err;
+    }
+
+    if (storedToken.revoked) {
+      const err = Object.assign(new Error("Refresh token has been revoked"), { status: 401 });
+      throw err;
+    }
+
+    if (storedToken.used) {
+      // Token reuse detected — this is a theft attempt.
+      // Revoke all tokens in this family.
+      await RefreshTokenModel.updateMany(
+        { familyId: storedToken.familyId },
+        { $set: { revoked: true } }
+      );
+      const err = Object.assign(
+        new Error("Refresh token reuse detected — all sessions invalidated"),
+        { status: 401 }
+      );
+      throw err;
+    }
+
+    // Mark the presented token as used
+    await RefreshTokenModel.findByIdAndUpdate(storedToken._id, { used: true });
+
+    // Issue a new token pair in the same family
+    return this.issueTokenPair(payload.sub, payload.wallet, storedToken.familyId);
+  }
+
+  async logout(userId: string): Promise<void> {
+    await RefreshTokenModel.updateMany(
+      { userId, revoked: false },
+      { $set: { revoked: true } }
+    );
   }
 
   verifyAccessToken(token: string): JwtPayload {
@@ -134,7 +185,11 @@ export class AuthService {
     return payload;
   }
 
-  private issueTokenPair(userId: string, walletAddress: string): TokenPair {
+  private async issueTokenPair(
+    userId: string,
+    walletAddress: string,
+    existingFamilyId?: string
+  ): Promise<TokenPair> {
     const secret = getJwtSecret();
     const accessPayload: JwtPayload = { sub: userId, wallet: walletAddress, type: "access" };
     const refreshPayload: JwtPayload = { sub: userId, wallet: walletAddress, type: "refresh" };
@@ -142,10 +197,44 @@ export class AuthService {
     const accessToken = jwt.sign(accessPayload, secret, {
       expiresIn: (process.env.JWT_EXPIRES_IN ?? "15m") as jwt.SignOptions["expiresIn"],
     });
+
+    const refreshExpiresIn = (process.env.JWT_REFRESH_EXPIRES_IN ?? "7d") as jwt.SignOptions["expiresIn"];
     const refreshToken = jwt.sign(refreshPayload, secret, {
-      expiresIn: (process.env.JWT_REFRESH_EXPIRES_IN ?? "7d") as jwt.SignOptions["expiresIn"],
+      expiresIn: refreshExpiresIn,
+    });
+
+    // Compute expiry date for the stored record
+    const ttlSec = typeof refreshExpiresIn === "string"
+      ? parseDuration(refreshExpiresIn)
+      : (refreshExpiresIn as number);
+    const expiresAt = new Date(Date.now() + ttlSec * 1000);
+
+    const familyId = existingFamilyId ?? randomUUID();
+
+    // Store the hashed refresh token
+    await RefreshTokenModel.create({
+      tokenHash: hashToken(refreshToken),
+      familyId,
+      userId,
+      used: false,
+      revoked: false,
+      expiresAt,
     });
 
     return { accessToken, refreshToken };
+  }
+}
+
+function parseDuration(duration: string): number {
+  const match = duration.match(/^(\d+)\s*(s|m|h|d)$/);
+  if (!match) return 7 * 24 * 60 * 60; // default 7 days
+  const value = parseInt(match[1], 10);
+  const unit = match[2];
+  switch (unit) {
+    case "s": return value;
+    case "m": return value * 60;
+    case "h": return value * 3600;
+    case "d": return value * 86400;
+    default: return 7 * 24 * 60 * 60;
   }
 }
