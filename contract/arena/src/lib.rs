@@ -1,7 +1,9 @@
 ﻿#![no_std]
 use soroban_sdk::{Address, Bytes, BytesN, Env, Vec, contract, contractimpl, token};
 
+mod eliminations;
 mod snapshot_test;
+mod state_machine;
 mod storage;
 mod types;
 
@@ -36,10 +38,13 @@ impl ArenaContract {
         // Require the caller to be the registered admin
         config.admin.require_auth();
 
-        // Guard: cannot cancel a game that has already started
-        if config.state != GameState::Open {
-            return Err(ArenaError::CannotCancelStartedGame);
-        }
+        // Guard: cannot cancel a game that has already started. The legal
+        // Open → Cancelled transition is enforced by the state machine module.
+        state_machine::ensure_state(
+            &config.state,
+            &GameState::Open,
+            ArenaError::CannotCancelStartedGame,
+        )?;
 
         // Transition state first — reentrancy protection
         config.state = GameState::Cancelled;

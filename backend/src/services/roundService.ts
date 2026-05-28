@@ -9,6 +9,7 @@ import {
   roundResolutionsTotal,
   roundResolutionDuration,
 } from '../utils/metrics';
+import { invalidateArenaStats } from '../cache/cacheService';
 
 export class RoundService {
   private roundRepo: RoundRepository;
@@ -65,6 +66,11 @@ export class RoundService {
       });
       playersEliminatedTotal.inc(eliminatedPlayers.length);
       await refreshArenaMetrics(this.prisma);
+
+      // Drop the now-stale arena stats cache so watchers see the resolved round
+      // immediately rather than after the TTL. Best-effort — a Redis outage
+      // must not fail an otherwise-successful resolution.
+      await invalidateArenaStats(round.arenaId).catch(() => {});
 
       const duration = (Date.now() - start) / 1000;
       roundResolutionDuration.observe(duration);
