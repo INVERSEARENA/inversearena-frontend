@@ -166,3 +166,68 @@ Query parameters: `limit` (1–200, default 50), `action`, `adminId`.
 - [ ] Run `deploy.sh --network mainnet` — script pauses 5 s before proceeding
 - [ ] Update frontend + backend env vars with mainnet contract IDs
 - [ ] Do not use accounts from `.env.test` on mainnet
+
+---
+
+## Environment variables reference
+
+Copy `backend/.env.example` → `backend/.env` and `frontend/.env.example` →
+`frontend/.env.local`, then fill in the values below. Contract IDs come from
+`contract/deployed.json` after `deploy.sh`.
+
+### Backend (`backend/.env`)
+
+| Variable | Purpose |
+| --- | --- |
+| `PORT` | HTTP port the API listens on |
+| `DATABASE_URL` | Postgres connection string (Prisma) |
+| `MONGODB_URI` | MongoDB connection string |
+| `REDIS_URL` | Redis URL for caching (arena stats, leaderboard) |
+| `ADMIN_API_KEY` | API key gating admin routes |
+| `ADMIN_TOKEN_TTL_SECONDS` | Lifetime of issued admin tokens |
+| `JWT_SECRET` | Secret for signing auth JWTs |
+| `JWT_EXPIRES_IN` / `JWT_REFRESH_EXPIRES_IN` | Access / refresh token lifetimes |
+| `NONCE_TTL_SECONDS` | Validity window for auth challenge nonces |
+| `SOROBAN_RPC_URL` | Soroban RPC endpoint |
+| `STELLAR_NETWORK_PASSPHRASE` | Network passphrase (testnet/mainnet) |
+| `PAYOUT_CONTRACT_ID` | Deployed payout contract id |
+| `PAYOUT_SOURCE_ACCOUNT` | Account that submits payout transactions |
+| `PAYOUT_METHOD_NAME` | Payout contract method (default `distribute_winnings`) |
+| `PAYOUTS_LIVE_EXECUTION` | `true` to submit on-chain; `false` builds only |
+| `PAYOUTS_SIGN_WITH_HOT_KEY` | Sign payouts with a hot key vs. external signer |
+| `PAYOUTS_MAX_GAS_STROOPS` | Reject prepared txs whose fee exceeds this |
+| `PAYOUTS_MAX_ATTEMPTS` | Max submission attempts before a payout fails |
+| `PAYOUTS_CONFIRM_POLL_MS` / `PAYOUTS_CONFIRM_MAX_POLLS` | Confirmation polling cadence/limit |
+
+### Frontend (`frontend/.env.local`)
+
+| Variable | Purpose |
+| --- | --- |
+| `NEXT_PUBLIC_STELLAR_NETWORK` | `testnet` or `public` |
+| `NEXT_PUBLIC_STELLAR_NETWORK_PASSPHRASE` | Network passphrase |
+| `NEXT_PUBLIC_SOROBAN_RPC_URL` | Soroban RPC endpoint |
+| `NEXT_PUBLIC_HORIZON_URL` | Horizon endpoint |
+| `NEXT_PUBLIC_FACTORY_CONTRACT_ID` | Deployed factory contract id |
+| `NEXT_PUBLIC_USDC_CONTRACT_ID` | USDC token contract id |
+| `NEXT_PUBLIC_APP_ORIGIN` | Public app origin (used for share links / sitemap) |
+| `ALLOWED_ORIGINS` | CORS allow-list for the API |
+| `REDIS_URL` | Redis URL (if the frontend uses server-side caching) |
+| `NEXT_PUBLIC_SENTRY_DSN` | Sentry DSN (optional) |
+| `NEXT_PUBLIC_SENTRY_ENVIRONMENT` / `NEXT_PUBLIC_SENTRY_RELEASE` | Sentry tagging (optional) |
+
+> There is no `docker-compose.yml` in this repo today; local services (Postgres,
+> MongoDB, Redis) are expected to be provided by the developer, and the app is run
+> with the `make backend-dev` / `make frontend-dev` targets above.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause / fix |
+| --- | --- |
+| `NotInitialised` from payout calls | The payout contract was deployed but `initialize(admin, token)` was never called. |
+| Payout returns `AlreadyPaid` | The `payout_id` was already executed — idempotency guard. Use a fresh id. |
+| Frontend can't reach contracts | `NEXT_PUBLIC_*` contract IDs don't match `contract/deployed.json`, or RPC URL points at the wrong network. |
+| API 500s with no obvious cause | Grab the `X-Request-Id` response header and grep the backend logs / Sentry for that id. |
+| Arena stats look stale | Redis cache TTL not yet expired; stats are invalidated automatically on round resolution. |
+| `make deploy` fails funding accounts | Testnet friendbot rate-limited — wait and retry, or fund manually (see step 2). |

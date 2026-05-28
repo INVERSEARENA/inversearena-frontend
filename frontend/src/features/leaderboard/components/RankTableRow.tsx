@@ -2,6 +2,7 @@
 
 import { Survivor } from "../types";
 import { formatAgentId, formatCurrency } from "../data/mockLeaderboard";
+import { RankBadge } from "./RankBadge";
 
 interface RankTableRowProps {
   survivor: Survivor;
@@ -24,9 +25,7 @@ export function RankTableRow({ survivor, onChallenge }: RankTableRowProps) {
   return (
     <tr className="border-b border-white/5 transition-colors hover:bg-white/[0.02]">
       <td className="py-5 pl-6 pr-4">
-        <span className="font-display text-3xl font-light italic text-white">
-          {survivor.rank}
-        </span>
+        <RankBadge rank={survivor.rank} movement={survivor.rankMovement} />
       </td>
 
       <td className="px-4 py-5">
