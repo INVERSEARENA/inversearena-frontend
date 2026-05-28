@@ -6,10 +6,8 @@ import { useWallet } from "@/shared-d/hooks/useWallet";
 import { TransactionModal } from "@/components/modals/TransactionModal";
 import { buildCreatePoolTransaction, submitSignedTransaction } from "@/shared-d/utils/stellar-transactions";
 import {
-  validateStakeAmount,
   formatCurrencyInput,
   sanitizeNumericInput,
-  getDecimalPrecision,
   type Currency,
 } from "@/shared-d/utils/form-validation";
 import {
@@ -17,8 +15,13 @@ import {
   formatFeeDisplay,
   formatTotalCostDisplay,
 } from "@/shared-d/utils/stellar-fees";
-
-type RoundSpeed = "30S" | "1M" | "5M";
+import {
+  poolSchema,
+  MIN_CAPACITY,
+  MAX_CAPACITY,
+  MIN_STAKE,
+  type RoundSpeed,
+} from "@/shared-d/utils/pool-schema";
 
 interface PoolCreationModalProps {
   isOpen: boolean;
@@ -37,84 +40,99 @@ interface PoolCreationData {
   arenaCapacity: number;
 }
 
-const MIN_CAPACITY = 10;
-const MAX_CAPACITY = 1000;
-const MIN_STAKE = 10; // Minimum stake for both XLM and USDC
-
 export function PoolCreationModal({
   isOpen,
   onClose,
   onInitialize,
   challengedSurvivor,
 }: PoolCreationModalProps) {
-  // Form input state (using string for better control)
   const [stakeAmountInput, setStakeAmountInput] = useState("100");
   const [currency, setCurrency] = useState<Currency>("USDC");
   const [roundSpeed, setRoundSpeed] = useState<RoundSpeed>("1M");
   const [arenaCapacity, setArenaCapacity] = useState(50);
 
-  // Validation state
   const [stakeError, setStakeError] = useState<string>("");
+  const [capacityError, setCapacityError] = useState<string>("");
   const [isFormValid, setIsFormValid] = useState(false);
   const [isDeploying, setIsDeploying] = useState(false);
 
-  // Refs for accessibility
   const stakeInputRef = useRef<HTMLInputElement>(null);
   const stakeErrorRef = useRef<HTMLDivElement>(null);
+  const capacityErrorRef = useRef<HTMLDivElement>(null);
 
-  // Fee estimation
   const [estimatedFee] = useState(estimateCreatePoolFee());
 
-  const { isConnected, address, connect, signTransaction, balance, isLoadingBalance, refreshBalance } = useWallet();
+  const { isConnected, address, connect, signTransaction, balance, isLoadingBalance } = useWallet();
   const [showTxModal, setShowTxModal] = useState(false);
   const [txDetails, setTxDetails] = useState<{ label: string; value: string | number }[]>([]);
 
-  // Parse stake amount for calculations
   const stakeAmount = parseFloat(stakeAmountInput) || 0;
   const totalPotentialPool = stakeAmount * arenaCapacity;
   const dynamicYield = 8.42;
   const minorityWinCap = 14.5;
 
-  // Get max stake based on currency and wallet balance
   const getMaxStake = useCallback(() => {
     if (!isConnected) return Infinity;
     return currency === "XLM" ? balance.xlm : balance.usdc;
   }, [isConnected, currency, balance]);
 
-  // Validate stake amount
-  const validateStake = useCallback(() => {
+  const validateForm = useCallback(() => {
+    const numericStake = parseFloat(stakeAmountInput);
     const maxStake = getMaxStake();
-    const result = validateStakeAmount({
-      amount: stakeAmountInput,
+
+    const result = poolSchema.safeParse({
+      stakeAmount: stakeAmountInput,
       currency,
-      minStake: MIN_STAKE,
-      maxStake,
+      roundSpeed,
+      arenaCapacity,
     });
 
-    setStakeError(result.error || "");
+    let capacityErr = "";
+    let stakeErr = "";
 
-    // Focus error if it exists (Accessibility)
-    if (result.error && stakeErrorRef.current) {
-      stakeErrorRef.current.focus();
+    if (!result.success) {
+      for (const issue of result.error.issues) {
+        if (issue.path[0] === "arenaCapacity") {
+          capacityErr = issue.message;
+        }
+        if (issue.path[0] === "stakeAmount") {
+          stakeErr = issue.message;
+        }
+      }
     }
 
-    return result.isValid;
-  }, [stakeAmountInput, currency, getMaxStake]);
+    if (!stakeErr && numericStake < MIN_STAKE) {
+      stakeErr = `Minimum stake is ${MIN_STAKE} ${currency}`;
+    }
 
-  // Validate form on stake or currency change
+    if (!stakeErr && numericStake > maxStake) {
+      stakeErr = `Insufficient balance. Maximum: ${maxStake.toFixed(currency === "USDC" ? 2 : 7)} ${currency}`;
+    }
+
+    setStakeError(stakeErr);
+    setCapacityError(capacityErr);
+
+    if (stakeErr && stakeErrorRef.current) {
+      stakeErrorRef.current.focus();
+    }
+    if (capacityErr && capacityErrorRef.current) {
+      capacityErrorRef.current.focus();
+    }
+
+    return result.success && !stakeErr && numericStake > 0;
+  }, [stakeAmountInput, currency, roundSpeed, arenaCapacity, getMaxStake]);
+
   useEffect(() => {
-    const isStakeValid = validateStake();
-    const isCapacityValid = arenaCapacity >= MIN_CAPACITY && arenaCapacity <= MAX_CAPACITY;
-    const hasStake = stakeAmountInput.trim() !== "" && stakeAmount > 0;
-
-    setIsFormValid(isStakeValid && isCapacityValid && hasStake);
-  }, [stakeAmountInput, stakeAmount, currency, arenaCapacity, validateStake]);
+    const valid = validateForm();
+    setIsFormValid(valid);
+  }, [stakeAmountInput, currency, roundSpeed, arenaCapacity, validateForm]);
 
   // Reset form when modal closes
   useEffect(() => {
     if (!isOpen) {
       setStakeAmountInput("100");
       setStakeError("");
+      setCapacityError("");
       setIsFormValid(false);
       setRoundSpeed("1M");
       setArenaCapacity(50);
@@ -304,6 +322,20 @@ export function PoolCreationModal({
                   <span className={isDecreaseDisabled ? "text-primary" : ""}>Min: {MIN_CAPACITY}</span>
                   <span className={isIncreaseDisabled ? "text-primary" : ""}>Max: {MAX_CAPACITY}</span>
                 </div>
+
+                {capacityError && (
+                  <div
+                    ref={capacityErrorRef}
+                    id="capacity-error"
+                    tabIndex={-1}
+                    className="mt-3 text-sm font-bold text-red-500 flex items-start gap-2 outline-none"
+                    role="alert"
+                    aria-live="polite"
+                  >
+                    <span className="material-symbols-outlined text-base">error</span>
+                    <span>{capacityError}</span>
+                  </div>
+                )}
               </section>
             </div>
 
