@@ -1,9 +1,7 @@
 #![allow(dead_code)]
-use crate::types::{ArenaConfig, ArenaError, Choice, PlayerState, YieldSnapshot};
-use soroban_sdk::{Address, BytesN, Env, Vec, contracttype, symbol_short};
 
-const CONFIG_KEY: &str = "CONFIG";
-const PLAYERS_KEY: &str = "PLAYERS";
+
+const PENDING_ADMIN_KEY: &str = "PENDING_ADMIN";
 
 /// Storage key for per-player data, keyed by the player's address.
 #[contracttype]
@@ -31,31 +29,7 @@ impl ArenaStorage {
             .set(&symbol_short!("CONFIG"), config);
     }
 
-    /// Ledger timestamp at which the current round started (#689). `None` until
-    /// `start_round` has been called.
-    pub fn load_round_start(env: &Env) -> Option<u64> {
-        env.storage().persistent().get(&symbol_short!("RSTART"))
-    }
 
-    pub fn save_round_start(env: &Env, timestamp: u64) {
-        env.storage()
-            .persistent()
-            .set(&symbol_short!("RSTART"), &timestamp);
-    }
-
-    /// Minimum seconds that must elapse after `start_round` before
-    /// `resolve_round` is permitted (#689). Defaults to 0 if never set.
-    pub fn load_round_duration(env: &Env) -> u64 {
-        env.storage()
-            .persistent()
-            .get(&symbol_short!("RDUR"))
-            .unwrap_or(0)
-    }
-
-    pub fn save_round_duration(env: &Env, seconds: u64) {
-        env.storage()
-            .persistent()
-            .set(&symbol_short!("RDUR"), &seconds);
     }
 
     /// Return the list of all player addresses that have joined this arena.
@@ -108,69 +82,9 @@ impl ArenaStorage {
             .set(&DataKey::Player(player.clone()), state);
     }
 
-    /// Store a commitment hash for a player during the commit phase.
-    pub fn save_commitment(env: &Env, player: &Address, commitment: &BytesN<32>) {
-        env.storage()
-            .persistent()
-            .set(&DataKey::Commitment(player.clone()), commitment);
-    }
 
-    /// Load a player's stored commitment, or `None` if they never committed.
-    pub fn load_commitment(env: &Env, player: &Address) -> Option<BytesN<32>> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Commitment(player.clone()))
-    }
-
-    /// Store a player's revealed choice.
-    pub fn save_choice(env: &Env, player: &Address, choice: &Choice) {
-        env.storage()
-            .persistent()
-            .set(&DataKey::Choice(player.clone()), choice);
-    }
-
-    /// Load a player's revealed choice, or `None` if not yet revealed.
-    pub fn load_choice(env: &Env, player: &Address) -> Option<Choice> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Choice(player.clone()))
-    }
-
-    /// Returns `true` if the player has already revealed their choice.
-    pub fn has_revealed(env: &Env, player: &Address) -> bool {
-        env.storage()
-            .persistent()
-            .has(&DataKey::Choice(player.clone()))
-    }
-
-    pub fn save_yield_snapshot(env: &Env, round: u32, snapshot: &YieldSnapshot) {
-        env.storage()
-            .persistent()
-            .set(&DataKey::YieldSnapshot(round), snapshot);
-    }
-
-    pub fn load_yield_snapshot(env: &Env, round: u32) -> Option<YieldSnapshot> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::YieldSnapshot(round))
-    }
-
-    /// Persist the oracle-reported yield rate (in bps) for a resolved round.
-    pub fn save_round_yield_bps(env: &Env, round: u32, bps: u32) {
-        env.storage()
-            .persistent()
-            .set(&DataKey::RoundYieldBps(round), &bps);
-    }
-
-    /// Load the snapshotted oracle yield rate for a round. Returns `None` if
-    /// the round has not been resolved yet or pre-dates oracle integration.
-    pub fn load_round_yield_bps(env: &Env, round: u32) -> Option<u32> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::RoundYieldBps(round))
     }
 }
 
 // Silence unused-import warnings until the full contract is wired up
-const _: &str = CONFIG_KEY;
-const _: &str = PLAYERS_KEY;
+const _: &str = PENDING_ADMIN_KEY;

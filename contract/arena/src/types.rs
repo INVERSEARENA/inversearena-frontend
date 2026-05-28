@@ -59,6 +59,13 @@ pub struct ArenaConfig {
     pub oracle_contract: Address,
 }
 
+/// Wrapper for a pending admin transfer proposal.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingAdmin {
+    pub new_admin: Address,
+}
+
 /// Per-player state stored in persistent storage, keyed by the player address.
 ///
 /// Returned (alongside the address) by `get_players` so indexers, analytics
@@ -96,24 +103,5 @@ pub enum ArenaError {
     CannotCancelStartedGame = 2,
     /// Arena configuration has not been initialised.
     NotInitialised = 3,
-    /// Commit phase has ended — the current ledger timestamp is past the
-    /// configured `commit_deadline`.
-    CommitPhaseEnded = 4,
-    /// Reveal phase is not yet active — the commit deadline has not passed.
-    RevealPhaseNotActive = 5,
-    /// The computed hash of (choice | salt) does not match the stored
-    /// commitment for this player.
-    HashMismatch = 6,
-    /// The player has already revealed their choice for this round.
-    AlreadyRevealed = 7,
-    /// No prior commitment was found for this player.
-    NoCommitmentFound = 8,
-    /// `resolve_round` was called before the round was started.
-    RoundNotStarted = 9,
-    /// `resolve_round` was called before the minimum grace period elapsed.
-    GracePeriodNotElapsed = 10,
-    /// The operation requires the arena to be in the Active state.
-    RoundNotActive = 11,
-    /// Player has already joined this arena.
-    AlreadyJoined = 12,
+
 }

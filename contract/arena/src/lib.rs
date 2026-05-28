@@ -10,7 +10,6 @@ mod types;
 
 use rwa_adapter::RwaAdapterClient;
 use storage::ArenaStorage;
-use types::{ArenaConfig, ArenaError, Choice, GameState, PlayerState, YieldSnapshot};
 
 /// Number of players returned per `get_players` page.
 const PAGE_SIZE: u32 = 50;
@@ -29,35 +28,23 @@ pub struct ArenaContract;
 
 #[contractimpl]
 impl ArenaContract {
-    /// Initialise the arena with configuration.
-    ///
-    /// Must be called once by the admin before any other function.
-    /// Sets `stake_token`, `yield_vault`, and `entry_fee` for the arena lifetime.
+
     pub fn initialize(
         env: Env,
         admin: Address,
         stake_token: Address,
-        yield_vault: Address,
-        entry_fee: i128,
-        oracle_contract: Address,
-    ) -> Result<(), ArenaError> {
-        admin.require_auth();
+
 
         let config = ArenaConfig {
             admin,
             stake_token,
-            yield_vault,
-            entry_fee,
-            state: GameState::Open,
-            player_count: 0,
-            commit_deadline: u64::MAX,
-            round_count: 0,
-            oracle_contract,
+
         };
         ArenaStorage::save_config(&env, &config);
 
         env.events()
             .publish((soroban_sdk::symbol_short!("init"),), ());
+
         Ok(())
     }
 
@@ -109,107 +96,17 @@ impl ArenaContract {
         Ok(())
     }
 
-    /// Commit a hidden choice via its hash during the commit phase.
-    ///
-    /// `commitment` must be `sha256(choice.to_byte() | salt)` computed
-    /// off-chain by the player. The contract stores only the hash; the
-    /// actual choice and salt must be revealed later via [`reveal_choice`].
-    pub fn commit_choice(env: Env, player: Address, commitment: BytesN<32>) -> Result<(), ArenaError> {
-        player.require_auth();
 
-        let config = ArenaStorage::load_config(&env)?;
-
-        if env.ledger().timestamp() >= config.commit_deadline {
-            return Err(ArenaError::CommitPhaseEnded);
-        }
-
-        ArenaStorage::save_commitment(&env, &player, &commitment);
-
-        env.events()
-            .publish((soroban_sdk::symbol_short!("committed"), player), ());
 
         Ok(())
     }
 
-    /// Reveal a previously committed choice with its salt.
-    ///
-    /// The contract computes `sha256(choice.to_byte() | salt)` and verifies
-    /// it matches the commitment stored during [`commit_choice`].
-    pub fn reveal_choice(
-        env: Env,
-        player: Address,
-        choice: Choice,
-        salt: BytesN<32>,
-    ) -> Result<(), ArenaError> {
-        player.require_auth();
 
-        let config = ArenaStorage::load_config(&env)?;
-
-        if env.ledger().timestamp() < config.commit_deadline {
-            return Err(ArenaError::RevealPhaseNotActive);
-        }
-
-        let stored = ArenaStorage::load_commitment(&env, &player)
-            .ok_or(ArenaError::NoCommitmentFound)?;
-
-        if ArenaStorage::has_revealed(&env, &player) {
-            return Err(ArenaError::AlreadyRevealed);
-        }
-
-        let mut preimage = Bytes::new(&env);
-        preimage.push_back(choice.to_byte());
-        let salt_bytes = salt.to_array();
-        for b in salt_bytes.iter() {
-            preimage.push_back(*b);
-        }
-
-        let computed: BytesN<32> = env.crypto().sha256(&preimage).into();
-        if computed != stored {
-            return Err(ArenaError::HashMismatch);
-        }
-
-        ArenaStorage::save_choice(&env, &player, &choice);
-
-        env.events()
-            .publish((soroban_sdk::symbol_short!("revealed"), player), ());
 
         Ok(())
     }
 
-    /// Join an open arena by staking the entry fee.
-    ///
-    /// Transfers `entry_fee` of `stake_token` from the player to the arena
-    /// contract, then immediately deposits the stake into the RWA yield vault
-    /// via the configured adapter contract.
-    pub fn join(env: Env, player: Address) -> Result<(), ArenaError> {
-        player.require_auth();
 
-        let config = ArenaStorage::load_config(&env)?;
-
-        if config.state != GameState::Open {
-            return Err(ArenaError::CannotCancelStartedGame);
-        }
-
-        if ArenaStorage::load_player(&env, &player).is_some() {
-            return Err(ArenaError::AlreadyJoined);
-        }
-
-        let token_client = token::TokenClient::new(&env, &config.stake_token);
-        let arena_addr = env.current_contract_address();
-        token_client.transfer(&player, &arena_addr, &config.entry_fee);
-
-        arena_addr.require_auth();
-        token_client.transfer(&arena_addr, &config.yield_vault, &config.entry_fee);
-
-        let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
-        let _ = rwa_client.deposit(&arena_addr, &config.entry_fee);
-
-        ArenaStorage::add_player(&env, &player);
-
-        env.events().publish(
-            (soroban_sdk::symbol_short!("joined"), player),
-            config.entry_fee,
-        );
 
         Ok(())
     }

@@ -1,21 +1,16 @@
 import { Request, Response } from 'express';
 import { RoundService } from '../services/roundService';
+import { RoundInputSchema } from '../types/round';
 import type { RoundInput } from '../types/round';
 
 export class RoundController {
   constructor(private roundService: RoundService) {}
 
   resolveRound = async (req: Request, res: Response): Promise<void> => {
+    const input = RoundInputSchema.parse(req.body) as RoundInput;
+
     try {
-      const input: RoundInput = req.body;
-
-      if (!input.roundId || !input.playerChoices || input.oracleYield === undefined) {
-        res.status(400).json({ error: 'Missing required fields' });
-        return;
-      }
-
       const resolution = await this.roundService.resolveRound(input);
-
       res.json({
         success: true,
         data: resolution,
