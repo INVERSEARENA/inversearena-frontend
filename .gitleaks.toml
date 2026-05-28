@@ -1,0 +1,36 @@
+title = "InverseArena Gitleaks Configuration"
+
+[extend]
+# Extend the default ruleset shipped with Gitleaks.
+useDefault = true
+
+[[rules]]
+id = "stellar-secret-key"
+description = "Stellar secret key (56-character base32 string starting with S)"
+regex = '''S[A-Z2-7]{55}'''
+tags = ["stellar", "private-key", "high-severity"]
+
+[[rules]]
+id = "jwt-secret-env"
+description = "JWT_SECRET assigned a literal value (not a variable reference)"
+regex = '''JWT_SECRET\s*[=:]\s*['"]?[^${\n'"]{32,}'''
+tags = ["jwt", "secret"]
+
+[[rules]]
+id = "admin-api-key-env"
+description = "ADMIN_API_KEY assigned a literal value"
+regex = '''ADMIN_API_KEY\s*[=:]\s*['"]?[^${\n'"]{8,}'''
+tags = ["api-key", "secret"]
+
+[allowlist]
+description = "Allowlist for test fixtures and known safe dummy values"
+# Paths that intentionally contain dummy/placeholder keys.
+paths = [
+    '''\.env\.example''',
+    '''\.env\.test''',
+]
+# Known dummy Stellar secret key used exclusively in test fixtures.
+# This is not a real key — it was generated offline for testing purposes only.
+regexes = [
+    '''SCZANGBA5XHFAT5GJYMFNOHTN5SL6KVWGIXLIAQBCAYHH7QJIQKFXS5''',
+]

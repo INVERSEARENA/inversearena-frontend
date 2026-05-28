@@ -2,6 +2,7 @@
 use soroban_sdk::{Address, Bytes, BytesN, Env, Vec, contract, contractimpl, token};
 
 mod eliminations;
+mod fuzz_tests;
 mod oracle;
 mod snapshot_test;
 mod state_machine;

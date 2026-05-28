@@ -1,4 +1,5 @@
 #![no_std]
+mod snapshot_tests;
 mod storage;
 mod types;
 

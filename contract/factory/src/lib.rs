@@ -1,5 +1,11 @@
 #![no_std]
 
+mod snapshot_tests;
+mod storage;
+mod types;
+
+use storage::FactoryStorage;
+use types::FactoryError;
 
 /// Factory contract — deploys arena instances and enforces protocol-level rules.
 ///
