@@ -230,4 +230,30 @@ describe("useStellarWallet", () => {
 
     expect(StellarWalletsKit.init).toHaveBeenCalledTimes(1);
   });
+
+  it("calls StellarWalletsKit.disconnect on unmount (cleanup)", () => {
+    const { unmount } = renderHook(() => useStellarWallet(Networks.TESTNET));
+
+    unmount();
+
+    expect(StellarWalletsKit.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls disconnect then reinit when network prop changes", () => {
+    const { rerender } = renderHook(
+      ({ network }: { network: Networks }) => useStellarWallet(network),
+      { initialProps: { network: Networks.TESTNET } },
+    );
+
+    rerender({ network: "Public Global Stellar Network ; September 2015" as Networks });
+
+    // First init on mount, second after the network-change cleanup
+    expect(StellarWalletsKit.init).toHaveBeenCalledTimes(2);
+    // Cleanup from the first effect fires before the second init
+    expect(StellarWalletsKit.disconnect).toHaveBeenCalledTimes(1);
+    expect(StellarWalletsKit.init).toHaveBeenLastCalledWith({
+      network: "Public Global Stellar Network ; September 2015",
+      modules: expect.any(Array),
+    });
+  });
 });

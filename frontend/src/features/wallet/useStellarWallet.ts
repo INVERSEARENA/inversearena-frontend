@@ -48,8 +48,10 @@ export const useStellarWallet = (network: Networks): WalletHook => {
 
     // Suppress auto-reconnect if the user previously disconnected intentionally
     if (typeof window !== 'undefined' && localStorage.getItem(WALLET_DISCONNECTED_KEY) === 'true') {
-      return;
+      return () => { StellarWalletsKit.disconnect(); };
     }
+
+    return () => { StellarWalletsKit.disconnect(); };
   }, [network]);
 
   const connectWallet = useCallback(async () => {

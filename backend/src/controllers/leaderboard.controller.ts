@@ -65,132 +65,93 @@ export class LeaderboardController {
   // ──────────────────────────────────────────────────────────────────
 
   /**
-   * Aggregates all users' stats from resolved rounds and elimination logs,
-   * returning a sorted array of players ranked by total yield (descending).
+   * Aggregates per-user stats using a single PostgreSQL CTE, avoiding the
+   * O(rounds × players) memory spike of loading all round rows into Node.js.
    *
-   * - totalYield     : sum of payouts from round resolution metadata
-   * - arenasWon      : distinct arenas where user participated but was never eliminated
-   * - survivalStreak : rounds participated minus rounds eliminated (cumulative)
+   * The CTE pipeline:
+   *  1. round_choices  – unnests playerChoices JSONB arrays from RESOLVED rounds
+   *  2. round_stats    – groups by userId: totalYield, roundsParticipated, arenas
+   *  3. elim_stats     – groups elimination_logs by userId
+   *  4. all_users      – UNION of both sets so eliminated-only players are included
+   *
+   * Result is pre-sorted by totalYield DESC, arenasWon DESC so JS only assigns ranks.
    */
   private async buildRankedPlayers(): Promise<PlayerStats[]> {
-    // 1. Fetch all resolved rounds
-    const resolvedRounds = await this.prisma.round.findMany({
-      where: { state: "RESOLVED" },
-      select: { arenaId: true, metadata: true },
-    });
+    type RawRow = {
+      id: string;
+      walletAddress: string;
+      totalYield: string;      // PostgreSQL numeric → string in Prisma $queryRaw
+      arenasWon: string;       // bigint → string
+      survivalStreak: string;  // bigint → string
+    };
 
-    // Per-user accumulators
-    const yieldByUser = new Map<string, number>();
-    const arenasByUser = new Map<string, Set<string>>();
-    const roundsParticipatedByUser = new Map<string, number>();
+    const rows = await this.prisma.$queryRaw<RawRow[]>`
+      WITH round_choices AS (
+        SELECT
+          r.id                                       AS round_id,
+          r.arena_id,
+          (choice->>'userId')                        AS user_id,
+          COALESCE((
+            SELECT SUM((p->>'amount')::numeric)
+            FROM jsonb_array_elements(r.metadata->'resolution'->'payouts') AS p
+            WHERE p->>'userId' = choice->>'userId'
+          ), 0)                                      AS payout
+        FROM rounds r
+        CROSS JOIN LATERAL jsonb_array_elements(r.metadata->'playerChoices') AS c(choice)
+        WHERE r.state = 'RESOLVED'
+      ),
+      round_stats AS (
+        SELECT
+          user_id,
+          SUM(payout)                   AS total_yield,
+          COUNT(*)                      AS rounds_participated,
+          COUNT(DISTINCT arena_id)      AS arenas_participated
+        FROM round_choices
+        GROUP BY user_id
+      ),
+      elim_stats AS (
+        SELECT
+          el.user_id,
+          COUNT(DISTINCT r.arena_id)    AS arenas_eliminated,
+          COUNT(*)                      AS eliminations
+        FROM elimination_logs el
+        JOIN rounds r ON r.id = el.round_id
+        GROUP BY el.user_id
+      ),
+      all_user_ids AS (
+        SELECT user_id FROM round_stats
+        UNION
+        SELECT user_id FROM elim_stats
+      )
+      SELECT
+        u.id,
+        u.wallet_address                                                    AS "walletAddress",
+        COALESCE(rs.total_yield, 0)::numeric                                AS "totalYield",
+        GREATEST(0,
+          COALESCE(rs.arenas_participated, 0)::bigint
+          - COALESCE(es.arenas_eliminated, 0)::bigint
+        )                                                                   AS "arenasWon",
+        GREATEST(0,
+          COALESCE(rs.rounds_participated, 0)::bigint
+          - COALESCE(es.eliminations, 0)::bigint
+        )                                                                   AS "survivalStreak"
+      FROM all_user_ids au
+      JOIN users u ON u.id = au.user_id
+      LEFT JOIN round_stats rs ON rs.user_id = au.user_id
+      LEFT JOIN elim_stats es ON es.user_id = au.user_id
+      ORDER BY "totalYield" DESC, "arenasWon" DESC
+    `;
 
-    for (const round of resolvedRounds) {
-      const meta = round.metadata as Record<string, unknown> | null;
-      if (!meta) continue;
+    if (rows.length === 0) return [];
 
-      const choices = meta.playerChoices as
-        | Array<{ userId: string }>
-        | undefined;
-      if (choices) {
-        for (const c of choices) {
-          if (!arenasByUser.has(c.userId)) arenasByUser.set(c.userId, new Set());
-          arenasByUser.get(c.userId)!.add(round.arenaId);
-          roundsParticipatedByUser.set(
-            c.userId,
-            (roundsParticipatedByUser.get(c.userId) ?? 0) + 1,
-          );
-        }
-      }
-
-      const resolution = meta.resolution as
-        | { payouts?: Array<{ userId: string; amount: number }> }
-        | undefined;
-      if (resolution?.payouts) {
-        for (const p of resolution.payouts) {
-          yieldByUser.set(p.userId, (yieldByUser.get(p.userId) ?? 0) + p.amount);
-        }
-      }
-    }
-
-    // 2. Fetch elimination logs to compute arenasWon and survivalStreak
-    const eliminations = await this.prisma.eliminationLog.findMany({
-      select: {
-        userId: true,
-        round: { select: { arenaId: true } },
-      },
-    });
-
-    const eliminatedArenasByUser = new Map<string, Set<string>>();
-    const eliminationCountByUser = new Map<string, number>();
-
-    for (const el of eliminations) {
-      if (!arenasByUser.has(el.userId)) arenasByUser.set(el.userId, new Set());
-      arenasByUser.get(el.userId)!.add(el.round.arenaId);
-
-      if (!eliminatedArenasByUser.has(el.userId)) {
-        eliminatedArenasByUser.set(el.userId, new Set());
-      }
-      eliminatedArenasByUser.get(el.userId)!.add(el.round.arenaId);
-
-      eliminationCountByUser.set(
-        el.userId,
-        (eliminationCountByUser.get(el.userId) ?? 0) + 1,
-      );
-    }
-
-    // 3. Merge all user IDs
-    const allUserIds = new Set([
-      ...yieldByUser.keys(),
-      ...arenasByUser.keys(),
-    ]);
-
-    if (allUserIds.size === 0) return [];
-
-    // 4. Fetch user identity from PostgreSQL (same DB as game data)
-    type UserRow = { id: string; walletAddress: string };
-    const users: UserRow[] = await this.prisma.user.findMany({
-      where: { id: { in: Array.from(allUserIds) } },
-      select: { id: true, walletAddress: true },
-    });
-
-    const userMap = new Map<string, UserRow>(users.map((u) => [u.id, u]));
-
-    // 5. Build unsorted player list
-    const players: Omit<PlayerStats, "rank">[] = [];
-
-    for (const userId of allUserIds) {
-      const user = userMap.get(userId);
-      if (!user) continue; // skip orphaned game records
-
-      const participatedArenas = arenasByUser.get(userId) ?? new Set<string>();
-      const eliminatedArenas = eliminatedArenasByUser.get(userId) ?? new Set<string>();
-
-      const arenasWon = [...participatedArenas].filter(
-        (a) => !eliminatedArenas.has(a),
-      ).length;
-
-      const roundsParticipated = roundsParticipatedByUser.get(userId) ?? 0;
-      const eliminationCount = eliminationCountByUser.get(userId) ?? 0;
-      const survivalStreak = Math.max(0, roundsParticipated - eliminationCount);
-
-      players.push({
-        id: user.id,
-        walletAddress: user.walletAddress,
-        totalYield: yieldByUser.get(userId) ?? 0,
-        arenasWon,
-        survivalStreak,
-      });
-    }
-
-    // 6. Sort by totalYield descending, arenasWon as tiebreaker
-    players.sort((a, b) => {
-      const yieldDiff = b.totalYield - a.totalYield;
-      if (yieldDiff !== 0) return yieldDiff;
-      return b.arenasWon - a.arenasWon;
-    });
-
-    // 7. Assign 1-based ranks
-    return players.map((p, i) => ({ ...p, rank: i + 1 }));
+    return rows.map((row, i) => ({
+      id: row.id,
+      walletAddress: row.walletAddress,
+      totalYield: Number(row.totalYield),
+      arenasWon: Number(row.arenasWon),
+      survivalStreak: Number(row.survivalStreak),
+      rank: i + 1,
+    }));
   }
 
   // ── Cursor encoding ───────────────────────────────────────────────

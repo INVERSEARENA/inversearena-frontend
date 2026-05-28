@@ -21,6 +21,7 @@ async function cleanup(arenaId: string) {
     where: { round: { arenaId } },
   });
   await prisma.round.deleteMany({ where: { arenaId } });
+  await prisma.pool.deleteMany({ where: { arenaId } });
   await prisma.arena.delete({ where: { id: arenaId } }).catch(() => {});
 }
 
@@ -53,6 +54,67 @@ describe("ArenaStatsService.getArenaStats", () => {
     }
   });
 
+  it("counts players from Pool entries for a pre-start arena (0 rounds)", async () => {
+    if (!process.env.DATABASE_URL) return;
+
+    const arena = await createArena(50);
+
+    // 3 players joined (Pool entries) but no round has started yet
+    await prisma.pool.createMany({
+      data: [
+        { arenaId: arena.id, stakeAmount: 50 },
+        { arenaId: arena.id, stakeAmount: 50 },
+        { arenaId: arena.id, stakeAmount: 50 },
+      ],
+    });
+
+    try {
+      const stats = await service.getArenaStats(arena.id);
+
+      expect(stats.playerCount).toBe(3);
+      expect(stats.currentRound).toBe(0);
+      expect(stats.status).toBe("pending");
+    } finally {
+      await cleanup(arena.id);
+    }
+  });
+
+  it("counts players who joined but did not submit a choice in round 1", async () => {
+    if (!process.env.DATABASE_URL) return;
+
+    const arena = await createArena(50);
+    const users = await Promise.all([createUser("NP1"), createUser("NP2")]);
+
+    // 4 players joined via Pool, but only 2 appear in round 1 metadata choices
+    await prisma.pool.createMany({
+      data: Array(4).fill({ arenaId: arena.id, stakeAmount: 50 }),
+    });
+
+    await prisma.round.create({
+      data: {
+        arenaId: arena.id,
+        roundNumber: 1,
+        state: "OPEN",
+        metadata: {
+          playerChoices: [
+            { userId: users[0].id, stake: 50 },
+            { userId: users[1].id, stake: 50 },
+          ],
+        },
+      },
+    });
+
+    try {
+      const stats = await service.getArenaStats(arena.id);
+
+      // Pool count reflects all 4 joined players, not just the 2 with choices
+      expect(stats.playerCount).toBe(4);
+    } finally {
+      await cleanup(arena.id);
+      await cleanupUsers(users.map((u) => u.id));
+    }
+  });
+
   it("counts players and survivors correctly after the first round with eliminations", async () => {
     if (!process.env.DATABASE_URL) return;
 
@@ -64,6 +126,11 @@ describe("ArenaStatsService.getArenaStats", () => {
       createUser("U4"),
       createUser("U5"),
     ]);
+
+    // Each user has a Pool entry representing their joined stake
+    await prisma.pool.createMany({
+      data: users.map(() => ({ arenaId: arena.id, stakeAmount: 50 })),
+    });
 
     const round = await prisma.round.create({
       data: {
@@ -108,6 +175,10 @@ describe("ArenaStatsService.getArenaStats", () => {
       createUser("Y2"),
     ]);
 
+    await prisma.pool.createMany({
+      data: users.map(() => ({ arenaId: arena.id, stakeAmount: 100 })),
+    });
+
     for (let i = 1; i <= 3; i++) {
       await prisma.round.create({
         data: {
@@ -138,6 +209,8 @@ describe("ArenaStatsService.getArenaStats", () => {
 
     const arena = await createArena(100);
     const user = await createUser("NR1");
+
+    await prisma.pool.create({ data: { arenaId: arena.id, stakeAmount: 100 } });
 
     // One resolved round with yield, one open round without.
     await prisma.round.create({

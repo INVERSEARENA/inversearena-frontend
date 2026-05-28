@@ -28,10 +28,7 @@ export class ArenaStatsService {
     const lastRound = rounds[rounds.length - 1];
     const currentRound = lastRound !== undefined ? lastRound.roundNumber : 0;
 
-    const firstRound = rounds[0];
-    const firstRoundMetadata = (firstRound?.metadata as Record<string, unknown>) ?? {};
-    const playerChoices = (firstRoundMetadata.playerChoices as unknown[]) ?? [];
-    const playerCount = playerChoices.length;
+    const playerCount = await this.prisma.pool.count({ where: { arenaId } });
 
     const eliminatedUserIds = new Set<string>();
     rounds.forEach((round) => {
