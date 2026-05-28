@@ -3,8 +3,11 @@ import {
   BASE_FEE,
   Contract,
   Keypair,
+  Transaction,
   TransactionBuilder,
   nativeToScVal,
+  scValToNative,
+  xdr,
 } from "@stellar/stellar-sdk";
 // @ts-ignore
 import { rpc } from "@stellar/stellar-sdk";
@@ -158,7 +161,9 @@ export class PaymentService {
       throw new Error(`Transaction ${transactionId} is not waiting for signature`);
     }
 
-    TransactionBuilder.fromXDR(signedXdr, this.config.networkPassphrase);
+    // Audit the signed XDR before queuing (#667): a compromised external signer
+    // could return a validly-signed transaction that redirects the payout.
+    this.assertSignedTransactionMatches(signedXdr, transaction);
 
     return this.transactions.update(transactionId, {
       signedXdr,
@@ -288,6 +293,66 @@ export class PaymentService {
     }
 
     return current;
+  }
+
+  /**
+   * Verify that a signed payout transaction matches the stored payout record
+   * and this service's configuration before it is queued for submission (#667).
+   *
+   * Rejects if the source account, invoked contract, called method, payout
+   * destination, or amount differ from what was authorised. Without this, a
+   * compromised KMS signer could return a validly-signed XDR redirecting funds.
+   */
+  private assertSignedTransactionMatches(
+    signedXdr: string,
+    transaction: TransactionRecord
+  ): void {
+    let parsed: ReturnType<typeof TransactionBuilder.fromXDR>;
+    try {
+      parsed = TransactionBuilder.fromXDR(signedXdr, this.config.networkPassphrase);
+    } catch {
+      throw new Error("Signed XDR could not be parsed");
+    }
+
+    // Fee-bump wrappers are not expected for payouts.
+    if (!(parsed instanceof Transaction)) {
+      throw new Error("Signed transaction must not be a fee-bump transaction");
+    }
+    const tx = parsed;
+
+    if (tx.source !== this.config.sourceAccount) {
+      throw new Error("Signed transaction source account does not match the payout source");
+    }
+    if (tx.operations.length !== 1) {
+      throw new Error("Signed transaction must contain exactly one operation");
+    }
+
+    const op = tx.operations[0] as { type: string; func?: xdr.HostFunction };
+    if (op.type !== "invokeHostFunction" || !op.func) {
+      throw new Error("Signed transaction operation is not a contract invocation");
+    }
+    if (op.func.switch().name !== "hostFunctionTypeInvokeContract") {
+      throw new Error("Signed transaction does not invoke a contract");
+    }
+
+    const invoke = op.func.invokeContract();
+    const contractId = Address.fromScAddress(invoke.contractAddress()).toString();
+    if (contractId !== this.config.payoutContractId) {
+      throw new Error("Signed transaction targets an unexpected contract");
+    }
+    if (invoke.functionName().toString() !== this.config.payoutMethodName) {
+      throw new Error("Signed transaction calls an unexpected contract method");
+    }
+
+    const args = invoke.args();
+    const destination = String(scValToNative(args[0]));
+    if (destination !== transaction.destinationAccount) {
+      throw new Error("Signed transaction destination does not match the payout record");
+    }
+    const amount = String(scValToNative(args[1]));
+    if (amount !== transaction.amountStroops) {
+      throw new Error("Signed transaction amount does not match the payout record");
+    }
   }
 
   private async requireTransaction(transactionId: string): Promise<TransactionRecord> {

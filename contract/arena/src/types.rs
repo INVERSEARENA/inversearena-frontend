@@ -89,4 +89,10 @@ pub enum ArenaError {
     AlreadyRevealed = 7,
     /// No prior commitment was found for this player.
     NoCommitmentFound = 8,
+    /// `resolve_round` was called before the round was started.
+    RoundNotStarted = 9,
+    /// `resolve_round` was called before the minimum grace period elapsed.
+    GracePeriodNotElapsed = 10,
+    /// The operation requires the arena to be in the Active state.
+    RoundNotActive = 11,
 }

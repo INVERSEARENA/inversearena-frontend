@@ -29,6 +29,33 @@ impl ArenaStorage {
             .set(&symbol_short!("CONFIG"), config);
     }
 
+    /// Ledger timestamp at which the current round started (#689). `None` until
+    /// `start_round` has been called.
+    pub fn load_round_start(env: &Env) -> Option<u64> {
+        env.storage().persistent().get(&symbol_short!("RSTART"))
+    }
+
+    pub fn save_round_start(env: &Env, timestamp: u64) {
+        env.storage()
+            .persistent()
+            .set(&symbol_short!("RSTART"), &timestamp);
+    }
+
+    /// Minimum seconds that must elapse after `start_round` before
+    /// `resolve_round` is permitted (#689). Defaults to 0 if never set.
+    pub fn load_round_duration(env: &Env) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&symbol_short!("RDUR"))
+            .unwrap_or(0)
+    }
+
+    pub fn save_round_duration(env: &Env, seconds: u64) {
+        env.storage()
+            .persistent()
+            .set(&symbol_short!("RDUR"), &seconds);
+    }
+
     /// Return the list of all player addresses that have joined this arena.
     pub fn load_all_players(env: &Env) -> Vec<Address> {
         env.storage()

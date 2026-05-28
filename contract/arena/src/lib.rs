@@ -166,13 +166,64 @@ impl ArenaContract {
             .map(|c| c.player_count)
             .unwrap_or(0)
     }
+
+    /// Start a round, opening the submission window (#689).
+    ///
+    /// Records the round start timestamp and the minimum grace period
+    /// (`duration_seconds`) that must elapse before [`resolve_round`] can be
+    /// called. Only the admin may start a round, and only from `Open`.
+    pub fn start_round(env: Env, duration_seconds: u64) -> Result<(), ArenaError> {
+        let mut config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+
+        if config.state != GameState::Open {
+            return Err(ArenaError::CannotCancelStartedGame);
+        }
+
+        config.state = GameState::Active;
+        ArenaStorage::save_config(&env, &config);
+        ArenaStorage::save_round_start(&env, env.ledger().timestamp());
+        ArenaStorage::save_round_duration(&env, duration_seconds);
+
+        env.events()
+            .publish((soroban_sdk::symbol_short!("started"),), duration_seconds);
+        Ok(())
+    }
+
+    /// Resolve the current round, enforcing the on-chain timelock (#689).
+    ///
+    /// Rejects with [`ArenaError::GracePeriodNotElapsed`] unless at least
+    /// `duration_seconds` have passed since the round started — so an admin
+    /// cannot resolve a round before players have had the window to act.
+    pub fn resolve_round(env: Env) -> Result<(), ArenaError> {
+        let mut config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+
+        if config.state != GameState::Active {
+            return Err(ArenaError::RoundNotActive);
+        }
+
+        let round_start =
+            ArenaStorage::load_round_start(&env).ok_or(ArenaError::RoundNotStarted)?;
+        let grace = ArenaStorage::load_round_duration(&env);
+        if env.ledger().timestamp() < round_start.saturating_add(grace) {
+            return Err(ArenaError::GracePeriodNotElapsed);
+        }
+
+        config.state = GameState::Finished;
+        ArenaStorage::save_config(&env, &config);
+
+        env.events()
+            .publish((soroban_sdk::symbol_short!("resolved"),), ());
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
     use crate::types::ArenaConfig;
-    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::{Address as _, Ledger as _};
 
     /// Register the contract and seed `n` joined players, returning the client.
     fn setup(n: u32) -> (Env, ArenaContractClient<'static>) {
@@ -396,5 +447,72 @@ mod test {
         let client = ArenaContractClient::new(&env, &contract_id);
         let result = client.try_reveal_choice(&player, &Choice::Heads, &salt);
         assert!(result.is_err());
+    }
+
+    // ── #689: admin timelock on resolve_round ──────────────────────────────
+
+    fn setup_started(duration: u64, start_ts: u64) -> (Env, ArenaContractClient<'static>) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        env.as_contract(&contract_id, || {
+            let config = ArenaConfig {
+                admin: Address::generate(&env),
+                stake_token: Address::generate(&env),
+                entry_fee: 100,
+                state: GameState::Open,
+                player_count: 0,
+                commit_deadline: 0,
+            };
+            ArenaStorage::save_config(&env, &config);
+        });
+        let client = ArenaContractClient::new(&env, &contract_id);
+        env.ledger().with_mut(|li| li.timestamp = start_ts);
+        client.start_round(&duration);
+        (env, client)
+    }
+
+    fn state_of(env: &Env, client: &ArenaContractClient) -> GameState {
+        env.as_contract(&client.address, || ArenaStorage::load_config(env).unwrap().state)
+    }
+
+    #[test]
+    fn resolve_round_before_grace_elapsed_fails() {
+        let (env, client) = setup_started(60, 1_000);
+        // Only 30s have passed; the 60s grace window has not elapsed.
+        env.ledger().with_mut(|li| li.timestamp = 1_030);
+        assert!(client.try_resolve_round().is_err());
+        // State is unchanged — still Active.
+        assert_eq!(state_of(&env, &client), GameState::Active);
+    }
+
+    #[test]
+    fn resolve_round_after_grace_elapsed_succeeds() {
+        let (env, client) = setup_started(60, 1_000);
+        // Past the grace window.
+        env.ledger().with_mut(|li| li.timestamp = 1_061);
+        client.resolve_round();
+        assert_eq!(state_of(&env, &client), GameState::Finished);
+    }
+
+    #[test]
+    fn resolve_round_requires_an_active_round() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        env.as_contract(&contract_id, || {
+            let config = ArenaConfig {
+                admin: Address::generate(&env),
+                stake_token: Address::generate(&env),
+                entry_fee: 100,
+                state: GameState::Open,
+                player_count: 0,
+                commit_deadline: 0,
+            };
+            ArenaStorage::save_config(&env, &config);
+        });
+        let client = ArenaContractClient::new(&env, &contract_id);
+        // Never started → not Active → rejected.
+        assert!(client.try_resolve_round().is_err());
     }
 }
