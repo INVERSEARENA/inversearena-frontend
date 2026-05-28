@@ -5,6 +5,7 @@ import { createApiRouter } from "./routes";
 import { createAdminRouter } from "./routes/admin";
 import { errorHandler } from "./middleware/errorHandler";
 import { requestLogger } from "./middleware/logger";
+import { requestContextMiddleware } from "./middleware/requestContext";
 import { metricsMiddleware } from "./middleware/metrics";
 import {
   ApiKeyAuthProvider,
@@ -44,6 +45,7 @@ export function createApp(deps: AppDependencies): express.Application {
   app.use(cors());
   app.use(express.json());
   app.use(requestLogger);
+  app.use(requestContextMiddleware);
   app.use(metricsMiddleware);
 
   app.get("/health", (_req, res) => {

@@ -1,6 +1,7 @@
 import pino from "pino";
 // @ts-ignore
 import * as Sentry from "@sentry/node";
+import { getRequestId } from "./requestContext";
 
 const redactPaths = [
     "req.headers.authorization",
@@ -30,8 +31,18 @@ export const logger = pino({
     timestamp: pino.stdTimeFunctions.isoTime,
 });
 
+/** A child logger carrying the current request id, for service-layer logs (#661). */
+export const contextLogger = () => {
+    const requestId = getRequestId();
+    return requestId ? logger.child({ requestId }) : logger;
+};
+
 export const reportErrorToSentry = (err: Error, context?: Record<string, any>) => {
     Sentry.withScope((scope: any) => {
+        // Tie the Sentry event back to the originating request (#661).
+        const requestId = getRequestId();
+        if (requestId) scope.setTag("requestId", requestId);
+
         if (context) {
             if (context.userWallet) {
                 context.userWalletMasked = maskWalletAddress(context.userWallet);
