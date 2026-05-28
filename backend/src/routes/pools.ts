@@ -6,6 +6,7 @@ import { cacheTTL } from "../cache/cacheService";
 import { prisma } from "../db/prisma";
 import { createRateLimitMiddleware, poolsRateLimitConfig } from "../middleware/rateLimit";
 import type { RequestHandler } from "express";
+import { apiError } from "../utils/apiError";
 
 const PaginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
@@ -111,8 +112,7 @@ export function createPoolsRouter(authMiddleware: RequestHandler): Router {
       });
 
       if (!pool) {
-        res.status(404).json({ error: { code: "POOL_NOT_FOUND" } });
-        return;
+        throw apiError(404, "POOL_NOT_FOUND", "Pool not found");
       }
 
       const offset = cursor ? decodeCursor(cursor) : 0;

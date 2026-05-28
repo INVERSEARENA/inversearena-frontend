@@ -62,7 +62,8 @@ describe("Auth Flow Integration", () => {
             .send({ walletAddress: keypair.publicKey(), signature });
 
         expect(verifyRes.status).toBe(401);
-        expect(verifyRes.body.error).toMatch(/nonce/i);
+        expect(verifyRes.body.error.code).toBe("UNAUTHORIZED");
+        expect(verifyRes.body.error.message).toMatch(/nonce/i);
     });
 
     it("returns 401 when nonce has already been used", async () => {
@@ -88,6 +89,7 @@ describe("Auth Flow Integration", () => {
             .send({ walletAddress: keypair.publicKey(), signature });
 
         expect(secondVerify.status).toBe(401);
-        expect(secondVerify.body.error).toMatch(/nonce/i);
+        expect(secondVerify.body.error.code).toBe("UNAUTHORIZED");
+        expect(secondVerify.body.error.message).toMatch(/nonce/i);
     });
 });

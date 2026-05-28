@@ -5,6 +5,7 @@ import {
   type RateLimiterAbstract,
 } from "rate-limiter-flexible";
 import { redis } from "../cache/redisClient";
+import { apiError } from "../utils/apiError";
 
 export interface RateLimitConfig {
   keyPrefix: string;
@@ -91,10 +92,8 @@ export function createRateLimitMiddleware(
         1,
         Math.ceil((typed.msBeforeNext ?? config.durationSeconds * 1_000) / 1_000),
       );
-      res
-        .status(429)
-        .set("Retry-After", String(retryAfter))
-        .json({ error: "Too many requests. Please retry later." });
+      res.set("Retry-After", String(retryAfter));
+      next(apiError(429, "RATE_LIMITED", "Too many requests. Please retry later."));
     }
   };
 }

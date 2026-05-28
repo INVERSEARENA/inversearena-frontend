@@ -1,11 +1,12 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
+import { apiError } from "../utils/apiError";
 
 export function verifyWebhookSignature(secret: string): RequestHandler {
   return (req: Request, res: Response, next: NextFunction): void => {
     const signature = req.headers["x-oracle-signature"] as string | undefined;
     if (!signature) {
-      res.status(401).json({ error: "Missing webhook signature" });
+      next(apiError(401, "WEBHOOK_SIGNATURE_MISSING", "Missing webhook signature"));
       return;
     }
 
@@ -19,7 +20,7 @@ export function verifyWebhookSignature(secret: string): RequestHandler {
     const expBuf = Buffer.from(expected);
 
     if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) {
-      res.status(401).json({ error: "Invalid webhook signature" });
+      next(apiError(401, "WEBHOOK_SIGNATURE_INVALID", "Invalid webhook signature"));
       return;
     }
 

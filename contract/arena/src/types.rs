@@ -80,13 +80,23 @@ pub struct PlayerState {
     pub rounds_survived: u32,
 }
 
+/// Per-round resolution metadata stored in persistent storage.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoundResult {
+    pub round: u32,
+    pub eliminated: u32,
+    pub survivors: u32,
+    pub yield_snapshot: YieldSnapshot,
+}
+
 /// Per-round yield snapshot stored in persistent storage, keyed by round number.
 #[contracttype]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct YieldSnapshot {
     pub round: u32,
-    pub total_deposited: i128,
-    pub total_yield: i128,
+    pub rate_bps: u32,
+    pub accrued: i128,
 }
 
 /// Error codes returned by arena contract functions.
@@ -103,5 +113,20 @@ pub enum ArenaError {
     CannotCancelStartedGame = 2,
     /// Arena configuration has not been initialised.
     NotInitialised = 3,
-
+    /// Operation requires an active round.
+    RoundNotActive = 4,
+    /// Round has not been started.
+    RoundNotStarted = 5,
+    /// Round grace period has not elapsed.
+    GracePeriodNotElapsed = 6,
+    /// Commitment does not match the revealed choice and salt.
+    InvalidReveal = 7,
+    /// Player has not submitted a commitment.
+    MissingCommitment = 8,
+    /// Player has already revealed a choice.
+    ChoiceAlreadyRevealed = 9,
+    /// Contract has already been initialized.
+    AlreadyInitialized = 10,
+    /// Operation requires the game to be finished.
+    GameNotFinished = 11,
 }

@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use crate::types::{ArenaConfig, ArenaError, Choice, PlayerState, RoundResult, YieldSnapshot};
+use soroban_sdk::{Address, BytesN, Env, Vec, contracttype, symbol_short};
 
 const PENDING_ADMIN_KEY: &str = "PENDING_ADMIN";
 
@@ -10,7 +12,11 @@ enum DataKey {
     Commitment(Address),
     Choice(Address),
     YieldSnapshot(u32),
+    RoundResult(u32),
     RoundYieldBps(u32),
+    RoundStart,
+    RoundDuration,
+    LastVaultBalance,
 }
 
 pub struct ArenaStorage;
@@ -29,7 +35,8 @@ impl ArenaStorage {
             .set(&symbol_short!("CONFIG"), config);
     }
 
-
+    pub fn has_config(env: &Env) -> bool {
+        env.storage().persistent().has(&symbol_short!("CONFIG"))
     }
 
     /// Return the list of all player addresses that have joined this arena.
@@ -82,7 +89,92 @@ impl ArenaStorage {
             .set(&DataKey::Player(player.clone()), state);
     }
 
+    pub fn save_commitment(env: &Env, player: &Address, commitment: &BytesN<32>) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Commitment(player.clone()), commitment);
+    }
 
+    pub fn load_commitment(env: &Env, player: &Address) -> Option<BytesN<32>> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Commitment(player.clone()))
+    }
+
+    pub fn save_choice(env: &Env, player: &Address, choice: &Choice) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Choice(player.clone()), choice);
+    }
+
+    pub fn load_choice(env: &Env, player: &Address) -> Option<Choice> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Choice(player.clone()))
+    }
+
+    pub fn save_round_start(env: &Env, timestamp: u64) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::RoundStart, &timestamp);
+    }
+
+    pub fn load_round_start(env: &Env) -> Option<u64> {
+        env.storage().persistent().get(&DataKey::RoundStart)
+    }
+
+    pub fn save_round_duration(env: &Env, duration_seconds: u64) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::RoundDuration, &duration_seconds);
+    }
+
+    pub fn load_round_duration(env: &Env) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RoundDuration)
+            .unwrap_or(0)
+    }
+
+    pub fn save_round_yield_bps(env: &Env, round: u32, yield_bps: u32) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::RoundYieldBps(round), &yield_bps);
+    }
+
+    pub fn save_yield_snapshot(env: &Env, round: u32, snapshot: &YieldSnapshot) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::YieldSnapshot(round), snapshot);
+    }
+
+    pub fn load_yield_snapshot(env: &Env, round: u32) -> Option<YieldSnapshot> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::YieldSnapshot(round))
+    }
+
+    pub fn save_round_result(env: &Env, round: u32, result: &RoundResult) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::RoundResult(round), result);
+    }
+
+    pub fn load_round_result(env: &Env, round: u32) -> Option<RoundResult> {
+        env.storage().persistent().get(&DataKey::RoundResult(round))
+    }
+
+    pub fn save_last_vault_balance(env: &Env, balance: i128) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::LastVaultBalance, &balance);
+    }
+
+    pub fn load_last_vault_balance(env: &Env) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::LastVaultBalance)
+            .unwrap_or(0)
     }
 }
 

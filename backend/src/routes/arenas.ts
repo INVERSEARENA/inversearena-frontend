@@ -4,6 +4,7 @@ import { cacheMiddleware } from "../middleware/cache";
 import { cacheKeys, cacheTTL } from "../cache/cacheService";
 import { ArenaStatsService } from "../services/arenaStatsService";
 import { prisma } from "../db/prisma";
+import { apiError } from "../utils/apiError";
 
 export function createArenasRouter(): Router {
   const router = Router();
@@ -25,7 +26,7 @@ export function createArenasRouter(): Router {
         res.json(stats);
       } catch (error) {
         if (error instanceof Error && error.message.includes("not found")) {
-          res.status(404).json({ error: error.message });
+          throw apiError(404, "ARENA_NOT_FOUND", error.message);
         } else {
           throw error;
         }

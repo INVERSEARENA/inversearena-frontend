@@ -77,3 +77,16 @@ After regenerating, commit the updated snapshot file and document the interface 
 5. Run `./scripts/generate_abi_snapshots.sh` to generate an initial ABI snapshot.
 
 See the top-level `CONTRIBUTING.md` for snapshot testing requirements.
+
+## Arena Events
+
+| Event | Topic key | Data |
+| --- | --- | --- |
+| initialized | `init` | `admin` |
+| player_joined | `join` | `player_count` |
+| game_started | `started` | `(round, duration_seconds)` |
+| round_resolved | `resolved` | `(round, eliminated, survivors)` |
+| player_eliminated | `elim` | `round` |
+| game_finished | `finished` | `(winner, round)` |
+| prize_claimed | `claimed` | `(amount, yield_amount)` |
+| admin_changed | `admin` | `(old_admin, new_admin)` |

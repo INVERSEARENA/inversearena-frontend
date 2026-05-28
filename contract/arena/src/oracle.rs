@@ -24,7 +24,7 @@ pub fn fetch_yield_bps(env: &Env, oracle_contract: &Address) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use soroban_sdk::{contract, contractimpl, testutils::Address as _, Env};
+    use soroban_sdk::{Env, contract, contractimpl};
 
     /// Mock returning a fixed 500 bps yield rate.
     #[contract]

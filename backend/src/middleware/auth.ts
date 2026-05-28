@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "crypto";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import type { AuthService } from "../services/authService";
+import { apiError } from "../utils/apiError";
 
 // Augment Express Request so controllers can read adminId / user without casting
 declare global {
@@ -18,7 +19,7 @@ export function requireAuth(authService: AuthService): RequestHandler {
       const header = req.headers.authorization ?? "";
       const token = header.startsWith("Bearer ") ? header.slice(7) : "";
       if (!token) {
-        res.status(401).json({ error: "Unauthorized" });
+        next(apiError(401, "UNAUTHORIZED", "Unauthorized"));
         return;
       }
       const payload = authService.verifyAccessToken(token);
@@ -71,7 +72,7 @@ export function requireAdmin(provider: AdminAuthProvider): RequestHandler {
     try {
       const ok = await provider.isAdmin(req);
       if (!ok) {
-        res.status(401).json({ error: "Unauthorized" });
+        next(apiError(401, "UNAUTHORIZED", "Unauthorized"));
         return;
       }
       req.adminId = provider.getAdminId(req);
