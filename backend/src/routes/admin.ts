@@ -32,7 +32,8 @@ export function createAdminRouter(
   router.post("/pools/:id/reindex", authMiddleware, asyncHandler(controller.reindexPool));
   router.post("/reconciliation/run", authMiddleware, asyncHandler(controller.runReconciliation));
 
-  // Round resolution: admin-only
+  // Round management: admin-only
+  router.post("/rounds/:id/close", authMiddleware, asyncHandler(roundController.closeRound));
   router.post("/rounds/resolve", authMiddleware, asyncHandler(roundController.resolveRound));
 
   // Read-only: requires admin auth

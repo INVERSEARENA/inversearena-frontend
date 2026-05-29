@@ -1,5 +1,35 @@
 # Contributing to InverseArena
 
+## Smart Contract Code Review Checklist
+
+Every PR that touches a contract function which moves funds (transfers tokens,
+interacts with a vault, pays out prizes, etc.) must be reviewed against the
+checks-effects-interactions pattern. Reviewers should confirm each of the
+following before approving:
+
+- [ ] **Checks first.** All input validation, auth (`require_auth`), state
+  preconditions (e.g. `GameState`), and "already done" guards
+  (e.g. `prize_claimed`) run before any state write.
+- [ ] **Effects next.** Every persistent storage write that records the
+  outcome of the operation (state transitions, flags such as
+  `mark_prize_claimed`, counters, balances) is committed *before* any
+  cross-contract call.
+- [ ] **Interactions last.** Cross-contract calls — token transfers, vault
+  withdrawals, oracle reads that can have side effects — happen only after
+  all state has been persisted. The function should not write to storage
+  after a cross-contract call returns.
+- [ ] **No "guard after transfer".** A flag like `prize_claimed` or
+  `state = Settled` must never be set after a `token.transfer`,
+  `rwa.withdraw_all`, or similar external invocation. A malicious token
+  contract could re-enter and replay the operation before the flag is set.
+- [ ] **Reentrancy regression test.** Any new or modified fund-moving function
+  has a unit test that pre-sets the relevant guard flag (simulating mid-call
+  reentry) and asserts the function returns the corresponding `AlreadyX`
+  error.
+
+See `contract/arena/src/lib.rs::claim` for the canonical example of this
+ordering.
+
 ## Snapshot Testing
 
 Soroban stores all `#[contracttype]` values using XDR serialization. A change to a `contracttype` struct (adding, removing, or reordering fields) silently breaks deserialization of existing ledger entries.

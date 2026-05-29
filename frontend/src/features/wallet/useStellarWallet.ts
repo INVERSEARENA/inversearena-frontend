@@ -18,6 +18,9 @@ export interface WalletHook {
 // Stellar public keys start with G and are exactly 56 alphanumeric (base32) characters.
 const STELLAR_PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
 
+// Key used to persist intentional disconnect so wallet extensions can't phantom-reconnect.
+const WALLET_DISCONNECTED_KEY = 'inversearena:wallet:disconnected';
+
 export function isValidStellarPublicKey(address: string): boolean {
   return STELLAR_PUBLIC_KEY_REGEX.test(address);
 }
@@ -42,12 +45,23 @@ export const useStellarWallet = (network: Networks): WalletHook => {
         new AlbedoModule()
       ],
     });
+
+    // Suppress auto-reconnect if the user previously disconnected intentionally
+    if (typeof window !== 'undefined' && localStorage.getItem(WALLET_DISCONNECTED_KEY) === 'true') {
+      return () => { StellarWalletsKit.disconnect(); };
+    }
+
+    return () => { StellarWalletsKit.disconnect(); };
   }, [network]);
 
   const connectWallet = useCallback(async () => {
     try {
       setStatus('connecting');
       setError(null);
+      // Clear intentional-disconnect flag so the session is treated as fresh
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem(WALLET_DISCONNECTED_KEY);
+      }
       const { address } = await StellarWalletsKit.authModal();
 
       if (!isValidStellarPublicKey(address)) {
@@ -76,6 +90,10 @@ export const useStellarWallet = (network: Networks): WalletHook => {
     setIsConnected(false);
     setStatus('disconnected');
     setError(null);
+    // Persist intentional disconnect so extensions cannot phantom-reconnect on reload
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(WALLET_DISCONNECTED_KEY, 'true');
+    }
   }, []);
 
   return { publicKey, isConnected, status, error, connectWallet, disconnectWallet };

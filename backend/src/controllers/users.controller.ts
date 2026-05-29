@@ -1,6 +1,7 @@
-import type { Request, Response } from "express";
+import type { NextFunction, Request, Response } from "express";
 import type { PrismaClient } from "@prisma/client";
 import { UserModel } from "../db/models/user.model";
+import { apiError } from "../utils/apiError";
 
 export class UsersController {
   constructor(private readonly prisma: PrismaClient) {}
@@ -17,13 +18,13 @@ export class UsersController {
    *  - totalYieldEarned — sum of payouts from resolved rounds (USDC string)
    *  - currentRank  — 1-based position on the all-time yield leaderboard (null if unranked)
    */
-  me = async (req: Request, res: Response): Promise<void> => {
+  me = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const { id, walletAddress } = req.user!;
 
     // ── Identity (MongoDB) ──────────────────────────────────────────
     const user = await UserModel.findById(id).lean();
     if (!user) {
-      res.status(404).json({ error: "User not found" });
+      next(apiError(404, "USER_NOT_FOUND", "User not found"));
       return;
     }
 

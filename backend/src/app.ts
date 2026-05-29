@@ -52,6 +52,15 @@ export function createApp(deps: AppDependencies): express.Application {
     res.json({ status: "ok" });
   });
 
+  app.get("/ready", (_req, res) => {
+    const breakerStats = deps.paymentService.getSorobanBreakerStats();
+    const sorobanUp = breakerStats.state !== "open";
+    res.status(sorobanUp ? 200 : 503).json({
+      status: sorobanUp ? "ready" : "degraded",
+      sorobanCircuitBreaker: breakerStats,
+    });
+  });
+
   app.get("/metrics", async (_req, res) => {
     try {
       await refreshArenaMetrics(prisma);

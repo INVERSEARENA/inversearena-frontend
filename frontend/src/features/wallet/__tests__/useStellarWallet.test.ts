@@ -3,8 +3,6 @@ import { act, renderHook } from "@testing-library/react";
 import { Networks } from "@creit-tech/stellar-wallets-kit";
 import { isValidStellarPublicKey } from "../useStellarWallet";
 
-// ── isValidStellarPublicKey unit tests ────────────────────────────────────────
-
 describe("isValidStellarPublicKey", () => {
   it("accepts a well-formed Stellar public key", () => {
     expect(
@@ -61,8 +59,6 @@ describe("isValidStellarPublicKey", () => {
   });
 });
 
-// ── useStellarWallet integration tests ───────────────────────────────────────
-
 jest.mock("@creit-tech/stellar-wallets-kit", () => ({
   StellarWalletsKit: {
     init: jest.fn(),
@@ -84,7 +80,6 @@ jest.mock("@creit-tech/stellar-wallets-kit/modules/albedo", () => ({
   AlbedoModule: jest.fn().mockImplementation(() => ({})),
 }));
 
-// Import after mocks are set up
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { StellarWalletsKit } = require("@creit-tech/stellar-wallets-kit");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -213,5 +208,52 @@ describe("useStellarWallet", () => {
     expect(result.current.status).toBe("disconnected");
     expect(result.current.isConnected).toBe(false);
     expect(result.current.publicKey).toBeNull();
+  });
+
+  it("calls StellarWalletsKit.init once on mount", () => {
+    renderHook(() => useStellarWallet(Networks.TESTNET));
+
+    expect(StellarWalletsKit.init).toHaveBeenCalledTimes(1);
+    expect(StellarWalletsKit.init).toHaveBeenCalledWith({
+      network: Networks.TESTNET,
+      modules: expect.any(Array),
+    });
+  });
+
+  it("does not reinit if network prop is stable", () => {
+    const { rerender } = renderHook(
+      ({ network }) => useStellarWallet(network),
+      { initialProps: { network: Networks.TESTNET } },
+    );
+
+    rerender({ network: Networks.TESTNET });
+
+    expect(StellarWalletsKit.init).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls StellarWalletsKit.disconnect on unmount (cleanup)", () => {
+    const { unmount } = renderHook(() => useStellarWallet(Networks.TESTNET));
+
+    unmount();
+
+    expect(StellarWalletsKit.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls disconnect then reinit when network prop changes", () => {
+    const { rerender } = renderHook(
+      ({ network }: { network: Networks }) => useStellarWallet(network),
+      { initialProps: { network: Networks.TESTNET } },
+    );
+
+    rerender({ network: "Public Global Stellar Network ; September 2015" as Networks });
+
+    // First init on mount, second after the network-change cleanup
+    expect(StellarWalletsKit.init).toHaveBeenCalledTimes(2);
+    // Cleanup from the first effect fires before the second init
+    expect(StellarWalletsKit.disconnect).toHaveBeenCalledTimes(1);
+    expect(StellarWalletsKit.init).toHaveBeenLastCalledWith({
+      network: "Public Global Stellar Network ; September 2015",
+      modules: expect.any(Array),
+    });
   });
 });

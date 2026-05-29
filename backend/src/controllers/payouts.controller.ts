@@ -1,7 +1,8 @@
-import type { Request, Response } from "express";
+import type { NextFunction, Request, Response } from "express";
 import type { PaymentService } from "../services/paymentService";
 import type { TransactionRepository } from "../repositories/transactionRepository";
 import { cache, cacheKeys } from "../cache/cacheService";
+import { apiError } from "../utils/apiError";
 
 export class PayoutsController {
   constructor(
@@ -21,11 +22,11 @@ export class PayoutsController {
     res.status(201).json(result);
   };
 
-  getPayout = async (req: Request, res: Response): Promise<void> => {
+  getPayout = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const { id } = req.params;
-    const transaction = await this.transactions.findById(id);
+    const transaction = await this.transactions.findById(id!);
     if (!transaction) {
-      res.status(404).json({ error: `Transaction ${id} not found` });
+      next(apiError(404, "TRANSACTION_NOT_FOUND", `Transaction ${id} not found`));
       return;
     }
     res.json(transaction);
@@ -34,13 +35,13 @@ export class PayoutsController {
   signPayout = async (req: Request, res: Response): Promise<void> => {
     const { id } = req.params;
     const { signedXdr } = req.body as { signedXdr: string };
-    const transaction = await this.paymentService.queueSignedTransaction(id, signedXdr);
+    const transaction = await this.paymentService.queueSignedTransaction(id!, signedXdr);
     res.json(transaction);
   };
 
   submitPayout = async (req: Request, res: Response): Promise<void> => {
     const { id } = req.params;
-    const result = await this.paymentService.submitQueuedTransaction(id);
+    const result = await this.paymentService.submitQueuedTransaction(id!);
     res.json(result);
   };
 }

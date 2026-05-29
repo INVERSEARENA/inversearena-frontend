@@ -47,10 +47,12 @@ Sentry.init({
   beforeSend(event) {
     // Strip any accidentally included user info (wallet address, email, etc.)
     if (event.user) {
-      // Keep only a stable, anonymous identifier if present; drop everything
-      // else that could be considered PII.
       const { id } = event.user;
-      event.user = id ? { id } : undefined;
+      if (id) {
+        event.user = { id };
+      } else {
+        delete event.user;
+      }
     }
 
     // Scrub Stellar wallet addresses from all event fields to prevent

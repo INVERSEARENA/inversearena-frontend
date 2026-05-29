@@ -19,6 +19,10 @@ export function createAuthRouter(
 
   // Protected — requires valid JWT
   router.get("/me", authMiddleware, asyncHandler(controller.me));
+  router.post("/logout", authMiddleware, asyncHandler(controller.logout));
+  // Wallet-owner action: invalidate every active session for the caller's
+  // wallet (used after wallet compromise, rotation, or full sign-out).
+  router.delete("/sessions", authMiddleware, asyncHandler(controller.revokeAllSessions));
 
   return router;
 }

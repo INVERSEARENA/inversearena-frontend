@@ -53,6 +53,17 @@ pub struct ArenaConfig {
     pub commit_deadline: u64,
     /// Number of completed rounds so far. Incremented when a round resolves.
     pub round_count: u32,
+    /// On-chain oracle contract that supplies the current USDY yield rate in
+    /// basis points. Called once per `resolve_round` to snapshot the rate.
+    /// If the oracle is unavailable the round defaults to 0 bps yield.
+    pub oracle_contract: Address,
+}
+
+/// Wrapper for a pending admin transfer proposal.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingAdmin {
+    pub new_admin: Address,
 }
 
 /// Per-player state stored in persistent storage, keyed by the player address.
@@ -69,13 +80,23 @@ pub struct PlayerState {
     pub rounds_survived: u32,
 }
 
+/// Per-round resolution metadata stored in persistent storage.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoundResult {
+    pub round: u32,
+    pub eliminated: u32,
+    pub survivors: u32,
+    pub yield_snapshot: YieldSnapshot,
+}
+
 /// Per-round yield snapshot stored in persistent storage, keyed by round number.
 #[contracttype]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct YieldSnapshot {
     pub round: u32,
-    pub total_deposited: i128,
-    pub total_yield: i128,
+    pub rate_bps: u32,
+    pub accrued: i128,
 }
 
 /// Error codes returned by arena contract functions.
@@ -92,24 +113,24 @@ pub enum ArenaError {
     CannotCancelStartedGame = 2,
     /// Arena configuration has not been initialised.
     NotInitialised = 3,
-    /// Commit phase has ended — the current ledger timestamp is past the
-    /// configured `commit_deadline`.
-    CommitPhaseEnded = 4,
-    /// Reveal phase is not yet active — the commit deadline has not passed.
-    RevealPhaseNotActive = 5,
-    /// The computed hash of (choice | salt) does not match the stored
-    /// commitment for this player.
-    HashMismatch = 6,
-    /// The player has already revealed their choice for this round.
-    AlreadyRevealed = 7,
-    /// No prior commitment was found for this player.
-    NoCommitmentFound = 8,
-    /// `resolve_round` was called before the round was started.
-    RoundNotStarted = 9,
-    /// `resolve_round` was called before the minimum grace period elapsed.
-    GracePeriodNotElapsed = 10,
-    /// The operation requires the arena to be in the Active state.
-    RoundNotActive = 11,
-    /// Player has already joined this arena.
-    AlreadyJoined = 12,
+    /// Operation requires an active round.
+    RoundNotActive = 4,
+    /// Round has not been started.
+    RoundNotStarted = 5,
+    /// Round grace period has not elapsed.
+    GracePeriodNotElapsed = 6,
+    /// Commitment does not match the revealed choice and salt.
+    InvalidReveal = 7,
+    /// Player has not submitted a commitment.
+    MissingCommitment = 8,
+    /// Player has already revealed a choice.
+    ChoiceAlreadyRevealed = 9,
+    /// Contract has already been initialized.
+    AlreadyInitialized = 10,
+    /// Operation requires the game to be finished.
+    GameNotFinished = 11,
+    /// Prize has already been claimed for this game.
+    PrizeAlreadyClaimed = 12,
+    /// Player was eliminated and cannot perform this action.
+    PlayerEliminated = 13,
 }

@@ -75,7 +75,7 @@ function renderDot(props: { cx?: number; cy?: number; index?: number; payload?: 
 }
 
 export function YieldPerformanceChart({ data = defaultData }: YieldPerformanceChartProps) {
-  const latestYield = data.length > 0 ? data[data.length - 1]?.yield : 0;
+  const latestYield: number = data.length > 0 ? (data[data.length - 1]?.yield ?? 0) : 0;
 
   return (
     <motion.div

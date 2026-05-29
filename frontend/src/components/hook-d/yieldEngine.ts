@@ -75,6 +75,7 @@ export function calculateTrend(history: YieldSnapshot[]): number {
     }
 
     const latest = history[history.length - 1];
+    if (latest === undefined) return 0;
     const targetTime = latest.lastUpdatedAt - SECONDS_IN_DAY;
 
     // Find the snapshot closest to 24h ago
@@ -82,7 +83,7 @@ export function calculateTrend(history: YieldSnapshot[]): number {
     let pastSnapshot: YieldSnapshot | undefined;
 
     for (let i = history.length - 2; i >= 0; i--) {
-        if (history[i].lastUpdatedAt <= targetTime) {
+        if (history[i]!.lastUpdatedAt <= targetTime) {
             pastSnapshot = history[i];
             break;
         }
@@ -93,7 +94,7 @@ export function calculateTrend(history: YieldSnapshot[]): number {
         pastSnapshot = history[0];
     }
 
-    if (pastSnapshot.apy <= 0) {
+    if (pastSnapshot === undefined || pastSnapshot.apy <= 0) {
         return latest.apy > 0 ? 100 : 0;
     }
 

@@ -5,7 +5,7 @@ use soroban_sdk::{contracttype, symbol_short, Address, Env};
 /// Persistent record that a given payout id has been executed, enabling
 /// idempotent distribution and off-chain reconciliation.
 #[contracttype]
-enum DataKey {
+pub(crate) enum DataKey {
     Paid(u64),
 }
 

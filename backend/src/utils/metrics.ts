@@ -76,6 +76,20 @@ export const payoutsSuccessTotal = new Counter({
   registers: [register],
 });
 
+// 0 = closed (healthy), 1 = half-open (probing), 2 = open (failing)
+export const sorobanCircuitBreakerState = new Gauge({
+  name: 'inversearena_soroban_circuit_breaker_state',
+  help: 'Soroban RPC circuit breaker state: 0=closed, 1=half-open, 2=open',
+  registers: [register],
+});
+
+export const sorobanCircuitTransitionsTotal = new Counter({
+  name: 'inversearena_soroban_circuit_transitions_total',
+  help: 'Total Soroban RPC circuit breaker state transitions',
+  labelNames: ['to_state'],
+  registers: [register],
+});
+
 export async function refreshArenaMetrics(prisma: PrismaClient): Promise<void> {
   const activeRounds = await prisma.round.findMany({
     where: {

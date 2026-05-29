@@ -1,28 +1,29 @@
 import { timingSafeEqual } from "crypto";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import type { AuthService } from "../services/authService";
+import { apiError } from "../utils/apiError";
 
 // Augment Express Request so controllers can read adminId / user without casting
 declare global {
   namespace Express {
     interface Request {
       adminId?: string;
-      user?: { id: string; walletAddress: string };
+      user?: { id: string; walletAddress: string; jti: string };
     }
   }
 }
 
 export function requireAuth(authService: AuthService): RequestHandler {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const header = req.headers.authorization ?? "";
       const token = header.startsWith("Bearer ") ? header.slice(7) : "";
       if (!token) {
-        res.status(401).json({ error: "Unauthorized" });
+        next(apiError(401, "UNAUTHORIZED", "Unauthorized"));
         return;
       }
-      const payload = authService.verifyAccessToken(token);
-      req.user = { id: payload.sub, walletAddress: payload.wallet };
+      const payload = await authService.verifyAccessToken(token);
+      req.user = { id: payload.sub, walletAddress: payload.wallet, jti: payload.jti };
       next();
     } catch (err) {
       next(err);
@@ -71,7 +72,7 @@ export function requireAdmin(provider: AdminAuthProvider): RequestHandler {
     try {
       const ok = await provider.isAdmin(req);
       if (!ok) {
-        res.status(401).json({ error: "Unauthorized" });
+        next(apiError(401, "UNAUTHORIZED", "Unauthorized"));
         return;
       }
       req.adminId = provider.getAdminId(req);

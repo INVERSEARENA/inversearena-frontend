@@ -20,7 +20,7 @@ export async function POST(request: NextRequest) {
   const limited = await buildRateLimitRejection({
     config: nonceRateLimitConfig,
     request,
-    walletAddress,
+    ...(walletAddress !== undefined && { walletAddress }),
   });
   if (limited) {
     return limited;

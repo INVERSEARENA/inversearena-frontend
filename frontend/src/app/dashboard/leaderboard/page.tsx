@@ -103,7 +103,7 @@ export default function LeaderboardPage() {
               <p className="text-[8px] font-mono uppercase tracking-[0.2em] text-zinc-500">
                 TOTAL YIELD
               </p>
-              {isLoading ? (
+              {loading ? (
                 <Skeleton className="h-8 w-24 mt-2" />
               ) : (
                 <p className="mt-2 text-2xl font-semibold text-white">
@@ -115,7 +115,7 @@ export default function LeaderboardPage() {
               <p className="text-[8px] font-mono uppercase tracking-[0.2em] text-black/80">
                 LIVE AGENTS
               </p>
-              {isLoading ? (
+              {loading ? (
                 <Skeleton className="h-8 w-24 mt-2 bg-black/20" />
               ) : (
                 <p className="mt-2 text-2xl font-semibold text-black">
@@ -161,7 +161,7 @@ export default function LeaderboardPage() {
                 <div
                   className={`${isFirst ? "mt-5" : "mt-10"} flex items-center gap-4`}
                 >
-                  {isLoading ? (
+                  {loading ? (
                     <Skeleton
                       className={`${isFirst ? "h-16 w-16" : "h-12 w-12"} shrink-0`}
                     />
@@ -177,7 +177,7 @@ export default function LeaderboardPage() {
                     />
                   )}
                   <div>
-                    {isLoading ? (
+                    {loading ? (
                       <Skeleton className="h-6 w-24" />
                     ) : (
                       <p
@@ -200,7 +200,7 @@ export default function LeaderboardPage() {
                         <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
                           YIELD GENERATED
                         </p>
-                        {isLoading ? (
+                        {loading ? (
                           <Skeleton className="h-6 w-20 mt-1" />
                         ) : (
                           <p className="mt-1 text-lg font-semibold text-[#37FF1C]">
@@ -215,7 +215,7 @@ export default function LeaderboardPage() {
                         <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
                           STREAK
                         </p>
-                        {isLoading ? (
+                        {loading ? (
                           <Skeleton className="h-6 w-20 mt-1" />
                         ) : (
                           <p className="mt-1 text-lg font-semibold text-white">
@@ -227,7 +227,7 @@ export default function LeaderboardPage() {
                   </>
                 ) : (
                   <div className="mt-auto pt-6">
-                    {isLoading ? (
+                    {loading ? (
                       <Skeleton className="h-6 w-24" />
                     ) : (
                       <p className="text-lg font-semibold text-[#37FF1C]">
@@ -277,7 +277,7 @@ export default function LeaderboardPage() {
       <PoolCreationModal
         isOpen={isChallengeModalOpen}
         onClose={() => setIsChallengeModalOpen(false)}
-        challengedSurvivor={targetedSurvivor}
+        {...(targetedSurvivor !== undefined && { challengedSurvivor: targetedSurvivor })}
       />
     </div>
   );

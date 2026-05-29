@@ -137,6 +137,17 @@ export class RoundService {
     }));
   }
 
+  async closeRound(roundId: string): Promise<{ state: RoundState }> {
+    const round = await this.roundRepo.findById(roundId);
+    if (!round) throw new Error(`Round ${roundId} not found`);
+    if (round.state !== RoundState.OPEN) {
+      throw new Error(`Round is not OPEN (current state: ${round.state})`);
+    }
+    await this.roundRepo.updateState(roundId, RoundState.CLOSED);
+    arenaStateTransitionsTotal.inc({ from: RoundState.OPEN, to: RoundState.CLOSED });
+    return { state: RoundState.CLOSED };
+  }
+
   private computePoolBalances(
     playerChoices: RoundInput['playerChoices'],
     eliminatedPlayers: string[]
