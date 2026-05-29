@@ -42,6 +42,7 @@ export const cacheKeys = {
 export const cacheTTL = {
   ORACLE_YIELD: 60,
   ARENA_STATS: 15,
+  ARENA_ROUNDS: 10,
   LEADERBOARD: 30,
 } as const;
 
