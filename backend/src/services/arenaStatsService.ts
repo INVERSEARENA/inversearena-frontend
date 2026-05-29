@@ -21,21 +21,25 @@ export class ArenaStatsService {
       throw new Error(`Arena with ID ${arenaId} not found`);
     }
 
-    const metadata = (arena.metadata as Record<string, any>) || {};
-    const entryFee = metadata.minStake || 0;
+    const metadata = (arena.metadata as Record<string, unknown>) ?? {};
+    const entryFee =
+      (metadata.entryFee as number | undefined) ??
+      (metadata.minStake as number | undefined) ??
+      0;
+    const maxPlayers = (metadata.maxPlayers as number | undefined) ?? 0;
+    const joinDeadline =
+      typeof metadata.joinDeadline === "string" ? metadata.joinDeadline : null;
+    const arenaName =
+      (metadata.name as string | undefined) ?? `Arena ${arenaId.slice(0, 8)}`;
+    const stakeToken =
+      (metadata.stakeToken as string | undefined) ?? "XLM";
 
     const rounds = arena.rounds;
-    const currentRound = rounds.length > 0 ? rounds[rounds.length - 1].roundNumber : 0;
+    const lastRound = rounds[rounds.length - 1];
+    const currentRound = lastRound !== undefined ? lastRound.roundNumber : 0;
 
-    // Player count is based on the first round's participation
-    // If no rounds have started, it's 0 or we could check pools in a real scenario
-    // For this implementation, we rely on the first round's metadata or a placeholder
-    const firstRound = rounds[0];
-    const firstRoundMetadata = (firstRound?.metadata as Record<string, any>) || {};
-    const playerChoices = firstRoundMetadata.playerChoices || [];
-    const playerCount = playerChoices.length;
+    const playerCount = await this.prisma.pool.count({ where: { arenaId } });
 
-    // Survivor count is playerCount minus total unique eliminations
     const eliminatedUserIds = new Set<string>();
     rounds.forEach((round) => {
       round.eliminationLogs.forEach((log) => {
@@ -44,33 +48,33 @@ export class ArenaStatsService {
     });
     const survivorCount = Math.max(0, playerCount - eliminatedUserIds.size);
 
-    // Current pot comes from the latest round's choices
     const latestRound = rounds[rounds.length - 1];
-    const latestRoundMetadata = (latestRound?.metadata as Record<string, any>) || {};
-    const latestChoices = latestRoundMetadata.playerChoices || [];
-    const currentPot = latestChoices.reduce((sum: number, p: any) => sum + (p.stake || 0), 0);
+    const latestRoundMetadata = (latestRound?.metadata as Record<string, unknown>) ?? {};
+    const latestChoices = (latestRoundMetadata.playerChoices as Array<{ stake?: number }>) ?? [];
+    const currentPot = latestChoices.reduce((sum: number, p) => sum + (p.stake ?? 0), 0);
 
-    // Yield accrued can be derived from round resolutions or oracle yield
-    // For simplicity, we aggregate oracleYield from all resolved rounds
     let yieldAccrued = 0;
     rounds.forEach((round) => {
       if (round.state === "RESOLVED") {
-          const roundMetadata = (round.metadata as Record<string, any>) || {};
-          const roundYield = roundMetadata.oracleYield || 0;
-          // Simple additive yield for this mock-to-real transition
-          yieldAccrued += roundYield; 
+        const roundMetadata = (round.metadata as Record<string, unknown>) ?? {};
+        const roundYield = (roundMetadata.oracleYield as number | undefined) ?? 0;
+        yieldAccrued += roundYield;
       }
     });
 
-    const status = latestRound?.state || "pending";
+    const status = latestRound?.state ?? "pending";
 
     return {
       arenaId,
+      arenaName,
       currentPot,
       playerCount,
+      maxPlayers,
       survivorCount,
       currentRound,
       entryFee,
+      stakeToken,
+      joinDeadline,
       yieldAccrued,
       status: status.toLowerCase(),
       lastUpdated: new Date().toISOString(),

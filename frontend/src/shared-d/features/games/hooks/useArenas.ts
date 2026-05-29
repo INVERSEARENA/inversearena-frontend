@@ -97,9 +97,9 @@ export function useArenas(options: UseArenasOptions = {}): UseArenasData & {
 
   return {
     arenas,
-    featuredArena,
+    ...(featuredArena !== undefined && { featuredArena }),
     status,
-    error,
+    ...(error !== undefined && { error }),
     totalCount,
     filteredCount: arenas.length,
     setFilter,

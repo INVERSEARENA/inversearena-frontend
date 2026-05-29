@@ -95,7 +95,7 @@ describe('LeaderboardPage', () => {
         });
 
         const challengeButtons = screen.getAllByRole('button', { name: /challenge/i });
-        fireEvent.click(challengeButtons[0]); // Challenge Rank 4
+        fireEvent.click(challengeButtons[0]!); // Challenge Rank 4
 
         expect(screen.getByTestId('challenge-modal')).toBeInTheDocument();
         expect(screen.getByText(/Challenging ADDR4/i)).toBeInTheDocument();

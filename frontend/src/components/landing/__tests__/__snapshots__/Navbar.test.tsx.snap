@@ -1,0 +1,69 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`Navbar matches snapshot 1`] = `
+<nav
+  class="fixed top-0 left-0 right-0 z-50"
+>
+  <div
+    class="bg-black/95 backdrop-blur-xl border-b border-white/5 h-16"
+  >
+    <div
+      class="max-w-7xl mx-auto px-6 h-full flex items-center justify-between"
+    >
+      <div
+        class="flex items-center gap-3"
+      >
+        <div
+          class="w-8 h-8 border border-neon-green flex items-center justify-center p-1.5"
+        >
+          <div
+            class="w-full h-full bg-neon-green"
+          />
+        </div>
+        <div
+          class="flex text-lg tracking-tighter uppercase font-extralight"
+        >
+          <span
+            class="text-white"
+          >
+            INVERSE
+          </span>
+          <span
+            class="text-neon-green ml-1"
+          >
+            ARENA
+          </span>
+        </div>
+      </div>
+      <div
+        class="hidden md:flex items-center gap-8"
+      >
+        <a
+          class="text-[10px] font-medium tracking-widest text-zinc-400 hover:text-white transition-colors uppercase"
+          href="#protocol"
+        >
+          The_Protocol
+        </a>
+        <a
+          class="text-[10px] font-medium tracking-widest text-zinc-400 hover:text-white transition-colors uppercase"
+          href="#why"
+        >
+          Why_Inverse?
+        </a>
+        <a
+          class="text-[10px] font-medium tracking-widest text-zinc-400 hover:text-white transition-colors uppercase"
+          href="#yield"
+        >
+          Win_Or_Lose
+        </a>
+      </div>
+      <button
+        class="bg-[#39ff14] px-6 py-2 text-[10px] font-bold uppercase text-black hover:bg-white transition-all transform active:scale-95 rounded-none"
+        data-testid="connect-wallet-btn"
+      >
+        Connect Wallet
+      </button>
+    </div>
+  </div>
+</nav>
+`;

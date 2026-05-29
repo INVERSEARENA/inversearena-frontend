@@ -1,5 +1,7 @@
 # Inverse Arena Contract Architecture
 
+> **RWA Yield Flow:** For a complete end-to-end explanation of how entry fees are converted to USDY, how yield accrues, and how the winner's payout is calculated, see [docs/RWA_YIELD_FLOW.md](../docs/RWA_YIELD_FLOW.md).
+
 This document describes how the Soroban contracts in `contract/` fit together, which components trust each other, and where authority lives today.
 
 It is meant to help:

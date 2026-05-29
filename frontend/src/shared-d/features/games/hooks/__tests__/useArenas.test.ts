@@ -57,7 +57,7 @@ describe('useArenas', () => {
         await waitFor(() => expect(result.current.status).toBe('success'));
 
         expect(result.current.arenas).toHaveLength(1);
-        expect(result.current.arenas[0].id).toBe('1');
+        expect(result.current.arenas[0]!.id).toBe('1');
     });
 
     it('should handle search queries', async () => {

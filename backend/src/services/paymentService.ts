@@ -3,8 +3,11 @@ import {
   BASE_FEE,
   Contract,
   Keypair,
+  Transaction,
   TransactionBuilder,
   nativeToScVal,
+  scValToNative,
+  xdr,
 } from "@stellar/stellar-sdk";
 // @ts-ignore
 import { rpc } from "@stellar/stellar-sdk";
@@ -13,6 +16,8 @@ import { z } from "zod";
 
 import { getPaymentConfig, type PaymentConfig } from "../config/paymentConfig";
 import type { TransactionRepository } from "../repositories/transactionRepository";
+import { payoutsSuccessTotal } from "../utils/metrics";
+import { CircuitOpenError, getSorobanBreaker, type CircuitBreaker } from "../utils/circuitBreaker";
 import type {
   BuildPayoutResult,
   CreatePayoutRequest,
@@ -73,11 +78,13 @@ const delay = async (ms: number): Promise<void> =>
 export interface PaymentServiceOptions {
   config?: PaymentConfig;
   rpcServer?: any;
+  circuitBreaker?: CircuitBreaker;
 }
 
 export class PaymentService {
   private readonly config: PaymentConfig;
   private readonly rpcServer: any;
+  private readonly breaker: CircuitBreaker;
 
   constructor(
     private readonly transactions: TransactionRepository,
@@ -85,6 +92,11 @@ export class PaymentService {
   ) {
     this.config = options.config ?? getPaymentConfig();
     this.rpcServer = options.rpcServer ?? new Server(this.config.sorobanRpcUrl);
+    this.breaker = options.circuitBreaker ?? getSorobanBreaker();
+  }
+
+  getSorobanBreakerStats() {
+    return this.breaker.getStats();
   }
 
   async createPayoutTransaction(input: unknown): Promise<BuildPayoutResult> {
@@ -157,7 +169,9 @@ export class PaymentService {
       throw new Error(`Transaction ${transactionId} is not waiting for signature`);
     }
 
-    TransactionBuilder.fromXDR(signedXdr, this.config.networkPassphrase);
+    // Audit the signed XDR before queuing (#667): a compromised external signer
+    // could return a validly-signed transaction that redirects the payout.
+    this.assertSignedTransactionMatches(signedXdr, transaction);
 
     return this.transactions.update(transactionId, {
       signedXdr,
@@ -203,7 +217,18 @@ export class PaymentService {
         transaction.signedXdr,
         this.config.networkPassphrase
       );
-      const sendResult = await this.rpcServer.sendTransaction(signedTransaction);
+
+      let sendResult: Awaited<ReturnType<typeof this.rpcServer.sendTransaction>>;
+      try {
+        sendResult = await this.breaker.fire(() =>
+          this.rpcServer.sendTransaction(signedTransaction)
+        );
+      } catch (err) {
+        if (err instanceof CircuitOpenError) {
+          return { transaction, submitted: false };
+        }
+        throw err;
+      }
 
       if (sendResult.status === "ERROR") {
         const failed = await this.transactions.update(transaction.id, {
@@ -252,9 +277,20 @@ export class PaymentService {
       return transaction;
     }
 
-    const onChain = await this.rpcServer.getTransaction(transaction.txHash);
+    let onChain: Awaited<ReturnType<typeof this.rpcServer.getTransaction>>;
+    try {
+      onChain = await this.breaker.fire(() =>
+        this.rpcServer.getTransaction(transaction.txHash)
+      );
+    } catch (err) {
+      if (err instanceof CircuitOpenError) {
+        return transaction;
+      }
+      throw err;
+    }
 
     if (onChain.status === Api.GetTransactionStatus.SUCCESS) {
+      payoutsSuccessTotal.inc({ asset: transaction.asset });
       return this.transactions.update(transaction.id, {
         status: "confirmed",
         confirmedAt: new Date(),
@@ -288,6 +324,66 @@ export class PaymentService {
     return current;
   }
 
+  /**
+   * Verify that a signed payout transaction matches the stored payout record
+   * and this service's configuration before it is queued for submission (#667).
+   *
+   * Rejects if the source account, invoked contract, called method, payout
+   * destination, or amount differ from what was authorised. Without this, a
+   * compromised KMS signer could return a validly-signed XDR redirecting funds.
+   */
+  private assertSignedTransactionMatches(
+    signedXdr: string,
+    transaction: TransactionRecord
+  ): void {
+    let parsed: ReturnType<typeof TransactionBuilder.fromXDR>;
+    try {
+      parsed = TransactionBuilder.fromXDR(signedXdr, this.config.networkPassphrase);
+    } catch {
+      throw new Error("Signed XDR could not be parsed");
+    }
+
+    // Fee-bump wrappers are not expected for payouts.
+    if (!(parsed instanceof Transaction)) {
+      throw new Error("Signed transaction must not be a fee-bump transaction");
+    }
+    const tx = parsed;
+
+    if (tx.source !== this.config.sourceAccount) {
+      throw new Error("Signed transaction source account does not match the payout source");
+    }
+    if (tx.operations.length !== 1) {
+      throw new Error("Signed transaction must contain exactly one operation");
+    }
+
+    const op = tx.operations[0] as { type: string; func?: xdr.HostFunction };
+    if (op.type !== "invokeHostFunction" || !op.func) {
+      throw new Error("Signed transaction operation is not a contract invocation");
+    }
+    if (op.func.switch().name !== "hostFunctionTypeInvokeContract") {
+      throw new Error("Signed transaction does not invoke a contract");
+    }
+
+    const invoke = op.func.invokeContract();
+    const contractId = Address.fromScAddress(invoke.contractAddress()).toString();
+    if (contractId !== this.config.payoutContractId) {
+      throw new Error("Signed transaction targets an unexpected contract");
+    }
+    if (invoke.functionName().toString() !== this.config.payoutMethodName) {
+      throw new Error("Signed transaction calls an unexpected contract method");
+    }
+
+    const args = invoke.args();
+    const destination = String(scValToNative(args[0]));
+    if (destination !== transaction.destinationAccount) {
+      throw new Error("Signed transaction destination does not match the payout record");
+    }
+    const amount = String(scValToNative(args[1]));
+    if (amount !== transaction.amountStroops) {
+      throw new Error("Signed transaction amount does not match the payout record");
+    }
+  }
+
   private async requireTransaction(transactionId: string): Promise<TransactionRecord> {
     const transaction = await this.transactions.findById(transactionId);
     if (!transaction) {
@@ -297,7 +393,9 @@ export class PaymentService {
   }
 
   private async buildPreparedTransaction(request: CreatePayoutRequest, nonce: number) {
-    const sourceAccount = await this.rpcServer.getAccount(this.config.sourceAccount);
+    const sourceAccount = await this.breaker.fire(() =>
+      this.rpcServer.getAccount(this.config.sourceAccount)
+    );
     const contract = new Contract(this.config.payoutContractId);
     const amountStroops = toStroops(request.amount);
 
@@ -318,7 +416,9 @@ export class PaymentService {
       .setTimeout(60)
       .build();
 
-    const preparedTransaction = await this.rpcServer.prepareTransaction(built);
+    const preparedTransaction = await this.breaker.fire(() =>
+      this.rpcServer.prepareTransaction(built)
+    );
 
     const feeStroops = Number(preparedTransaction.fee);
     if (!Number.isFinite(feeStroops) || feeStroops <= 0) {

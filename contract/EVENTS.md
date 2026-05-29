@@ -1,6 +1,6 @@
 # Contract Event Reference
 
-All events include a version marker (`v: u32`) as the first field of the
+Arena and factory events include a version marker (`v: u32`) in the
 data payload. Consumers should check this field to detect schema changes
 without requiring redeployment.
 
@@ -20,9 +20,8 @@ Current payload version: **1**
 | `R_START`     | `start_round()`        | `(round_number: u32, round_start_ledger: u32, round_deadline_ledger: u32, v)` |
 | `R_TOUT`      | `timeout_round()`      | `(round_number: u32, total_submissions: u32, v)` |
 | `RSLVD`       | `resolve_round()`      | `(round_number: u32, heads_count: u32, tails_count: u32, outcome: Symbol, eliminated_count: u32, survivor_count: u32, v)` |
-| `WIN_SET`     | `set_winner()`         | `(player: Address, stake: i128, yield_comp: i128)` |
+| `WIN_SET`     | `set_winner()`         | `(player: Address, stake: i128, yield_comp: i128, v)` |
 | `CLAIM`       | `claim()`              | `(winner: Address, prize: i128, v)`      |
-| `G_END`       | *(reserved)*           | *(not currently emitted)*                |
 
 ## Factory Contract
 
@@ -61,6 +60,6 @@ address, amounts) is in the data payload so indexers can filter on `STAKED` /
 
 ## Versioning Policy
 
-- The `v` field is always the **first** element of the data tuple.
+- The `v` field is included in every arena/factory event payload.
 - When fields are added, removed, or reordered the version is bumped.
 - Consumers should fall back gracefully on unknown versions.

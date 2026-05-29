@@ -5,6 +5,7 @@ import { createApiRouter } from "./routes";
 import { createAdminRouter } from "./routes/admin";
 import { errorHandler } from "./middleware/errorHandler";
 import { requestLogger } from "./middleware/logger";
+import { requestContextMiddleware } from "./middleware/requestContext";
 import { metricsMiddleware } from "./middleware/metrics";
 import {
   ApiKeyAuthProvider,
@@ -19,7 +20,8 @@ import { UsersController } from "./controllers/users.controller";
 import { LeaderboardController } from "./controllers/leaderboard.controller";
 import { TransactionsController } from "./controllers/transactions.controller";
 import { RoundController } from "./controllers/round.controller";
-import { register } from "./utils/metrics";
+import { refreshArenaMetrics, register } from "./utils/metrics";
+import { redis } from "./cache/redisClient";
 import type { PaymentService } from "./services/paymentService";
 import type { PaymentWorker } from "./workers/paymentWorker";
 import type { TransactionRepository } from "./repositories/transactionRepository";
@@ -44,13 +46,42 @@ export function createApp(deps: AppDependencies): express.Application {
   app.use(cors());
   app.use(express.json());
   app.use(requestLogger);
+  app.use(requestContextMiddleware);
   app.use(metricsMiddleware);
 
   app.get("/health", (_req, res) => {
     res.json({ status: "ok" });
   });
 
+  app.get("/ready", async (_req, res) => {
+    try {
+      const [dbResult, redisResult] = await Promise.all([
+        prisma.$queryRaw`SELECT 1`,
+        redis.ping(),
+      ]);
+
+      const breakerStats = deps.paymentService.getSorobanBreakerStats();
+
+      res.status(200).json({
+        status: "ready",
+        database: dbResult,
+        redis: redisResult,
+        sorobanCircuitBreaker: breakerStats,
+      });
+    } catch (error) {
+      res.status(503).json({
+        status: "not_ready",
+        error: error instanceof Error ? error.message : "Readiness check failed",
+      });
+    }
+  });
+
   app.get("/metrics", async (_req, res) => {
+    try {
+      await refreshArenaMetrics(prisma);
+    } catch {
+      // Keep the metrics endpoint available even if the database is degraded.
+    }
     res.set("Content-Type", register.contentType);
     res.send(await register.metrics());
   });

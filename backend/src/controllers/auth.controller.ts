@@ -1,7 +1,8 @@
-import type { Request, Response } from "express";
+import type { NextFunction, Request, Response } from "express";
 import { z } from "zod";
 import type { AuthService } from "../services/authService";
 import { UserModel } from "../db/models/user.model";
+import { apiError } from "../utils/apiError";
 
 const PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
 
@@ -45,11 +46,23 @@ export class AuthController {
     res.json(tokens);
   };
 
-  me = async (req: Request, res: Response): Promise<void> => {
+  logout = async (req: Request, res: Response): Promise<void> => {
+    const { jti } = req.user!;
+    await this.authService.logout(jti);
+    res.json({ message: "Logged out successfully" });
+  };
+
+  revokeAllSessions = async (req: Request, res: Response): Promise<void> => {
+    const { id, walletAddress } = req.user!;
+    const revoked = await this.authService.revokeAllSessions(walletAddress, id);
+    res.json({ message: "All sessions revoked", revoked });
+  };
+
+  me = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const { id } = req.user!;
     const user = await UserModel.findById(id).lean();
     if (!user) {
-      res.status(404).json({ error: "User not found" });
+      next(apiError(404, "USER_NOT_FOUND", "User not found"));
       return;
     }
     res.json({

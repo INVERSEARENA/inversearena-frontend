@@ -1,6 +1,7 @@
 /**
  * Centralized Arena Configuration Constants
  */
+import { STELLAR_PLACEHOLDERS, stellarConfig } from "@/lib/stellarConfig";
 
 export const GAME_MECHANICS = {
   MAX_CAPACITY: 1024,
@@ -19,20 +20,14 @@ export const UI_BEHAVIOR = {
 } as const;
 
 export const STELLAR_NETWORK = {
-  PASSPHRASE:
-    process.env.NEXT_PUBLIC_STELLAR_NETWORK_PASSPHRASE ||
-    "Test SDF Network ; September 2015",
-  SOROBAN_RPC_URL:
-    process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ||
-    "https://soroban-testnet.stellar.org",
-  HORIZON_URL:
-    process.env.NEXT_PUBLIC_HORIZON_URL ||
-    "https://horizon-testnet.stellar.org",
+  PASSPHRASE: stellarConfig.passphrase,
+  SOROBAN_RPC_URL: stellarConfig.sorobanRpcUrl,
+  HORIZON_URL: stellarConfig.horizonUrl,
   CONTRACTS: {
-    FACTORY: process.env.NEXT_PUBLIC_FACTORY_CONTRACT_ID || "CB...",
-    XLM: "CAS3J7GYLGXMF6TDJBXBGMELNUPVCGXIZ68TZE6GTVASJ63Y32KXVY77",
-    USDC: process.env.NEXT_PUBLIC_USDC_CONTRACT_ID || "CC...",
-    STAKING_PLACEHOLDER: "CD...",
+    FACTORY: stellarConfig.factoryContractId,
+    XLM: stellarConfig.xlmContractId,
+    USDC: stellarConfig.usdcContractId,
+    STAKING_PLACEHOLDER: STELLAR_PLACEHOLDERS.stakingContractId,
   },
 } as const;
 

@@ -85,7 +85,7 @@ No custom Soroban storage keys are currently defined or used.
 | `get_round` | `Round` | — | — |
 | `get_choice` | `Submission(n, player)` | — | — |
 | `join` | `TOKEN`, `CAPACITY`, `S_COUNT`, `PRIZE` (instance), `Survivor(player)` | `Survivor(player)`, `S_COUNT`, `PRIZE` (instance) | `Survivor(player)` |
-| `set_token` | `ADMIN` (instance) | `TOKEN` (instance) | — |
+| `set_token` ¹ | `ADMIN` (instance) | `TOKEN` (instance) | — |
 | `survivor_count` | `S_COUNT` (instance) | — | — |
 | `claim` | `G_FIN`, `S_COUNT`, `Survivor(winner)`, `PrizeClaimed(winner)`, `PRIZE`, `TOKEN` | `PrizeClaimed(winner)`, `PRIZE`, `G_FIN` (instance) | `PrizeClaimed(winner)` |
 | `initialize` | `ADMIN` (instance) | `ADMIN` (instance) | — |
@@ -198,7 +198,7 @@ Round lifecycle state machine:
 The arena contract exposes a global pause mechanism (`pause` / `unpause`, admin-only).
 When paused, all state-mutating game functions reject calls with `ArenaError::Paused`.
 
-**However, governance/upgrade functions are explicitly exempt from the pause check.**
+**However, governance/upgrade functions and admin-only recovery configuration are explicitly exempt from the pause check.**
 
 ### Exempt functions
 
@@ -207,6 +207,7 @@ When paused, all state-mutating game functions reject calls with `ArenaError::Pa
 | `propose_upgrade` | **Yes** | Admin must be able to queue a recovery upgrade at any time |
 | `execute_upgrade` | **Yes** | Admin must be able to deploy the recovery upgrade after the timelock |
 | `cancel_upgrade` | **Yes** | Admin must be able to retract an incorrect proposal before correcting it |
+| `set_token` | **Yes** | Admin must be able to rotate a compromised token address while gameplay is paused |
 | `pause` | **Yes** | Admin must always be able to pause |
 | `unpause` | **Yes** | Admin must always be able to unpause |
 
@@ -234,9 +235,10 @@ governance functions exempt, the admin retains full ability to:
 
 ### Invariant
 
-> `propose_upgrade`, `execute_upgrade`, and `cancel_upgrade` MUST NOT call
-> `require_not_paused`. Any future addition of new governance functions should
-> follow the same exemption rule and update this table.
+> `propose_upgrade`, `execute_upgrade`, `cancel_upgrade`, and `set_token` MUST
+> NOT call `require_not_paused`. Any future addition of new governance or
+> admin-only recovery functions should follow the same exemption rule and update
+> this table.
 
 ## Historical baseline note
 

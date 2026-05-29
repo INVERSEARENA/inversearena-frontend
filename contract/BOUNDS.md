@@ -10,6 +10,7 @@ Defined in `contract/arena/src/bounds.rs`:
 |----------|-----------------------------|---------|
 | `MAX_ARENA_PARTICIPANTS` | `10_000` | Hard ceiling on joins; also interacts with admin `set_capacity` (effective cap is `min(capacity, MAX_ARENA_PARTICIPANTS)` when `capacity > 0`). |
 | `MAX_SUBMISSIONS_PER_ROUND` | `10_000` | Hard ceiling on distinct submitters per active round. |
+| `MIN_REQUIRED_STAKE` | `10_000_000` | Minimum `required_stake_amount` accepted by `init()`. Equals 10 XLM in stroops (7-decimal token). Matches the factory's `DEFAULT_MIN_STAKE` to prevent dust-stake arenas and enforce a consistent floor regardless of whether the arena was created via the factory or directly. |
 
 **Test builds** (`cfg(test)`) use smaller values (`64` participants, `32` submissions per round) so CI can run **N−1 / N / N+1** boundary tests quickly.
 

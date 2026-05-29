@@ -1,9 +1,11 @@
-import { ISupportedWallet, StellarWalletsKit, Networks } from "@creit-tech/stellar-wallets-kit";
+import { StellarWalletsKit, Networks } from "@creit-tech/stellar-wallets-kit";
 import { FreighterModule } from "@creit-tech/stellar-wallets-kit/modules/freighter";
 import { xBullModule } from "@creit-tech/stellar-wallets-kit/modules/xbull";
 import { AlbedoModule } from "@creit-tech/stellar-wallets-kit/modules/albedo";
 import { useEffect, useState, useCallback } from "react";
 import { WalletStatus } from "./types";
+import { SignedXdrSchema } from "@/shared-d/utils/security-validation";
+import { stellarConfig } from "@/lib/stellarConfig";
 
 // Define an interface for the wallet hook's return type
 export interface WalletHook {
@@ -11,8 +13,19 @@ export interface WalletHook {
   isConnected: boolean;
   status: WalletStatus;
   error: string | null;
-  connectWallet: () => Promise<void>;
+  connectWallet: () => Promise<string | null>;
+  signTransaction: (xdr: string) => Promise<string>;
   disconnectWallet: () => void;
+}
+
+// Stellar public keys start with G and are exactly 56 alphanumeric (base32) characters.
+const STELLAR_PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
+
+// Key used to persist intentional disconnect so wallet extensions can't phantom-reconnect.
+const WALLET_DISCONNECTED_KEY = 'inversearena:wallet:disconnected';
+
+export function isValidStellarPublicKey(address: string): boolean {
+  return STELLAR_PUBLIC_KEY_REGEX.test(address);
 }
 
 /**
@@ -35,24 +48,62 @@ export const useStellarWallet = (network: Networks): WalletHook => {
         new AlbedoModule()
       ],
     });
+
+    // Suppress auto-reconnect if the user previously disconnected intentionally
+    if (typeof window !== 'undefined' && localStorage.getItem(WALLET_DISCONNECTED_KEY) === 'true') {
+      return () => { StellarWalletsKit.disconnect(); };
+    }
+
+    return () => { StellarWalletsKit.disconnect(); };
   }, [network]);
 
   const connectWallet = useCallback(async () => {
     try {
       setStatus('connecting');
       setError(null);
+      // Clear intentional-disconnect flag so the session is treated as fresh
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem(WALLET_DISCONNECTED_KEY);
+      }
       const { address } = await StellarWalletsKit.authModal();
+
+      if (!isValidStellarPublicKey(address)) {
+        setIsConnected(false);
+        setPublicKey(null);
+        setStatus('error');
+        setError('Wallet returned an invalid public key. Please try reconnecting.');
+        return null;
+      }
+
       setPublicKey(address);
       setIsConnected(true);
       setStatus('connected');
+      return address;
     } catch (err) {
       console.error("Failed to connect wallet:", err);
       setIsConnected(false);
       setPublicKey(null);
       setStatus('error');
       setError(err instanceof Error ? err.message : "Failed to connect wallet");
+      return null;
     }
   }, []);
+
+  const signTransaction = useCallback(async (xdr: string) => {
+    const walletAddress = publicKey ?? (await StellarWalletsKit.getAddress()).address;
+
+    if (!walletAddress) {
+      throw new Error("Wallet is not connected");
+    }
+
+    const validatedXdr = SignedXdrSchema.parse(xdr);
+    const { signedTxXdr } = await StellarWalletsKit.signTransaction(validatedXdr, {
+      address: walletAddress,
+      networkPassphrase: stellarConfig.passphrase,
+    });
+
+    return SignedXdrSchema.parse(signedTxXdr);
+  }, [publicKey]);
 
   const disconnectWallet = useCallback(() => {
     StellarWalletsKit.disconnect();
@@ -60,8 +111,11 @@ export const useStellarWallet = (network: Networks): WalletHook => {
     setIsConnected(false);
     setStatus('disconnected');
     setError(null);
+    // Persist intentional disconnect so extensions cannot phantom-reconnect on reload
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(WALLET_DISCONNECTED_KEY, 'true');
+    }
   }, []);
 
-  return { publicKey, isConnected, status, error, connectWallet, disconnectWallet };
+  return { publicKey, isConnected, status, error, connectWallet, signTransaction, disconnectWallet };
 };
-

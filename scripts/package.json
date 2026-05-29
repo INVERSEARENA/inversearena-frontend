@@ -1,0 +1,18 @@
+{
+  "name": "inversearena-scripts",
+  "version": "0.1.0",
+  "description": "One-off utility scripts for InverseArena contributors",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup-testnet": "tsx setup-testnet.ts"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^13.1.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "tsx": "^4.15.6",
+    "typescript": "^5.4.5"
+  }
+}

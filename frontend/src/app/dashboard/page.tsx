@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { ErrorBoundary } from "@/components/error-boundary/ErrorBoundary";
+import { ErrorFallback } from "@/components/error-boundary/ErrorFallback";
 import { FeaturedArenaCard } from "@/features/dashboard-home/components/FeaturedArenaCard";
 import { YieldGeneratorPanel } from "@/features/dashboard-home/components/YieldGeneratorPanel";
 import {
@@ -27,6 +29,14 @@ import {
 const HAS_STAKED_KEY = "inversearena_has_staked";
 
 export default function DashboardHomePage() {
+  return (
+    <ErrorBoundary fallback={<ErrorFallback context="dashboard" />}>
+      <DashboardHomeView />
+    </ErrorBoundary>
+  );
+}
+
+function DashboardHomeView() {
   const [isStakeModalOpen, setIsStakeModalOpen] = useState(false);
   const [isPoolModalOpen, setIsPoolModalOpen] = useState(false);
   const [hasStaked, setHasStaked] = useState(false);

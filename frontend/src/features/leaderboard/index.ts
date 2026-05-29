@@ -1,17 +1,10 @@
 // Leaderboard feature exports
 
 // Components
-export {
-  LeaderboardTable,
-  RankTableRow,
-  Pagination,
-} from './components';
+export { LeaderboardTable, RankTableRow, Pagination } from "./components";
 
 // Types
-export type {
-  Survivor,
-  PaginationState,
-} from './types';
+export type { Survivor, PaginationState } from "./types";
 
 // Data utilities
 export {
@@ -20,7 +13,10 @@ export {
   getTotalPages,
   formatAgentId,
   formatCurrency,
-} from './data/mockLeaderboard';
+} from "./data/mockLeaderboard";
 
 // Hooks
-export { useLeaderboard } from './hooks/useLeaderboard';
+export { useLeaderboard } from "./hooks/useLeaderboard";
+
+// API types
+export type { LeaderboardApiResponse } from "./hooks/useLeaderboard";

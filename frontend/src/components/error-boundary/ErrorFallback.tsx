@@ -4,9 +4,11 @@ import React, { ErrorInfo } from "react";
 import { useRouter } from "next/navigation";
 
 interface ErrorFallbackProps {
-  error: Error | null;
-  errorInfo: ErrorInfo | null;
-  onReset: () => void;
+  error?: Error | null;
+  errorInfo?: ErrorInfo | null;
+  onReset?: () => void;
+  /** Optional context label shown in the error message (e.g. "arena", "dashboard") */
+  context?: string;
 }
 
 /**
@@ -16,9 +18,10 @@ interface ErrorFallbackProps {
  * Matches the app's design system with dark theme and neon-green accents.
  */
 export function ErrorFallback({
-  error,
-  errorInfo,
-  onReset,
+  error = null,
+  errorInfo = null,
+  onReset = () => {},
+  context,
 }: ErrorFallbackProps) {
   const router = useRouter();
   const [copied, setCopied] = React.useState(false);
@@ -26,6 +29,11 @@ export function ErrorFallback({
   const handleGoHome = () => {
     onReset();
     router.push("/");
+  };
+
+  const handleGoToDashboard = () => {
+    onReset();
+    router.push("/dashboard");
   };
 
   const handleRetry = () => {
@@ -71,7 +79,9 @@ Timestamp: ${new Date().toISOString()}
             System Error
           </h1>
           <p className="text-gray-400 text-lg mb-2">
-            Something went wrong in the arena
+            {context
+              ? `Something went wrong loading the ${context}`
+              : "Something went wrong in the arena"}
           </p>
           <p className="text-gray-500 text-sm">
             Don't worry, your data is safe. Try one of the recovery options below.
@@ -119,6 +129,15 @@ Timestamp: ${new Date().toISOString()}
             aria-label="Navigate back to the home page"
           >
             🏠 Go Home
+          </button>
+
+          {/* Go to Dashboard Button */}
+          <button
+            onClick={handleGoToDashboard}
+            className="w-full bg-gray-800 text-white font-pixel py-4 px-6 rounded-lg hover:bg-gray-700 transition-all border border-gray-700 uppercase tracking-wider text-sm focus:outline-none focus:ring-2 focus:ring-gray-600 focus:ring-offset-2 focus:ring-offset-black"
+            aria-label="Navigate to the dashboard"
+          >
+            📊 Go to Dashboard
           </button>
 
           {/* Report Issue Button */}

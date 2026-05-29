@@ -1,5 +1,5 @@
-'use client'
-import React, { useState, useEffect } from 'react';
+"use client";
+import React, { useState, useEffect, useRef } from 'react';
 import { Modal } from '../ui/Modal';
 
 interface JoinArenaModalProps {
@@ -27,11 +27,18 @@ const JoinArenaModal: React.FC<JoinArenaModalProps> = ({
 }) => {
   const [isChecked, setIsChecked] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const isMountedRef = useRef(true);
 
   useEffect(() => {
+    isMountedRef.current = true;
+
     if (isOpen) {
       setIsChecked(false);
     }
+
+    return () => {
+      isMountedRef.current = false;
+    };
   }, [isOpen]);
 
   const handleConfirm = async () => {
@@ -40,7 +47,9 @@ const JoinArenaModal: React.FC<JoinArenaModalProps> = ({
     try {
       await onConfirm();
     } finally {
-      setIsLoading(false);
+      if (isMountedRef.current) {
+        setIsLoading(false);
+      }
     }
   };
 

@@ -20,6 +20,12 @@ export function createLeaderboardRouter(
    * Query params:
    *  - limit  (1–100, default 20)
    *  - cursor (opaque string for next page)
+   *
+   * Cache key design: the key is scoped by pagination params only, NOT by user identity.
+   * This is intentional — leaderboard data is public: every player sees the same global
+   * rankings. The response must never include personalised fields (e.g. "my rank
+   * highlighted"). If personalised fields are added in the future, the cache key MUST be
+   * updated to include a user-scoped identifier to prevent cross-user data leakage.
    */
   router.get(
     "/",

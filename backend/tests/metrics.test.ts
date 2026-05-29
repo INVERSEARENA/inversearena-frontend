@@ -1,4 +1,14 @@
-import { register, httpRequestsTotal, httpRequestDuration, workerJobsPending, txsConfirmedTotal } from '../src/utils/metrics';
+import {
+  arenaStateTransitionsTotal,
+  arenasActiveGauge,
+  httpRequestDuration,
+  httpRequestsTotal,
+  payoutsSuccessTotal,
+  playersEliminatedTotal,
+  register,
+  txsConfirmedTotal,
+  workerJobsPending,
+} from '../src/utils/metrics';
 
 async function testMetricsEndpoint() {
   console.log('🧪 Test: Metrics Endpoint');
@@ -16,6 +26,10 @@ async function testMetricsEndpoint() {
   txsConfirmedTotal.inc({ status: 'confirmed' });
   txsConfirmedTotal.inc({ status: 'confirmed' });
   txsConfirmedTotal.inc({ status: 'failed' });
+  arenaStateTransitionsTotal.inc({ from_state: 'OPEN', to_state: 'RESOLVED' });
+  playersEliminatedTotal.inc(3);
+  payoutsSuccessTotal.inc({ asset: 'XLM' });
+  arenasActiveGauge.set(2);
   
   const metrics = await register.metrics();
   
@@ -24,6 +38,10 @@ async function testMetricsEndpoint() {
     { name: 'http_request_duration_seconds', present: metrics.includes('http_request_duration_seconds') },
     { name: 'worker_jobs_pending', present: metrics.includes('worker_jobs_pending') },
     { name: 'txs_confirmed_total', present: metrics.includes('txs_confirmed_total') },
+    { name: 'inversearena_arenas_active_total', present: metrics.includes('inversearena_arenas_active_total') },
+    { name: 'inversearena_players_eliminated_total', present: metrics.includes('inversearena_players_eliminated_total') },
+    { name: 'inversearena_payouts_success_total', present: metrics.includes('inversearena_payouts_success_total') },
+    { name: 'inversearena_arena_state_transitions_total', present: metrics.includes('inversearena_arena_state_transitions_total') },
     { name: 'route label', present: metrics.includes('route=') },
     { name: 'status label', present: metrics.includes('status=') },
   ];

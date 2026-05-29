@@ -13,6 +13,59 @@
 
 import * as Sentry from "@sentry/nextjs";
 import type { ErrorInfo } from "react";
+import type { Event as SentryEvent } from "@sentry/nextjs";
+
+// Matches any Stellar public key (G + 55 base32 chars) anywhere in a string.
+const STELLAR_PUBLIC_KEY_REGEX = /G[A-Z2-7]{55}/g;
+// Matches any Stellar secret key (S + 55 base32 chars). Events containing
+// these are dropped entirely — they should never appear in error reports.
+const STELLAR_SECRET_KEY_REGEX = /S[A-Z2-7]{55}/g;
+
+/**
+ * Replace all Stellar public keys in `text` with the placeholder
+ * `[STELLAR_ADDRESS]`. Returns the original value if it is not a string.
+ */
+function redactPublicKeys(text: string): string {
+  return text.replace(STELLAR_PUBLIC_KEY_REGEX, "[STELLAR_ADDRESS]");
+}
+
+/**
+ * Scrub Stellar wallet addresses from a Sentry event before it is sent.
+ *
+ * - Public keys (G…) are replaced with `[STELLAR_ADDRESS]` in exception
+ *   values, breadcrumb messages, and breadcrumb URLs.
+ * - If a secret key (S…) appears anywhere in the serialised event the entire
+ *   event is dropped (returns `null`) as a belt-and-suspenders safeguard.
+ */
+export function scrubStellarAddresses(event: SentryEvent): SentryEvent | null {
+  // Belt-and-suspenders: drop the event entirely if a secret key leaks.
+  if (STELLAR_SECRET_KEY_REGEX.test(JSON.stringify(event))) {
+    return null;
+  }
+
+  // Scrub exception values (error messages / descriptions).
+  if (event.exception?.values) {
+    for (const ex of event.exception.values) {
+      if (ex.value) {
+        ex.value = redactPublicKeys(ex.value);
+      }
+    }
+  }
+
+  // Scrub breadcrumb messages and navigation URLs.
+  if (event.breadcrumbs?.values) {
+    for (const breadcrumb of event.breadcrumbs.values) {
+      if (breadcrumb.message) {
+        breadcrumb.message = redactPublicKeys(breadcrumb.message);
+      }
+      if (breadcrumb.data?.url && typeof breadcrumb.data.url === "string") {
+        breadcrumb.data.url = redactPublicKeys(breadcrumb.data.url);
+      }
+    }
+  }
+
+  return event;
+}
 
 const SENTRY_ENABLED =
   typeof process !== "undefined" &&
