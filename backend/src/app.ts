@@ -21,6 +21,7 @@ import { LeaderboardController } from "./controllers/leaderboard.controller";
 import { TransactionsController } from "./controllers/transactions.controller";
 import { RoundController } from "./controllers/round.controller";
 import { refreshArenaMetrics, register } from "./utils/metrics";
+import { redis } from "./cache/redisClient";
 import type { PaymentService } from "./services/paymentService";
 import type { PaymentWorker } from "./workers/paymentWorker";
 import type { TransactionRepository } from "./repositories/transactionRepository";
@@ -52,13 +53,27 @@ export function createApp(deps: AppDependencies): express.Application {
     res.json({ status: "ok" });
   });
 
-  app.get("/ready", (_req, res) => {
-    const breakerStats = deps.paymentService.getSorobanBreakerStats();
-    const sorobanUp = breakerStats.state !== "open";
-    res.status(sorobanUp ? 200 : 503).json({
-      status: sorobanUp ? "ready" : "degraded",
-      sorobanCircuitBreaker: breakerStats,
-    });
+  app.get("/ready", async (_req, res) => {
+    try {
+      const [dbResult, redisResult] = await Promise.all([
+        prisma.$queryRaw`SELECT 1`,
+        redis.ping(),
+      ]);
+
+      const breakerStats = deps.paymentService.getSorobanBreakerStats();
+
+      res.status(200).json({
+        status: "ready",
+        database: dbResult,
+        redis: redisResult,
+        sorobanCircuitBreaker: breakerStats,
+      });
+    } catch (error) {
+      res.status(503).json({
+        status: "not_ready",
+        error: error instanceof Error ? error.message : "Readiness check failed",
+      });
+    }
   });
 
   app.get("/metrics", async (_req, res) => {

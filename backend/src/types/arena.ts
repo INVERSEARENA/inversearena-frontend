@@ -1,13 +1,27 @@
 export interface ArenaStats {
   arenaId: string;
+  arenaName: string;
   currentPot: number;
   playerCount: number;
+  maxPlayers: number;
   survivorCount: number;
   currentRound: number;
   entryFee: number;
+  stakeToken: string;
+  joinDeadline: string | null;
   yieldAccrued: number;
   status: string;
   lastUpdated: string;
+}
+
+export interface ArenaParticipant {
+  id: string;
+  walletAddress: string;
+  choice: "heads" | "tails";
+  stake: number;
+  status: "READY" | "ACTIVE" | "ELIMINATED";
+  roundNumber: number;
+  joinedAt: string;
 }
 
 export interface CreateArenaInput {

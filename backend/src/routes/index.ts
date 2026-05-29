@@ -36,7 +36,7 @@ export function createApiRouter(
     createTransactionsRouter(transactionsController),
   );
   router.use("/oracle", createOracleRouter());
-  router.use("/arenas", requireAuth, createArenasRouter(requireAuth));
+  router.use("/arenas", createArenasRouter(requireAuth));
   router.use("/pools", createPoolsRouter(requireAuth));
   router.use(
     "/leaderboard",

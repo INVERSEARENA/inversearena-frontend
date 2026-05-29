@@ -4,6 +4,8 @@ import { xBullModule } from "@creit-tech/stellar-wallets-kit/modules/xbull";
 import { AlbedoModule } from "@creit-tech/stellar-wallets-kit/modules/albedo";
 import { useEffect, useState, useCallback } from "react";
 import { WalletStatus } from "./types";
+import { SignedXdrSchema } from "@/shared-d/utils/security-validation";
+import { stellarConfig } from "@/lib/stellarConfig";
 
 // Define an interface for the wallet hook's return type
 export interface WalletHook {
@@ -11,7 +13,8 @@ export interface WalletHook {
   isConnected: boolean;
   status: WalletStatus;
   error: string | null;
-  connectWallet: () => Promise<void>;
+  connectWallet: () => Promise<string | null>;
+  signTransaction: (xdr: string) => Promise<string>;
   disconnectWallet: () => void;
 }
 
@@ -69,20 +72,38 @@ export const useStellarWallet = (network: Networks): WalletHook => {
         setPublicKey(null);
         setStatus('error');
         setError('Wallet returned an invalid public key. Please try reconnecting.');
-        return;
+        return null;
       }
 
       setPublicKey(address);
       setIsConnected(true);
       setStatus('connected');
+      return address;
     } catch (err) {
       console.error("Failed to connect wallet:", err);
       setIsConnected(false);
       setPublicKey(null);
       setStatus('error');
       setError(err instanceof Error ? err.message : "Failed to connect wallet");
+      return null;
     }
   }, []);
+
+  const signTransaction = useCallback(async (xdr: string) => {
+    const walletAddress = publicKey ?? (await StellarWalletsKit.getAddress()).address;
+
+    if (!walletAddress) {
+      throw new Error("Wallet is not connected");
+    }
+
+    const validatedXdr = SignedXdrSchema.parse(xdr);
+    const { signedTxXdr } = await StellarWalletsKit.signTransaction(validatedXdr, {
+      address: walletAddress,
+      networkPassphrase: stellarConfig.passphrase,
+    });
+
+    return SignedXdrSchema.parse(signedTxXdr);
+  }, [publicKey]);
 
   const disconnectWallet = useCallback(() => {
     StellarWalletsKit.disconnect();
@@ -96,6 +117,5 @@ export const useStellarWallet = (network: Networks): WalletHook => {
     }
   }, []);
 
-  return { publicKey, isConnected, status, error, connectWallet, disconnectWallet };
+  return { publicKey, isConnected, status, error, connectWallet, signTransaction, disconnectWallet };
 };
-

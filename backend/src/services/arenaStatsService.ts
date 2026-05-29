@@ -22,7 +22,17 @@ export class ArenaStatsService {
     }
 
     const metadata = (arena.metadata as Record<string, unknown>) ?? {};
-    const entryFee = (metadata.minStake as number | undefined) ?? 0;
+    const entryFee =
+      (metadata.entryFee as number | undefined) ??
+      (metadata.minStake as number | undefined) ??
+      0;
+    const maxPlayers = (metadata.maxPlayers as number | undefined) ?? 0;
+    const joinDeadline =
+      typeof metadata.joinDeadline === "string" ? metadata.joinDeadline : null;
+    const arenaName =
+      (metadata.name as string | undefined) ?? `Arena ${arenaId.slice(0, 8)}`;
+    const stakeToken =
+      (metadata.stakeToken as string | undefined) ?? "XLM";
 
     const rounds = arena.rounds;
     const lastRound = rounds[rounds.length - 1];
@@ -56,11 +66,15 @@ export class ArenaStatsService {
 
     return {
       arenaId,
+      arenaName,
       currentPot,
       playerCount,
+      maxPlayers,
       survivorCount,
       currentRound,
       entryFee,
+      stakeToken,
+      joinDeadline,
       yieldAccrued,
       status: status.toLowerCase(),
       lastUpdated: new Date().toISOString(),
