@@ -3,11 +3,13 @@ import { asyncHandler } from "../middleware/validate";
 import { cacheMiddleware } from "../middleware/cache";
 import { cacheKeys, cacheTTL } from "../cache/cacheService";
 import { ArenaStatsService } from "../services/arenaStatsService";
+import { ArenaController } from "../controllers/arena.controller";
 import { prisma } from "../db/prisma";
 
 export function createArenasRouter(): Router {
   const router = Router();
   const statsService = new ArenaStatsService(prisma);
+  const arenaController = new ArenaController(prisma);
 
   /**
    * GET /api/arenas/:id/stats
@@ -31,6 +33,20 @@ export function createArenasRouter(): Router {
         }
       }
     })
+  );
+
+  /**
+   * GET /api/arenas/:id/participants
+   * Returns paginated list of participants in a specific arena.
+   * Cached for 5s — participant status changes with round eliminations.
+   */
+  router.get(
+    "/:id/participants",
+    cacheMiddleware(
+      (req) => `arena:participants:${req.params.id}:${req.query.limit || 25}:${req.query.cursor || ""}`,
+      5
+    ),
+    asyncHandler(arenaController.getParticipants)
   );
 
   return router;
