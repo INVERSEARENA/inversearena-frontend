@@ -96,6 +96,9 @@ test("AuthService.requestNonce: invalidates prior nonces before creating a new o
 
   assert.strictEqual(mockUpdateMany.mock.callCount(), 1);
   assert.strictEqual(mockCreate.mock.callCount(), 1);
+
+  const callParams = mockCreate.mock.calls[0].arguments[0] as { walletAddress: string };
+  assert.strictEqual(callParams.walletAddress, walletAddress);
 });
 
 test("AuthService.verifySignatureAndLogin: successful login", async () => {

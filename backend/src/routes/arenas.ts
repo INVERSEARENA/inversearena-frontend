@@ -5,10 +5,11 @@ import { asyncHandler } from "../middleware/validate";
 import { cacheMiddleware } from "../middleware/cache";
 import { cacheKeys, cacheTTL } from "../cache/cacheService";
 import { prisma } from "../db/prisma";
-import { RoundRepository } from "../repositories/roundRepository";
-import { apiError } from "../utils/apiError";
+import type { CreateArenaInput } from "../types/arena";
 import { ArenaService } from "../services/arenaService";
 import { ArenaStatsService } from "../services/arenaStatsService";
+import { RoundRepository } from "../repositories/roundRepository";
+import { apiError } from "../utils/apiError";
 
 const PaginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
@@ -41,6 +42,26 @@ const CreateArenaSchema = z.object({
   name: z.string().trim().min(1).max(120),
 });
 
+function formatRound(round: {
+  id: string;
+  roundNumber: number;
+  state: string;
+  createdAt: Date;
+  updatedAt: Date;
+  eliminationCount: number;
+  metadata: unknown;
+}) {
+  return {
+    id: round.id,
+    roundNumber: round.roundNumber,
+    state: round.state,
+    eliminationCount: round.eliminationCount,
+    metadata: round.metadata,
+    createdAt: round.createdAt.toISOString(),
+    updatedAt: round.updatedAt.toISOString(),
+  };
+}
+
 function writeSseEvent(
   res: { write: (chunk: string) => void },
   event: string,
@@ -64,7 +85,7 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
     "/",
     authMiddleware,
     asyncHandler(async (req, res) => {
-      const input = CreateArenaSchema.parse(req.body);
+      const input = CreateArenaSchema.parse(req.body) as unknown as CreateArenaInput;
       const createdBy = req.user?.walletAddress;
 
       if (!createdBy) {
@@ -86,9 +107,12 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
    */
   router.get(
     "/:id/stats",
-    cacheMiddleware((req) => cacheKeys.arenaStats(req.params.id!), cacheTTL.ARENA_STATS),
+    cacheMiddleware((req) => cacheKeys.arenaStats(req.params.id ?? ""), cacheTTL.ARENA_STATS),
     asyncHandler(async (req, res) => {
-      const id = req.params.id!;
+      const id = req.params.id;
+      if (!id) {
+        throw apiError(400, "INVALID_ARENA_ID", "Arena id is required");
+      }
 
       try {
         const stats = await arenaStatsService.getArenaStats(id);
@@ -111,6 +135,9 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
     ),
     asyncHandler(async (req, res) => {
       const { id } = req.params;
+      if (!id) {
+        throw apiError(400, "INVALID_ARENA_ID", "Arena id is required");
+      }
       const { limit, cursor } = PaginationSchema.parse(req.query);
 
       const arena = await prisma.arena.findUnique({ where: { id } });
@@ -120,15 +147,17 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
       }
 
       const result = await roundRepository.listByArenaId(id, limit, cursor);
-      const items = result.items.map((round) => ({
-        id: round.id,
-        roundNumber: round.roundNumber,
-        state: round.state,
-        eliminationCount: round.metadata?.resolution?.eliminatedPlayers?.length ?? 0,
-        metadata: round.metadata,
-        createdAt: round.createdAt.toISOString(),
-        updatedAt: round.updatedAt.toISOString(),
-      }));
+      const items = result.items.map((round) =>
+        formatRound({
+          id: round.id,
+          roundNumber: round.roundNumber,
+          state: round.state,
+          eliminationCount: round.metadata?.resolution?.eliminatedPlayers?.length ?? 0,
+          metadata: round.metadata,
+          createdAt: round.createdAt,
+          updatedAt: round.updatedAt,
+        }),
+      );
 
       res.json({
         items,
