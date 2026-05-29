@@ -42,7 +42,35 @@ export interface AppDependencies {
 export function createApp(deps: AppDependencies): express.Application {
   const app = express();
 
-  app.use(helmet());
+  // Configure Helmet with security headers
+  app.use(
+    helmet({
+      // HSTS: Force HTTPS for 1 year, including subdomains
+      hsts: {
+        maxAge: 31536000, // 1 year in seconds
+        includeSubDomains: true,
+        preload: true,
+      },
+      // Referrer Policy: Balance privacy and analytics
+      referrerPolicy: {
+        policy: "strict-origin-when-cross-origin",
+      },
+      // Cross-Origin Opener Policy: Improve isolation
+      crossOriginOpenerPolicy: {
+        policy: "same-origin",
+      },
+      // Cross-Origin Resource Policy: Allow frontend to load from API
+      crossOriginResourcePolicy: {
+        policy: "cross-origin",
+      },
+      // Content Security Policy: Disabled (handled by Next.js frontend)
+      contentSecurityPolicy: false,
+      // Permitted Cross-Domain Policies: Disable Adobe Flash/PDF policies
+      permittedCrossDomainPolicies: {
+        permittedPolicies: "none",
+      },
+    })
+  );
   app.use(cors());
   app.use(express.json());
   app.use(requestLogger);

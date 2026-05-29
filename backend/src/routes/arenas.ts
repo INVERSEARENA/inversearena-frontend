@@ -411,5 +411,19 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
     }),
   );
 
+  /**
+   * GET /api/arenas/:id/participants
+   * Returns paginated list of participants in a specific arena.
+   * Cached for 5s — participant status changes with round eliminations.
+   */
+  router.get(
+    "/:id/participants",
+    cacheMiddleware(
+      (req) => `arena:participants:${req.params.id}:${req.query.limit || 25}:${req.query.cursor || ""}`,
+      5
+    ),
+    asyncHandler(arenaController.getParticipants)
+  );
+
   return router;
 }
