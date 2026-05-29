@@ -22,6 +22,14 @@ import {
   submitSignedTransaction,
   fetchArenaState
 } from "@/shared-d/utils/stellar-transactions";
+import { useArenaStream } from "@/features/arena/useArenaStream";
+
+const DEMO_ELIMINATION_FEED = [
+  { id: "demo-1", label: "S-6782-5", roundNumber: 1, status: "OUT" as const, createdAt: "2026-05-29T00:00:00.000Z" },
+  { id: "demo-2", label: "S-3382-8", roundNumber: 1, status: "OUT" as const, createdAt: "2026-05-29T00:00:00.000Z" },
+  { id: "demo-3", label: "K-0001-A", roundNumber: 1, status: "OUT" as const, createdAt: "2026-05-29T00:00:00.000Z" },
+  { id: "demo-4", label: "S-9921-W", roundNumber: 1, status: "ACTIVE" as const, createdAt: "2026-05-29T00:00:00.000Z" },
+];
 
 export default function ArenaPage() {
   return (
@@ -53,8 +61,9 @@ function ArenaGameView() {
   const [txType, setTxType] = useState<"JOIN" | "SUBMIT" | "CLAIM" | null>(null);
   const [txDetails, setTxDetails] = useState<{ label: string; value: string | number }[]>([]);
 
-  // Mock Arena ID
-  const ARENA_ID = "C...ARENA";
+  // Demo arena identifier; when unset the page falls back to the static mock view.
+  const ARENA_ID = process.env.NEXT_PUBLIC_DEMO_ARENA_ID ?? "";
+  const { status: streamStatus, snapshot, feed: streamFeed } = useArenaStream(ARENA_ID);
 
   // Mock data - would come from API/contract
   const headsYield = 42;
@@ -62,8 +71,37 @@ function ArenaGameView() {
   const headsPercentage = 42;
   const tailsPercentage = 58;
 
+  useEffect(() => {
+    if (!snapshot) return;
+
+    setSurvivors((current) => ({
+      current: snapshot.survivorCount,
+      max: snapshot.playerCount || current.max,
+    }));
+    setCurrentRound(snapshot.currentRound);
+
+    if (snapshot.status === "settled" || snapshot.survivorCount <= 1) {
+      setHasWon(true);
+      setUserStatus("WINNER!");
+      setIsRoundResolved(false);
+      setShowEliminationSummary(true);
+    }
+  }, [snapshot]);
+
+  useEffect(() => {
+    if (!ARENA_ID || !snapshot) return;
+    if (streamStatus === "connected" && snapshot.lastRoundState === "RESOLVED") {
+      setIsRoundResolved(true);
+    }
+  }, [ARENA_ID, snapshot, streamStatus]);
+
+  const eliminationFeed =
+    streamFeed.length > 0
+      ? streamFeed
+      : DEMO_ELIMINATION_FEED;
+
   const updateArenaState = useCallback(async () => {
-    if (!address) return;
+    if (!address || !ARENA_ID) return;
     setIsLoadingArena(true);
     try {
       const state = await fetchArenaState(ARENA_ID, address);
@@ -78,7 +116,7 @@ function ArenaGameView() {
     } finally {
       setIsLoadingArena(false);
     }
-  }, [address]);
+  }, [address, ARENA_ID]);
 
   useEffect(() => {
     if (isConnected && address) {
@@ -106,7 +144,7 @@ function ArenaGameView() {
                 TEST ELIMINATION
               </button>
               <button className="border border-white/20 px-4 py-2 font-pixel text-[8px] text-white tracking-wider hover:bg-white/5">
-                SOROBAN LIVE
+                {ARENA_ID ? `STREAM ${streamStatus.toUpperCase()}` : "SOROBAN LIVE"}
               </button>
               <button
                 onClick={() => !isConnected && connect()}
@@ -125,6 +163,7 @@ function ArenaGameView() {
               </div>
               <button
                 onClick={() => {
+                  if (!ARENA_ID) return;
                   setTxType("JOIN");
                   setTxDetails([
                     { label: "Action", value: "Join Arena" },
@@ -185,6 +224,7 @@ function ArenaGameView() {
                 <div className="mt-4 flex justify-center">
                   <button
                     onClick={() => {
+                      if (!ARENA_ID) return;
                       setTxType("SUBMIT");
                       setTxDetails([
                         { label: "Action", value: "Submit Choice" },
@@ -233,24 +273,23 @@ function ArenaGameView() {
               <div className="h-0.5 bg-black mb-4" />
 
               <div className="space-y-3 text-sm font-mono">
-                {/* Eliminated entries */}
-                <div className="flex justify-between items-center bg-pink-100 p-3">
-                  <span className="text-neon-pink line-through">S-6782-5</span>
-                  <span className="bg-neon-pink px-3 py-1 text-white text-xs font-bold">OUT</span>
-                </div>
-                <div className="flex justify-between items-center bg-pink-100 p-3">
-                  <span className="text-neon-pink line-through">S-3382-8</span>
-                  <span className="bg-neon-pink px-3 py-1 text-white text-xs font-bold">OUT</span>
-                </div>
-                <div className="flex justify-between items-center bg-pink-100 p-3">
-                  <span className="text-neon-pink line-through">K-0001-A</span>
-                  <span className="bg-neon-pink px-3 py-1 text-white text-xs font-bold">OUT</span>
-                </div>
-                {/* Active entry */}
-                <div className="flex justify-between items-center p-3">
-                  <span className="text-black">S-9921-W</span>
-                  <span className="bg-black px-3 py-1 text-neon-green text-xs font-pixel">ACTIVE</span>
-                </div>
+                {eliminationFeed.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className={`flex justify-between items-center p-3 ${entry.status === "OUT" ? "bg-pink-100" : ""}`}
+                  >
+                    <span className={entry.status === "OUT" ? "text-neon-pink line-through" : "text-black"}>
+                      {entry.label}
+                    </span>
+                    <span
+                      className={`px-3 py-1 text-white text-xs font-bold ${
+                        entry.status === "OUT" ? "bg-neon-pink" : "bg-black text-neon-green font-pixel"
+                      }`}
+                    >
+                      {entry.status}
+                    </span>
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -270,6 +309,7 @@ function ArenaGameView() {
                 {hasWon ? (
                   <button
                     onClick={() => {
+                      if (!ARENA_ID) return;
                       setTxType("CLAIM");
                       setTxDetails([
                         { label: "Action", value: "Claim Winnings" },

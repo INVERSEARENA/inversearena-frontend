@@ -106,6 +106,8 @@ Stellar is the optimal foundation for Inverse Arena:
 | Auth Service | Wallet-based JWT authentication with nonce challenge flow |
 | Metrics | Prometheus endpoint at `/metrics` for observability |
 
+For a deeper breakdown of the system boundaries, state machines, and data model, see [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ---
 
 ## Repository Structure
