@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { AuditLogModel } from "../db/models/auditLog.model";
+import { logger } from "../utils/logger";
 
 /**
  * Express middleware that automatically writes an audit log entry for every
@@ -22,7 +23,7 @@ export function auditLogMiddleware(): RequestHandler {
       // Write the audit log entry asynchronously — do not block the response
       writeAuditLog(req, res, body).catch((err) => {
         // Log but never crash the request due to audit failure
-        console.error("[auditLog] Failed to write audit log entry:", err);
+        logger.error({ err, method: req.method, path: req.path }, "Failed to write audit log entry");
       });
       return originalJson(body);
     };

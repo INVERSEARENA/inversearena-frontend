@@ -2,6 +2,7 @@ import { Worker, type Job } from "bullmq";
 import type { PaymentService } from "../services/paymentService";
 import type { TransactionRepository } from "../repositories/transactionRepository";
 import { TX_CONFIRM_QUEUE, type ConfirmJobData } from "../queues/txQueue";
+import { logger } from "../utils/logger";
 
 export function startTxReconcilerWorker(
   paymentService: PaymentService,
@@ -24,18 +25,38 @@ export function startTxReconcilerWorker(
   // Dead-letter: fired on every failure attempt; only act when all retries are exhausted
   worker.on("failed", async (job: Job<ConfirmJobData> | undefined, err: Error) => {
     if (!job) return;
-    const maxAttempts = job.opts.attempts ?? 1;
-    if (job.attemptsMade >= maxAttempts) {
-      await transactions.update(job.data.transactionId, {
-        status: "dead",
-        errorMessage: `Confirmation failed after ${maxAttempts} attempts: ${err.message}`,
-        updatedAt: new Date(),
-      });
+    const maxAttempts = job.opts.attempts ?? 10;
+    if (job.attemptsMade < maxAttempts) {
+      logger.info(
+        {
+          transactionId: job.data.transactionId,
+          attemptsMade: job.attemptsMade,
+          maxAttempts,
+          err,
+        },
+        "TxReconciler retry scheduled"
+      );
+      return;
     }
+
+    await transactions.update(job.data.transactionId, {
+      status: "dead",
+      errorMessage: `Confirmation failed after ${maxAttempts} attempts: ${err.message}`,
+      updatedAt: new Date(),
+    });
+    logger.error(
+      {
+        transactionId: job.data.transactionId,
+        attemptsMade: job.attemptsMade,
+        maxAttempts,
+        err,
+      },
+      "TxReconciler exhausted retries"
+    );
   });
 
   worker.on("error", (err: Error) => {
-    console.error("[TxReconciler] Worker error:", err.message);
+    logger.error({ err }, "TxReconciler worker error");
   });
 
   return worker;

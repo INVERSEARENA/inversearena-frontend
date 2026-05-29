@@ -27,7 +27,7 @@ import type {
 
 const PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
 const IDEMPOTENCY_REGEX = /^[a-zA-Z0-9:_-]{8,128}$/;
-const AMOUNT_REGEX = /^\d+(\.\d{1,7})?$/;
+const AMOUNT_REGEX = /^\d+(\.\d{0,7})?$/;
 
 const CreatePayoutRequestSchema = z.object({
   payoutId: z.string().trim().min(1).max(128),
@@ -46,7 +46,7 @@ const CreatePayoutRequestSchema = z.object({
     .regex(IDEMPOTENCY_REGEX, "Invalid idempotency key format"),
 });
 
-function toStroops(amount: string): string {
+export function toStroops(amount: string): string {
   const [wholePart, fractionPart = ""] = amount.split(".");
   const padded = (fractionPart + "0000000").slice(0, 7);
   const combined = `${wholePart}${padded}`.replace(/^0+(?=\d)/, "");

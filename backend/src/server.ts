@@ -16,6 +16,7 @@ import { startTxReconcilerWorker } from "./workers/txReconciler";
 import { createApp } from "./app";
 
 import { initSentry } from "./utils/sentry";
+import { logger } from "./utils/logger";
 
 const PORT = Number(process.env.PORT ?? 3001);
 
@@ -45,11 +46,11 @@ async function main() {
   });
 
   app.listen(PORT, () => {
-    console.log(`InverseArena backend listening on http://localhost:${PORT}`);
+    logger.info({ port: PORT }, "InverseArena backend listening");
   });
 }
 
 main().catch((err) => {
-  console.error("Failed to start server:", err);
+  logger.error({ err }, "Failed to start server");
   process.exit(1);
 });

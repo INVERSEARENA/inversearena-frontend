@@ -1,3 +1,5 @@
+import { logger } from "./logger";
+
 type CircuitState = "closed" | "open" | "half-open";
 
 interface CircuitBreakerOptions {
@@ -139,7 +141,7 @@ export function getSorobanBreaker(): CircuitBreaker {
     });
 
     _sorobanBreaker.on("open", () => {
-      console.warn("[circuit-breaker] Soroban RPC circuit OPEN — calls will be rejected");
+      logger.warn({ subsystem: "circuit-breaker" }, "Soroban RPC circuit open");
       try {
         const { sorobanCircuitBreakerState, sorobanCircuitTransitionsTotal } =
           require("./metrics") as typeof import("./metrics");
@@ -148,7 +150,7 @@ export function getSorobanBreaker(): CircuitBreaker {
       } catch { /* metrics not available in test environments */ }
     });
     _sorobanBreaker.on("halfOpen", () => {
-      console.info("[circuit-breaker] Soroban RPC circuit HALF-OPEN — probing");
+      logger.info({ subsystem: "circuit-breaker" }, "Soroban RPC circuit half-open");
       try {
         const { sorobanCircuitBreakerState, sorobanCircuitTransitionsTotal } =
           require("./metrics") as typeof import("./metrics");
@@ -157,7 +159,7 @@ export function getSorobanBreaker(): CircuitBreaker {
       } catch { /* metrics not available in test environments */ }
     });
     _sorobanBreaker.on("close", () => {
-      console.info("[circuit-breaker] Soroban RPC circuit CLOSED — normal operation");
+      logger.info({ subsystem: "circuit-breaker" }, "Soroban RPC circuit closed");
       try {
         const { sorobanCircuitBreakerState, sorobanCircuitTransitionsTotal } =
           require("./metrics") as typeof import("./metrics");
