@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, Env, symbol_short};
+use soroban_sdk::{Address, Env, Symbol, symbol_short};
 
 pub struct ArenaEvents;
 
@@ -45,5 +45,15 @@ impl ArenaEvents {
             (symbol_short!("admin"),),
             (old_admin.clone(), new_admin.clone()),
         );
+    }
+
+    pub fn paused(env: &Env, caller: &Address, reason: &Symbol) {
+        env.events()
+            .publish((symbol_short!("paused"), caller.clone()), reason.clone());
+    }
+
+    pub fn unpaused(env: &Env, caller: &Address) {
+        env.events()
+            .publish((symbol_short!("unpaused"), caller.clone()), ());
     }
 }

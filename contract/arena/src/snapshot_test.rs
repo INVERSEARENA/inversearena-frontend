@@ -75,6 +75,7 @@ mod snapshot_tests {
             yield_vault: Address::generate(&env),
             entry_fee: 100,
             state: GameState::Open,
+            paused: false,
             player_count: 42,
             commit_deadline: 1_730_000_000,
             round_count: 0,
@@ -86,6 +87,7 @@ mod snapshot_tests {
             yield_vault: Address::generate(&env),
             entry_fee: 200, // differs from config_a
             state: GameState::Open,
+            paused: false,
             player_count: 42,
             commit_deadline: 1_730_000_000,
             round_count: 0,
