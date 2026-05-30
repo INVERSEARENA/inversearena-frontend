@@ -25,4 +25,5 @@ pub enum RwaError {
     Unauthorized = 4,
     AlreadyWithdrawn = 5,
     InsufficientBalance = 6,
+    ArithmeticOverflow = 7,
 }

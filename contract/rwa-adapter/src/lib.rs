@@ -65,8 +65,13 @@ impl RwaAdapter {
             return Err(RwaError::AlreadyWithdrawn);
         }
 
-        let yield_amount = pos.principal * YIELD_BPS / 10000;
-        let total = pos.principal + yield_amount;
+        let yield_amount = pos.principal
+            .checked_mul(YIELD_BPS)
+            .and_then(|v| v.checked_div(10000))
+            .ok_or(RwaError::ArithmeticOverflow)?;
+        let total = pos.principal
+            .checked_add(yield_amount)
+            .ok_or(RwaError::ArithmeticOverflow)?;
 
         let mut updated = pos;
         updated.withdrawn = true;
@@ -98,7 +103,11 @@ impl RwaAdapter {
                 if pos.withdrawn {
                     0
                 } else {
-                    pos.principal + (pos.principal * YIELD_BPS / 10000)
+                    pos.principal
+                        .checked_mul(YIELD_BPS)
+                        .and_then(|y| y.checked_div(10000))
+                        .and_then(|y| pos.principal.checked_add(y))
+                        .unwrap_or(0)
                 }
             })
             .unwrap_or(0)
