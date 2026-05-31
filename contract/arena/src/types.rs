@@ -141,5 +141,5 @@ pub enum ArenaError {
     NoPendingAdmin = 14,
     InvalidVaultAddress = 15,
     /// Contract is paused by the admin.
-    ContractPaused = 15,
+    ContractPaused = 16,
 }

@@ -2,9 +2,9 @@ import { Router } from "express";
 import { asyncHandler } from "../middleware/validate";
 import {
   createRateLimitMiddleware,
-  nonceRateLimitConfig,
-  refreshRateLimitConfig,
-  verifyRateLimitConfig,
+  getNonceRateLimitConfig,
+  getRefreshRateLimitConfig,
+  getVerifyRateLimitConfig,
 } from "../middleware/rateLimit";
 import type { AuthController } from "../controllers/auth.controller";
 import type { RequestHandler } from "express";
@@ -15,9 +15,9 @@ export function createAuthRouter(
 ): Router {
   const router = Router();
 
-  const nonceRateLimiter = createRateLimitMiddleware(nonceRateLimitConfig);
-  const verifyRateLimiter = createRateLimitMiddleware(verifyRateLimitConfig);
-  const refreshRateLimiter = createRateLimitMiddleware(refreshRateLimitConfig);
+  const nonceRateLimiter = createRateLimitMiddleware(getNonceRateLimitConfig());
+  const verifyRateLimiter = createRateLimitMiddleware(getVerifyRateLimitConfig());
+  const refreshRateLimiter = createRateLimitMiddleware(getRefreshRateLimitConfig());
 
   // Public endpoints
   router.post("/nonce", nonceRateLimiter, asyncHandler(controller.requestNonce));

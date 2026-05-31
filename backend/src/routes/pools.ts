@@ -4,7 +4,7 @@ import { asyncHandler } from "../middleware/validate";
 import { cacheMiddleware } from "../middleware/cache";
 import { cacheTTL } from "../cache/cacheService";
 import { prisma } from "../db/prisma";
-import { createRateLimitMiddleware, poolsRateLimitConfig } from "../middleware/rateLimit";
+import { createRateLimitMiddleware, getPoolsRateLimitConfig } from "../middleware/rateLimit";
 import type { RequestHandler } from "express";
 import { apiError } from "../utils/apiError";
 
@@ -52,7 +52,7 @@ function formatEliminationLog(log: {
 export function createPoolsRouter(authMiddleware: RequestHandler): Router {
   const router = Router();
 
-  const poolsRateLimiter = createRateLimitMiddleware(poolsRateLimitConfig);
+  const poolsRateLimiter = createRateLimitMiddleware(getPoolsRateLimitConfig());
 
   /**
    * POST /api/pools

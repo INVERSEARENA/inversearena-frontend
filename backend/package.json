@@ -11,7 +11,7 @@
     "test:request-validation": "tsx --test tests/request-validation.unit.test.ts",
     "test": "jest",
     "test:migration": "jest --testPathPattern=migration.test.ts --runInBand",
-    "test:ci": "prisma generate && jest --ci --runInBand",
+    "test:ci": "prisma generate && jest --ci --runInBand && npm run test:request-validation && node --test tests/roundRepository.unit.test.ts tests/auth.unit.test.ts tests/payment.unit.test.ts tests/auth-middleware.unit.test.ts tests/arenas.route.unit.test.ts",
     "typecheck": "tsc --noEmit",
     "migrate": "prisma migrate deploy",
     "migrate:dev": "prisma migrate dev",

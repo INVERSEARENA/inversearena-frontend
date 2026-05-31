@@ -146,7 +146,9 @@ describe("Rate limiting on POST /api/pools", () => {
     });
 });
 
-const VERIFY_IP = "10.2.0.1";
+const VERIFY_IP_LIMIT = "10.2.0.1";
+const VERIFY_IP_OTHER_WALLET = "10.2.0.2";
+const VERIFY_IP_FRESH = "10.2.0.99";
 
 describe("Rate limiting on POST /api/auth/verify", () => {
     let app: ReturnType<typeof setupTestApp>;
@@ -176,7 +178,7 @@ describe("Rate limiting on POST /api/auth/verify", () => {
         for (let i = 0; i <= limit; i++) {
             lastRes = await request(app)
                 .post("/api/auth/verify")
-                .set("X-Forwarded-For", VERIFY_IP)
+                .set("X-Forwarded-For", VERIFY_IP_LIMIT)
                 .send({ walletAddress, signature: "invalid-signature" });
         }
 
@@ -199,7 +201,7 @@ describe("Rate limiting on POST /api/auth/verify", () => {
         const keypair = Keypair.random();
         const res = await request(app)
             .post("/api/auth/verify")
-            .set("X-Forwarded-For", "10.2.0.99")
+            .set("X-Forwarded-For", VERIFY_IP_FRESH)
             .send({ walletAddress: keypair.publicKey(), signature: "invalid" });
 
         expect(res.status).not.toBe(429);

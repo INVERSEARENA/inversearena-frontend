@@ -53,6 +53,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Run Prisma migrations
+        env:
+          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest
+        run: npx prisma migrate deploy
+
       - name: TypeScript typecheck
         run: npm run typecheck
 

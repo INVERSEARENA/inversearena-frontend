@@ -22,30 +22,38 @@ function readPositiveInt(name: string, fallback: number): number {
   return Number.isInteger(parsed) && parsed >= 1 ? parsed : fallback;
 }
 
-export const nonceRateLimitConfig: RateLimitConfig = {
-  keyPrefix: process.env.RATE_LIMIT_NONCE_PREFIX ?? "rl:auth:nonce",
-  points: readPositiveInt("RATE_LIMIT_NONCE_POINTS", 5),
-  durationSeconds: readPositiveInt("RATE_LIMIT_NONCE_WINDOW_SECONDS", 60),
-};
+export function getNonceRateLimitConfig(): RateLimitConfig {
+  return {
+    keyPrefix: process.env.RATE_LIMIT_NONCE_PREFIX ?? "rl:auth:nonce",
+    points: readPositiveInt("RATE_LIMIT_NONCE_POINTS", 5),
+    durationSeconds: readPositiveInt("RATE_LIMIT_NONCE_WINDOW_SECONDS", 60),
+  };
+}
 
-export const poolsRateLimitConfig: RateLimitConfig = {
-  keyPrefix: process.env.RATE_LIMIT_POOLS_PREFIX ?? "rl:pools:create",
-  points: readPositiveInt("RATE_LIMIT_POOLS_POINTS", 3),
-  durationSeconds: readPositiveInt("RATE_LIMIT_POOLS_WINDOW_SECONDS", 60),
-};
+export function getPoolsRateLimitConfig(): RateLimitConfig {
+  return {
+    keyPrefix: process.env.RATE_LIMIT_POOLS_PREFIX ?? "rl:pools:create",
+    points: readPositiveInt("RATE_LIMIT_POOLS_POINTS", 3),
+    durationSeconds: readPositiveInt("RATE_LIMIT_POOLS_WINDOW_SECONDS", 60),
+  };
+}
 
-export const verifyRateLimitConfig: RateLimitConfig = {
-  keyPrefix: process.env.RATE_LIMIT_VERIFY_PREFIX ?? "rl:auth:verify",
-  points: readPositiveInt("RATE_LIMIT_VERIFY_POINTS", 10),
-  durationSeconds: readPositiveInt("RATE_LIMIT_VERIFY_WINDOW_SECONDS", 60),
-  dualScope: true,
-};
+export function getVerifyRateLimitConfig(): RateLimitConfig {
+  return {
+    keyPrefix: process.env.RATE_LIMIT_VERIFY_PREFIX ?? "rl:auth:verify",
+    points: readPositiveInt("RATE_LIMIT_VERIFY_POINTS", 10),
+    durationSeconds: readPositiveInt("RATE_LIMIT_VERIFY_WINDOW_SECONDS", 60),
+    dualScope: true,
+  };
+}
 
-export const refreshRateLimitConfig: RateLimitConfig = {
-  keyPrefix: process.env.RATE_LIMIT_REFRESH_PREFIX ?? "rl:auth:refresh",
-  points: readPositiveInt("RATE_LIMIT_REFRESH_POINTS", 20),
-  durationSeconds: readPositiveInt("RATE_LIMIT_REFRESH_WINDOW_SECONDS", 60),
-};
+export function getRefreshRateLimitConfig(): RateLimitConfig {
+  return {
+    keyPrefix: process.env.RATE_LIMIT_REFRESH_PREFIX ?? "rl:auth:refresh",
+    points: readPositiveInt("RATE_LIMIT_REFRESH_POINTS", 20),
+    durationSeconds: readPositiveInt("RATE_LIMIT_REFRESH_WINDOW_SECONDS", 60),
+  };
+}
 
 const limiterCache = new Map<string, RateLimiterAbstract>();
 

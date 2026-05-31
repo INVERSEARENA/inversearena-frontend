@@ -125,6 +125,7 @@ impl ArenaContract {
         token_client.transfer(&player, &arena_addr, &config.entry_fee);
 
         // Attempt to deposit entry fee into vault; ignore failures
+        let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
         let _ = rwa_client.try_deposit(&arena_addr, &config.entry_fee);
         let baseline = ArenaStorage::load_last_vault_balance(&env).saturating_add(config.entry_fee);
         ArenaStorage::save_last_vault_balance(&env, baseline);

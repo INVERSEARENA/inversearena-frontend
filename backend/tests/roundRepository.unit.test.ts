@@ -70,9 +70,13 @@ test("RoundRepository.listByArenaId honors opaque offset cursor and pagination",
   const result = await roundRepo.listByArenaId("arena-1", 5, cursor);
 
   assert.strictEqual(result.items.length, 3);
-  assert.strictEqual(result.items[0].roundNumber, 26);
-  assert.strictEqual(result.items[1].roundNumber, 27);
-  assert.strictEqual(result.items[2].state, RoundState.RESOLVED);
+  const first = result.items[0];
+  const second = result.items[1];
+  const third = result.items[2];
+  assert.ok(first && second && third);
+  assert.strictEqual(first.roundNumber, 26);
+  assert.strictEqual(second.roundNumber, 27);
+  assert.strictEqual(third.state, RoundState.RESOLVED);
   assert.strictEqual(result.cursor, null);
   assert.strictEqual(result.hasMore, false);
 });

@@ -56,4 +56,11 @@ impl ArenaEvents {
         env.events()
             .publish((symbol_short!("unpaused"), caller.clone()), ());
     }
+
+    pub fn vault_balance_decreased(env: &Env, previous_balance: i128, current_balance: i128) {
+        env.events().publish(
+            (symbol_short!("vaultdec"),),
+            (previous_balance, current_balance),
+        );
+    }
 }

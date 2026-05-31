@@ -1,15 +1,23 @@
+import * as Sentry from "@sentry/node";
+import { runWithRequestContext, getRequestId } from "../src/utils/requestContext";
+import { reportErrorToSentry } from "../src/utils/logger";
+
 const setTag = jest.fn();
 const setExtras = jest.fn();
 const captureException = jest.fn();
 
-jest.mock("@sentry/node", () => ({
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  withScope: (fn: (scope: any) => void) => fn({ setTag, setExtras }),
-  captureException,
-}));
+beforeAll(() => {
+  jest.spyOn(Sentry, "withScope").mockImplementation((fn) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fn as (scope: any) => void)({ setTag, setExtras });
+    return undefined as ReturnType<typeof Sentry.withScope>;
+  });
+  jest.spyOn(Sentry, "captureException").mockImplementation(captureException);
+});
 
-import { runWithRequestContext, getRequestId } from "../src/utils/requestContext";
-import { reportErrorToSentry } from "../src/utils/logger";
+afterAll(() => {
+  jest.restoreAllMocks();
+});
 
 describe("request context propagation (#661)", () => {
   beforeEach(() => {
