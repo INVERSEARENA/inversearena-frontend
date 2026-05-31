@@ -96,7 +96,7 @@ impl PayoutContract {
                 return Err(PayoutError::DuplicateRecipient);
             }
             seen.push_back(recipient);
-            total_amount = total_amount.saturating_add(*amount);
+            total_amount = total_amount.saturating_add(amount);
         }
         // Verify contract has enough balance for total payout
         let token_addr = PayoutStorage::get_token(&env)?;
