@@ -27,7 +27,7 @@ impl ArenaStorage {
         env.storage()
             .persistent()
             .get(&symbol_short!("CONFIG"))
-            .ok_or(ArenaError::NotInitialised)
+            .ok_or(ArenaError::NotInitialized)
     }
 
     pub fn save_config(env: &Env, config: &ArenaConfig) {

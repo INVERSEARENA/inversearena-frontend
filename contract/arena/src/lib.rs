@@ -106,9 +106,9 @@ impl ArenaContract {
     /// - `player`: Address of the joining player. Must authorize this call.
     ///
     /// # Errors
-    /// - `ArenaError::NotInitialised` if `initialize` has not been called.
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
     /// - `ArenaError::ContractPaused` if the contract is paused.
-    /// - `ArenaError::CannotCancelStartedGame` if the arena is not in the `Open` state.
+    /// - `ArenaError::InvalidGameState` if the arena is not in the `Open` state.
     ///
     /// # Events
     /// Emits `player_joined` with the player address and updated total player count.
@@ -117,7 +117,7 @@ impl ArenaContract {
         let config = ArenaStorage::load_config(&env)?;
         Self::require_not_paused(&config)?;
         if config.state != GameState::Open {
-            return Err(ArenaError::CannotCancelStartedGame);
+            return Err(ArenaError::InvalidGameState);
         }
 
         let token_client = token::TokenClient::new(&env, &config.stake_token);
@@ -147,7 +147,7 @@ impl ArenaContract {
     /// - `commitment`: SHA-256 hash of `[choice_byte] ++ salt_bytes`.
     ///
     /// # Errors
-    /// - `ArenaError::NotInitialised` if `initialize` has not been called.
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
     /// - `ArenaError::ContractPaused` if the contract is paused.
     pub fn submit_commitment(
         env: Env,
@@ -173,7 +173,7 @@ impl ArenaContract {
     /// - `salt`: The 32-byte random nonce used when hashing the original commitment.
     ///
     /// # Errors
-    /// - `ArenaError::NotInitialised` if `initialize` has not been called.
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
     /// - `ArenaError::ContractPaused` if the contract is paused.
     /// - `ArenaError::ChoiceAlreadyRevealed` if this player has already revealed for the current round.
     /// - `ArenaError::RoundNotActive` if the `commit_deadline` has not yet elapsed.
@@ -211,9 +211,9 @@ impl ArenaContract {
     /// and transfers each player's `entry_fee` back to their address.
     ///
     /// # Errors
-    /// - `ArenaError::NotInitialised` if `initialize` has not been called.
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
     /// - `ArenaError::ContractPaused` if the contract is paused.
-    /// - `ArenaError::CannotCancelStartedGame` if the arena is not in the `Open` state.
+    /// - `ArenaError::InvalidGameState` if the arena is not in the `Open` state.
     pub fn cancel_arena(env: Env) -> Result<(), ArenaError> {
         let mut config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
@@ -221,7 +221,7 @@ impl ArenaContract {
         state_machine::ensure_state(
             &config.state,
             &GameState::Open,
-            ArenaError::CannotCancelStartedGame,
+            ArenaError::InvalidGameState,
         )?;
 
         config.state = GameState::Cancelled;
@@ -286,9 +286,9 @@ impl ArenaContract {
     ///   becomes callable.
     ///
     /// # Errors
-    /// - `ArenaError::NotInitialised` if `initialize` has not been called.
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
     /// - `ArenaError::ContractPaused` if the contract is paused.
-    /// - `ArenaError::CannotCancelStartedGame` if the arena is not in `Open` or `Finished` state.
+    /// - `ArenaError::InvalidGameState` if the arena is not in `Open` or `Finished` state.
     ///
     /// # Events
     /// Emits `game_started` with the round number and duration.
@@ -298,7 +298,7 @@ impl ArenaContract {
         Self::require_not_paused(&config)?;
 
         if config.state != GameState::Open && config.state != GameState::Finished {
-            return Err(ArenaError::CannotCancelStartedGame);
+            return Err(ArenaError::InvalidGameState);
         }
 
         config.state = GameState::Active;
@@ -319,7 +319,7 @@ impl ArenaContract {
     /// survivor remains).
     ///
     /// # Errors
-    /// - `ArenaError::NotInitialised` if `initialize` has not been called.
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
     /// - `ArenaError::ContractPaused` if the contract is paused.
     /// - `ArenaError::RoundNotActive` if the arena is not in the `Active` state.
     /// - `ArenaError::RoundNotStarted` if no round start timestamp is recorded.
@@ -409,7 +409,7 @@ impl ArenaContract {
     /// - `winner`: Address of the last surviving player. Must authorize this call.
     ///
     /// # Errors
-    /// - `ArenaError::NotInitialised` if `initialize` has not been called.
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
     /// - `ArenaError::ContractPaused` if the contract is paused.
     /// - `ArenaError::GameNotFinished` if the arena is not in the `Finished` state.
     /// - `ArenaError::PrizeAlreadyClaimed` if the prize has already been paid out (guards re-entrancy).
@@ -474,7 +474,7 @@ impl ArenaContract {
     /// - `new_admin`: Address being nominated to become the next admin.
     ///
     /// # Errors
-    /// - `ArenaError::NotInitialised` if `initialize` has not been called.
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
     /// - `ArenaError::ContractPaused` if the contract is paused.
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), ArenaError> {
         let config = ArenaStorage::load_config(&env)?;
@@ -491,7 +491,7 @@ impl ArenaContract {
     ///
     /// # Errors
     /// - `ArenaError::NoPendingAdmin` if no admin transfer has been proposed.
-    /// - `ArenaError::NotInitialised` if `initialize` has not been called.
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
     /// - `ArenaError::ContractPaused` if the contract is paused.
     ///
     /// # Events
@@ -536,7 +536,7 @@ impl ArenaContract {
     ///   indexers and dashboards.
     ///
     /// # Errors
-    /// - `ArenaError::NotInitialised` if `initialize` has not been called.
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
     ///
     /// # Events
     /// Emits `paused` with the admin address and reason symbol.
@@ -555,7 +555,7 @@ impl ArenaContract {
     /// again. Only the admin can unpause.
     ///
     /// # Errors
-    /// - `ArenaError::NotInitialised` if `initialize` has not been called.
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
     ///
     /// # Events
     /// Emits `unpaused` with the admin address.
@@ -1422,3 +1422,5 @@ mod test {
 }
 #[cfg(test)]
 mod join_arena_tests;
+#[cfg(test)]
+mod integration_tests;

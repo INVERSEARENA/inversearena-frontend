@@ -4,7 +4,7 @@
 //! join when the arena is Open.
 //!
 //! State guard in lib.rs join_arena() (lines 70-72):
-//!   !Open → ArenaError::CannotCancelStartedGame
+//!   !Open → ArenaError::InvalidGameState
 
 #![cfg(test)]
 
@@ -87,50 +87,50 @@ fn join_accepted_when_arena_is_open() {
     );
 }
 
-/// join_arena() rejects with CannotCancelStartedGame when the arena is Active.
+/// join_arena() rejects with InvalidGameState when the arena is Active.
 #[test]
 fn join_rejected_when_arena_is_active() {
     let (env, client, _) = setup_arena(GameState::Active);
     let player = Address::generate(&env);
     assert_eq!(
         client.try_join_arena(&player),
-        Err(Ok(ArenaError::CannotCancelStartedGame)),
+        Err(Ok(ArenaError::InvalidGameState)),
         "join_arena() must reject when Active; removing the guard allows mid-game joins"
     );
 }
 
-/// join_arena() rejects with CannotCancelStartedGame when the arena is Finished.
+/// join_arena() rejects with InvalidGameState when the arena is Finished.
 #[test]
 fn join_rejected_when_arena_is_finished() {
     let (env, client, _) = setup_arena(GameState::Finished);
     let player = Address::generate(&env);
     assert_eq!(
         client.try_join_arena(&player),
-        Err(Ok(ArenaError::CannotCancelStartedGame)),
+        Err(Ok(ArenaError::InvalidGameState)),
         "join_arena() must reject when Finished; removing the guard allows post-game joins"
     );
 }
 
-/// join_arena() rejects with CannotCancelStartedGame when the arena is Cancelled.
+/// join_arena() rejects with InvalidGameState when the arena is Cancelled.
 #[test]
 fn join_rejected_when_arena_is_cancelled() {
     let (env, client, _) = setup_arena(GameState::Cancelled);
     let player = Address::generate(&env);
     assert_eq!(
         client.try_join_arena(&player),
-        Err(Ok(ArenaError::CannotCancelStartedGame)),
+        Err(Ok(ArenaError::InvalidGameState)),
         "join_arena() must reject when Cancelled; removing the guard accepts fees after cancellation"
     );
 }
 
-/// join_arena() rejects with CannotCancelStartedGame when the arena is Settled.
+/// join_arena() rejects with InvalidGameState when the arena is Settled.
 #[test]
 fn join_rejected_when_arena_is_settled() {
     let (env, client, _) = setup_arena(GameState::Settled);
     let player = Address::generate(&env);
     assert_eq!(
         client.try_join_arena(&player),
-        Err(Ok(ArenaError::CannotCancelStartedGame)),
+        Err(Ok(ArenaError::InvalidGameState)),
         "join_arena() must reject when Settled; removing the guard allows joins after prize payout"
     );
 }

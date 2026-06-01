@@ -111,35 +111,76 @@ pub struct YieldSnapshot {
 #[contracterror]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArenaError {
-    /// Caller is not authorised to perform this operation.
+    /// Returned when a caller attempts to perform an operation they are not authorized to perform.
+    ///
+    /// Note that most standard authorization checks are handled automatically by Soroban's
+    /// `require_auth` mechanism, which panics rather than returning a Rust error.
     Unauthorized = 1,
-    /// Operation requires the arena to be in Open state.
+
+    /// Deprecated: Use `InvalidGameState` instead.
+    #[deprecated(note = "Use `InvalidGameState` instead")]
     CannotCancelStartedGame = 2,
-    /// Arena configuration has not been initialised.
+
+    /// Deprecated: Use `NotInitialized` instead.
+    #[deprecated(note = "Use `NotInitialized` instead")]
     NotInitialised = 3,
-    /// Operation requires an active round.
+
+    /// Returned when a player attempts to reveal their choice before the commitment phase has ended
+    /// (i.e. before the `commit_deadline` has passed), or when the admin attempts to resolve a round
+    /// when the arena is not in the `Active` state.
     RoundNotActive = 4,
-    /// Round has not been started.
+
+    /// Returned during round resolution when no round start timestamp is recorded in storage.
     RoundNotStarted = 5,
-    /// Round grace period has not elapsed.
+
+    /// Returned when trying to resolve a round before the grace period (round duration) has elapsed.
     GracePeriodNotElapsed = 6,
-    /// Commitment does not match the revealed choice and salt.
+
+    /// Returned when a player's revealed choice and salt do not match the cryptographic commitment
+    /// they previously submitted.
     InvalidReveal = 7,
-    /// Player has not submitted a commitment.
+
+    /// Returned when a player attempts to reveal their choice, but they have not submitted a
+    /// commitment for the current round.
     MissingCommitment = 8,
-    /// Player has already revealed a choice.
+
+    /// Returned when a player attempts to reveal their choice, but they have already successfully
+    /// revealed their choice for the current round.
     ChoiceAlreadyRevealed = 9,
-    /// Contract has already been initialized.
+
+    /// Returned when a caller attempts to call `initialize` on an arena contract that has
+    /// already been initialized.
     AlreadyInitialized = 10,
-    /// Operation requires the game to be finished.
+
+    /// Returned when a player attempts to claim the prize, but the arena is not in the `Finished` state.
     GameNotFinished = 11,
-    /// Prize has already been claimed for this game.
+
+    /// Returned when a player attempts to claim a prize they have already claimed, or when a payout
+    /// has already been executed for this game.
     PrizeAlreadyClaimed = 12,
-    /// Player was eliminated and cannot perform this action.
+
+    /// Returned when an eliminated player attempts to claim the prize or perform an action reserved for
+    /// surviving players.
     PlayerEliminated = 13,
-    /// No pending admin transfer to accept.
+
+    /// Returned when a caller attempts to accept the admin role, but there is no pending admin
+    /// transfer proposal recorded.
     NoPendingAdmin = 14,
+
+    /// Returned when the vault address provided during initialization is invalid (e.g. not a contract
+    /// or not responding to the required interface).
     InvalidVaultAddress = 15,
-    /// Contract is paused by the admin.
+
+    /// Returned when a state-mutating gameplay entry point is called while the contract is paused
+    /// by the admin (emergency circuit breaker).
     ContractPaused = 16,
+
+    /// Returned when the arena is in an invalid lifecycle state for the requested operation.
+    ///
+    /// Examples include attempting to join or cancel an arena that is already in progress/finished,
+    /// or starting a round when the game is not in a valid state.
+    InvalidGameState = 17,
+
+    /// Returned when an operation is performed on an arena that has not yet been initialized.
+    NotInitialized = 18,
 }

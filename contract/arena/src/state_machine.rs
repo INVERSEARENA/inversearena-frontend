@@ -74,18 +74,18 @@ mod tests {
 
     #[test]
     fn ensure_state_matches_and_rejects() {
-        assert!(ensure_state(&Open, &Open, ArenaError::CannotCancelStartedGame).is_ok());
+        assert!(ensure_state(&Open, &Open, ArenaError::InvalidGameState).is_ok());
         assert_eq!(
-            ensure_state(&Active, &Open, ArenaError::CannotCancelStartedGame),
-            Err(ArenaError::CannotCancelStartedGame),
+            ensure_state(&Active, &Open, ArenaError::InvalidGameState),
+            Err(ArenaError::InvalidGameState),
         );
     }
 
     #[test]
     fn ensure_transition_guards() {
-        assert!(ensure_transition(&Open, &Active, ArenaError::CannotCancelStartedGame).is_ok());
+        assert!(ensure_transition(&Open, &Active, ArenaError::InvalidGameState).is_ok());
         assert!(
-            ensure_transition(&Finished, &Active, ArenaError::CannotCancelStartedGame).is_err()
+            ensure_transition(&Finished, &Active, ArenaError::InvalidGameState).is_err()
         );
     }
 }
