@@ -183,4 +183,8 @@ pub enum ArenaError {
 
     /// Returned when an operation is performed on an arena that has not yet been initialized.
     NotInitialized = 18,
+
+    /// Returned when `start_round` is called with fewer than `MIN_PLAYERS_TO_START` active players.
+    /// Prevents degenerate single-player or zero-player games where one player can win trivially.
+    NotEnoughPlayers = 19,
 }

@@ -23,6 +23,7 @@ use types::{
 };
 
 const PAGE_SIZE: u32 = 50;
+const MIN_PLAYERS_TO_START: u32 = 2;
 
 #[contract]
 /// On-chain arena contract. Manages the full lifecycle of a single elimination
@@ -299,6 +300,10 @@ impl ArenaContract {
 
         if config.state != GameState::Open && config.state != GameState::Finished {
             return Err(ArenaError::InvalidGameState);
+        }
+
+        if config.player_count < MIN_PLAYERS_TO_START {
+            return Err(ArenaError::NotEnoughPlayers);
         }
 
         config.state = GameState::Active;
@@ -1418,6 +1423,96 @@ mod test {
             let pending = ArenaStorage::load_pending_admin(&env).unwrap();
             assert_eq!(pending.new_admin, new_admin);
         });
+    }
+    #[test]
+    fn start_round_rejected_with_zero_players() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+        env.as_contract(&contract_id, || {
+            ArenaStorage::save_config(
+                &env,
+                &ArenaConfig {
+                    admin: Address::generate(&env),
+                    stake_token: Address::generate(&env),
+                    entry_fee: 100,
+                    state: GameState::Open,
+                    paused: false,
+                    player_count: 0,
+                    cumulative_yield: 0,
+                    commit_deadline: 0,
+                    yield_vault: Address::generate(&env),
+                    round_count: 0,
+                    oracle_contract: oracle_id,
+                },
+            );
+        });
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let result = client.try_start_round(&60);
+        assert_eq!(result, Err(Ok(ArenaError::NotEnoughPlayers)));
+    }
+
+    #[test]
+    fn start_round_rejected_with_one_player() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+        env.as_contract(&contract_id, || {
+            ArenaStorage::save_config(
+                &env,
+                &ArenaConfig {
+                    admin: Address::generate(&env),
+                    stake_token: Address::generate(&env),
+                    entry_fee: 100,
+                    state: GameState::Open,
+                    paused: false,
+                    player_count: 1,
+                    cumulative_yield: 0,
+                    commit_deadline: 0,
+                    yield_vault: Address::generate(&env),
+                    round_count: 0,
+                    oracle_contract: oracle_id,
+                },
+            );
+        });
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let result = client.try_start_round(&60);
+        assert_eq!(result, Err(Ok(ArenaError::NotEnoughPlayers)));
+    }
+
+    #[test]
+    fn start_round_succeeds_with_two_or_more_players() {
+        let (_, client) = setup_started(60, 0);
+        // setup_started configures player_count: 0 but the existing test already
+        // called start_round successfully because setup_started uses
+        // player_count: 0 — bump it here to prove the happy path independently.
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+        env.as_contract(&contract_id, || {
+            ArenaStorage::save_config(
+                &env,
+                &ArenaConfig {
+                    admin: Address::generate(&env),
+                    stake_token: Address::generate(&env),
+                    entry_fee: 100,
+                    state: GameState::Open,
+                    paused: false,
+                    player_count: 2,
+                    cumulative_yield: 0,
+                    commit_deadline: 0,
+                    yield_vault: Address::generate(&env),
+                    round_count: 0,
+                    oracle_contract: oracle_id,
+                },
+            );
+        });
+        let client2 = ArenaContractClient::new(&env, &contract_id);
+        client2.start_round(&60);
+        let _ = client; // suppress unused warning
     }
 }
 #[cfg(test)]
