@@ -319,6 +319,87 @@ fn configure_arena_accepts_future_deadline() {
     assert_eq!(config.join_deadline, future_deadline);
 }
 
+// ── Double-submission and eligibility guard tests (Issue #696) ────────────
+
+#[test]
+#[ignore = "Prerequisite: the contract does not yet reject double submissions with AlreadySubmitted"]
+fn double_submit_is_rejected() {
+    todo!("Add a contract-level AlreadySubmitted guard before enabling this test");
+}
+
+#[test]
+#[ignore = "Prerequisite: the contract does not yet reject choice changes after first submission"]
+fn different_choice_after_first_submission_is_rejected() {
+    todo!("Add a contract-level AlreadySubmitted guard before enabling this test");
+}
+
+#[test]
+fn eliminated_player_cannot_submit() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, client) = setup_arena(&env);
+
+    let initial_fee = 100_000_000;
+    let initial_max = 100;
+    let initial_deadline = env.ledger().timestamp() + 86400;
+
+    client.initialize(&admin, &initial_fee, &initial_max, &initial_deadline);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+    let dave = Address::generate(&env);
+    let eve = Address::generate(&env);
+
+    client.join(&alice);
+    client.join(&bob);
+    client.join(&carol);
+    client.join(&dave);
+    client.join(&eve);
+
+    client.start_game();
+
+    client.submit_choice(&alice, &Choice::Heads);
+    client.submit_choice(&bob, &Choice::Heads);
+    client.submit_choice(&carol, &Choice::Heads);
+    client.submit_choice(&dave, &Choice::Tails);
+    client.submit_choice(&eve, &Choice::Tails);
+
+    let result = client.resolve_round();
+    assert_eq!(result.eliminated, 3);
+    assert_eq!(result.survivors, 2);
+    assert_eq!(client.game_state(), GameState::InProgress);
+
+    let retry = client.try_submit_choice(&alice, &Choice::Heads);
+    assert!(retry.is_err());
+    assert_eq!(retry.unwrap_err().unwrap(), ArenaError::PlayerEliminated);
+}
+
+#[test]
+fn non_joined_player_cannot_submit() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, client) = setup_arena(&env);
+
+    let initial_fee = 100_000_000;
+    let initial_max = 100;
+    let initial_deadline = env.ledger().timestamp() + 86400;
+
+    client.initialize(&admin, &initial_fee, &initial_max, &initial_deadline);
+
+    let alice = Address::generate(&env);
+    let intruder = Address::generate(&env);
+
+    client.join(&alice);
+    client.start_game();
+
+    let result = client.try_submit_choice(&intruder, &Choice::Heads);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::NotAPlayer);
+}
+
 // ── Test 13: Multiple Updates ──────────────────────────────────────────────
 
 #[test]
@@ -758,4 +839,3 @@ fn test_claim_errors() {
     assert!(double_claim.is_err());
     assert_eq!(double_claim.unwrap_err().unwrap(), ArenaError::PrizeAlreadyClaimed);
 }
-
