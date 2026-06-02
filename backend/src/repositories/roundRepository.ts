@@ -117,7 +117,7 @@ export class RoundRepository {
     resolution: RoundResolution,
     metadata: RoundMetadata,
   ): Promise<void> {
-    await this.prisma.$transaction(async (tx) => {
+    await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       if (resolution.eliminatedPlayers.length > 0) {
         await tx.eliminationLog.createMany({
           data: resolution.eliminatedPlayers.map((userId) => ({
