@@ -70,11 +70,13 @@ impl RwaAdapter {
             return Err(RwaError::AlreadyWithdrawn);
         }
 
-        let yield_amount = pos.principal
+        let yield_amount = pos
+            .principal
             .checked_mul(YIELD_BPS)
             .and_then(|v| v.checked_div(10000))
             .ok_or(RwaError::ArithmeticOverflow)?;
-        let total = pos.principal
+        let total = pos
+            .principal
             .checked_add(yield_amount)
             .ok_or(RwaError::ArithmeticOverflow)?;
 

@@ -9,13 +9,14 @@ mod eliminations;
 mod events;
 mod fuzz_tests;
 mod oracle;
+mod rwa_client;
 mod snapshot_test;
 mod state_machine;
 mod storage;
 mod types;
 
 use events::ArenaEvents;
-use rwa_adapter::RwaAdapterClient;
+use rwa_client::RwaAdapterClient;
 use storage::ArenaStorage;
 use types::{
     ArenaConfig, ArenaError, Choice, GameState, PendingAdmin, PlayerState, RoundResult,
@@ -1421,6 +1422,6 @@ mod test {
     }
 }
 #[cfg(test)]
-mod join_arena_tests;
-#[cfg(test)]
 mod integration_tests;
+#[cfg(test)]
+mod join_arena_tests;

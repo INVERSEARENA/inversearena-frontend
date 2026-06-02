@@ -3,13 +3,13 @@
 extern crate std;
 
 use super::*;
+use ::oracle::{OracleContract, OracleContractClient};
+use ::rwa_adapter::{RwaAdapter, RwaAdapterClient};
 use soroban_sdk::{
     Address, BytesN, Env, Symbol, TryFromVal,
     testutils::{Address as _, Events as _, Ledger as _},
     token::StellarAssetClient,
 };
-use ::rwa_adapter::{RwaAdapter, RwaAdapterClient};
-use ::oracle::{OracleContract, OracleContractClient};
 
 fn compute_commitment(env: &Env, choice: Choice, salt: &BytesN<32>) -> BytesN<32> {
     ArenaContract::compute_commitment(env, choice, salt)
@@ -127,13 +127,26 @@ fn full_game_lifecycle_commit_reveal() {
     assert_eq!(players.len(), 4);
 
     let get_player_active = |p: &Address| -> bool {
-        players.iter().find(|(addr, _)| addr == p).map(|(_, state)| state.active).unwrap_or(false)
+        players
+            .iter()
+            .find(|(addr, _)| addr == p)
+            .map(|(_, state)| state.active)
+            .unwrap_or(false)
     };
 
     assert!(get_player_active(&p1), "Player 1 (minority) must survive");
-    assert!(!get_player_active(&p2), "Player 2 (majority) must be eliminated");
-    assert!(!get_player_active(&p3), "Player 3 (majority) must be eliminated");
-    assert!(!get_player_active(&p4), "Player 4 (majority) must be eliminated");
+    assert!(
+        !get_player_active(&p2),
+        "Player 2 (majority) must be eliminated"
+    );
+    assert!(
+        !get_player_active(&p3),
+        "Player 3 (majority) must be eliminated"
+    );
+    assert!(
+        !get_player_active(&p4),
+        "Player 4 (majority) must be eliminated"
+    );
 
     // 12. Fund RWA adapter with simulated yield + payout
     // Principal (400) + Yield (5% of 400 = 20) = 420.
@@ -164,11 +177,32 @@ fn full_game_lifecycle_commit_reveal() {
         })
     };
 
-    assert!(has_event(soroban_sdk::symbol_short!("init")), "Must emit init event");
-    assert!(has_event(soroban_sdk::symbol_short!("join")), "Must emit join event");
-    assert!(has_event(soroban_sdk::symbol_short!("started")), "Must emit started event");
-    assert!(has_event(soroban_sdk::symbol_short!("resolved")), "Must emit resolved event");
-    assert!(has_event(soroban_sdk::symbol_short!("elim")), "Must emit elim event");
-    assert!(has_event(soroban_sdk::symbol_short!("finished")), "Must emit finished event");
-    assert!(has_event(soroban_sdk::symbol_short!("claimed")), "Must emit claimed event");
+    assert!(
+        has_event(soroban_sdk::symbol_short!("init")),
+        "Must emit init event"
+    );
+    assert!(
+        has_event(soroban_sdk::symbol_short!("join")),
+        "Must emit join event"
+    );
+    assert!(
+        has_event(soroban_sdk::symbol_short!("started")),
+        "Must emit started event"
+    );
+    assert!(
+        has_event(soroban_sdk::symbol_short!("resolved")),
+        "Must emit resolved event"
+    );
+    assert!(
+        has_event(soroban_sdk::symbol_short!("elim")),
+        "Must emit elim event"
+    );
+    assert!(
+        has_event(soroban_sdk::symbol_short!("finished")),
+        "Must emit finished event"
+    );
+    assert!(
+        has_event(soroban_sdk::symbol_short!("claimed")),
+        "Must emit claimed event"
+    );
 }
