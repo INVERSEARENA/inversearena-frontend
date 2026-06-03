@@ -84,8 +84,6 @@ mod tests {
     #[test]
     fn ensure_transition_guards() {
         assert!(ensure_transition(&Open, &Active, ArenaError::InvalidGameState).is_ok());
-        assert!(
-            ensure_transition(&Finished, &Active, ArenaError::InvalidGameState).is_err()
-        );
+        assert!(ensure_transition(&Finished, &Active, ArenaError::InvalidGameState).is_err());
     }
 }

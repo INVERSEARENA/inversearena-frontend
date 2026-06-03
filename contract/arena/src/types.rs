@@ -117,12 +117,10 @@ pub enum ArenaError {
     /// `require_auth` mechanism, which panics rather than returning a Rust error.
     Unauthorized = 1,
 
-    /// Deprecated: Use `InvalidGameState` instead.
-    #[deprecated(note = "Use `InvalidGameState` instead")]
+    /// Kept for on-chain backward compatibility (discriminant 2). Prefer `InvalidGameState`.
     CannotCancelStartedGame = 2,
 
-    /// Deprecated: Use `NotInitialized` instead.
-    #[deprecated(note = "Use `NotInitialized` instead")]
+    /// Kept for on-chain backward compatibility (discriminant 3). Prefer `NotInitialized`.
     NotInitialised = 3,
 
     /// Returned when a player attempts to reveal their choice before the commitment phase has ended

@@ -1,5 +1,9 @@
 import type { NextConfig } from "next";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { withSentryConfig } from "@sentry/nextjs";
+
+const projectRoot = dirname(fileURLToPath(import.meta.url));
 
 const cspHeader = [
   "default-src 'self'",
@@ -26,6 +30,9 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  turbopack: {
+    root: projectRoot,
+  },
   async headers() {
     return [
       {
@@ -37,14 +44,19 @@ const nextConfig: NextConfig = {
 };
 
 export default withSentryConfig(nextConfig, {
-  // Suppress the Sentry CLI output during builds unless CI=true.
+  // Suppress Sentry CLI output during builds unless running in CI.
   silent: !process.env.CI,
 
-  // Upload source maps so stack traces in the dashboard show original
-  // TypeScript source instead of minified output.
-  // Requires SENTRY_AUTH_TOKEN (server-side only, never exposed to the browser).
+  // Upload source maps so Sentry shows original TypeScript in stack traces.
+  // Requires SENTRY_AUTH_TOKEN (server-only; never exposed to the browser).
   widenClientFileUpload: true,
 
-  // Automatically tree-shake Sentry logger statements in production builds.
-  disableLogger: true,
+  webpack: {
+    // Do not wrap Next.js middleware — we have no middleware.ts and the
+    // auto-wrap causes MIDDLEWARE_INVOCATION_FAILED on Vercel Edge deployments.
+    autoInstrumentMiddleware: false,
+
+    // Disable automatic Vercel Cron monitors — not used in this project.
+    automaticVercelMonitors: false,
+  },
 });

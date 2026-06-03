@@ -1,5 +1,13 @@
-use oracle::OracleContractClient;
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{Address, Env, contractclient};
+
+#[allow(dead_code)]
+/// Minimal cross-contract client for the yield-rate oracle.
+/// Defined locally to avoid linking the oracle crate implementation into
+/// the arena WASM (which would create duplicate symbol conflicts).
+#[contractclient(name = "OracleContractClient")]
+pub trait OracleInterface {
+    fn get_current_yield_bps(env: Env) -> u32;
+}
 
 /// Fetch the current yield rate in basis points from the on-chain oracle.
 ///

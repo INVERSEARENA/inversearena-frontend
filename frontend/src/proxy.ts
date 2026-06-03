@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseAllowedOrigins } from "@/shared-d/utils/security-validation";
-import { stellarConfig } from "@/lib/stellarConfig";
+
+const DEFAULT_TESTNET_HORIZON_URL = "https://horizon-testnet.stellar.org";
+const DEFAULT_TESTNET_SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
+const DEFAULT_MAINNET_HORIZON_URL = "https://horizon.stellar.org";
+const DEFAULT_MAINNET_SOROBAN_RPC_URL = "https://mainnet.sorobanrpc.com";
 
 function toOrigin(url: string): string {
   const candidate = url.trim();
@@ -13,13 +17,28 @@ function toOrigin(url: string): string {
 }
 
 function getNetworkConnectSources(): string[] {
-  const horizonOrigin = toOrigin(stellarConfig.horizonUrl);
-  const sorobanOrigin = toOrigin(stellarConfig.sorobanRpcUrl);
+  const isMainnet =
+    process.env.NEXT_PUBLIC_STELLAR_NETWORK?.toLowerCase() === "mainnet";
+  const horizonUrl =
+    process.env.NEXT_PUBLIC_HORIZON_URL ??
+    (isMainnet ? DEFAULT_MAINNET_HORIZON_URL : DEFAULT_TESTNET_HORIZON_URL);
+  const sorobanRpcUrl =
+    process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ??
+    (isMainnet ? DEFAULT_MAINNET_SOROBAN_RPC_URL : DEFAULT_TESTNET_SOROBAN_RPC_URL);
+  const horizonOrigin = toOrigin(horizonUrl);
+  const sorobanOrigin = toOrigin(sorobanRpcUrl);
   return [horizonOrigin, sorobanOrigin];
 }
 
 function getAllowedOrigins(): string[] {
-  const configuredOrigins = parseAllowedOrigins(process.env.ALLOWED_ORIGINS);
+  let configuredOrigins: string[];
+  try {
+    configuredOrigins = parseAllowedOrigins(process.env.ALLOWED_ORIGINS);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid ALLOWED_ORIGINS configuration: ${message}`);
+  }
+
   const appOrigin = process.env.NEXT_PUBLIC_APP_ORIGIN;
   const defaults =
     process.env.NODE_ENV === "development"

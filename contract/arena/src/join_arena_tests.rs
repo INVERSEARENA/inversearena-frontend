@@ -12,10 +12,7 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    Address, Env,
-    contract, contractimpl,
-    testutils::Address as _,
-    token::StellarAssetClient,
+    Address, Env, contract, contractimpl, testutils::Address as _, token::StellarAssetClient,
 };
 
 // ── Mock vault (needed by join_arena's try_deposit call) ─────────────────────
@@ -26,8 +23,12 @@ struct MockVault;
 #[contractimpl]
 impl MockVault {
     pub fn deposit(_env: Env, _from: Address, _amount: i128) {}
-    pub fn balance_of(_env: Env, _user: Address) -> i128 { 0 }
-    pub fn withdraw_all(_env: Env, _user: Address) -> i128 { 0 }
+    pub fn balance_of(_env: Env, _user: Address) -> i128 {
+        0
+    }
+    pub fn withdraw_all(_env: Env, _user: Address) -> i128 {
+        0
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
