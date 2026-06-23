@@ -8,7 +8,7 @@ mod errors;
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
+use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, Vec};
 use storage::ArenaStorage;
 use types::{ArenaConfig, GameState, Choice, RoundResult};
 use events::ArenaEvents;
@@ -26,6 +26,8 @@ impl ArenaContract {
         entry_fee: i128,
         max_players: u32,
         join_deadline: u64,
+        treasury_address: Address,
+        creation_cooldown_seconds: u64,
     ) -> Result<(), ArenaError> {
         // Validate inputs
         if entry_fee <= 0 {
@@ -37,6 +39,18 @@ impl ArenaContract {
             return Err(ArenaError::DeadlineTooSoon);
         }
 
+        // Check rate limiting cooldown (admin bypasses cooldown)
+        if let Ok(existing_config) = ArenaStorage::load_config(&env) {
+            if admin != existing_config.admin {
+                if existing_config.creation_cooldown_seconds > 0 {
+                    let elapsed = now.saturating_sub(existing_config.last_creation_timestamp);
+                    if elapsed < existing_config.creation_cooldown_seconds {
+                        return Err(ArenaError::CooldownNotElapsed);
+                    }
+                }
+            }
+        }
+
         // Create initial configuration
         let config = ArenaConfig {
             admin: admin.clone(),
@@ -44,7 +58,11 @@ impl ArenaContract {
             max_players,
             join_deadline,
             state: GameState::Open,
+            paused: false,
             player_count: 0,
+            treasury_address,
+            last_creation_timestamp: now,
+            creation_cooldown_seconds,
         };
 
         // Save configuration
@@ -133,6 +151,8 @@ impl ArenaContract {
         let mut config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
 
+        Self::require_not_paused(&config)?;
+
         if config.state != GameState::Open {
             return Err(ArenaError::InvalidStateTransition);
         }
@@ -149,6 +169,8 @@ impl ArenaContract {
         let mut config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
 
+        Self::require_not_paused(&config)?;
+
         if config.state != GameState::InProgress {
             return Err(ArenaError::InvalidStateTransition);
         }
@@ -160,9 +182,70 @@ impl ArenaContract {
         Ok(())
     }
 
+    /// Pause the contract, blocking all state-mutating operations.
+    ///
+    /// While paused, calls to `join`, `submit_choice`, `resolve_round`, and `claim`
+    /// all fail with `ArenaError::ContractPaused`. Read-only queries are unaffected.
+    /// Only the admin can pause.
+    pub fn pause(env: Env, reason: Symbol) -> Result<(), ArenaError> {
+        let mut config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+        config.paused = true;
+        ArenaStorage::save_config(&env, &config);
+        ArenaEvents::contract_paused(&env, &config.admin, &reason);
+        Ok(())
+    }
+
+    /// Resume normal operation after a `pause`.
+    ///
+    /// Clears the paused flag so all gameplay entry points become callable
+    /// again. Only the admin can unpause.
+    pub fn unpause(env: Env) -> Result<(), ArenaError> {
+        let mut config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+        config.paused = false;
+        ArenaStorage::save_config(&env, &config);
+        ArenaEvents::contract_unpaused(&env, &config.admin);
+        Ok(())
+    }
+
+    /// Update the treasury address where platform fees are collected.
+    ///
+    /// Only the admin can change the treasury address. This supports
+    /// multi-sig treasury wallets and separation of concerns.
+    pub fn update_treasury(env: Env, new_treasury: Address) -> Result<(), ArenaError> {
+        let mut config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+        config.treasury_address = new_treasury.clone();
+        ArenaStorage::save_config(&env, &config);
+        ArenaEvents::treasury_updated(&env, &config.admin, &new_treasury);
+        Ok(())
+    }
+
+    /// Set the minimum cooldown period between arena creations.
+    ///
+    /// Only the admin can update this. The cooldown prevents a creator
+    /// from rapidly creating and cancelling arenas to spam the system.
+    pub fn set_creation_cooldown(env: Env, cooldown_seconds: u64) -> Result<(), ArenaError> {
+        let mut config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+        config.creation_cooldown_seconds = cooldown_seconds;
+        ArenaStorage::save_config(&env, &config);
+        ArenaEvents::cooldown_configured(&env, &config.admin, &cooldown_seconds);
+        Ok(())
+    }
+
+    /// Get the current treasury address
+    pub fn treasury(env: Env) -> Result<Address, ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        Ok(config.treasury_address)
+    }
+
     /// Join the arena as a player
     pub fn join(env: Env, player: Address) -> Result<(), ArenaError> {
         let mut config = ArenaStorage::load_config(&env)?;
+
+        Self::require_not_paused(&config)?;
 
         if config.state != GameState::Open {
             return Err(ArenaError::ArenaAlreadyStarted);
@@ -197,6 +280,9 @@ impl ArenaContract {
     /// Submit a choice for the current round
     pub fn submit_choice(env: Env, player: Address, choice: Choice) -> Result<(), ArenaError> {
         let config = ArenaStorage::load_config(&env)?;
+
+        Self::require_not_paused(&config)?;
+
         if config.state != GameState::InProgress {
             return Err(ArenaError::InvalidStateTransition);
         }
@@ -223,6 +309,9 @@ impl ArenaContract {
     /// Resolve the current round based on minority wins / coin flip
     pub fn resolve_round(env: Env) -> Result<RoundResult, ArenaError> {
         let mut config = ArenaStorage::load_config(&env)?;
+
+        Self::require_not_paused(&config)?;
+
         if config.state != GameState::InProgress {
             return Err(ArenaError::InvalidStateTransition);
         }
@@ -330,6 +419,9 @@ impl ArenaContract {
         winner.require_auth();
 
         let config = ArenaStorage::load_config(&env)?;
+
+        Self::require_not_paused(&config)?;
+
         if config.state != GameState::Finished {
             return Err(ArenaError::GameNotFinished);
         }
@@ -360,6 +452,13 @@ impl ArenaContract {
         ArenaStorage::load_config(&env)
             .map(|c| c.state)
             .unwrap_or(GameState::Open)
+    }
+
+    fn require_not_paused(config: &ArenaConfig) -> Result<(), ArenaError> {
+        if config.paused {
+            return Err(ArenaError::ContractPaused);
+        }
+        Ok(())
     }
 }
 

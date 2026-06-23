@@ -1,4 +1,4 @@
-use soroban_sdk::{symbol_short, Address, Env};
+use soroban_sdk::{symbol_short, Address, Env, Symbol};
 
 pub struct ArenaEvents;
 
@@ -41,6 +41,26 @@ impl ArenaEvents {
     /// Emit prize claimed event
     pub fn prize_claimed(env: &Env, winner: &Address) {
         env.events().publish((symbol_short!("CLAIMED"),), winner);
+    }
+
+    /// Emit contract paused event
+    pub fn contract_paused(env: &Env, admin: &Address, reason: &Symbol) {
+        env.events().publish((symbol_short!("PAUSED"), admin.clone()), reason.clone());
+    }
+
+    /// Emit contract unpaused event
+    pub fn contract_unpaused(env: &Env, admin: &Address) {
+        env.events().publish((symbol_short!("UNPAUS"), admin.clone()), ());
+    }
+
+    /// Emit treasury address updated event
+    pub fn treasury_updated(env: &Env, admin: &Address, new_treasury: &Address) {
+        env.events().publish((symbol_short!("TRSRY"), admin.clone()), new_treasury);
+    }
+
+    /// Emit cooldown configured event
+    pub fn cooldown_configured(env: &Env, admin: &Address, cooldown_seconds: &u64) {
+        env.events().publish((symbol_short!("COOLDN"), admin.clone()), *cooldown_seconds);
     }
 }
 

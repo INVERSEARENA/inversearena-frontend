@@ -26,5 +26,11 @@ pub enum ArenaError {
     GameNotFinished = 10,
     /// Not a registered player
     NotAPlayer = 11,
+    /// Cooldown period between arena creations has not elapsed
+    CooldownNotElapsed = 12,
+    /// Treasury address has not been set
+    TreasuryNotSet = 13,
+    /// Contract is paused; state-mutating operations blocked
+    ContractPaused = 14,
 }
 
