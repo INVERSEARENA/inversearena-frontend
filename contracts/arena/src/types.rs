@@ -6,12 +6,14 @@ pub enum GameState {
     Open,
     InProgress,
     Finished,
+    Cancelled,
 }
 
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct ArenaConfig {
     pub admin: Address,
+    pub token: Address,
     pub entry_fee: i128,
     pub max_players: u32,
     pub join_deadline: u64,

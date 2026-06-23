@@ -8,11 +8,13 @@ mod errors;
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
+use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Env, Vec};
 use storage::ArenaStorage;
 use types::{ArenaConfig, GameState, Choice, RoundResult};
 use events::ArenaEvents;
 use errors::ArenaError;
+
+const PLATFORM_FEE_BP: i128 = 1000; // 10% = 1000 basis points
 
 #[contract]
 pub struct ArenaContract;
@@ -23,6 +25,7 @@ impl ArenaContract {
     pub fn initialize(
         env: Env,
         admin: Address,
+        token: Address,
         entry_fee: i128,
         max_players: u32,
         join_deadline: u64,
@@ -40,6 +43,7 @@ impl ArenaContract {
         // Create initial configuration
         let config = ArenaConfig {
             admin: admin.clone(),
+            token,
             entry_fee,
             max_players,
             join_deadline,
@@ -57,19 +61,19 @@ impl ArenaContract {
     }
 
     /// Configure arena parameters before game starts
-    /// 
+    ///
     /// This function allows the admin to update arena parameters after initialization
     /// but before the game starts. This provides flexibility to adjust settings based
     /// on player adoption rates, market conditions, or operational requirements.
-    /// 
+    ///
     /// # Parameters
     /// - `new_entry_fee`: Optional new entry fee in stroops (must be > 0)
     /// - `new_max_players`: Optional new maximum player capacity
     /// - `new_join_deadline`: Optional new join deadline (must be in future)
-    /// 
+    ///
     /// # Authorization
     /// Requires admin authentication
-    /// 
+    ///
     /// # Errors
     /// - `ArenaError::ArenaAlreadyStarted`: Game is not in Open state
     /// - `ArenaError::InvalidEntryFee`: Entry fee <= 0
@@ -178,6 +182,10 @@ impl ArenaContract {
         }
 
         player.require_auth();
+
+        // Transfer entry fee from player to contract
+        let token = TokenClient::new(&env, &config.token);
+        token.transfer(&player, &env.current_contract_address(), &config.entry_fee);
 
         ArenaStorage::add_player(&env, &player);
 
@@ -343,10 +351,112 @@ impl ArenaContract {
             return Err(ArenaError::PlayerEliminated);
         }
 
+        // Calculate prize: total pot minus platform fee
+        let total_pot = (config.player_count as i128) * config.entry_fee;
+        let platform_fee = total_pot * PLATFORM_FEE_BP / 10000;
+        let prize = total_pot - platform_fee;
+
+        // Transfer platform fee to admin
+        let token = TokenClient::new(&env, &config.token);
+        token.transfer(&env.current_contract_address(), &config.admin, &platform_fee);
+
+        // Transfer prize to winner
+        token.transfer(&env.current_contract_address(), &winner, &prize);
+
         ArenaStorage::set_prize_claimed(&env);
 
         ArenaEvents::prize_claimed(&env, &winner);
 
+        Ok(())
+    }
+
+    /// Cancel the arena (admin only, before game starts)
+    pub fn cancel_arena(env: Env) -> Result<(), ArenaError> {
+        let mut config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+
+        if config.state != GameState::Open {
+            return Err(ArenaError::InvalidStateTransition);
+        }
+
+        config.state = GameState::Cancelled;
+        ArenaStorage::save_config(&env, &config);
+
+        ArenaEvents::arena_cancelled(&env);
+        Ok(())
+    }
+
+    /// Claim a refund when arena is cancelled
+    pub fn claim_refund(env: Env, player: Address) -> Result<(), ArenaError> {
+        player.require_auth();
+
+        let config = ArenaStorage::load_config(&env)?;
+        if config.state != GameState::Cancelled {
+            return Err(ArenaError::ArenaNotCancelled);
+        }
+
+        if ArenaStorage::is_refund_claimed(&env, &player) {
+            return Err(ArenaError::RefundAlreadyClaimed);
+        }
+
+        // Verify player actually joined
+        let players = ArenaStorage::load_all_players(&env);
+        if !players.contains(&player) {
+            return Err(ArenaError::NotAPlayer);
+        }
+
+        // Transfer entry fee back to player
+        let token = TokenClient::new(&env, &config.token);
+        token.transfer(&env.current_contract_address(), &player, &config.entry_fee);
+
+        ArenaStorage::set_refund_claimed(&env, &player);
+
+        ArenaEvents::refund_claimed(&env, &player);
+        Ok(())
+    }
+
+    /// Deposit creator stake into the contract
+    pub fn deposit_creator_stake(env: Env, creator: Address, amount: i128) -> Result<(), ArenaError> {
+        creator.require_auth();
+
+        if amount <= 0 {
+            return Err(ArenaError::InvalidEntryFee);
+        }
+
+        if ArenaStorage::load_creator_stake(&env) > 0 {
+            return Err(ArenaError::StakeAlreadyDeposited);
+        }
+
+        let config = ArenaStorage::load_config(&env)?;
+
+        // Transfer stake from creator to contract
+        let token = TokenClient::new(&env, &config.token);
+        token.transfer(&creator, &env.current_contract_address(), &amount);
+
+        ArenaStorage::save_creator_stake(&env, amount);
+
+        ArenaEvents::stake_deposited(&env, amount);
+        Ok(())
+    }
+
+    /// Withdraw creator stake from the contract
+    pub fn withdraw_creator_stake(env: Env, creator: Address) -> Result<(), ArenaError> {
+        creator.require_auth();
+
+        let stake = ArenaStorage::load_creator_stake(&env);
+        if stake <= 0 {
+            return Err(ArenaError::NoStakeToWithdraw);
+        }
+
+        let config = ArenaStorage::load_config(&env)?;
+
+        // Transfer stake back to creator
+        let token = TokenClient::new(&env, &config.token);
+        token.transfer(&env.current_contract_address(), &creator, &stake);
+
+        ArenaStorage::save_creator_stake(&env, 0);
+
+        ArenaEvents::stake_withdrawn(&env, stake);
         Ok(())
     }
 
@@ -360,6 +470,11 @@ impl ArenaContract {
         ArenaStorage::load_config(&env)
             .map(|c| c.state)
             .unwrap_or(GameState::Open)
+    }
+
+    /// Get current creator stake
+    pub fn get_creator_stake(env: Env) -> i128 {
+        ArenaStorage::load_creator_stake(&env)
     }
 }
 

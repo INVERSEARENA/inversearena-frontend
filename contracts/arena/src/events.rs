@@ -42,5 +42,25 @@ impl ArenaEvents {
     pub fn prize_claimed(env: &Env, winner: &Address) {
         env.events().publish((symbol_short!("CLAIMED"),), winner);
     }
+
+    /// Emit arena cancelled event
+    pub fn arena_cancelled(env: &Env) {
+        env.events().publish((symbol_short!("CNCL"),), ());
+    }
+
+    /// Emit refund claimed event
+    pub fn refund_claimed(env: &Env, player: &Address) {
+        env.events().publish((symbol_short!("REFUND"),), player);
+    }
+
+    /// Emit stake deposited event
+    pub fn stake_deposited(env: &Env, amount: i128) {
+        env.events().publish((symbol_short!("STK_DEP"),), amount);
+    }
+
+    /// Emit stake withdrawn event
+    pub fn stake_withdrawn(env: &Env, amount: i128) {
+        env.events().publish((symbol_short!("STK_WTH"),), amount);
+    }
 }
 

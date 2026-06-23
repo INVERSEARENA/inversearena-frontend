@@ -26,5 +26,17 @@ pub enum ArenaError {
     GameNotFinished = 10,
     /// Not a registered player
     NotAPlayer = 11,
+    /// Token transfer failed
+    TransferFailed = 12,
+    /// Insufficient token balance
+    InsufficientBalance = 13,
+    /// Refund already claimed
+    RefundAlreadyClaimed = 14,
+    /// Arena is not cancelled
+    ArenaNotCancelled = 15,
+    /// No stake to withdraw
+    NoStakeToWithdraw = 16,
+    /// Stake already deposited
+    StakeAlreadyDeposited = 17,
 }
 
