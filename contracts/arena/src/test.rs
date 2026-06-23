@@ -1458,3 +1458,202 @@ fn update_treasury_requires_admin_auth() {
     let result = client.try_update_treasury(&new_treasury);
     assert!(result.is_err());
 }
+
+// ── Issue #919: Keeper-compatible auto-resolve ──────────────────────────────
+
+#[test]
+fn auto_resolve_fails_before_deadline() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let deadline = env.ledger().timestamp() + 86400;
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &deadline, &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    mint_tokens(&env, &token, &bob, 100_000_000);
+    client.join(&alice);
+    client.join(&bob);
+    client.start_game();
+    client.submit_choice(&alice, &Choice::Heads);
+    client.submit_choice(&bob, &Choice::Tails);
+
+    // Time has NOT passed the deadline yet
+    let result = client.try_auto_resolve();
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::DeadlineTooSoon);
+}
+
+#[test]
+fn auto_resolve_succeeds_after_deadline_by_any_caller() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let deadline = env.ledger().timestamp() + 1000;
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &deadline, &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    mint_tokens(&env, &token, &bob, 100_000_000);
+    client.join(&alice);
+    client.join(&bob);
+    client.start_game();
+    client.submit_choice(&alice, &Choice::Heads);
+    client.submit_choice(&bob, &Choice::Tails);
+
+    // Advance time past the join deadline
+    let mut ledger = env.ledger().get();
+    ledger.timestamp = deadline + 1;
+    env.ledger().set(ledger);
+
+    let round_result = client.auto_resolve();
+    assert_eq!(round_result.eliminated + round_result.survivors, 2);
+}
+
+#[test]
+fn auto_resolve_fails_when_game_not_in_progress() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let deadline = env.ledger().timestamp() + 1000;
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &deadline, &treasury, &0);
+
+    // Arena is Open, not InProgress — advance time past deadline
+    let mut ledger = env.ledger().get();
+    ledger.timestamp = deadline + 1;
+    env.ledger().set(ledger);
+
+    let result = client.try_auto_resolve();
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::InvalidStateTransition);
+}
+
+// ── Issue #907: Player join/profile tracking ──────────────────────────────────
+
+#[test]
+fn player_profile_created_on_first_join() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    assert_eq!(client.get_player_count(), 0);
+    let player = Address::generate(&env);
+    mint_tokens(&env, &token, &player, 100_000_000);
+    client.join(&player);
+    assert_eq!(client.get_player_count(), 1);
+}
+
+#[test]
+fn games_played_increments_after_round_resolves() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let charlie = Address::generate(&env);
+    let dave = Address::generate(&env);
+    for p in [&alice, &bob, &charlie, &dave] {
+        mint_tokens(&env, &token, p, 100_000_000);
+    }
+    client.join(&alice);
+    client.join(&bob);
+    client.join(&charlie);
+    client.join(&dave);
+    client.start_game();
+
+    // alice+bob=Heads (minority=2), charlie+dave=Tails (majority=2) — tie resolves via coin flip
+    // Use heads×1 minority to guarantee: alice=Heads (minority), bob/charlie/dave=Tails
+    client.submit_choice(&alice, &Choice::Heads);
+    client.submit_choice(&bob, &Choice::Tails);
+    client.submit_choice(&charlie, &Choice::Tails);
+    client.submit_choice(&dave, &Choice::Tails);
+
+    let r1 = client.resolve_round();
+    assert_eq!(r1.round, 1);
+    assert_eq!(r1.survivors, 1);
+    assert_eq!(r1.eliminated, 3);
+}
+
+#[test]
+fn winner_is_recorded_after_final_round() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    // 1 Heads (minority) vs 2 Tails (majority) — alice survives as winner
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let charlie = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    mint_tokens(&env, &token, &bob, 100_000_000);
+    mint_tokens(&env, &token, &charlie, 100_000_000);
+    client.join(&alice);
+    client.join(&bob);
+    client.join(&charlie);
+    client.start_game();
+
+    client.submit_choice(&alice, &Choice::Heads);
+    client.submit_choice(&bob, &Choice::Tails);
+    client.submit_choice(&charlie, &Choice::Tails);
+    client.resolve_round();
+
+    let winner = client.winner();
+    assert_eq!(winner, Some(alice));
+}
+
+#[test]
+fn survival_streak_resets_after_elimination() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    // 2 Heads (minority) vs 3 Tails (majority, eliminated) — game stays InProgress after round 1
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let charlie = Address::generate(&env);
+    let dave = Address::generate(&env);
+    let eve = Address::generate(&env);
+    for p in [&alice, &bob, &charlie, &dave, &eve] {
+        mint_tokens(&env, &token, p, 100_000_000);
+    }
+    client.join(&alice);
+    client.join(&bob);
+    client.join(&charlie);
+    client.join(&dave);
+    client.join(&eve);
+    client.start_game();
+
+    // alice+bob=Heads (minority=2, survive), charlie+dave+eve=Tails (majority=3, eliminated)
+    client.submit_choice(&alice, &Choice::Heads);
+    client.submit_choice(&bob, &Choice::Heads);
+    client.submit_choice(&charlie, &Choice::Tails);
+    client.submit_choice(&dave, &Choice::Tails);
+    client.submit_choice(&eve, &Choice::Tails);
+    client.resolve_round();
+
+    // charlie was eliminated — submitting a choice should fail
+    let result = client.try_submit_choice(&charlie, &Choice::Heads);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::PlayerEliminated);
+}

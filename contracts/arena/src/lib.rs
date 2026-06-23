@@ -4,6 +4,7 @@ mod storage;
 mod types;
 mod events;
 mod errors;
+mod validation;
 
 #[cfg(test)]
 mod test;
@@ -13,6 +14,7 @@ use storage::ArenaStorage;
 use types::{ArenaConfig, GameState, Choice, RoundResult};
 use events::ArenaEvents;
 use errors::ArenaError;
+use validation::{validate_deadline, validate_entry_fee};
 
 const PLATFORM_FEE_BP: i128 = 1000; // 10% = 1000 basis points
 
@@ -32,15 +34,9 @@ impl ArenaContract {
         treasury_address: Address,
         creation_cooldown_seconds: u64,
     ) -> Result<(), ArenaError> {
-        // Validate inputs
-        if entry_fee <= 0 {
-            return Err(ArenaError::InvalidEntryFee);
-        }
-
+        validate_entry_fee(entry_fee)?;
         let now = env.ledger().timestamp();
-        if join_deadline <= now {
-            return Err(ArenaError::DeadlineTooSoon);
-        }
+        validate_deadline(join_deadline, now)?;
 
         // Check rate limiting cooldown (admin bypasses cooldown)
         if let Ok(existing_config) = ArenaStorage::load_config(&env) {
@@ -117,9 +113,7 @@ impl ArenaContract {
 
         // Update entry fee if provided
         if let Some(fee) = new_entry_fee {
-            if fee <= 0 {
-                return Err(ArenaError::InvalidEntryFee);
-            }
+            validate_entry_fee(fee)?;
             config.entry_fee = fee;
         }
 
@@ -130,9 +124,7 @@ impl ArenaContract {
 
         // Update join deadline if provided
         if let Some(deadline) = new_join_deadline {
-            if deadline <= now {
-                return Err(ArenaError::DeadlineTooSoon);
-            }
+            validate_deadline(deadline, now)?;
             config.join_deadline = deadline;
         }
 
@@ -420,6 +412,22 @@ impl ArenaContract {
             eliminated,
             survivors,
         })
+    }
+
+    /// Keeper-compatible auto-resolve: any caller may trigger resolution once the
+    /// join deadline has passed and the game is still InProgress.
+    pub fn auto_resolve(env: Env) -> Result<RoundResult, ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        if config.state != GameState::InProgress {
+            return Err(ArenaError::InvalidStateTransition);
+        }
+
+        let now = env.ledger().timestamp();
+        if now <= config.join_deadline {
+            return Err(ArenaError::DeadlineTooSoon);
+        }
+
+        Self::resolve_round(env)
     }
 
     /// Claim the prize pool
