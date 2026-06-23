@@ -2078,3 +2078,191 @@ fn survival_streak_resets_after_elimination() {
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().unwrap(), ArenaError::PlayerEliminated);
 }
+
+// ── Capacity Edge Cases (Issue #908) ─────────────────────────────────────────
+
+fn initialize_arena(
+    env: &Env,
+    client: &ArenaContractClient<'_>,
+    admin: &Address,
+    max_players: u32,
+) {
+    let entry_fee: i128 = 10_000_000; // 1 XLM
+    let deadline = env.ledger().timestamp() + 86_400;
+    client.initialize(admin, &entry_fee, &max_players, &deadline);
+}
+
+/// Minimum arena — exactly 2 players (boundary: the smallest valid game).
+#[test]
+fn capacity_minimum_two_players_game_runs_to_completion() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, client) = setup_arena(&env);
+    initialize_arena(&env, &client, &admin, 2);
+    client.start_game();
+
+    let p1 = Address::generate(&env);
+    let p2 = Address::generate(&env);
+
+    client.join(&p1);
+    client.join(&p2);
+
+    // Submit opposite choices so one player is eliminated deterministically.
+    client.submit_choice(&p1, &Choice::Heads);
+    client.submit_choice(&p2, &Choice::Tails);
+
+    let result = client.resolve_round();
+    // Minority wins: Tails has fewer → p2 survives; p1 eliminated.
+    assert_eq!(result.survivors, 1);
+    assert_eq!(result.eliminated, 1);
+
+    // Game should be finished after 1 round with 1 survivor.
+    let state = client.game_state();
+    assert_eq!(state, GameState::Finished);
+
+    let winner = client.winner();
+    assert!(winner.is_some());
+}
+
+/// Exactly at capacity — max_players == player_count; next join must fail.
+#[test]
+fn capacity_join_at_max_returns_arena_full_error() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, client) = setup_arena(&env);
+    initialize_arena(&env, &client, &admin, 3);
+
+    let players: Vec<Address> = (0..3).map(|_| Address::generate(&env)).collect();
+    for p in &players {
+        client.join(p);
+    }
+
+    // Arena is now at full capacity; a 4th join must be rejected.
+    let overflow = Address::generate(&env);
+    let err = client.try_join(&overflow);
+    assert!(err.is_err());
+    assert_eq!(err.unwrap_err().unwrap(), ArenaError::ArenaFull);
+}
+
+/// Large arena — 50 players all submit the same choice (tie) then the
+/// round produces no eliminations for >2 players.
+#[test]
+fn capacity_large_arena_tie_round_no_eliminations() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    const N: u32 = 50;
+    let (admin, client) = setup_arena(&env);
+    initialize_arena(&env, &client, &admin, N);
+    client.start_game();
+
+    let players: Vec<Address> = (0..N).map(|_| Address::generate(&env)).collect();
+    for p in &players {
+        client.join(p);
+    }
+
+    // Tie: half heads, half tails — for >2 players this is a tie round.
+    for (i, p) in players.iter().enumerate() {
+        let choice = if i % 2 == 0 { Choice::Heads } else { Choice::Tails };
+        client.submit_choice(p, &choice);
+    }
+
+    let result = client.resolve_round();
+    // For >2 players with a tie, no eliminations occur.
+    assert_eq!(result.eliminated, 0);
+    assert_eq!(result.survivors, N);
+    assert_eq!(client.game_state(), GameState::InProgress);
+}
+
+/// Large arena — 100 players; minority-wins eliminates the heads side.
+#[test]
+fn capacity_hundred_players_minority_wins_eliminates_majority() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    const N: u32 = 100;
+    const HEADS: u32 = 30;
+    const TAILS: u32 = 70;
+    let (admin, client) = setup_arena(&env);
+    initialize_arena(&env, &client, &admin, N);
+    client.start_game();
+
+    let players: Vec<Address> = (0..N).map(|_| Address::generate(&env)).collect();
+    for p in &players {
+        client.join(p);
+    }
+
+    // 30 heads (minority = survivors), 70 tails (eliminated)
+    for (i, p) in players.iter().enumerate() {
+        let choice = if (i as u32) < HEADS { Choice::Heads } else { Choice::Tails };
+        client.submit_choice(p, &choice);
+    }
+
+    let result = client.resolve_round();
+    assert_eq!(result.survivors, HEADS);
+    assert_eq!(result.eliminated, TAILS);
+}
+
+/// Global stats — joining increments arena count and survivor count.
+#[test]
+fn global_stats_updated_on_join_and_elimination() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, client) = setup_arena(&env);
+    initialize_arena(&env, &client, &admin, 4);
+    client.start_game();
+
+    let stats_initial = client.get_global_stats();
+    assert_eq!(stats_initial.total_arenas, 1);
+    assert_eq!(stats_initial.live_survivors, 0);
+
+    let p1 = Address::generate(&env);
+    let p2 = Address::generate(&env);
+    client.join(&p1);
+    client.join(&p2);
+
+    let stats_joined = client.get_global_stats();
+    assert_eq!(stats_joined.live_survivors, 2);
+
+    // Resolve: heads wins (p1 heads, p2 tails — tails eliminated)
+    client.submit_choice(&p1, &Choice::Heads);
+    client.submit_choice(&p2, &Choice::Tails);
+    client.resolve_round();
+
+    let stats_after = client.get_global_stats();
+    assert_eq!(stats_after.live_survivors, 1);
+}
+
+/// RWA yield — receive_rwa_yield grows the prize pool and records the entry.
+#[test]
+fn rwa_yield_grows_prize_pool_and_returns_id() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, client) = setup_arena(&env);
+    initialize_arena(&env, &client, &admin, 10);
+
+    let adapter = Address::generate(&env);
+    let yield_amount: i128 = 5_000_000_000; // 500 XLM
+
+    let id = client.receive_rwa_yield(
+        &adapter,
+        &yield_amount,
+        &soroban_sdk::String::from_str(&env, "Treasury vault A"),
+    );
+    assert_eq!(id, 1u64);
+
+    // A second call increments the ID monotonically.
+    let id2 = client.receive_rwa_yield(
+        &adapter,
+        &1_000_000_000i128,
+        &soroban_sdk::String::from_str(&env, "Treasury vault B"),
+    );
+    assert_eq!(id2, 2u64);
+
+    let stats = client.get_global_stats();
+    assert_eq!(stats.global_pool_total, yield_amount + 1_000_000_000i128);
+}

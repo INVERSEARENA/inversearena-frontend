@@ -9,9 +9,9 @@ mod validation;
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Env, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Env, String, Symbol, Vec};
 use storage::ArenaStorage;
-use types::{ArenaConfig, GameState, Choice, RoundResult};
+use types::{ArenaConfig, GameState, Choice, GlobalStats, RoundResult, RwaYieldRecord};
 use events::ArenaEvents;
 use errors::ArenaError;
 use validation::{validate_deadline, validate_entry_fee};
@@ -69,6 +69,9 @@ impl ArenaContract {
 
         // Save configuration
         ArenaStorage::save_config(&env, &config);
+
+        // Track global arena count for dashboard stats.
+        ArenaStorage::increment_arena_count(&env);
 
         // Emit initialization event
         ArenaEvents::arena_initialized(&env, &admin);
@@ -275,6 +278,13 @@ impl ArenaContract {
         config.player_count += 1;
         ArenaStorage::save_config(&env, &config);
 
+        // Keep global live_survivors in sync.
+        ArenaStorage::increment_live_survivors(&env, 1);
+        // Accumulate entry fee into the global pool total.
+        ArenaStorage::add_to_global_pool(&env, config.entry_fee);
+        let current_pool = ArenaStorage::get_prize_pool(&env);
+        ArenaStorage::set_prize_pool(&env, current_pool.saturating_add(config.entry_fee));
+
         ArenaEvents::player_joined(&env, &player);
         Ok(())
     }
@@ -396,6 +406,11 @@ impl ArenaContract {
                     }
                 }
             }
+        }
+
+        // Update global survivor count for dashboard stats.
+        if eliminated > 0 {
+            ArenaStorage::decrement_live_survivors(&env, eliminated);
         }
 
         // Clear choices for the next round
@@ -585,7 +600,7 @@ impl ArenaContract {
         Ok(())
     }
 
-    /// Withdraw creator stake from the contract
+    /// Withdraw creator stake from the contract, applying slash penalty if active pools exist
     pub fn withdraw_creator_stake(env: Env, creator: Address) -> Result<(), ArenaError> {
         creator.require_auth();
 
@@ -596,78 +611,35 @@ impl ArenaContract {
 
         let config = ArenaStorage::load_config(&env)?;
 
-        // Transfer stake back to creator
-        let token = TokenClient::new(&env, &config.token);
-        token.transfer(&env.current_contract_address(), &creator, &stake);
-
-        ArenaStorage::save_creator_stake(&env, 0);
-
-        ArenaEvents::creator_stake_withdrawn(&env, &creator, stake, false);
-        Ok(())
-    }
-
-    /// Get the winner address if the game is finished
-    pub fn winner(env: Env) -> Option<Address> {
-        ArenaStorage::get_winner(&env)
-    }
-
-    /// Get current game state directly
-    pub fn game_state(env: Env) -> GameState {
-        ArenaStorage::load_config(&env)
-            .map(|c| c.state)
-            .unwrap_or(GameState::Open)
-    }
-
-    /// Deposit creator stake into the arena
-    pub fn deposit_creator_stake(env: Env, creator: Address, amount: i128) -> Result<(), ArenaError> {
-        let mut config = ArenaStorage::load_config(&env)?;
-        Self::require_not_paused(&config)?;
-
-        if amount <= 0 {
-            return Err(ArenaError::InvalidStakeAmount);
-        }
-
-        creator.require_auth();
-
-        config.creator_stake = config.creator_stake.checked_add(amount).ok_or(ArenaError::InvalidStakeAmount)?;
-        ArenaStorage::save_config(&env, &config);
-
-        ArenaEvents::stake_deposited(&env, &creator, amount);
-        Ok(())
-    }
-
-    /// Withdraw creator stake, applying slash penalty if there are active (non-finished) pools
-    pub fn withdraw_creator_stake(env: Env, creator: Address) -> Result<(), ArenaError> {
-        let mut config = ArenaStorage::load_config(&env)?;
-        Self::require_not_paused(&config)?;
-
-        if config.creator_stake <= 0 {
-            return Err(ArenaError::NoStakeToWithdraw);
-        }
-
-        creator.require_auth();
-
         // If the game state is not Finished, it has active (non-finished) pools/games
         let active_pools = if config.state != GameState::Finished { 1 } else { 0 };
 
         let (withdrawn, slashed) = if active_pools > 0 {
-            let slashed_amount = (config.creator_stake * config.slash_rate_bps as i128) / 10000;
-            let remaining = config.creator_stake - slashed_amount;
+            let slashed_amount = (stake * config.slash_rate_bps as i128) / 10000;
+            let remaining = stake - slashed_amount;
             (remaining, slashed_amount)
         } else {
-            (config.creator_stake, 0)
+            (stake, 0)
         };
 
-        config.creator_stake = 0;
-        ArenaStorage::save_config(&env, &config);
+        // Transfer stake back to creator
+        let token = TokenClient::new(&env, &config.token);
+        token.transfer(&env.current_contract_address(), &creator, &withdrawn);
+
+        ArenaStorage::save_creator_stake(&env, 0);
 
         if slashed > 0 {
             ArenaEvents::stake_slashed(&env, &creator, slashed, withdrawn);
         } else {
-            ArenaEvents::stake_withdrawn(&env, &creator, withdrawn);
+            ArenaEvents::creator_stake_withdrawn(&env, &creator, withdrawn, false);
         }
 
         Ok(())
+    }
+
+    /// Get current creator stake
+    pub fn get_creator_stake(env: Env) -> i128 {
+        ArenaStorage::load_creator_stake(&env)
     }
 
     /// Set a new slash rate (in bps, e.g., 5000 = 50%) for creator stake withdrawals
@@ -684,9 +656,65 @@ impl ArenaContract {
 
         ArenaEvents::slash_rate_configured(&env, &config.admin, slash_rate_bps);
         Ok(())
-    /// Get current creator stake
-    pub fn get_creator_stake(env: Env) -> i128 {
-        ArenaStorage::load_creator_stake(&env)
+    }
+
+    /// Get the winner address if the game is finished
+    pub fn winner(env: Env) -> Option<Address> {
+        ArenaStorage::get_winner(&env)
+    }
+
+    /// Get current game state directly
+    pub fn game_state(env: Env) -> GameState {
+        ArenaStorage::load_config(&env)
+            .map(|c| c.state)
+            .unwrap_or(GameState::Open)
+    }
+
+    /// Return aggregated global statistics for the dashboard.
+    ///
+    /// Stats are maintained incrementally on each mutating operation, so
+    /// this is O(1) — no arena scan needed. (Issue #895)
+    pub fn get_global_stats(env: Env) -> GlobalStats {
+        ArenaStorage::load_global_stats(&env)
+    }
+
+    /// Receive a yield deposit from an external RWA adapter and grow the
+    /// prize pool. The adapter contract must authorize the call.
+    ///
+    /// Records a `RwaYieldRecord` for auditability and emits an event.
+    /// (Issue #915)
+    pub fn receive_rwa_yield(
+        env: Env,
+        adapter: Address,
+        yield_amount: i128,
+        source_label: String,
+    ) -> Result<u64, ArenaError> {
+        adapter.require_auth();
+
+        if yield_amount <= 0 {
+            return Err(ArenaError::InvalidEntryFee);
+        }
+
+        let config = ArenaStorage::load_config(&env)?;
+        if config.state == GameState::Finished {
+            return Err(ArenaError::ArenaAlreadyStarted);
+        }
+
+        let current_pool = ArenaStorage::get_prize_pool(&env);
+        ArenaStorage::set_prize_pool(&env, current_pool.saturating_add(yield_amount));
+        ArenaStorage::add_to_global_pool(&env, yield_amount);
+
+        let record = ArenaStorage::create_rwa_yield(&env, RwaYieldRecord {
+            id: 0, // will be assigned by create_rwa_yield
+            adapter,
+            yield_amount,
+            received_at: env.ledger().sequence(),
+            source_label,
+        });
+
+        ArenaEvents::rwa_yield_received(&env, yield_amount);
+
+        Ok(record.id)
     }
 
     fn require_not_paused(config: &ArenaConfig) -> Result<(), ArenaError> {
@@ -696,4 +724,3 @@ impl ArenaContract {
         Ok(())
     }
 }
-
