@@ -1,13 +1,19 @@
 # Arena Smart Contract
 
-A Soroban smart contract for managing game arenas with configurable parameters.
+A Soroban smart contract for managing game arenas on the Stellar network.
 
 ## Features
 
-- **Initialize Arena**: Set up a new arena with entry fee, max players, and join deadline
-- **Configure Arena**: Update arena parameters before the game starts (Issue #687)
+- **Initialize Arena**: Set up a new arena with entry fee, max players, join deadline, and token address
+- **Configure Arena**: Update arena parameters before the game starts
 - **Join Arena**: Players can join before the deadline
 - **Game State Management**: Transition between Open, InProgress, and Finished states
+- **Token Payments**: Entry fees and prizes use a configurable Stellar token contract
+
+## Quick Start
+
+See [docs/CONTRIBUTING_CONTRACTS.md](../../docs/CONTRIBUTING_CONTRACTS.md) for environment setup,
+build instructions, and the PR checklist.
 
 ## Configure Arena Function
 
