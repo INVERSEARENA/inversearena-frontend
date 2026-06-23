@@ -32,5 +32,11 @@ pub enum ArenaError {
     TreasuryNotSet = 13,
     /// Contract is paused; state-mutating operations blocked
     ContractPaused = 14,
+    /// Slash rate in bps cannot exceed 10000 (100%)
+    InvalidSlashRate = 15,
+    /// No stake available to withdraw
+    NoStakeToWithdraw = 16,
+    /// Stake amount must be positive
+    InvalidStakeAmount = 17,
 }
 

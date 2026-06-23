@@ -1174,3 +1174,211 @@ fn update_treasury_requires_admin_auth() {
     assert!(result.is_err());
 }
 
+// ── Creator Stake Slashing Tests ───────────────────────────────────────────
+
+#[test]
+fn deposit_creator_stake_success() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, client) = setup_arena(&env);
+    let initial_fee = 100_000_000;
+    let initial_max = 100;
+    let initial_deadline = env.ledger().timestamp() + 86400;
+    let treasury = Address::generate(&env);
+
+    client.initialize(&admin, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+
+    let creator = Address::generate(&env);
+    client.deposit_creator_stake(&creator, &50_000);
+
+    let config = client.get_config();
+    assert_eq!(config.creator_stake, 50_000);
+}
+
+#[test]
+fn deposit_creator_stake_invalid_amount() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, client) = setup_arena(&env);
+    let initial_fee = 100_000_000;
+    let initial_max = 100;
+    let initial_deadline = env.ledger().timestamp() + 86400;
+    let treasury = Address::generate(&env);
+
+    client.initialize(&admin, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+
+    let creator = Address::generate(&env);
+    let result = client.try_deposit_creator_stake(&creator, &-100);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::InvalidStakeAmount);
+
+    let result_zero = client.try_deposit_creator_stake(&creator, &0);
+    assert!(result_zero.is_err());
+    assert_eq!(result_zero.unwrap_err().unwrap(), ArenaError::InvalidStakeAmount);
+}
+
+#[test]
+fn withdraw_creator_stake_no_active_pools() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, client) = setup_arena(&env);
+    let initial_fee = 100_000_000;
+    let initial_max = 100;
+    let initial_deadline = env.ledger().timestamp() + 86400;
+    let treasury = Address::generate(&env);
+
+    client.initialize(&admin, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+
+    // Set state to Finished (simulate a completed game)
+    client.start_game();
+    client.finish_game();
+
+    let creator = Address::generate(&env);
+    client.deposit_creator_stake(&creator, &100_000);
+
+    // Withdraw with no active pools (state is Finished)
+    let withdraw_result = client.try_withdraw_creator_stake(&creator);
+    assert!(withdraw_result.is_ok());
+
+    let config = client.get_config();
+    assert_eq!(config.creator_stake, 0);
+
+    // Check that event contains STK_WTD
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    let topics = &last_event.1;
+    let expected: soroban_sdk::Val = soroban_sdk::IntoVal::into_val(&symbol_short!("STK_WTD"), &env);
+    assert!(topics.contains(&expected));
+}
+
+#[test]
+fn withdraw_creator_stake_with_active_pools_default_slash() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, client) = setup_arena(&env);
+    let initial_fee = 100_000_000;
+    let initial_max = 100;
+    let initial_deadline = env.ledger().timestamp() + 86400;
+    let treasury = Address::generate(&env);
+
+    client.initialize(&admin, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+
+    // The game state is Open (which is active, not Finished)
+    let creator = Address::generate(&env);
+    client.deposit_creator_stake(&creator, &100_000);
+
+    // Withdraw with active pools (default slash of 50%)
+    let withdraw_result = client.try_withdraw_creator_stake(&creator);
+    assert!(withdraw_result.is_ok());
+
+    let config = client.get_config();
+    assert_eq!(config.creator_stake, 0);
+
+    // Check that event contains STK_SLSH
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    let topics = &last_event.1;
+    let expected: soroban_sdk::Val = soroban_sdk::IntoVal::into_val(&symbol_short!("STK_SLSH"), &env);
+    assert!(topics.contains(&expected));
+}
+
+#[test]
+fn set_slash_rate_success_and_affects_slash() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, client) = setup_arena(&env);
+    let initial_fee = 100_000_000;
+    let initial_max = 100;
+    let initial_deadline = env.ledger().timestamp() + 86400;
+    let treasury = Address::generate(&env);
+
+    client.initialize(&admin, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+
+    // Configure slash rate to 25% (2500 bps)
+    client.set_slash_rate(&2500);
+
+    let config_rate = client.get_config();
+    assert_eq!(config_rate.slash_rate_bps, 2500);
+
+    let creator = Address::generate(&env);
+    client.deposit_creator_stake(&creator, &100_000);
+
+    // Withdraw with active pools - should slash 25% (25,000 stroops slashed, 75,000 returned)
+    let withdraw_result = client.try_withdraw_creator_stake(&creator);
+    assert!(withdraw_result.is_ok());
+
+    let config = client.get_config();
+    assert_eq!(config.creator_stake, 0);
+
+    // Check that events contains STK_SLSH with correct calculation
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    let topics = &last_event.1;
+    let expected: soroban_sdk::Val = soroban_sdk::IntoVal::into_val(&symbol_short!("STK_SLSH"), &env);
+    assert!(topics.contains(&expected));
+}
+
+#[test]
+fn set_slash_rate_invalid() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, client) = setup_arena(&env);
+    let initial_fee = 100_000_000;
+    let initial_max = 100;
+    let initial_deadline = env.ledger().timestamp() + 86400;
+    let treasury = Address::generate(&env);
+
+    client.initialize(&admin, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+
+    // Attempting to set rate > 100% (10000 bps) should fail
+    let result = client.try_set_slash_rate(&10001);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::InvalidSlashRate);
+}
+
+#[test]
+fn set_slash_rate_requires_admin_auth() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, client) = setup_arena(&env);
+    let initial_fee = 100_000_000;
+    let initial_max = 100;
+    let initial_deadline = env.ledger().timestamp() + 86400;
+    let treasury = Address::generate(&env);
+
+    client.initialize(&admin, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+
+    // Clear auths to verify authorization requirement
+    env.set_auths(&[]);
+
+    let result = client.try_set_slash_rate(&3000);
+    assert!(result.is_err());
+}
+
+#[test]
+fn withdraw_creator_stake_no_stake_fails() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, client) = setup_arena(&env);
+    let initial_fee = 100_000_000;
+    let initial_max = 100;
+    let initial_deadline = env.ledger().timestamp() + 86400;
+    let treasury = Address::generate(&env);
+
+    client.initialize(&admin, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+
+    let creator = Address::generate(&env);
+    let result = client.try_withdraw_creator_stake(&creator);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::NoStakeToWithdraw);
+}
+
+

@@ -21,6 +21,13 @@ pub struct ArenaConfig {
     pub treasury_address: Address,
     pub last_creation_timestamp: u64,
     pub creation_cooldown_seconds: u64,
+    /// Amount of stake the creator has deposited (in stroops).
+    /// Tracked in contract state; actual token transfers are performed by the caller.
+    pub creator_stake: i128,
+    /// Slash rate in basis points (1 bps = 0.01%).
+    /// Applied to `creator_stake` when the creator withdraws while active pools exist.
+    /// E.g. 5000 bps = 50% slash. Maximum allowed value is 10_000 (100%).
+    pub slash_rate_bps: u32,
 }
 
 #[contracttype]

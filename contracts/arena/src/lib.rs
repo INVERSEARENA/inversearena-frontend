@@ -63,6 +63,8 @@ impl ArenaContract {
             treasury_address,
             last_creation_timestamp: now,
             creation_cooldown_seconds,
+            creator_stake: 0,
+            slash_rate_bps: 5000, // 50% default slash rate
         };
 
         // Save configuration
@@ -452,6 +454,74 @@ impl ArenaContract {
         ArenaStorage::load_config(&env)
             .map(|c| c.state)
             .unwrap_or(GameState::Open)
+    }
+
+    /// Deposit creator stake into the arena
+    pub fn deposit_creator_stake(env: Env, creator: Address, amount: i128) -> Result<(), ArenaError> {
+        let mut config = ArenaStorage::load_config(&env)?;
+        Self::require_not_paused(&config)?;
+
+        if amount <= 0 {
+            return Err(ArenaError::InvalidStakeAmount);
+        }
+
+        creator.require_auth();
+
+        config.creator_stake = config.creator_stake.checked_add(amount).ok_or(ArenaError::InvalidStakeAmount)?;
+        ArenaStorage::save_config(&env, &config);
+
+        ArenaEvents::stake_deposited(&env, &creator, amount);
+        Ok(())
+    }
+
+    /// Withdraw creator stake, applying slash penalty if there are active (non-finished) pools
+    pub fn withdraw_creator_stake(env: Env, creator: Address) -> Result<(), ArenaError> {
+        let mut config = ArenaStorage::load_config(&env)?;
+        Self::require_not_paused(&config)?;
+
+        if config.creator_stake <= 0 {
+            return Err(ArenaError::NoStakeToWithdraw);
+        }
+
+        creator.require_auth();
+
+        // If the game state is not Finished, it has active (non-finished) pools/games
+        let active_pools = if config.state != GameState::Finished { 1 } else { 0 };
+
+        let (withdrawn, slashed) = if active_pools > 0 {
+            let slashed_amount = (config.creator_stake * config.slash_rate_bps as i128) / 10000;
+            let remaining = config.creator_stake - slashed_amount;
+            (remaining, slashed_amount)
+        } else {
+            (config.creator_stake, 0)
+        };
+
+        config.creator_stake = 0;
+        ArenaStorage::save_config(&env, &config);
+
+        if slashed > 0 {
+            ArenaEvents::stake_slashed(&env, &creator, slashed, withdrawn);
+        } else {
+            ArenaEvents::stake_withdrawn(&env, &creator, withdrawn);
+        }
+
+        Ok(())
+    }
+
+    /// Set a new slash rate (in bps, e.g., 5000 = 50%) for creator stake withdrawals
+    pub fn set_slash_rate(env: Env, slash_rate_bps: u32) -> Result<(), ArenaError> {
+        let mut config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+
+        if slash_rate_bps > 10000 {
+            return Err(ArenaError::InvalidSlashRate);
+        }
+
+        config.slash_rate_bps = slash_rate_bps;
+        ArenaStorage::save_config(&env, &config);
+
+        ArenaEvents::slash_rate_configured(&env, &config.admin, slash_rate_bps);
+        Ok(())
     }
 
     fn require_not_paused(config: &ArenaConfig) -> Result<(), ArenaError> {

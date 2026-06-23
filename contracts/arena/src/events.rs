@@ -62,5 +62,25 @@ impl ArenaEvents {
     pub fn cooldown_configured(env: &Env, admin: &Address, cooldown_seconds: &u64) {
         env.events().publish((symbol_short!("COOLDN"), admin.clone()), *cooldown_seconds);
     }
+
+    /// Emit creator stake deposited event
+    pub fn stake_deposited(env: &Env, creator: &Address, amount: i128) {
+        env.events().publish((symbol_short!("STK_DEP"), creator.clone()), amount);
+    }
+
+    /// Emit creator stake withdrawn event
+    pub fn stake_withdrawn(env: &Env, creator: &Address, amount: i128) {
+        env.events().publish((symbol_short!("STK_WTD"), creator.clone()), amount);
+    }
+
+    /// Emit creator stake slashed event
+    pub fn stake_slashed(env: &Env, creator: &Address, slashed_amount: i128, remaining_returned: i128) {
+        env.events().publish((symbol_short!("STK_SLSH"), creator.clone()), (slashed_amount, remaining_returned));
+    }
+
+    /// Emit slash rate configured event
+    pub fn slash_rate_configured(env: &Env, admin: &Address, slash_rate_bps: u32) {
+        env.events().publish((symbol_short!("SLSH_CFG"), admin.clone()), slash_rate_bps);
+    }
 }
 
