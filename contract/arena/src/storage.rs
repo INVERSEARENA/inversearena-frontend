@@ -4,7 +4,10 @@ use crate::types::{
     ArenaConfig, ArenaError, Choice, GameState, PendingAdmin, PlayerState, RoundResult,
     YieldSnapshot,
 };
-use soroban_sdk::{Address, BytesN, Env, Vec, contracttype, symbol_short};
+use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, IntoVal, Val, Vec};
+
+const PERSISTENT_TTL_THRESHOLD: u32 = 100;
+const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
 
 /// Storage key for per-player data, keyed by the player's address.
 #[contracttype]
@@ -27,7 +30,17 @@ enum DataKey {
 pub struct ArenaStorage;
 
 impl ArenaStorage {
+    fn extend_persistent_ttl<K>(env: &Env, key: &K)
+    where
+        K: IntoVal<Env, Val>,
+    {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+    }
+
     pub fn load_config(env: &Env) -> Result<ArenaConfig, ArenaError> {
+        Self::extend_persistent_ttl(env, &symbol_short!("CONFIG"));
         env.storage()
             .persistent()
             .get(&symbol_short!("CONFIG"))
@@ -49,17 +62,20 @@ impl ArenaStorage {
             Self::decrement_creator_active_pools(env, &previous_config.admin);
         }
 
+        Self::extend_persistent_ttl(env, &symbol_short!("CONFIG"));
         env.storage()
             .persistent()
             .set(&symbol_short!("CONFIG"), config);
     }
 
     pub fn has_config(env: &Env) -> bool {
+        Self::extend_persistent_ttl(env, &symbol_short!("CONFIG"));
         env.storage().persistent().has(&symbol_short!("CONFIG"))
     }
 
     /// Return the list of all player addresses that have joined this arena.
     pub fn load_all_players(env: &Env) -> Vec<Address> {
+        Self::extend_persistent_ttl(env, &symbol_short!("PLAYERS"));
         env.storage()
             .persistent()
             .get(&symbol_short!("PLAYERS"))
@@ -67,6 +83,7 @@ impl ArenaStorage {
     }
 
     pub fn save_players(env: &Env, players: &Vec<Address>) {
+        Self::extend_persistent_ttl(env, &symbol_short!("PLAYERS"));
         env.storage()
             .persistent()
             .set(&symbol_short!("PLAYERS"), players);
@@ -97,24 +114,28 @@ impl ArenaStorage {
 
     /// Load a single player's state, or `None` if they never joined.
     pub fn load_player(env: &Env, player: &Address) -> Option<PlayerState> {
+        Self::extend_persistent_ttl(env, &DataKey::Player(player.clone()));
         env.storage()
             .persistent()
             .get(&DataKey::Player(player.clone()))
     }
 
     pub fn save_player(env: &Env, player: &Address, state: &PlayerState) {
+        Self::extend_persistent_ttl(env, &DataKey::Player(player.clone()));
         env.storage()
             .persistent()
             .set(&DataKey::Player(player.clone()), state);
     }
 
     pub fn set_player_banned(env: &Env, player: &Address, banned: bool) {
+        Self::extend_persistent_ttl(env, &DataKey::BannedPlayer(player.clone()));
         env.storage()
             .persistent()
             .set(&DataKey::BannedPlayer(player.clone()), &banned);
     }
 
     pub fn is_player_banned(env: &Env, player: &Address) -> bool {
+        Self::extend_persistent_ttl(env, &DataKey::BannedPlayer(player.clone()));
         env.storage()
             .persistent()
             .get(&DataKey::BannedPlayer(player.clone()))
@@ -122,15 +143,18 @@ impl ArenaStorage {
     }
 
     pub fn save_player_limits(env: &Env, min_players: u32, max_players: u32) {
+        Self::extend_persistent_ttl(env, &DataKey::MinPlayers);
         env.storage()
             .persistent()
             .set(&DataKey::MinPlayers, &min_players);
+        Self::extend_persistent_ttl(env, &DataKey::MaxPlayers);
         env.storage()
             .persistent()
             .set(&DataKey::MaxPlayers, &max_players);
     }
 
     pub fn load_min_players(env: &Env) -> u32 {
+        Self::extend_persistent_ttl(env, &DataKey::MinPlayers);
         env.storage()
             .persistent()
             .get(&DataKey::MinPlayers)
@@ -138,50 +162,59 @@ impl ArenaStorage {
     }
 
     pub fn load_max_players(env: &Env) -> Option<u32> {
+        Self::extend_persistent_ttl(env, &DataKey::MaxPlayers);
         env.storage().persistent().get(&DataKey::MaxPlayers)
     }
 
     pub fn save_commitment(env: &Env, player: &Address, commitment: &BytesN<32>) {
+        Self::extend_persistent_ttl(env, &DataKey::Commitment(player.clone()));
         env.storage()
             .persistent()
             .set(&DataKey::Commitment(player.clone()), commitment);
     }
 
     pub fn load_commitment(env: &Env, player: &Address) -> Option<BytesN<32>> {
+        Self::extend_persistent_ttl(env, &DataKey::Commitment(player.clone()));
         env.storage()
             .persistent()
             .get(&DataKey::Commitment(player.clone()))
     }
 
     pub fn save_choice(env: &Env, player: &Address, choice: &Choice) {
+        Self::extend_persistent_ttl(env, &DataKey::Choice(player.clone()));
         env.storage()
             .persistent()
             .set(&DataKey::Choice(player.clone()), choice);
     }
 
     pub fn load_choice(env: &Env, player: &Address) -> Option<Choice> {
+        Self::extend_persistent_ttl(env, &DataKey::Choice(player.clone()));
         env.storage()
             .persistent()
             .get(&DataKey::Choice(player.clone()))
     }
 
     pub fn save_round_start(env: &Env, timestamp: u64) {
+        Self::extend_persistent_ttl(env, &DataKey::RoundStart);
         env.storage()
             .persistent()
             .set(&DataKey::RoundStart, &timestamp);
     }
 
     pub fn load_round_start(env: &Env) -> Option<u64> {
+        Self::extend_persistent_ttl(env, &DataKey::RoundStart);
         env.storage().persistent().get(&DataKey::RoundStart)
     }
 
     pub fn save_round_duration(env: &Env, duration_seconds: u64) {
+        Self::extend_persistent_ttl(env, &DataKey::RoundDuration);
         env.storage()
             .persistent()
             .set(&DataKey::RoundDuration, &duration_seconds);
     }
 
     pub fn load_round_duration(env: &Env) -> u64 {
+        Self::extend_persistent_ttl(env, &DataKey::RoundDuration);
         env.storage()
             .persistent()
             .get(&DataKey::RoundDuration)
@@ -189,40 +222,47 @@ impl ArenaStorage {
     }
 
     pub fn save_round_yield_bps(env: &Env, round: u32, yield_bps: u32) {
+        Self::extend_persistent_ttl(env, &DataKey::RoundYieldBps(round));
         env.storage()
             .persistent()
             .set(&DataKey::RoundYieldBps(round), &yield_bps);
     }
 
     pub fn save_yield_snapshot(env: &Env, round: u32, snapshot: &YieldSnapshot) {
+        Self::extend_persistent_ttl(env, &DataKey::YieldSnapshot(round));
         env.storage()
             .persistent()
             .set(&DataKey::YieldSnapshot(round), snapshot);
     }
 
     pub fn load_yield_snapshot(env: &Env, round: u32) -> Option<YieldSnapshot> {
+        Self::extend_persistent_ttl(env, &DataKey::YieldSnapshot(round));
         env.storage()
             .persistent()
             .get(&DataKey::YieldSnapshot(round))
     }
 
     pub fn save_round_result(env: &Env, round: u32, result: &RoundResult) {
+        Self::extend_persistent_ttl(env, &DataKey::RoundResult(round));
         env.storage()
             .persistent()
             .set(&DataKey::RoundResult(round), result);
     }
 
     pub fn load_round_result(env: &Env, round: u32) -> Option<RoundResult> {
+        Self::extend_persistent_ttl(env, &DataKey::RoundResult(round));
         env.storage().persistent().get(&DataKey::RoundResult(round))
     }
 
     pub fn save_last_vault_balance(env: &Env, balance: i128) {
+        Self::extend_persistent_ttl(env, &DataKey::LastVaultBalance);
         env.storage()
             .persistent()
             .set(&DataKey::LastVaultBalance, &balance);
     }
 
     pub fn load_last_vault_balance(env: &Env) -> i128 {
+        Self::extend_persistent_ttl(env, &DataKey::LastVaultBalance);
         env.storage()
             .persistent()
             .get(&DataKey::LastVaultBalance)
@@ -233,6 +273,7 @@ impl ArenaStorage {
     /// `claim` so a reentrant call sees the flag and bails out with
     /// `PrizeAlreadyClaimed` before the token transfer can run a second time.
     pub fn prize_claimed(env: &Env) -> bool {
+        Self::extend_persistent_ttl(env, &DataKey::PrizeClaimed);
         env.storage()
             .persistent()
             .get(&DataKey::PrizeClaimed)
@@ -243,6 +284,7 @@ impl ArenaStorage {
     /// (cross-contract) call in `claim` so that a malicious token contract
     /// re-entering the arena cannot replay the claim.
     pub fn mark_prize_claimed(env: &Env) {
+        Self::extend_persistent_ttl(env, &DataKey::PrizeClaimed);
         env.storage()
             .persistent()
             .set(&DataKey::PrizeClaimed, &true);
@@ -275,6 +317,7 @@ impl ArenaStorage {
     }
 
     pub fn load_creator_active_pools(env: &Env, creator: &Address) -> u32 {
+        Self::extend_persistent_ttl(env, &DataKey::CreatorActivePools(creator.clone()));
         env.storage()
             .persistent()
             .get(&DataKey::CreatorActivePools(creator.clone()))
@@ -282,6 +325,7 @@ impl ArenaStorage {
     }
 
     pub fn save_creator_active_pools(env: &Env, creator: &Address, active_pools: u32) {
+        Self::extend_persistent_ttl(env, &DataKey::CreatorActivePools(creator.clone()));
         env.storage()
             .persistent()
             .set(&DataKey::CreatorActivePools(creator.clone()), &active_pools);
@@ -304,12 +348,14 @@ impl ArenaStorage {
     }
 
     pub fn save_pending_admin(env: &Env, pending: &PendingAdmin) {
+        Self::extend_persistent_ttl(env, &symbol_short!("PADMIN"));
         env.storage()
             .persistent()
             .set(&symbol_short!("PADMIN"), pending);
     }
 
     pub fn load_pending_admin(env: &Env) -> Option<PendingAdmin> {
+        Self::extend_persistent_ttl(env, &symbol_short!("PADMIN"));
         env.storage().persistent().get(&symbol_short!("PADMIN"))
     }
 

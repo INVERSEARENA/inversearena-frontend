@@ -38,6 +38,7 @@ struct RoundResolution {
     eliminated: u32,
     survivors: u32,
     winner: Option<Address>,
+    tied: bool,
 }
 
 #[contractimpl]
@@ -471,6 +472,9 @@ impl ArenaContract {
         ArenaStorage::save_config(&env, &config);
 
         ArenaEvents::round_resolved(&env, round, resolution.eliminated, resolution.survivors);
+        if resolution.tied {
+            ArenaEvents::round_tied(&env, round, resolution.survivors);
+        }
         if let Some(winner_addr) = resolution.winner {
             ArenaEvents::game_finished(&env, &winner_addr, round);
         }
@@ -720,6 +724,7 @@ impl ArenaContract {
         }
 
         let tally = eliminations::tally_choices(&active_choices);
+        let tied = tally.heads > 0 && tally.heads == tally.tails;
         let mut eliminated = 0u32;
         let mut survivors = 0u32;
         let mut winner: Option<Address> = None;
@@ -751,12 +756,14 @@ impl ArenaContract {
                 eliminated,
                 survivors,
                 winner,
+                tied,
             }
         } else {
             RoundResolution {
                 eliminated,
                 survivors,
                 winner: None,
+                tied,
             }
         }
     }

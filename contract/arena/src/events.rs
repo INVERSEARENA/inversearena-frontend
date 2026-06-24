@@ -43,6 +43,11 @@ impl ArenaEvents {
             .publish((symbol_short!("resolved"),), (round, eliminated, survivors));
     }
 
+    pub fn round_tied(env: &Env, round: u32, survivors: u32) {
+        env.events()
+            .publish((symbol_short!("tied"),), (round, survivors));
+    }
+
     pub fn player_eliminated(env: &Env, player: &Address, round: u32) {
         env.events()
             .publish((symbol_short!("elim"), player.clone()), round);
