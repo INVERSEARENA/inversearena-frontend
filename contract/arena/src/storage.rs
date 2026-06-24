@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
 use crate::types::{
-    ArenaConfig, ArenaError, Choice, PendingAdmin, PlayerState, RoundResult, YieldSnapshot,
+    ArenaConfig, ArenaError, Choice, GameState, PendingAdmin, PlayerState, RoundResult,
+    YieldSnapshot,
 };
 use soroban_sdk::{Address, BytesN, Env, Vec, contracttype, symbol_short};
 
@@ -34,6 +35,20 @@ impl ArenaStorage {
     }
 
     pub fn save_config(env: &Env, config: &ArenaConfig) {
+        let previous: Option<ArenaConfig> = env.storage().persistent().get(&symbol_short!("CONFIG"));
+
+        if previous.is_none() && config.state == GameState::Open {
+            Self::increment_creator_active_pools(env, &config.admin);
+        }
+
+        if let Some(previous_config) = previous {
+            if !Self::is_terminal_pool_state(&previous_config.state)
+                && Self::is_terminal_pool_state(&config.state)
+            {
+                Self::decrement_creator_active_pools(env, &previous_config.admin);
+            }
+        }
+
         env.storage()
             .persistent()
             .set(&symbol_short!("CONFIG"), config);
@@ -233,6 +248,61 @@ impl ArenaStorage {
             .set(&DataKey::PrizeClaimed, &true);
     }
 
+    /// Return whether a state-changing entry point is already executing.
+    pub fn reentrancy_guard_entered(env: &Env) -> bool {
+        env.storage()
+            .temporary()
+            .get(&DataKey::ReentrancyGuard)
+            .unwrap_or(false)
+    }
+
+    /// Set the temporary reentrancy guard before state-changing logic performs
+    /// any checks/effects/interactions.
+    pub fn enter_reentrancy_guard(env: &Env) -> Result<(), ArenaError> {
+        if Self::reentrancy_guard_entered(env) {
+            return Err(ArenaError::ReentrantCall);
+        }
+
+        env.storage()
+            .temporary()
+            .set(&DataKey::ReentrancyGuard, &true);
+        Ok(())
+    }
+
+    /// Clear the temporary reentrancy guard after a guarded entry point exits.
+    pub fn exit_reentrancy_guard(env: &Env) {
+        env.storage()
+            .temporary()
+            .remove(&DataKey::ReentrancyGuard);
+    pub fn load_creator_active_pools(env: &Env, creator: &Address) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CreatorActivePools(creator.clone()))
+            .unwrap_or(0)
+    }
+
+    pub fn save_creator_active_pools(env: &Env, creator: &Address, active_pools: u32) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::CreatorActivePools(creator.clone()), &active_pools);
+    }
+
+    pub fn increment_creator_active_pools(env: &Env, creator: &Address) {
+        let active_pools = Self::load_creator_active_pools(env, creator).saturating_add(1);
+        Self::save_creator_active_pools(env, creator, active_pools);
+    }
+
+    pub fn decrement_creator_active_pools(env: &Env, creator: &Address) {
+        let active_pools = Self::load_creator_active_pools(env, creator);
+        if active_pools > 0 {
+            Self::save_creator_active_pools(env, creator, active_pools - 1);
+        }
+    }
+
+    fn is_terminal_pool_state(state: &GameState) -> bool {
+        matches!(state, GameState::Finished | GameState::Cancelled)
+    }
+
     pub fn save_pending_admin(env: &Env, pending: &PendingAdmin) {
         env.storage()
             .persistent()
@@ -245,5 +315,73 @@ impl ArenaStorage {
 
     pub fn delete_pending_admin(env: &Env) {
         env.storage().persistent().remove(&symbol_short!("PADMIN"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+
+    fn config(env: &Env, admin: &Address, state: GameState) -> ArenaConfig {
+        ArenaConfig {
+            admin: admin.clone(),
+            stake_token: Address::generate(env),
+            yield_vault: Address::generate(env),
+            entry_fee: 100,
+            state,
+            paused: false,
+            player_count: 0,
+            cumulative_yield: 0,
+            commit_deadline: 0,
+            round_count: 0,
+            oracle_contract: Address::generate(env),
+        }
+    }
+
+    #[test]
+    fn initial_open_config_increments_creator_active_pools() {
+        let env = Env::default();
+        let creator = Address::generate(&env);
+
+        ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Open));
+
+        assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 1);
+    }
+
+    #[test]
+    fn finished_transition_decrements_creator_active_pools_once() {
+        let env = Env::default();
+        let creator = Address::generate(&env);
+
+        ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Open));
+        ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Active));
+        ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Finished));
+        ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Finished));
+        ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Settled));
+
+        assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 0);
+    }
+
+    #[test]
+    fn cancelled_transition_decrements_creator_active_pools() {
+        let env = Env::default();
+        let creator = Address::generate(&env);
+
+        ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Open));
+        ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Cancelled));
+
+        assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 0);
+    }
+
+    #[test]
+    fn decrement_creator_active_pools_never_underflows() {
+        let env = Env::default();
+        let creator = Address::generate(&env);
+
+        ArenaStorage::decrement_creator_active_pools(&env, &creator);
+        ArenaStorage::decrement_creator_active_pools(&env, &creator);
+
+        assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 0);
     }
 }

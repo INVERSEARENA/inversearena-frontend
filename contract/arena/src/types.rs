@@ -131,7 +131,7 @@ pub enum ArenaError {
     /// Returned during round resolution when no round start timestamp is recorded in storage.
     RoundNotStarted = 5,
 
-    /// Returned when trying to resolve a round before the grace period (round duration) has elapsed.
+    /// Returned when trying to resolve a round before the grace period (round duration) has not yet passed.
     GracePeriodNotElapsed = 6,
 
     /// Returned when a player's revealed choice and salt do not match the cryptographic commitment
