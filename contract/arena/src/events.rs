@@ -1,3 +1,4 @@
+use crate::types::Choice;
 use soroban_sdk::{Address, Env, Symbol, symbol_short};
 
 pub struct ArenaEvents;
@@ -26,6 +27,19 @@ impl ArenaEvents {
     pub fn player_eliminated(env: &Env, player: &Address, round: u32) {
         env.events()
             .publish((symbol_short!("elim"), player.clone()), round);
+    }
+
+    pub fn player_eliminated_with_choice(
+        env: &Env,
+        arena_id: &Address,
+        player: &Address,
+        round: u32,
+        choice: Choice,
+    ) {
+        env.events().publish(
+            (symbol_short!("elim"), arena_id.clone(), player.clone()),
+            (round, choice),
+        );
     }
 
     pub fn game_finished(env: &Env, winner: &Address, round: u32) {
