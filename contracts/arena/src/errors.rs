@@ -38,5 +38,11 @@ pub enum ArenaError {
     NoStakeToWithdraw = 16,
     /// Stake already deposited
     StakeAlreadyDeposited = 17,
+    /// Cooldown period between arena creations has not elapsed
+    CooldownNotElapsed = 18,
+    /// Treasury address has not been set
+    TreasuryNotSet = 19,
+    /// Contract is paused; state-mutating operations blocked
+    ContractPaused = 20,
 }
 

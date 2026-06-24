@@ -18,7 +18,11 @@ pub struct ArenaConfig {
     pub max_players: u32,
     pub join_deadline: u64,
     pub state: GameState,
+    pub paused: bool,
     pub player_count: u32,
+    pub treasury_address: Address,
+    pub last_creation_timestamp: u64,
+    pub creation_cooldown_seconds: u64,
 }
 
 #[contracttype]
