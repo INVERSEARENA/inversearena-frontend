@@ -185,4 +185,16 @@ pub enum ArenaError {
     /// Returned when `start_round` is called with fewer than `MIN_PLAYERS_TO_START` active players.
     /// Prevents degenerate single-player or zero-player games where one player can win trivially.
     NotEnoughPlayers = 19,
+
+    /// Returned when a banned player attempts to join a new arena.
+    PlayerBanned = 20,
+
+    /// Returned when the arena creator/admin attempts to join their own arena.
+    CreatorCannotJoin = 21,
+
+    /// Returned when a player attempts to join after the arena has reached capacity.
+    ArenaFull = 22,
+
+    /// Returned when configured player limits are invalid.
+    InvalidPlayerLimits = 23,
 }

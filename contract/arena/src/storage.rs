@@ -9,6 +9,7 @@ use soroban_sdk::{Address, BytesN, Env, Vec, contracttype, symbol_short};
 #[contracttype]
 enum DataKey {
     Player(Address),
+    BannedPlayer(Address),
     Commitment(Address),
     Choice(Address),
     YieldSnapshot(u32),
@@ -18,6 +19,8 @@ enum DataKey {
     RoundDuration,
     LastVaultBalance,
     PrizeClaimed,
+    MinPlayers,
+    MaxPlayers,
 }
 
 pub struct ArenaStorage;
@@ -88,6 +91,39 @@ impl ArenaStorage {
         env.storage()
             .persistent()
             .set(&DataKey::Player(player.clone()), state);
+    }
+
+    pub fn set_player_banned(env: &Env, player: &Address, banned: bool) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::BannedPlayer(player.clone()), &banned);
+    }
+
+    pub fn is_player_banned(env: &Env, player: &Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::BannedPlayer(player.clone()))
+            .unwrap_or(false)
+    }
+
+    pub fn save_player_limits(env: &Env, min_players: u32, max_players: u32) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::MinPlayers, &min_players);
+        env.storage()
+            .persistent()
+            .set(&DataKey::MaxPlayers, &max_players);
+    }
+
+    pub fn load_min_players(env: &Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MinPlayers)
+            .unwrap_or(crate::MIN_PLAYERS_TO_START)
+    }
+
+    pub fn load_max_players(env: &Env) -> Option<u32> {
+        env.storage().persistent().get(&DataKey::MaxPlayers)
     }
 
     pub fn save_commitment(env: &Env, player: &Address, commitment: &BytesN<32>) {

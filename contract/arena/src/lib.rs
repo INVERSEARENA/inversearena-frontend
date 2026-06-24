@@ -24,7 +24,9 @@ use types::{
 };
 
 const PAGE_SIZE: u32 = 50;
-const MIN_PLAYERS_TO_START: u32 = 2;
+pub(crate) const MIN_PLAYERS_TO_START: u32 = 2;
+const DEFAULT_MAX_PLAYERS: u32 = u32::MAX;
+const CONTRACT_VERSION: u32 = 1;
 
 #[contract]
 /// On-chain arena contract. Manages the full lifecycle of a single elimination
@@ -93,9 +95,72 @@ impl ArenaContract {
             oracle_contract,
         };
         ArenaStorage::save_config(&env, &config);
+        ArenaStorage::save_player_limits(&env, MIN_PLAYERS_TO_START, DEFAULT_MAX_PLAYERS);
         ArenaStorage::save_last_vault_balance(&env, 0);
         ArenaEvents::initialized(&env, &admin);
         Ok(())
+    }
+
+    /// Return the arena contract ABI/storage version.
+    pub fn version(_env: Env) -> u32 {
+        CONTRACT_VERSION
+    }
+
+    /// Upgrade this arena contract to `new_wasm_hash`.
+    ///
+    /// Only the admin may upgrade. This intentionally remains callable while
+    /// paused so an emergency pause can be followed by a recovery upgrade.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+        ArenaEvents::upgraded(&env, &new_wasm_hash);
+        Ok(())
+    }
+
+    /// Configure arena player bounds.
+    ///
+    /// `min_players` must be at least 2 and cannot exceed `max_players`.
+    /// Existing participation is left untouched; the max applies to future
+    /// joins and the min applies to future `start_round` calls.
+    pub fn configure_player_limits(
+        env: Env,
+        min_players: u32,
+        max_players: u32,
+    ) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+        Self::validate_player_limits(min_players, max_players)?;
+        ArenaStorage::save_player_limits(&env, min_players, max_players);
+        ArenaEvents::player_limits_configured(&env, min_players, max_players);
+        Ok(())
+    }
+
+    /// Ban a player from joining this arena.
+    ///
+    /// Existing player state is not modified, so a ban does not eliminate a
+    /// player who has already joined.
+    pub fn ban_player(env: Env, player: Address) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+        ArenaStorage::set_player_banned(&env, &player, true);
+        ArenaEvents::player_banned(&env, &config.admin, &player);
+        Ok(())
+    }
+
+    /// Remove a player's join ban.
+    pub fn unban_player(env: Env, player: Address) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+        ArenaStorage::set_player_banned(&env, &player, false);
+        ArenaEvents::player_unbanned(&env, &config.admin, &player);
+        Ok(())
+    }
+
+    /// Return whether a player is currently banned from joining.
+    pub fn is_player_banned(env: Env, player: Address) -> bool {
+        ArenaStorage::is_player_banned(&env, &player)
     }
 
     /// Join the arena by staking the configured entry fee.
@@ -120,6 +185,17 @@ impl ArenaContract {
         Self::require_not_paused(&config)?;
         if config.state != GameState::Open {
             return Err(ArenaError::InvalidGameState);
+        }
+        if player == config.admin {
+            return Err(ArenaError::CreatorCannotJoin);
+        }
+        if ArenaStorage::is_player_banned(&env, &player) {
+            return Err(ArenaError::PlayerBanned);
+        }
+        if let Some(max_players) = ArenaStorage::load_max_players(&env) {
+            if config.player_count >= max_players {
+                return Err(ArenaError::ArenaFull);
+            }
         }
 
         let token_client = token::TokenClient::new(&env, &config.stake_token);
@@ -303,7 +379,7 @@ impl ArenaContract {
             return Err(ArenaError::InvalidGameState);
         }
 
-        if config.player_count < MIN_PLAYERS_TO_START {
+        if config.player_count < ArenaStorage::load_min_players(&env) {
             return Err(ArenaError::NotEnoughPlayers);
         }
 
@@ -624,6 +700,13 @@ impl ArenaContract {
         Ok(())
     }
 
+    fn validate_player_limits(min_players: u32, max_players: u32) -> Result<(), ArenaError> {
+        if min_players < MIN_PLAYERS_TO_START || min_players > max_players {
+            return Err(ArenaError::InvalidPlayerLimits);
+        }
+        Ok(())
+    }
+
     fn resolve_players(env: &Env, round: u32) -> RoundResolution {
         let players = ArenaStorage::load_all_players(env);
         let mut active_choices: Vec<Choice> = Vec::new(env);
@@ -685,6 +768,7 @@ mod test {
     use soroban_sdk::{
         contract, contractimpl, symbol_short,
         testutils::{Address as _, Events as _, Ledger as _},
+        token::StellarAssetClient,
     };
 
     #[contract]
@@ -1514,6 +1598,85 @@ mod test {
         let client2 = ArenaContractClient::new(&env, &contract_id);
         client2.start_round(&60);
         let _ = client; // suppress unused warning
+    }
+
+    #[test]
+    fn configure_player_limits_rejects_min_greater_than_max() {
+        let (_, client) = setup(0);
+        assert_eq!(
+            client.try_configure_player_limits(&4, &3),
+            Err(Ok(ArenaError::InvalidPlayerLimits))
+        );
+    }
+
+    #[test]
+    fn configure_player_limits_accepts_min_equal_max_boundary() {
+        let (_, client) = setup(0);
+        client.configure_player_limits(&2, &2);
+    }
+
+    #[test]
+    fn configure_player_limits_rejects_min_below_start_boundary() {
+        let (_, client) = setup(0);
+        assert_eq!(
+            client.try_configure_player_limits(&1, &2),
+            Err(Ok(ArenaError::InvalidPlayerLimits))
+        );
+    }
+
+    #[test]
+    fn join_respects_configured_max_players() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+
+        env.as_contract(&contract_id, || {
+            ArenaStorage::save_config(
+                &env,
+                &ArenaConfig {
+                    admin: Address::generate(&env),
+                    stake_token: token_id.clone(),
+                    entry_fee: 100,
+                    state: GameState::Open,
+                    paused: false,
+                    player_count: 0,
+                    cumulative_yield: 0,
+                    commit_deadline: 0,
+                    yield_vault: vault_id,
+                    round_count: 0,
+                    oracle_contract: oracle_id,
+                },
+            );
+            ArenaStorage::save_player_limits(&env, 2, 2);
+        });
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let asset = StellarAssetClient::new(&env, &token_id);
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        asset.mint(&p1, &100);
+        asset.mint(&p2, &100);
+        asset.mint(&p3, &100);
+
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        assert_eq!(
+            client.try_join_arena(&p3),
+            Err(Ok(ArenaError::ArenaFull))
+        );
+    }
+
+    #[test]
+    fn version_reports_contract_version() {
+        let (_, client) = setup(0);
+        assert_eq!(client.version(), CONTRACT_VERSION);
     }
 }
 #[cfg(test)]
