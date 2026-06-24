@@ -1458,3 +1458,59 @@ fn update_treasury_requires_admin_auth() {
     let result = client.try_update_treasury(&new_treasury);
     assert!(result.is_err());
 }
+
+// ── Initialize invalid-parameter tests (#900) ──────────────────────────────
+
+#[test]
+fn initialize_rejects_negative_entry_fee() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    let initial_deadline = env.ledger().timestamp() + 86400;
+
+    let result = client.try_initialize(&admin, &token, &-1, &100, &initial_deadline, &treasury, &0);
+
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::InvalidEntryFee);
+}
+
+#[test]
+fn initialize_rejects_deadline_at_current_time() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    let now = env.ledger().timestamp();
+
+    // join_deadline == now is not in the future — must be rejected
+    let result = client.try_initialize(&admin, &token, &100_000_000, &100, &now, &treasury, &0);
+
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::DeadlineTooSoon);
+}
+
+#[test]
+fn initialize_token_address_is_stored_and_queryable_via_get_token() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    let initial_deadline = env.ledger().timestamp() + 86400;
+
+    client.initialize(&admin, &token, &100_000_000, &100, &initial_deadline, &treasury, &0);
+
+    // get_token() must return the exact address passed to initialize()
+    let stored_token = client.get_token();
+    assert_eq!(stored_token, token);
+
+    // get_config() must carry the same token address
+    let config = client.get_config();
+    assert_eq!(config.token, token);
+}
