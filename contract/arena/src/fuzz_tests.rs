@@ -17,7 +17,18 @@ mod fuzz_tests {
         ) {
             let tally = Tally { heads, tails };
 
-            if heads < tails {
+            if heads == 0 && tails == 0 {
+                // No votes at all — no survivor.
+                prop_assert_eq!(surviving_choice(&tally), None);
+            } else if heads == 0 {
+                // Only tails voted — they survive (no opposing majority).
+                prop_assert_eq!(surviving_choice(&tally), Some(Choice::Tails));
+                prop_assert!(!is_eliminated(Choice::Tails, &tally));
+            } else if tails == 0 {
+                // Only heads voted — they survive (no opposing majority).
+                prop_assert_eq!(surviving_choice(&tally), Some(Choice::Heads));
+                prop_assert!(!is_eliminated(Choice::Heads, &tally));
+            } else if heads < tails {
                 // Heads is minority — heads survive, tails are eliminated.
                 prop_assert_eq!(surviving_choice(&tally), Some(Choice::Heads));
                 prop_assert!(!is_eliminated(Choice::Heads, &tally));

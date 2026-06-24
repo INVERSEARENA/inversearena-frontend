@@ -35,18 +35,18 @@ impl ArenaStorage {
     }
 
     pub fn save_config(env: &Env, config: &ArenaConfig) {
-        let previous: Option<ArenaConfig> = env.storage().persistent().get(&symbol_short!("CONFIG"));
+        let previous: Option<ArenaConfig> =
+            env.storage().persistent().get(&symbol_short!("CONFIG"));
 
         if previous.is_none() && config.state == GameState::Open {
             Self::increment_creator_active_pools(env, &config.admin);
         }
 
-        if let Some(previous_config) = previous {
-            if !Self::is_terminal_pool_state(&previous_config.state)
-                && Self::is_terminal_pool_state(&config.state)
-            {
-                Self::decrement_creator_active_pools(env, &previous_config.admin);
-            }
+        if let Some(previous_config) = previous
+            && !Self::is_terminal_pool_state(&previous_config.state)
+            && Self::is_terminal_pool_state(&config.state)
+        {
+            Self::decrement_creator_active_pools(env, &previous_config.admin);
         }
 
         env.storage()
@@ -271,9 +271,9 @@ impl ArenaStorage {
 
     /// Clear the temporary reentrancy guard after a guarded entry point exits.
     pub fn exit_reentrancy_guard(env: &Env) {
-        env.storage()
-            .temporary()
-            .remove(&DataKey::ReentrancyGuard);
+        env.storage().temporary().remove(&DataKey::ReentrancyGuard);
+    }
+
     pub fn load_creator_active_pools(env: &Env, creator: &Address) -> u32 {
         env.storage()
             .persistent()
@@ -321,6 +321,7 @@ impl ArenaStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ArenaContract;
     use soroban_sdk::testutils::Address as _;
 
     fn config(env: &Env, admin: &Address, state: GameState) -> ArenaConfig {
@@ -342,46 +343,54 @@ mod tests {
     #[test]
     fn initial_open_config_increments_creator_active_pools() {
         let env = Env::default();
+        let contract_id = env.register(ArenaContract, ());
         let creator = Address::generate(&env);
 
-        ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Open));
-
-        assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 1);
+        env.as_contract(&contract_id, || {
+            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Open));
+            assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 1);
+        });
     }
 
     #[test]
     fn finished_transition_decrements_creator_active_pools_once() {
         let env = Env::default();
+        let contract_id = env.register(ArenaContract, ());
         let creator = Address::generate(&env);
 
-        ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Open));
-        ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Active));
-        ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Finished));
-        ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Finished));
-        ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Settled));
-
-        assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 0);
+        env.as_contract(&contract_id, || {
+            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Open));
+            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Active));
+            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Finished));
+            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Finished));
+            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Settled));
+            assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 0);
+        });
     }
 
     #[test]
     fn cancelled_transition_decrements_creator_active_pools() {
         let env = Env::default();
+        let contract_id = env.register(ArenaContract, ());
         let creator = Address::generate(&env);
 
-        ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Open));
-        ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Cancelled));
-
-        assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 0);
+        env.as_contract(&contract_id, || {
+            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Open));
+            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Cancelled));
+            assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 0);
+        });
     }
 
     #[test]
     fn decrement_creator_active_pools_never_underflows() {
         let env = Env::default();
+        let contract_id = env.register(ArenaContract, ());
         let creator = Address::generate(&env);
 
-        ArenaStorage::decrement_creator_active_pools(&env, &creator);
-        ArenaStorage::decrement_creator_active_pools(&env, &creator);
-
-        assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 0);
+        env.as_contract(&contract_id, || {
+            ArenaStorage::decrement_creator_active_pools(&env, &creator);
+            ArenaStorage::decrement_creator_active_pools(&env, &creator);
+            assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 0);
+        });
     }
 }

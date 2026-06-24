@@ -95,11 +95,17 @@ mod tests {
 
     #[test]
     fn all_players_on_one_side_survive() {
-        let t = Tally { heads: 10, tails: 0 };
+        let t = Tally {
+            heads: 10,
+            tails: 0,
+        };
         assert_eq!(surviving_choice(&t), Some(Choice::Heads));
         assert!(!is_eliminated(Choice::Heads, &t));
 
-        let t = Tally { heads: 0, tails: 10 };
+        let t = Tally {
+            heads: 0,
+            tails: 10,
+        };
         assert_eq!(surviving_choice(&t), Some(Choice::Tails));
         assert!(!is_eliminated(Choice::Tails, &t));
     }

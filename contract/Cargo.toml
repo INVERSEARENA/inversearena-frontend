@@ -7,7 +7,6 @@ members = [
     "payout",
     "rwa-adapter",
     "staking",
-    "rwa-adapter",
 ]
 
 [workspace.dependencies]
