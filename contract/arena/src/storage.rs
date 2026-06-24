@@ -18,6 +18,7 @@ enum DataKey {
     RoundDuration,
     LastVaultBalance,
     PrizeClaimed,
+    ReentrancyGuard,
 }
 
 pub struct ArenaStorage;
@@ -195,6 +196,34 @@ impl ArenaStorage {
         env.storage()
             .persistent()
             .set(&DataKey::PrizeClaimed, &true);
+    }
+
+    /// Return whether a state-changing entry point is already executing.
+    pub fn reentrancy_guard_entered(env: &Env) -> bool {
+        env.storage()
+            .temporary()
+            .get(&DataKey::ReentrancyGuard)
+            .unwrap_or(false)
+    }
+
+    /// Set the temporary reentrancy guard before state-changing logic performs
+    /// any checks/effects/interactions.
+    pub fn enter_reentrancy_guard(env: &Env) -> Result<(), ArenaError> {
+        if Self::reentrancy_guard_entered(env) {
+            return Err(ArenaError::ReentrantCall);
+        }
+
+        env.storage()
+            .temporary()
+            .set(&DataKey::ReentrancyGuard, &true);
+        Ok(())
+    }
+
+    /// Clear the temporary reentrancy guard after a guarded entry point exits.
+    pub fn exit_reentrancy_guard(env: &Env) {
+        env.storage()
+            .temporary()
+            .remove(&DataKey::ReentrancyGuard);
     }
 
     pub fn save_pending_admin(env: &Env, pending: &PendingAdmin) {
