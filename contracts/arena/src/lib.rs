@@ -10,7 +10,7 @@ mod test;
 
 use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Env, Symbol, Vec};
 use storage::ArenaStorage;
-use types::{ArenaConfig, GameState, Choice, RoundResult};
+use types::{ArenaConfig, GameState, Choice, PlayerProfile, RoundResult};
 use events::ArenaEvents;
 use errors::ArenaError;
 
@@ -272,6 +272,13 @@ impl ArenaContract {
 
         ArenaStorage::add_player(&env, &player);
 
+        // Initialize profile on first join
+        let mut profile = ArenaStorage::load_player_profile(&env, &player);
+        if !profile.has_joined {
+            profile.has_joined = true;
+            ArenaStorage::save_player_profile(&env, &player, &profile);
+        }
+
         config.player_count += 1;
         ArenaStorage::save_config(&env, &config);
 
@@ -401,6 +408,15 @@ impl ArenaContract {
         let round = ArenaStorage::get_round(&env) + 1;
         ArenaStorage::set_round(&env, round);
 
+        // Increment rounds_survived for all active players
+        for player in active_players.iter() {
+            if ArenaStorage::is_player_active(&env, &player) {
+                let mut profile = ArenaStorage::load_player_profile(&env, &player);
+                profile.rounds_survived = profile.rounds_survived.saturating_add(1);
+                ArenaStorage::save_player_profile(&env, &player, &profile);
+            }
+        }
+
         // If only 1 survivor left (or 0), game finishes
         if survivors <= 1 {
             config.state = GameState::Finished;
@@ -409,6 +425,9 @@ impl ArenaContract {
             // Find and save the winner
             for player in players.iter() {
                 if ArenaStorage::is_player_active(&env, &player) {
+                    let mut profile = ArenaStorage::load_player_profile(&env, &player);
+                    profile.is_winner = true;
+                    ArenaStorage::save_player_profile(&env, &player, &profile);
                     ArenaStorage::set_winner(&env, &player);
                     break;
                 }
@@ -443,8 +462,10 @@ impl ArenaContract {
             return Err(ArenaError::PlayerEliminated);
         }
 
-        // Calculate prize: total pot minus platform fee
-        let total_pot = (config.player_count as i128) * config.entry_fee;
+        // Calculate prize: total pot minus platform fee (checked to prevent overflow)
+        let total_pot = (config.player_count as i128)
+            .checked_mul(config.entry_fee)
+            .ok_or(ArenaError::Overflow)?;
         let platform_fee = total_pot * PLATFORM_FEE_BP / 10000;
         let prize = total_pot - platform_fee;
 
@@ -567,6 +588,11 @@ impl ArenaContract {
     /// Get current creator stake
     pub fn get_creator_stake(env: Env) -> i128 {
         ArenaStorage::load_creator_stake(&env)
+    }
+
+    /// Get a player's profile (join status, rounds survived, win status)
+    pub fn get_player_profile(env: Env, player: Address) -> PlayerProfile {
+        ArenaStorage::load_player_profile(&env, &player)
     }
 
     fn require_not_paused(config: &ArenaConfig) -> Result<(), ArenaError> {
