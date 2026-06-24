@@ -25,6 +25,12 @@ enum DataKey {
     PrizeClaimed,
     MinPlayers,
     MaxPlayers,
+    ReentrancyGuard,
+    CreatorActivePools(Address),
+    Winner,
+    RefundClaimed(Address),
+    Leaderboard,
+    LeaderboardLimit,
 }
 
 pub struct ArenaStorage;
@@ -361,6 +367,53 @@ impl ArenaStorage {
 
     pub fn delete_pending_admin(env: &Env) {
         env.storage().persistent().remove(&symbol_short!("PADMIN"));
+    }
+
+    pub fn get_winner(env: &Env) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::Winner)
+    }
+
+    pub fn set_winner(env: &Env, winner: &Address) {
+        env.storage().persistent().set(&DataKey::Winner, winner);
+    }
+
+    pub fn is_refund_claimed(env: &Env, player: &Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RefundClaimed(player.clone()))
+            .unwrap_or(false)
+    }
+
+    pub fn set_refund_claimed(env: &Env, player: &Address) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::RefundClaimed(player.clone()), &true);
+    }
+
+    pub fn load_leaderboard(env: &Env) -> Vec<crate::types::LeaderboardEntry> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Leaderboard)
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    pub fn save_leaderboard(env: &Env, leaderboard: &Vec<crate::types::LeaderboardEntry>) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Leaderboard, leaderboard);
+    }
+
+    pub fn load_leaderboard_limit(env: &Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::LeaderboardLimit)
+            .unwrap_or(100)
+    }
+
+    pub fn save_leaderboard_limit(env: &Env, limit: u32) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::LeaderboardLimit, &limit);
     }
 }
 
