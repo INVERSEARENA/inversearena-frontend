@@ -33,10 +33,7 @@ impl ArenaStorage {
     }
 
     pub fn save_config(env: &Env, config: &ArenaConfig) {
-        let previous = env
-            .storage()
-            .persistent()
-            .get::<_, ArenaConfig>(&symbol_short!("CONFIG"));
+        let previous: Option<ArenaConfig> = env.storage().persistent().get(&symbol_short!("CONFIG"));
 
         if previous.is_none() && config.state == GameState::Open {
             Self::increment_creator_active_pools(env, &config.admin);
