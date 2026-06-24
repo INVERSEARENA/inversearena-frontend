@@ -150,6 +150,12 @@ impl ArenaContract {
         ArenaStorage::load_config(&env)
     }
 
+    /// Get the token contract address used for entry fees and payouts
+    pub fn get_token(env: Env) -> Result<Address, ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        Ok(config.token)
+    }
+
     /// Start the game (transition to InProgress state)
     pub fn start_game(env: Env) -> Result<(), ArenaError> {
         let mut config = ArenaStorage::load_config(&env)?;
