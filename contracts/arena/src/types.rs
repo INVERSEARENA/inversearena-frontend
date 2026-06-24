@@ -2,6 +2,14 @@ use soroban_sdk::{contracttype, Address};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlayerProfile {
+    pub has_joined: bool,
+    pub rounds_survived: u32,
+    pub is_winner: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GameState {
     Open,
     InProgress,

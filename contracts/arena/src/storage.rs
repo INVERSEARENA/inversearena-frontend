@@ -1,5 +1,5 @@
 use soroban_sdk::{Env, Symbol, Address, Vec};
-use crate::types::{ArenaConfig, Choice};
+use crate::types::{ArenaConfig, Choice, PlayerProfile};
 use crate::errors::ArenaError;
 
 const CONFIG_KEY: Symbol = Symbol::short("CONFIG");
@@ -121,6 +121,22 @@ impl ArenaStorage {
     pub fn set_refund_claimed(env: &Env, player: &Address) {
         let key = (Symbol::short("REFUND"), player.clone());
         env.storage().instance().set(&key, &true);
+    }
+
+    /// Load a player's profile, returning a zero-state default if not found.
+    pub fn load_player_profile(env: &Env, player: &Address) -> PlayerProfile {
+        let key = (Symbol::short("PROFILE"), player.clone());
+        env.storage().instance().get(&key).unwrap_or(PlayerProfile {
+            has_joined: false,
+            rounds_survived: 0,
+            is_winner: false,
+        })
+    }
+
+    /// Save a player's profile.
+    pub fn save_player_profile(env: &Env, player: &Address, profile: &PlayerProfile) {
+        let key = (Symbol::short("PROFILE"), player.clone());
+        env.storage().instance().set(&key, profile);
     }
 }
 

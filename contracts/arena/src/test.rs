@@ -1458,3 +1458,242 @@ fn update_treasury_requires_admin_auth() {
     let result = client.try_update_treasury(&new_treasury);
     assert!(result.is_err());
 }
+
+// ── Input Sanitization Tests (#896) ────────────────────────────────────────
+
+#[test]
+fn initialize_rejects_negative_entry_fee() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    let treasury = Address::generate(&env);
+    let result = client.try_initialize(&admin, &token, &-1, &100, &(env.ledger().timestamp() + 1000), &treasury, &0);
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::InvalidEntryFee);
+}
+
+#[test]
+fn deposit_creator_stake_rejects_zero_amount() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+    let result = client.try_deposit_creator_stake(&admin, &0);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::InvalidEntryFee);
+}
+
+#[test]
+fn deposit_creator_stake_rejects_negative_amount() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+    let result = client.try_deposit_creator_stake(&admin, &-500);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::InvalidEntryFee);
+}
+
+#[test]
+fn configure_arena_rejects_zero_fee() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+    let result = client.try_configure_arena(&Some(0_i128), &None, &None);
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::InvalidEntryFee);
+}
+
+#[test]
+fn claim_does_not_overflow_pot_calculation() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    let treasury = Address::generate(&env);
+    let entry_fee = 100_000_000_i128;
+    client.initialize(&admin, &token, &entry_fee, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, entry_fee);
+    mint_tokens(&env, &token, &bob, entry_fee);
+    client.join(&alice);
+    client.join(&bob);
+    client.start_game();
+    client.submit_choice(&alice, &Choice::Heads);
+    client.submit_choice(&bob, &Choice::Tails);
+    client.resolve_round();
+
+    // claim should succeed without overflow
+    let winner = client.winner().unwrap();
+    let result = client.try_claim(&winner);
+    assert!(result.is_ok());
+}
+
+// ── Player Profile Tests (#907) ─────────────────────────────────────────────
+
+#[test]
+fn player_profile_created_on_first_join() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    let treasury = Address::generate(&env);
+    let entry_fee = 100_000_000_i128;
+    client.initialize(&admin, &token, &entry_fee, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let player = Address::generate(&env);
+    // Before joining: no profile
+    let profile_before = client.get_player_profile(&player);
+    assert!(!profile_before.has_joined);
+
+    mint_tokens(&env, &token, &player, entry_fee);
+    client.join(&player);
+
+    let profile_after = client.get_player_profile(&player);
+    assert!(profile_after.has_joined);
+    assert_eq!(profile_after.rounds_survived, 0);
+    assert!(!profile_after.is_winner);
+}
+
+#[test]
+fn second_join_attempt_fails_no_duplicate_profile() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    let treasury = Address::generate(&env);
+    let entry_fee = 100_000_000_i128;
+    client.initialize(&admin, &token, &entry_fee, &1, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let player = Address::generate(&env);
+    mint_tokens(&env, &token, &player, entry_fee * 2);
+    client.join(&player);
+
+    // Arena is now full (max_players = 1); second join fails
+    let result = client.try_join(&player);
+    assert!(result.is_err());
+
+    // Profile still reflects one join only
+    let profile = client.get_player_profile(&player);
+    assert!(profile.has_joined);
+}
+
+#[test]
+fn rounds_survived_increments_for_surviving_player() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    let treasury = Address::generate(&env);
+    let entry_fee = 100_000_000_i128;
+    client.initialize(&admin, &token, &entry_fee, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+    let dave = Address::generate(&env);
+    for p in [&alice, &bob, &carol, &dave] {
+        mint_tokens(&env, &token, p, entry_fee);
+        client.join(p);
+    }
+    client.start_game();
+
+    // Round 1: 1 Heads (alice), 3 Tails (bob, carol, dave)
+    // Heads is minority and survives; Tails is eliminated
+    client.submit_choice(&alice, &Choice::Heads);
+    client.submit_choice(&bob, &Choice::Tails);
+    client.submit_choice(&carol, &Choice::Tails);
+    client.submit_choice(&dave, &Choice::Tails);
+    client.resolve_round();
+
+    // alice survived round 1 (minority Heads)
+    let alice_profile = client.get_player_profile(&alice);
+    assert_eq!(alice_profile.rounds_survived, 1);
+    // bob, carol, dave were eliminated
+    let bob_profile = client.get_player_profile(&bob);
+    assert_eq!(bob_profile.rounds_survived, 0);
+    let carol_profile = client.get_player_profile(&carol);
+    assert_eq!(carol_profile.rounds_survived, 0);
+}
+
+#[test]
+fn winner_profile_is_winner_set() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    let treasury = Address::generate(&env);
+    let entry_fee = 100_000_000_i128;
+    client.initialize(&admin, &token, &entry_fee, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, entry_fee);
+    mint_tokens(&env, &token, &bob, entry_fee);
+    client.join(&alice);
+    client.join(&bob);
+    client.start_game();
+
+    // alice Heads, bob Tails — 2-player tie: Heads (alice) survives
+    client.submit_choice(&alice, &Choice::Heads);
+    client.submit_choice(&bob, &Choice::Tails);
+    client.resolve_round();
+
+    let alice_profile = client.get_player_profile(&alice);
+    assert!(alice_profile.is_winner);
+    assert_eq!(alice_profile.rounds_survived, 1);
+
+    let bob_profile = client.get_player_profile(&bob);
+    assert!(!bob_profile.is_winner);
+}
+
+#[test]
+fn profile_rounds_accumulate_across_multiple_rounds() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    let treasury = Address::generate(&env);
+    let entry_fee = 100_000_000_i128;
+    client.initialize(&admin, &token, &entry_fee, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+    let dave = Address::generate(&env);
+    for p in [&alice, &bob, &carol, &dave] {
+        mint_tokens(&env, &token, p, entry_fee);
+        client.join(p);
+    }
+    client.start_game();
+
+    // Round 1: 2 Heads, 2 Tails — tie, no eliminations; all 4 survive
+    client.submit_choice(&alice, &Choice::Heads);
+    client.submit_choice(&bob, &Choice::Heads);
+    client.submit_choice(&carol, &Choice::Tails);
+    client.submit_choice(&dave, &Choice::Tails);
+    client.resolve_round();
+
+    // Round 2: another tie — all 4 survive
+    client.submit_choice(&alice, &Choice::Heads);
+    client.submit_choice(&bob, &Choice::Heads);
+    client.submit_choice(&carol, &Choice::Tails);
+    client.submit_choice(&dave, &Choice::Tails);
+    client.resolve_round();
+
+    let alice_profile = client.get_player_profile(&alice);
+    assert_eq!(alice_profile.rounds_survived, 2);
+}
+
+#[test]
+fn non_joined_player_has_empty_profile() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let stranger = Address::generate(&env);
+    let profile = client.get_player_profile(&stranger);
+    assert!(!profile.has_joined);
+    assert_eq!(profile.rounds_survived, 0);
+    assert!(!profile.is_winner);
+}
