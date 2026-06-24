@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, Env, Symbol, symbol_short};
+use soroban_sdk::{Address, BytesN, Env, Symbol, symbol_short};
 
 pub struct ArenaEvents;
 
@@ -11,6 +11,26 @@ impl ArenaEvents {
     pub fn player_joined(env: &Env, player: &Address, player_count: u32) {
         env.events()
             .publish((symbol_short!("join"), player.clone()), player_count);
+    }
+
+    pub fn player_banned(env: &Env, admin: &Address, player: &Address) {
+        env.events()
+            .publish((symbol_short!("ban"), admin.clone()), player.clone());
+    }
+
+    pub fn player_unbanned(env: &Env, admin: &Address, player: &Address) {
+        env.events()
+            .publish((symbol_short!("unban"), admin.clone()), player.clone());
+    }
+
+    pub fn player_limits_configured(env: &Env, min_players: u32, max_players: u32) {
+        env.events()
+            .publish((symbol_short!("limits"),), (min_players, max_players));
+    }
+
+    pub fn upgraded(env: &Env, new_wasm_hash: &BytesN<32>) {
+        env.events()
+            .publish((symbol_short!("upgrade"),), new_wasm_hash.clone());
     }
 
     pub fn game_started(env: &Env, round: u32, duration_seconds: u64) {

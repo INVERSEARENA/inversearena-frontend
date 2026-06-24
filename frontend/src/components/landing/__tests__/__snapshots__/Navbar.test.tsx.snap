@@ -57,12 +57,36 @@ exports[`Navbar matches snapshot 1`] = `
           Win_Or_Lose
         </a>
       </div>
-      <button
-        class="bg-[#39ff14] px-6 py-2 text-[10px] font-bold uppercase text-black hover:bg-white transition-all transform active:scale-95 rounded-none"
-        data-testid="connect-wallet-btn"
+      <div
+        class="flex items-center gap-3"
       >
-        Connect Wallet
-      </button>
+        <button
+          aria-label="Switch to dark theme"
+          class="flex size-9 items-center justify-center rounded-md border border-white/10 bg-white/5 text-zinc-400 transition-colors hover:bg-white/10 hover:text-white"
+        >
+          <svg
+            fill="none"
+            height="18"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            viewBox="0 0 24 24"
+            width="18"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"
+            />
+          </svg>
+        </button>
+        <button
+          class="bg-[#39ff14] px-6 py-2 text-[10px] font-bold uppercase text-black hover:bg-white transition-all transform active:scale-95 rounded-none"
+          data-testid="connect-wallet-btn"
+        >
+          Connect Wallet
+        </button>
+      </div>
     </div>
   </div>
 </nav>

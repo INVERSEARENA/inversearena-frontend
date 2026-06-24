@@ -26,10 +26,22 @@ pub enum ArenaError {
     GameNotFinished = 10,
     /// Not a registered player
     NotAPlayer = 11,
+    /// Token transfer failed
+    TransferFailed = 12,
+    /// Insufficient token balance
+    InsufficientBalance = 13,
+    /// Refund already claimed
+    RefundAlreadyClaimed = 14,
+    /// Arena is not cancelled
+    ArenaNotCancelled = 15,
+    /// No stake to withdraw
+    NoStakeToWithdraw = 16,
+    /// Stake already deposited
+    StakeAlreadyDeposited = 17,
     /// Cooldown period between arena creations has not elapsed
-    CooldownNotElapsed = 12,
+    CooldownNotElapsed = 18,
     /// Treasury address has not been set
-    TreasuryNotSet = 13,
+    TreasuryNotSet = 19,
     /// Contract is paused; state-mutating operations blocked
     ContractPaused = 14,
     /// Slash rate in bps cannot exceed 10000 (100%)
@@ -38,5 +50,6 @@ pub enum ArenaError {
     NoStakeToWithdraw = 16,
     /// Stake amount must be positive
     InvalidStakeAmount = 17,
+    ContractPaused = 20,
 }
 

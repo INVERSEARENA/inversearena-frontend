@@ -36,15 +36,20 @@ pub fn tally_choices(choices: &Vec<Choice>) -> Tally {
     Tally { heads, tails }
 }
 
-/// The surviving choice under minority-wins rules: whichever side has *fewer*
-/// votes. A tie is inconclusive (no elimination) and returns `None`.
+/// The surviving choice under minority-wins rules.
+///
+/// If both sides receive votes, the smaller side survives and the majority is
+/// eliminated. A tie is inconclusive, so nobody is eliminated. If every
+/// submitting player picked the same side, that side survives because there is
+/// no opposing majority to eliminate.
 pub fn surviving_choice(tally: &Tally) -> Option<Choice> {
-    if tally.heads == tally.tails {
-        None
-    } else if tally.heads < tally.tails {
-        Some(Choice::Heads)
-    } else {
-        Some(Choice::Tails)
+    match (tally.heads, tally.tails) {
+        (0, 0) => None,
+        (_, 0) => Some(Choice::Heads),
+        (0, _) => Some(Choice::Tails),
+        (heads, tails) if heads == tails => None,
+        (heads, tails) if heads < tails => Some(Choice::Heads),
+        _ => Some(Choice::Tails),
     }
 }
 
@@ -72,12 +77,50 @@ mod tests {
     }
 
     #[test]
+    fn three_heads_seven_tails_keeps_heads() {
+        let t = Tally { heads: 3, tails: 7 };
+        assert_eq!(surviving_choice(&t), Some(Choice::Heads));
+        assert!(!is_eliminated(Choice::Heads, &t));
+        assert!(is_eliminated(Choice::Tails, &t));
+    }
+
+    #[test]
     fn tie_is_inconclusive() {
-        let t = Tally { heads: 2, tails: 2 };
+        let t = Tally { heads: 5, tails: 5 };
         assert_eq!(surviving_choice(&t), None);
         // Nobody is eliminated on a tie.
         assert!(!is_eliminated(Choice::Heads, &t));
         assert!(!is_eliminated(Choice::Tails, &t));
+    }
+
+    #[test]
+    fn all_players_on_one_side_survive() {
+        let t = Tally {
+            heads: 10,
+            tails: 0,
+        };
+        assert_eq!(surviving_choice(&t), Some(Choice::Heads));
+        assert!(!is_eliminated(Choice::Heads, &t));
+
+        let t = Tally {
+            heads: 0,
+            tails: 10,
+        };
+        assert_eq!(surviving_choice(&t), Some(Choice::Tails));
+        assert!(!is_eliminated(Choice::Tails, &t));
+    }
+
+    #[test]
+    fn single_submitter_survives() {
+        let t = Tally { heads: 1, tails: 0 };
+        assert_eq!(surviving_choice(&t), Some(Choice::Heads));
+        assert!(!is_eliminated(Choice::Heads, &t));
+    }
+
+    #[test]
+    fn no_choices_has_no_surviving_choice() {
+        let t = Tally { heads: 0, tails: 0 };
+        assert_eq!(surviving_choice(&t), None);
     }
 
     #[test]

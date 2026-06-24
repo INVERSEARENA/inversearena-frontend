@@ -191,7 +191,7 @@ describe("Rate limiting on POST /api/auth/verify", () => {
         const otherWallet = Keypair.random().publicKey();
         const res = await request(app)
             .post("/api/auth/verify")
-            .set("X-Forwarded-For", VERIFY_IP)
+            .set("X-Forwarded-For", VERIFY_IP_OTHER_WALLET)
             .send({ walletAddress: otherWallet, signature: "invalid" });
 
         expect(res.status).not.toBe(429);

@@ -13,9 +13,6 @@ use soroban_sdk::{Address, Env, contract, contractimpl};
 #[contract]
 pub struct OracleContract;
 
-const RATE_KEY: &str = "RATE";
-const ADMIN_KEY: &str = "ADMIN";
-
 #[contractimpl]
 impl OracleContract {
     /// Initialise the oracle with an admin and an initial yield rate.
@@ -61,9 +58,6 @@ impl OracleContract {
             .unwrap_or(0)
     }
 }
-
-const _: &str = RATE_KEY;
-const _: &str = ADMIN_KEY;
 
 #[cfg(test)]
 mod tests {

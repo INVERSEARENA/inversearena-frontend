@@ -7,6 +7,7 @@ const PLAYERS_KEY: Symbol = Symbol::short("PLAYERS");
 const WINNER_KEY: Symbol = Symbol::short("WINNER");
 const ROUND_KEY: Symbol = Symbol::short("ROUND");
 const PRIZE_CLAIMED_KEY: Symbol = Symbol::short("CLAIMED");
+const CREATOR_STAKE_KEY: Symbol = Symbol::short("STAKE");
 
 pub struct ArenaStorage;
 
@@ -98,6 +99,28 @@ impl ArenaStorage {
     /// Mark the prize pool as claimed
     pub fn set_prize_claimed(env: &Env) {
         env.storage().instance().set(&PRIZE_CLAIMED_KEY, &true);
+    }
+
+    /// Save creator stake amount
+    pub fn save_creator_stake(env: &Env, amount: i128) {
+        env.storage().instance().set(&CREATOR_STAKE_KEY, &amount);
+    }
+
+    /// Load creator stake amount
+    pub fn load_creator_stake(env: &Env) -> i128 {
+        env.storage().instance().get(&CREATOR_STAKE_KEY).unwrap_or(0)
+    }
+
+    /// Check if a player has already claimed a refund
+    pub fn is_refund_claimed(env: &Env, player: &Address) -> bool {
+        let key = (Symbol::short("REFUND"), player.clone());
+        env.storage().instance().get(&key).unwrap_or(false)
+    }
+
+    /// Mark a player's refund as claimed
+    pub fn set_refund_claimed(env: &Env, player: &Address) {
+        let key = (Symbol::short("REFUND"), player.clone());
+        env.storage().instance().set(&key, &true);
     }
 }
 

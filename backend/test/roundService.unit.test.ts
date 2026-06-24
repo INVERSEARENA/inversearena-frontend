@@ -136,7 +136,8 @@ describe('RoundService.computeEliminations — majority elimination', () => {
       { userId: 'a', choice: 'heads', stake: 100 },
     ];
     const eliminated = computeEliminations(choices, ['a', 'b', 'c'], 0);
-    expect(eliminated.sort()).toEqual(['b', 'c']);
+    // With 1 heads vs 0 tails, heads is the majority — all players eliminated
+    expect(eliminated.sort()).toEqual(['a', 'b', 'c']);
   });
 
   it('eliminates non-submitters plus majority when choices exist', () => {

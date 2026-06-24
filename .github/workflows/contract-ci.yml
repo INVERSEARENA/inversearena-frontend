@@ -43,8 +43,8 @@ jobs:
         working-directory: ./contract
         run: cargo test --workspace
 
-      - name: Install Soroban CLI
-        run: cargo install --locked soroban-cli
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli
 
       - name: Optimize contract WASM and enforce size budget
         working-directory: ./contract

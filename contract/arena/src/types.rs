@@ -131,7 +131,7 @@ pub enum ArenaError {
     /// Returned during round resolution when no round start timestamp is recorded in storage.
     RoundNotStarted = 5,
 
-    /// Returned when trying to resolve a round before the grace period (round duration) has elapsed.
+    /// Returned when trying to resolve a round before the grace period (round duration) has not yet passed.
     GracePeriodNotElapsed = 6,
 
     /// Returned when a player's revealed choice and salt do not match the cryptographic commitment
@@ -185,4 +185,16 @@ pub enum ArenaError {
     /// Returned when `start_round` is called with fewer than `MIN_PLAYERS_TO_START` active players.
     /// Prevents degenerate single-player or zero-player games where one player can win trivially.
     NotEnoughPlayers = 19,
+
+    /// Returned when a banned player attempts to join a new arena.
+    PlayerBanned = 20,
+
+    /// Returned when the arena creator/admin attempts to join their own arena.
+    CreatorCannotJoin = 21,
+
+    /// Returned when a player attempts to join after the arena has reached capacity.
+    ArenaFull = 22,
+
+    /// Returned when configured player limits are invalid.
+    InvalidPlayerLimits = 23,
 }

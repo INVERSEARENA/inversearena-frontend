@@ -88,6 +88,58 @@ fn join_accepted_when_arena_is_open() {
     );
 }
 
+#[test]
+fn creator_cannot_join_own_arena() {
+    let (env, client, _) = setup_arena(GameState::Open);
+    let creator = env.as_contract(&client.address, || {
+        ArenaStorage::load_config(&env).unwrap().admin
+    });
+
+    assert_eq!(
+        client.try_join_arena(&creator),
+        Err(Ok(ArenaError::CreatorCannotJoin)),
+        "arena creator/admin must not be able to join their own arena"
+    );
+}
+
+#[test]
+fn banned_player_cannot_join_until_unbanned() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+    let player = Address::generate(&env);
+
+    client.ban_player(&player);
+    assert!(client.is_player_banned(&player));
+    assert_eq!(
+        client.try_join_arena(&player),
+        Err(Ok(ArenaError::PlayerBanned)),
+        "banned player must not be able to join"
+    );
+
+    client.unban_player(&player);
+    assert!(!client.is_player_banned(&player));
+    StellarAssetClient::new(&env, &token_id).mint(&player, &100);
+    assert!(
+        client.try_join_arena(&player).is_ok(),
+        "unbanned player should be able to join normally"
+    );
+}
+
+#[test]
+fn banning_existing_player_does_not_remove_participation() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+    let player = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&player, &100);
+
+    client.join_arena(&player);
+    assert_eq!(client.player_count(), 1);
+    client.ban_player(&player);
+
+    let players = client.get_players(&0);
+    assert_eq!(players.len(), 1);
+    assert_eq!(players.get(0).unwrap().0, player);
+    assert_eq!(client.player_count(), 1);
+}
+
 /// join_arena() rejects with InvalidGameState when the arena is Active.
 #[test]
 fn join_rejected_when_arena_is_active() {
