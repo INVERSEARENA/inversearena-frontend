@@ -306,6 +306,7 @@ Inverse Arena is designed for production-grade custody:
 Pull requests are welcome. Before contributing:
 
 1. Read [CONTRIBUTING.md](CONTRIBUTING.md) — especially the snapshot testing rules for Soroban contract types.
+2. For smart contract contributions, see [docs/CONTRIBUTING_CONTRACTS.md](docs/CONTRIBUTING_CONTRACTS.md) — covers environment setup, build commands, coding conventions, and the PR checklist.
 2. Run all relevant tests and ensure they pass.
 3. Keep PRs focused — one concern per pull request.
 
