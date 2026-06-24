@@ -16,6 +16,7 @@ export const PlayerChoiceSchema = z.object({
 export const RoundInputSchema = z.object({
   roundId: z.string().uuid(),
   playerChoices: z.array(PlayerChoiceSchema).min(1).max(500),
+  allActivePlayerIds: z.array(z.string().uuid()).min(1).max(500),
   oracleYield: z.number().finite().min(0).max(100),
   randomSeed: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 });

@@ -42,6 +42,7 @@ describe("Resolve Round Integration", () => {
                     { userId: user1.id, choice: "heads", stake: 100 },
                     { userId: user2.id, choice: "tails", stake: 100 },
                 ],
+                allActivePlayerIds: [user1.id, user2.id],
                 oracleYield: 5.5,
             });
 
