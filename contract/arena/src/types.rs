@@ -103,6 +103,14 @@ pub struct YieldSnapshot {
     pub accrued: i128,
 }
 
+/// A single entry in the on-chain leaderboard.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LeaderboardEntry {
+    pub player: Address,
+    pub rounds_survived: u32,
+}
+
 /// Error codes returned by arena contract functions.
 ///
 /// Must use `#[contracterror]` (not `#[contracttype]`) so the Soroban macro
@@ -197,4 +205,17 @@ pub enum ArenaError {
 
     /// Returned when configured player limits are invalid.
     InvalidPlayerLimits = 23,
+
+    /// Returned when a guarded state-changing entry point is called again before
+    /// its previous invocation has cleared the temporary reentrancy guard.
+    ReentrantCall = 24,
+
+    /// Returned when a player attempts to claim a refund, but they have already claimed it.
+    RefundAlreadyClaimed = 25,
+
+    /// Returned when a player attempts to claim a refund, but the arena is not in the Cancelled state.
+    ArenaNotCancelled = 26,
+
+    /// Returned when a player attempts to claim a refund or perform an action, but they are not registered.
+    NotAPlayer = 27,
 }

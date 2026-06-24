@@ -19,8 +19,8 @@ use events::ArenaEvents;
 use rwa_client::RwaAdapterClient;
 use storage::ArenaStorage;
 use types::{
-    ArenaConfig, ArenaError, Choice, GameState, PendingAdmin, PlayerState, RoundResult,
-    YieldSnapshot,
+    ArenaConfig, ArenaError, Choice, GameState, LeaderboardEntry, PendingAdmin, PlayerState,
+    RoundResult, YieldSnapshot,
 };
 
 const PAGE_SIZE: u32 = 50;
@@ -464,6 +464,10 @@ impl ArenaContract {
 
         config.round_count = round;
         config.state = if resolution.survivors <= 1 {
+            if let Some(ref winner_addr) = resolution.winner {
+                ArenaStorage::set_winner(&env, winner_addr);
+            }
+            build_leaderboard(&env);
             GameState::Finished
         } else {
             GameState::Open
@@ -511,8 +515,8 @@ impl ArenaContract {
         if ArenaStorage::prize_claimed(&env) {
             return Err(ArenaError::PrizeAlreadyClaimed);
         }
-        let player_state = ArenaStorage::load_player(&env, &winner).unwrap_or_default();
-        if !player_state.active {
+        let stored_winner = ArenaStorage::get_winner(&env).ok_or(ArenaError::PlayerEliminated)?;
+        if stored_winner != winner {
             return Err(ArenaError::PlayerEliminated);
         }
 
@@ -650,6 +654,74 @@ impl ArenaContract {
         Ok(())
     }
 
+    /// Force-cancel the arena (admin only).
+    /// Can be called at any state except Finished or Settled.
+    pub fn force_cancel_arena(env: Env) -> Result<(), ArenaError> {
+        let mut config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+
+        if config.state == GameState::Finished || config.state == GameState::Settled {
+            return Err(ArenaError::InvalidGameState);
+        }
+
+        if config.state == GameState::Cancelled {
+            return Ok(());
+        }
+
+        config.state = GameState::Cancelled;
+        ArenaStorage::save_config(&env, &config);
+
+        // Attempt to withdraw all funds from the yield vault
+        let arena_addr = env.current_contract_address();
+        let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
+        let _ = rwa_client.try_withdraw_all(&arena_addr);
+
+        ArenaEvents::arena_cancelled(&env, &config.admin);
+        Ok(())
+    }
+
+    /// Claim a refund when the arena has been cancelled.
+    pub fn claim_refund(env: Env, player: Address) -> Result<(), ArenaError> {
+        player.require_auth();
+
+        let config = ArenaStorage::load_config(&env)?;
+        Self::require_not_paused(&config)?;
+
+        if config.state != GameState::Cancelled {
+            return Err(ArenaError::ArenaNotCancelled);
+        }
+
+        if ArenaStorage::is_refund_claimed(&env, &player) {
+            return Err(ArenaError::RefundAlreadyClaimed);
+        }
+
+        if ArenaStorage::load_player(&env, &player).is_none() {
+            return Err(ArenaError::NotAPlayer);
+        }
+
+        ArenaStorage::set_refund_claimed(&env, &player);
+
+        let token_client = token::TokenClient::new(&env, &config.stake_token);
+        token_client.transfer(&env.current_contract_address(), &player, &config.entry_fee);
+
+        ArenaEvents::refund_claimed(&env, &player);
+        Ok(())
+    }
+
+    /// Get the sorted top-N leaderboard of players.
+    pub fn get_leaderboard(env: Env) -> Vec<LeaderboardEntry> {
+        ArenaStorage::load_leaderboard(&env)
+    }
+
+    /// Configure the leaderboard size limit (admin only).
+    pub fn configure_leaderboard_limit(env: Env, limit: u32) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+
+        ArenaStorage::save_leaderboard_limit(&env, limit);
+        Ok(())
+    }
+
     /// Return the cumulative yield earned across all resolved rounds.
     ///
     /// Summed from vault balance deltas recorded during each `resolve_round`
@@ -760,6 +832,44 @@ impl ArenaContract {
             }
         }
     }
+}
+
+fn build_leaderboard(env: &Env) {
+    let players = ArenaStorage::load_all_players(env);
+    let mut entries = Vec::new(env);
+    for player in players.iter() {
+        let state = ArenaStorage::load_player(env, &player).unwrap_or_default();
+        let entry = LeaderboardEntry {
+            player: player.clone(),
+            rounds_survived: state.rounds_survived,
+        };
+
+        let mut inserted = false;
+        for i in 0..entries.len() {
+            let existing: LeaderboardEntry = entries.get(i).unwrap();
+            if entry.rounds_survived > existing.rounds_survived {
+                entries.insert(i, entry.clone());
+                inserted = true;
+                break;
+            }
+        }
+        if !inserted {
+            entries.push_back(entry);
+        }
+    }
+
+    let limit = ArenaStorage::load_leaderboard_limit(env);
+    let mut truncated = Vec::new(env);
+    for i in 0..entries.len() {
+        if i >= limit {
+            break;
+        }
+        let entry: LeaderboardEntry = entries.get(i).unwrap();
+        truncated.push_back(entry);
+    }
+
+    ArenaStorage::save_leaderboard(env, &truncated);
+    ArenaEvents::leaderboard_updated(env);
 }
 
 #[cfg(test)]
@@ -1667,16 +1777,135 @@ mod test {
 
         client.join_arena(&p1);
         client.join_arena(&p2);
-        assert_eq!(
-            client.try_join_arena(&p3),
-            Err(Ok(ArenaError::ArenaFull))
-        );
+        assert_eq!(client.try_join_arena(&p3), Err(Ok(ArenaError::ArenaFull)));
     }
 
     #[test]
     fn version_reports_contract_version() {
         let (_, client) = setup(0);
         assert_eq!(client.version(), CONTRACT_VERSION);
+    }
+
+    #[test]
+    fn test_force_cancel_and_refund() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+        let vault_id = env.register(MockVault, ());
+
+        let admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract(admin.clone());
+        let token_client = token::TokenClient::new(&env, &token);
+        let token_admin = StellarAssetClient::new(&env, &token);
+
+        let p1 = Address::generate(&env);
+        token_admin.mint(&p1, &1000);
+
+        // Initialize the contract
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token, &vault_id, &100, &oracle_id);
+
+        // Player joins
+        client.join_arena(&p1);
+        assert_eq!(client.player_count(), 1);
+        assert_eq!(token_client.balance(&p1), 900);
+        assert_eq!(token_client.balance(&contract_id), 100);
+
+        // Admin force cancels the arena
+        client.force_cancel_arena();
+
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).unwrap();
+            assert_eq!(config.state, GameState::Cancelled);
+        });
+
+        // Player claims refund
+        client.claim_refund(&p1);
+        assert_eq!(token_client.balance(&p1), 1000);
+        assert_eq!(token_client.balance(&contract_id), 0);
+    }
+
+    #[test]
+    fn test_leaderboard_sorting() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+
+        let admin = Address::generate(&env);
+        let _client = ArenaContractClient::new(&env, &contract_id);
+
+        env.as_contract(&contract_id, || {
+            let config = ArenaConfig {
+                admin,
+                stake_token: Address::generate(&env),
+                yield_vault: Address::generate(&env),
+                entry_fee: 100,
+                state: GameState::Active,
+                paused: false,
+                player_count: 3,
+                cumulative_yield: 0,
+                commit_deadline: 0,
+                round_count: 0,
+                oracle_contract: oracle_id,
+            };
+            ArenaStorage::save_config(&env, &config);
+
+            let p1 = Address::generate(&env);
+            let p2 = Address::generate(&env);
+            let p3 = Address::generate(&env);
+
+            ArenaStorage::add_player(&env, &p1);
+            ArenaStorage::add_player(&env, &p2);
+            ArenaStorage::add_player(&env, &p3);
+
+            // Mock player survival states: p1 survived 3 rounds, p2 survived 5 rounds, p3 survived 1 round
+            ArenaStorage::save_player(
+                &env,
+                &p1,
+                &PlayerState {
+                    active: true,
+                    rounds_survived: 3,
+                },
+            );
+            ArenaStorage::save_player(
+                &env,
+                &p2,
+                &PlayerState {
+                    active: true,
+                    rounds_survived: 5,
+                },
+            );
+            ArenaStorage::save_player(
+                &env,
+                &p3,
+                &PlayerState {
+                    active: true,
+                    rounds_survived: 1,
+                },
+            );
+
+            // Build leaderboard
+            build_leaderboard(&env);
+
+            let leaderboard = ArenaStorage::load_leaderboard(&env);
+            assert_eq!(leaderboard.len(), 3);
+
+            // Should be sorted by rounds_survived descending: p2 (5), p1 (3), p3 (1)
+            let e0: LeaderboardEntry = leaderboard.get(0).unwrap();
+            let e1: LeaderboardEntry = leaderboard.get(1).unwrap();
+            let e2: LeaderboardEntry = leaderboard.get(2).unwrap();
+
+            assert_eq!(e0.player, p2);
+            assert_eq!(e0.rounds_survived, 5);
+
+            assert_eq!(e1.player, p1);
+            assert_eq!(e1.rounds_survived, 3);
+
+            assert_eq!(e2.player, p3);
+            assert_eq!(e2.rounds_survived, 1);
+        });
     }
 }
 #[cfg(test)]

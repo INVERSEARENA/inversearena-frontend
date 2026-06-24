@@ -83,4 +83,18 @@ impl ArenaEvents {
             (previous_balance, current_balance),
         );
     }
+
+    pub fn arena_cancelled(env: &Env, admin: &Address) {
+        env.events()
+            .publish((symbol_short!("cancel"), admin.clone()), ());
+    }
+
+    pub fn refund_claimed(env: &Env, player: &Address) {
+        env.events()
+            .publish((symbol_short!("refund"), player.clone()), ());
+    }
+
+    pub fn leaderboard_updated(env: &Env) {
+        env.events().publish((symbol_short!("lboard"),), ());
+    }
 }
