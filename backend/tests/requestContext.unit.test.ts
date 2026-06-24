@@ -9,7 +9,7 @@ const captureException = jest.fn();
 beforeAll(() => {
   jest.spyOn(Sentry, "withScope").mockImplementation((fn) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (fn as (scope: any) => void)({ setTag, setExtras });
+    (fn as unknown as (scope: any) => void)({ setTag, setExtras });
     return undefined as ReturnType<typeof Sentry.withScope>;
   });
   jest.spyOn(Sentry, "captureException").mockImplementation(captureException);

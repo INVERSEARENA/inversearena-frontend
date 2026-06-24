@@ -39,11 +39,10 @@ describe("Resolve Round Integration", () => {
             .send({
                 roundId: round.id,
                 playerChoices: [
-                    { userId: user1.id, choice: "UP", stake: 100 },
-                    { userId: user2.id, choice: "DOWN", stake: 100 },
+                    { userId: user1.id, choice: "heads", stake: 100 },
+                    { userId: user2.id, choice: "tails", stake: 100 },
                 ],
                 oracleYield: 5.5,
-                randomSeed: "test_seed",
             });
 
         expect(res.status).toBe(200);
