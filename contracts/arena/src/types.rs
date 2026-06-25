@@ -1,4 +1,33 @@
-use soroban_sdk::{contracttype, Address};
+use soroban_sdk::{contracttype, Address, String};
+
+/// Aggregated global statistics stored in contract instance storage.
+/// Updated on join, round resolution, and prize claim to avoid O(n) scans.
+#[contracttype]
+#[derive(Clone, Debug, Default)]
+pub struct GlobalStats {
+    /// Total arenas ever initialized.
+    pub total_arenas: u32,
+    /// Players currently alive across all in-progress arenas.
+    pub live_survivors: u32,
+    /// Total prize pool ever accumulated across all arenas (in stroops).
+    pub global_pool_total: i128,
+}
+
+/// Snapshot of a pending RWA yield integration request.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct RwaYieldRecord {
+    /// Unique record identifier (monotonic counter).
+    pub id: u64,
+    /// The external RWA adapter contract address.
+    pub adapter: Address,
+    /// Amount of yield deposited into the prize pool (in stroops).
+    pub yield_amount: i128,
+    /// Ledger sequence at which the yield was received.
+    pub received_at: u32,
+    /// Human-readable source description (e.g. "Treasury vault A").
+    pub source_label: String,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
