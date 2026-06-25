@@ -105,12 +105,7 @@ impl FactoryContract {
         FactoryStorage::load_max_active_pools(&env)
     }
 
-    /// Release an arena from a creator's active pool count.
-    ///
-    /// Called by the arena contract itself (verified via creator stake record)
-    /// when the arena finishes or is cancelled. Decrements the creator's active
-    /// pool count, allowing the creator to deploy new arenas.
-    /// Pause the factory, blocking pool creation and arena release.
+    /// Pause the factory, blocking new pool creation.
     pub fn pause(env: Env) -> Result<(), FactoryError> {
         Self::require_admin(&env)?;
         FactoryStorage::set_paused(&env, true);
@@ -126,6 +121,11 @@ impl FactoryContract {
         Ok(())
     }
 
+    /// Release an arena from a creator's active pool count.
+    ///
+    /// Called by the arena contract itself (verified via creator stake record)
+    /// when the arena finishes or is cancelled. Decrements the creator's active
+    /// pool count, allowing the creator to deploy new arenas.
     pub fn release_arena(env: Env) -> Result<(), FactoryError> {
         if FactoryStorage::is_paused(&env) {
             return Err(FactoryError::ContractPaused);
@@ -327,6 +327,42 @@ mod test {
             .expect("error must be a contract error");
 
         assert_eq!(err, FactoryError::HostNotWhitelisted);
+    }
+
+    #[test]
+    fn paused_factory_rejects_pool_creation() {
+        let (env, client, _admin, host) = setup();
+        client.add_to_whitelist(&host);
+
+        // Pause the factory.
+        client.pause();
+
+        let err = client
+            .try_create_pool(&host, &pool_config(&env, 100))
+            .err()
+            .expect("paused factory must error")
+            .expect("error must be a contract error");
+
+        assert_eq!(
+            err,
+            FactoryError::ContractPaused,
+            "paused factory must return ContractPaused, not any other error"
+        );
+
+        // Unpause and verify a different error is returned (pool creation
+        // proceeds past the pause check — fails on missing WASM hash).
+        client.unpause();
+        let err_after = client
+            .try_create_pool(&host, &pool_config(&env, 100))
+            .err()
+            .expect("must still error (no wasm hash configured)")
+            .expect("error must be a contract error");
+
+        assert_ne!(
+            err_after,
+            FactoryError::ContractPaused,
+            "unpaused factory must not return ContractPaused"
+        );
     }
 
     #[test]
