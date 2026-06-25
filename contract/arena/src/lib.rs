@@ -194,10 +194,10 @@ impl ArenaContract {
         if ArenaStorage::is_player_banned(&env, &player) {
             return Err(ArenaError::PlayerBanned);
         }
-        if let Some(max_players) = ArenaStorage::load_max_players(&env) {
-            if config.player_count >= max_players {
-                return Err(ArenaError::ArenaFull);
-            }
+        if let Some(max_players) = ArenaStorage::load_max_players(&env)
+            && config.player_count >= max_players
+        {
+            return Err(ArenaError::ArenaFull);
         }
 
         let token_client = token::TokenClient::new(&env, &config.stake_token);

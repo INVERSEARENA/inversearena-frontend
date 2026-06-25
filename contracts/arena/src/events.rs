@@ -53,32 +53,9 @@ impl ArenaEvents {
         env.events().publish((symbol_short!("REFUND"),), player);
     }
 
-    /// Emit stake deposited event (creator stake)
-    pub fn stake_deposited(env: &Env, creator: &Address, amount: i128) {
-        env.events().publish((symbol_short!("STK_DEP"), creator.clone()), amount);
-    }
-
-    /// Emit stake withdrawn event (creator stake)
-    pub fn stake_withdrawn(env: &Env, creator: &Address, amount: i128) {
-        env.events().publish((symbol_short!("STK_WTH"), creator.clone()), amount);
-    }
-
-    /// Emit creator stake slashed event
-    pub fn stake_slashed(env: &Env, creator: &Address, slashed_amount: i128, remaining_returned: i128) {
-        env.events().publish((symbol_short!("STK_SLSH"), creator.clone()), (slashed_amount, remaining_returned));
-    }
-
-    /// Emit slash rate configured event
-    pub fn slash_rate_configured(env: &Env, admin: &Address, slash_rate_bps: u32) {
-        env.events().publish((symbol_short!("SLSH_CFG"), admin.clone()), slash_rate_bps);
-    }
-
     /// Emit contract paused event
     pub fn contract_paused(env: &Env, admin: &Address, reason: &Symbol) {
-        env.events().publish(
-            (symbol_short!("PAUSED"), admin.clone()),
-            reason.clone(),
-        );
+        env.events().publish((symbol_short!("PAUSED"), admin.clone()), reason.clone());
     }
 
     /// Emit contract unpaused event
@@ -93,29 +70,31 @@ impl ArenaEvents {
 
     /// Emit cooldown configured event
     pub fn cooldown_configured(env: &Env, admin: &Address, cooldown_seconds: &u64) {
-        env.events().publish(
-            (symbol_short!("COOLDN"), admin.clone()),
-            *cooldown_seconds,
-        );
+        env.events().publish((symbol_short!("COOLDN"), admin.clone()), *cooldown_seconds);
     }
 
-    /// Emit max active pools configured event
-    pub fn max_pools_configured(env: &Env, admin: &Address, max: &u32) {
-        env.events().publish((symbol_short!("MXPL"), admin.clone()), *max);
+    /// Emit creator stake deposited event
+    pub fn creator_stake_deposited(env: &Env, creator: &Address, amount: i128, total: i128) {
+        env.events().publish((symbol_short!("STK_DEP"), creator.clone()), (amount, total));
     }
 
-    /// Emit token approved event
-    pub fn token_approved(env: &Env, admin: &Address, token: &Address) {
-        env.events().publish((symbol_short!("TKAPR"), admin.clone()), token);
+    /// Emit creator stake withdrawn event
+    pub fn creator_stake_withdrawn(env: &Env, creator: &Address, amount: i128, slashed: bool) {
+        env.events().publish((symbol_short!("STK_WTD"), creator.clone()), (amount, slashed));
     }
 
-    /// Emit token removed event
-    pub fn token_removed(env: &Env, admin: &Address, token: &Address) {
-        env.events().publish((symbol_short!("TKRMV"), admin.clone()), token);
+    /// Emit creator stake slashed event
+    pub fn stake_slashed(env: &Env, creator: &Address, slashed_amount: i128, remaining_returned: i128) {
+        env.events().publish((symbol_short!("STK_SLSH"), creator.clone()), (slashed_amount, remaining_returned));
     }
 
-    /// Emit player auto-eliminated event (AFK players)
-    pub fn player_auto_eliminated(env: &Env, player: &Address) {
-        env.events().publish((symbol_short!("AELIM"),), player);
+    /// Emit slash rate configured event
+    pub fn slash_rate_configured(env: &Env, admin: &Address, slash_rate_bps: u32) {
+        env.events().publish((symbol_short!("SLSH_CFG"), admin.clone()), slash_rate_bps);
+    }
+
+    /// Emit RWA yield received event
+    pub fn rwa_yield_received(env: &Env, amount: i128) {
+        env.events().publish((symbol_short!("RWAYLD"),), amount);
     }
 }
