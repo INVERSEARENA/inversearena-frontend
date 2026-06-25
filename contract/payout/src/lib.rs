@@ -3,7 +3,7 @@ mod snapshot_tests;
 mod storage;
 mod types;
 
-use soroban_sdk::{Address, Env, Vec, contract, contractimpl, symbol_short, token};
+use soroban_sdk::{Address, BytesN, Env, Vec, contract, contractimpl, symbol_short, token};
 use storage::PayoutStorage;
 use types::PayoutError;
 
@@ -31,6 +31,18 @@ impl PayoutContract {
         }
         PayoutStorage::set_admin(&env, &admin);
         PayoutStorage::set_token(&env, &token);
+        Ok(())
+    }
+
+    /// Upgrade this payout contract to `new_wasm_hash`.
+    ///
+    /// Only the configured admin may perform upgrades so payout history remains
+    /// attached to the same contract instance.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), PayoutError> {
+        let admin = PayoutStorage::get_admin(&env)?;
+        admin.require_auth();
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash);
         Ok(())
     }
 
@@ -264,5 +276,18 @@ mod test {
         let client = PayoutContractClient::new(&env, &contract_id);
         let winner = Address::generate(&env);
         assert!(client.try_distribute_winnings(&1, &winner, &10).is_err());
+    }
+
+    #[test]
+    fn upgrade_requires_admin_auth() {
+        let fx = setup(1_000);
+        env_set_no_auths(&fx.env);
+        let wasm = BytesN::from_array(&fx.env, &[0u8; 32]);
+
+        assert!(fx.client.try_upgrade(&wasm).is_err());
+    }
+
+    fn env_set_no_auths(env: &Env) {
+        env.set_auths(&[]);
     }
 }
