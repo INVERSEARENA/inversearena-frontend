@@ -181,6 +181,7 @@ impl ArenaContract {
     /// # Events
     /// Emits `player_joined` with the player address and updated total player count.
     pub fn join_arena(env: Env, player: Address) -> Result<(), ArenaError> {
+        ArenaStorage::enter_reentrancy_guard(&env)?;
         player.require_auth();
         let config = ArenaStorage::load_config(&env)?;
         Self::require_not_paused(&config)?;
@@ -212,6 +213,7 @@ impl ArenaContract {
         ArenaStorage::add_player(&env, &player);
         let count = ArenaStorage::load_all_players(&env).len();
         ArenaEvents::player_joined(&env, &player, count);
+        ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
     }
 
@@ -294,6 +296,7 @@ impl ArenaContract {
     /// - `ArenaError::ContractPaused` if the contract is paused.
     /// - `ArenaError::InvalidGameState` if the arena is not in the `Open` state.
     pub fn cancel_arena(env: Env) -> Result<(), ArenaError> {
+        ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
         Self::require_not_paused(&config)?;
@@ -318,6 +321,56 @@ impl ArenaContract {
             token_client.transfer(&arena_addr, &player, &config.entry_fee);
         }
 
+        ArenaEvents::arena_cancelled(&env, &config.admin);
+        ArenaStorage::exit_reentrancy_guard(&env);
+        Ok(())
+    }
+
+    /// Expire the arena and refund all survivors.
+    ///
+    /// Any caller may trigger this when the arena is `Active` and the current
+    /// round's commit deadline has already passed, i.e. the arena is stuck
+    /// because no one called `resolve_round`. Transitions to `Finished` and
+    /// refunds all surviving players to prevent indefinite fund lockup.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    /// - `ArenaError::ContractPaused` if the contract is paused.
+    /// - `ArenaError::InvalidGameState` if the arena is not in the `Active` state.
+    /// - `ArenaError::DeadlineTooSoon` if the commit deadline has not yet passed.
+    pub fn expire_arena(env: Env) -> Result<(), ArenaError> {
+        ArenaStorage::enter_reentrancy_guard(&env)?;
+        let mut config = ArenaStorage::load_config(&env)?;
+        Self::require_not_paused(&config)?;
+        if config.state != GameState::Active {
+            return Err(ArenaError::InvalidGameState);
+        }
+        if env.ledger().timestamp() <= config.commit_deadline {
+            return Err(ArenaError::DeadlineTooSoon);
+        }
+
+        config.state = GameState::Finished;
+        ArenaStorage::save_config(&env, &config);
+
+        let arena_addr = env.current_contract_address();
+        if config.player_count > 0 {
+            let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
+            let _ = rwa_client.withdraw_all(&arena_addr);
+        }
+
+        let token_client = token::TokenClient::new(&env, &config.stake_token);
+        let players = ArenaStorage::load_all_players(&env);
+        for player in players.iter() {
+            if ArenaStorage::load_player(&env, &player)
+                .map(|s| s.active)
+                .unwrap_or(false)
+            {
+                token_client.transfer(&arena_addr, &player, &config.entry_fee);
+            }
+        }
+
+        ArenaEvents::arena_expired(&env);
+        ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
     }
 
@@ -412,6 +465,7 @@ impl ArenaContract {
     /// Emits `round_resolved` with the round number, eliminated count, and survivor count.
     /// Emits `game_finished` with the winner address and round number if exactly one survivor remains.
     pub fn resolve_round(env: Env) -> Result<(), ArenaError> {
+        ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
         Self::require_not_paused(&config)?;
@@ -482,6 +536,7 @@ impl ArenaContract {
         if let Some(winner_addr) = resolution.winner {
             ArenaEvents::game_finished(&env, &winner_addr, round);
         }
+        ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
     }
 
@@ -508,6 +563,7 @@ impl ArenaContract {
     /// # Events
     /// Emits `prize_claimed` with the winner address, total payout, and yield portion.
     pub fn claim(env: Env, winner: Address) -> Result<(), ArenaError> {
+        ArenaStorage::enter_reentrancy_guard(&env)?;
         winner.require_auth();
         let mut config = ArenaStorage::load_config(&env)?;
         Self::require_not_paused(&config)?;
@@ -551,6 +607,7 @@ impl ArenaContract {
         token_client.transfer(&arena_addr, &winner, &total);
 
         ArenaEvents::prize_claimed(&env, &winner, total, total.saturating_sub(principal));
+        ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
     }
 

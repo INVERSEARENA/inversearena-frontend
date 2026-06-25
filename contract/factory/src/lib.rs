@@ -5,11 +5,13 @@ mod storage;
 mod types;
 
 use storage::{CreatorStakeRecord, FactoryStorage};
-use types::{FactoryError, PoolConfig};
+use types::{ArenaMetadata, ArenaStatus, FactoryError, PoolConfig};
 
 use soroban_sdk::{
-    Address, BytesN, Env, IntoVal, Symbol, contract, contractimpl, symbol_short, vec,
+    Address, BytesN, Env, IntoVal, Symbol, Vec, contract, contractimpl, symbol_short, vec,
 };
+
+const MAX_PAGE_SIZE: u32 = 50;
 
 /// Factory contract — deploys arena instances and enforces protocol-level rules.
 ///
@@ -64,11 +66,62 @@ impl FactoryContract {
         FactoryStorage::load_min_stake(&env)
     }
 
+    pub fn set_max_active_pools(env: Env, max: u32) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        FactoryStorage::save_max_active_pools(&env, max);
+        env.events().publish((symbol_short!("MXPLCFG"),), max);
+        Ok(())
+    }
+
+    pub fn get_max_active_pools(env: Env) -> u32 {
+        FactoryStorage::load_max_active_pools(&env)
+    }
+
+    /// Release an arena from a creator's active pool count.
+    ///
+    /// Called by the arena contract itself (verified via creator stake record)
+    /// when the arena finishes or is cancelled. Decrements the creator's active
+    /// pool count, allowing the creator to deploy new arenas.
+    /// Pause the factory, blocking pool creation and arena release.
+    pub fn pause(env: Env) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        FactoryStorage::set_paused(&env, true);
+        env.events().publish((symbol_short!("PAUSED"),), ());
+        Ok(())
+    }
+
+    /// Unpause the factory, resuming normal operations.
+    pub fn unpause(env: Env) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        FactoryStorage::set_paused(&env, false);
+        env.events().publish((symbol_short!("UNPAUS"),), ());
+        Ok(())
+    }
+
+    pub fn release_arena(env: Env) -> Result<(), FactoryError> {
+        if FactoryStorage::is_paused(&env) {
+            return Err(FactoryError::ContractPaused);
+        }
+        let arena = env.current_contract_address();
+
+        // Verify this arena was deployed by the factory
+        let record = FactoryStorage::load_creator_stake(&env, &arena)
+            .ok_or(FactoryError::ArenaNotFound)?;
+
+        FactoryStorage::decrement_active_pool_count(&env, &record.creator);
+
+        env.events().publish((symbol_short!("POOL_RLS"),), record.creator);
+        Ok(())
+    }
+
     pub fn create_pool(
         env: Env,
         host: Address,
         config: PoolConfig,
     ) -> Result<Address, FactoryError> {
+        if FactoryStorage::is_paused(&env) {
+            return Err(FactoryError::ContractPaused);
+        }
         host.require_auth();
         FactoryStorage::load_admin(&env)?;
 
@@ -81,6 +134,13 @@ impl FactoryContract {
         let min_stake = FactoryStorage::load_min_stake(&env)?;
         if config.entry_fee < min_stake {
             return Err(FactoryError::StakeBelowMinimum);
+        }
+
+        // Check active pool limit for this host
+        let max_pools = FactoryStorage::load_max_active_pools(&env);
+        let active = FactoryStorage::load_active_pool_count(&env, &host);
+        if active >= max_pools {
+            return Err(FactoryError::MaxActivePoolsReached);
         }
 
         let wasm_hash = FactoryStorage::load_arena_wasm_hash(&env)?;
@@ -111,6 +171,19 @@ impl FactoryContract {
                 amount: config.entry_fee,
             },
         );
+        FactoryStorage::increment_active_pool_count(&env, &host);
+
+        let pool_metadata = ArenaMetadata {
+            arena_address: arena.clone(),
+            pool_id,
+            host: host.clone(),
+            entry_fee: config.entry_fee,
+            status: ArenaStatus::Active,
+            created_at: env.ledger().timestamp(),
+        };
+        FactoryStorage::save_pool(&env, pool_id, &pool_metadata);
+        FactoryStorage::increment_pool_count(&env);
+
         env.events().publish(
             (symbol_short!("POOL_CRE"),),
             (pool_id, host, config.entry_fee, arena.clone()),
@@ -120,6 +193,47 @@ impl FactoryContract {
 
     pub fn get_creator_stake(env: Env, arena: Address) -> Option<CreatorStakeRecord> {
         FactoryStorage::load_creator_stake(&env, &arena)
+    }
+
+    /// Update the status of a deployed arena pool.
+    ///
+    /// Only callable by the arena contract itself. The calling arena's address
+    /// must match the recorded arena_address for the given pool_id.
+    pub fn update_arena_status(env: Env, pool_id: u32, status: ArenaStatus) -> Result<(), FactoryError> {
+        let caller = env.current_contract_address();
+        let meta = FactoryStorage::load_pool(&env, pool_id).ok_or(FactoryError::PoolNotFound)?;
+        if meta.arena_address != caller {
+            return Err(FactoryError::Unauthorized);
+        }
+        FactoryStorage::update_pool_status(&env, pool_id, &status);
+        env.events().publish((symbol_short!("POOL_ST"),), (pool_id, status));
+        Ok(())
+    }
+
+    /// Get metadata for a specific arena pool by pool_id.
+    pub fn get_arena(env: Env, pool_id: u32) -> Option<ArenaMetadata> {
+        FactoryStorage::load_pool(&env, pool_id)
+    }
+
+    /// Get a paginated list of all arena pools.
+    ///
+    /// `offset` is the number of pools to skip (0-indexed).
+    /// `limit` is the maximum number of pools to return (clamped to 50).
+    /// Pools are returned in creation order (pool_id ascending).
+    pub fn get_arenas(env: Env, offset: u32, limit: u32) -> Vec<ArenaMetadata> {
+        let total = FactoryStorage::pool_count(&env);
+        let limit = core::cmp::min(limit, MAX_PAGE_SIZE);
+        let mut result: Vec<ArenaMetadata> = Vec::new(&env);
+        let start = offset + 1;
+        let end = core::cmp::min(total, offset + limit);
+        if start <= end {
+            for pool_id in start..=end {
+                if let Some(meta) = FactoryStorage::load_pool(&env, pool_id) {
+                    result.push_back(meta);
+                }
+            }
+        }
+        result
     }
 
     fn require_admin(env: &Env) -> Result<Address, FactoryError> {

@@ -218,4 +218,7 @@ pub enum ArenaError {
 
     /// Returned when a player attempts to claim a refund or perform an action, but they are not registered.
     NotAPlayer = 27,
+
+    /// Returned when an operation is attempted before the required deadline has passed.
+    DeadlineTooSoon = 28,
 }

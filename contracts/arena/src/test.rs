@@ -44,7 +44,7 @@ fn configure_arena_updates_all_parameters() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Configure with new values
     let new_fee = 50_000_000; // 5 XLM
@@ -78,7 +78,7 @@ fn configure_arena_updates_entry_fee_only() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Update only entry fee
     let new_fee = 75_000_000;
@@ -104,7 +104,7 @@ fn configure_arena_updates_max_players_only() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Update only max players
     let new_max = 150;
@@ -130,7 +130,7 @@ fn configure_arena_updates_deadline_only() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Update only deadline
     let new_deadline = env.ledger().timestamp() + 259200; // 3 days
@@ -157,7 +157,7 @@ fn configure_arena_requires_admin_auth() {
 
     env.mock_all_auths();
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Clear all auths - this will cause auth to fail
     env.set_auths(&[]);
@@ -180,7 +180,7 @@ fn configure_arena_fails_when_game_in_progress() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Start the game (transition to InProgress)
     client.start_game();
@@ -206,7 +206,7 @@ fn configure_arena_fails_when_game_finished() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Play game to completion (transition to Finished)
     client.start_game();
@@ -233,7 +233,7 @@ fn configure_arena_rejects_zero_entry_fee() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Attempt to set fee to 0
     let result = client.try_configure_arena(&Some(0), &None, &None);
@@ -256,7 +256,7 @@ fn configure_arena_rejects_negative_entry_fee() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Attempt to set negative fee
     let result = client.try_configure_arena(&Some(-100), &None, &None);
@@ -280,7 +280,7 @@ fn configure_arena_rejects_past_deadline() {
     let initial_deadline = current_time + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Attempt to set deadline in the past
     let past_deadline = current_time - 1000;
@@ -305,7 +305,7 @@ fn configure_arena_rejects_current_time_deadline() {
     let initial_deadline = current_time + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Attempt to set deadline to current time
     let result = client.try_configure_arena(&None, &None, &Some(current_time));
@@ -329,7 +329,7 @@ fn configure_arena_accepts_future_deadline() {
     let initial_deadline = current_time + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Set deadline to future time
     let future_deadline = current_time + 172800; // 2 days
@@ -353,7 +353,7 @@ fn configure_arena_can_be_called_multiple_times() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // First update
     client.configure_arena(&Some(75_000_000), &None, &None);
@@ -389,7 +389,7 @@ fn configure_arena_emits_event() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Clear events
     let events_before = env.events().all().len();
@@ -423,7 +423,7 @@ fn configure_arena_with_all_none_succeeds() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     client.configure_arena(&None, &None, &None);
 
@@ -448,7 +448,7 @@ fn configure_arena_after_players_joined() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Players get tokens and join
     let player1 = Address::generate(&env);
@@ -487,7 +487,7 @@ fn configure_then_start_game_uses_new_config() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Configure with new entry fee
     let new_fee = 50_000_000;
@@ -516,7 +516,7 @@ fn initialize_rejects_zero_entry_fee() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     // Attempt to initialize with zero fee
-    let result = client.try_initialize(&admin, &token, &0, &100, &initial_deadline, &treasury, &0);
+    let result = client.try_initialize(&admin, &token, &0, &100, &initial_deadline, &treasury, &0, &None);
 
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().unwrap(), ArenaError::InvalidEntryFee);
@@ -536,7 +536,7 @@ fn initialize_rejects_past_deadline() {
     let past_deadline = current_time - 1000;
 
     // Attempt to initialize with past deadline
-    let result = client.try_initialize(&admin, &token, &100_000_000, &100, &past_deadline, &treasury, &0);
+    let result = client.try_initialize(&admin, &token, &100_000_000, &100, &past_deadline, &treasury, &0, &None);
 
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().unwrap(), ArenaError::DeadlineTooSoon);
@@ -556,7 +556,7 @@ fn configure_arena_accepts_zero_max_players() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     client.configure_arena(&None, &Some(0), &None);
 
@@ -577,7 +577,7 @@ fn test_full_game_two_players_one_round() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
@@ -618,7 +618,7 @@ fn test_full_game_ten_players_four_rounds() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Generate 10 players with tokens
     let mut players = soroban_sdk::Vec::new(&env);
@@ -707,7 +707,7 @@ fn test_tie_round_no_eliminations() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     let p0 = Address::generate(&env);
     let p1 = Address::generate(&env);
@@ -748,7 +748,7 @@ fn test_late_join_rejection() {
     let initial_deadline = current_time + 1000;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Fast-forward time past deadline
     let mut ledger = env.ledger().get();
@@ -773,7 +773,7 @@ fn test_claim_errors() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
@@ -818,7 +818,7 @@ fn test_join_transfers_entry_fee() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     let player = Address::generate(&env);
     mint_tokens(&env, &token, &player, entry_fee);
@@ -848,7 +848,7 @@ fn test_join_fails_without_tokens() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     let player = Address::generate(&env);
     // Player has no tokens
@@ -868,7 +868,7 @@ fn test_claim_transfers_prize() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
@@ -911,7 +911,7 @@ fn test_cancel_arena_and_refund() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     let player = Address::generate(&env);
     mint_tokens(&env, &token, &player, entry_fee);
@@ -1161,7 +1161,7 @@ fn test_claim_refund_fails_if_not_cancelled() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     let player = Address::generate(&env);
     mint_tokens(&env, &token, &player, entry_fee);
@@ -1184,7 +1184,7 @@ fn test_deposit_and_withdraw_creator_stake() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     let stake_amount: i128 = 500_000_000;
     mint_tokens(&env, &token, &admin, stake_amount);
@@ -1223,7 +1223,7 @@ fn test_double_deposit_stake_fails() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     let stake_amount: i128 = 500_000_000;
     mint_tokens(&env, &token, &admin, stake_amount * 2);
@@ -1247,7 +1247,7 @@ fn test_withdraw_without_stake_fails() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     let result = client.try_withdraw_creator_stake(&admin);
     assert!(result.is_err());
@@ -1265,7 +1265,7 @@ fn test_cancel_arena_fails_when_not_open() {
     let initial_deadline = env.ledger().timestamp() + 86400;
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
     client.start_game();
 
     // Can't cancel once game started
@@ -1289,7 +1289,7 @@ fn pause_rejects_all_state_mutating_operations() {
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Pause the contract
     client.pause(&symbol_short!("emerg"));
@@ -1325,7 +1325,7 @@ fn pause_rejects_submit_choice() {
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
@@ -1361,7 +1361,7 @@ fn pause_rejects_claim() {
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
@@ -1396,7 +1396,7 @@ fn read_queries_work_while_paused() {
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
@@ -1439,7 +1439,7 @@ fn unpause_restores_mutating_operations() {
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
@@ -1476,7 +1476,7 @@ fn pause_requires_admin_auth() {
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Clear auths to test non-admin cannot pause
     env.set_auths(&[]);
@@ -1497,7 +1497,7 @@ fn unpause_requires_admin_auth() {
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     client.pause(&symbol_short!("emerg"));
 
@@ -1523,7 +1523,7 @@ fn cooldown_enforced_between_creations() {
     let treasury = Address::generate(&env);
 
     // First initialization succeeds
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &60);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &60, &None);
 
     // Set cooldown to 60 seconds
     client.set_creation_cooldown(&60);
@@ -1547,7 +1547,7 @@ fn admin_bypasses_cooldown() {
     let treasury = Address::generate(&env);
 
     // Initialize with cooldown
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &60);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &60, &None);
 
     // Admin re-initializing should bypass cooldown (same admin check in code)
     // Validate that the current admin can call set_creation_cooldown
@@ -1570,7 +1570,7 @@ fn cooldown_configurable_by_admin() {
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &30);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &30, &None);
 
     // Verify initial cooldown
     let config1 = client.get_config();
@@ -1599,7 +1599,7 @@ fn set_cooldown_requires_admin_auth() {
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     // Clear auths
     env.set_auths(&[]);
@@ -1622,7 +1622,7 @@ fn treasury_address_stored_on_initialize() {
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     let stored = client.treasury();
     assert_eq!(stored, treasury);
@@ -1640,7 +1640,7 @@ fn admin_can_update_treasury() {
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     let new_treasury = Address::generate(&env);
     client.update_treasury(&new_treasury);
@@ -1661,7 +1661,7 @@ fn update_treasury_requires_admin_auth() {
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0, &None);
 
     let new_treasury = Address::generate(&env);
 
@@ -1890,7 +1890,7 @@ fn auto_resolve_fails_before_deadline() {
 
     let deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &100_000_000, &100, &deadline, &treasury, &0);
+    client.initialize(&admin, &token, &100_000_000, &100, &deadline, &treasury, &0, &None);
 
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
@@ -1916,7 +1916,7 @@ fn auto_resolve_succeeds_after_deadline_by_any_caller() {
 
     let deadline = env.ledger().timestamp() + 1000;
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &100_000_000, &100, &deadline, &treasury, &0);
+    client.initialize(&admin, &token, &100_000_000, &100, &deadline, &treasury, &0, &None);
 
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
@@ -1945,7 +1945,7 @@ fn auto_resolve_fails_when_game_not_in_progress() {
 
     let deadline = env.ledger().timestamp() + 1000;
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &100_000_000, &100, &deadline, &treasury, &0);
+    client.initialize(&admin, &token, &100_000_000, &100, &deadline, &treasury, &0, &None);
 
     // Arena is Open, not InProgress — advance time past deadline
     let mut ledger = env.ledger().get();
@@ -1966,7 +1966,7 @@ fn player_profile_created_on_first_join() {
     let (admin, token, _contract_id, client) = setup_arena(&env);
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
 
     assert_eq!(client.get_player_count(), 0);
     let player = Address::generate(&env);
@@ -1982,7 +1982,7 @@ fn games_played_increments_after_round_resolves() {
     let (admin, token, _contract_id, client) = setup_arena(&env);
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
 
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
@@ -2017,7 +2017,7 @@ fn winner_is_recorded_after_final_round() {
     let (admin, token, _contract_id, client) = setup_arena(&env);
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
 
     // 1 Heads (minority) vs 2 Tails (majority) — alice survives as winner
     let alice = Address::generate(&env);
@@ -2047,7 +2047,7 @@ fn survival_streak_resets_after_elimination() {
     let (admin, token, _contract_id, client) = setup_arena(&env);
 
     let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
 
     // 2 Heads (minority) vs 3 Tails (majority, eliminated) — game stays InProgress after round 1
     let alice = Address::generate(&env);
@@ -2077,4 +2077,396 @@ fn survival_streak_resets_after_elimination() {
     let result = client.try_submit_choice(&charlie, &Choice::Heads);
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().unwrap(), ArenaError::PlayerEliminated);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Task 2: Player Join Flow Edge Cases
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn duplicate_join_rejected() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let entry_fee = 100_000_000;
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &entry_fee, &100, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
+
+    let player = Address::generate(&env);
+    mint_tokens(&env, &token, &player, entry_fee * 2);
+
+    // First join succeeds
+    client.join(&player);
+    assert_eq!(client.get_player_count(), 1);
+
+    // Second join is rejected
+    let result = client.try_join(&player);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::AlreadyJoined);
+}
+
+#[test]
+fn join_when_full_rejected() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let entry_fee = 100_000_000;
+    let max_players = 2;
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &entry_fee, &max_players, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
+
+    let player1 = Address::generate(&env);
+    let player2 = Address::generate(&env);
+    let player3 = Address::generate(&env);
+    mint_tokens(&env, &token, &player1, entry_fee);
+    mint_tokens(&env, &token, &player2, entry_fee);
+    mint_tokens(&env, &token, &player3, entry_fee);
+
+    client.join(&player1);
+    client.join(&player2);
+
+    // Arena is full — third join rejected
+    let result = client.try_join(&player3);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::ArenaFull);
+}
+
+#[test]
+fn join_after_deadline_rejected() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let entry_fee = 100_000_000;
+    let current_time = env.ledger().timestamp();
+    let deadline = current_time + 1000;
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &entry_fee, &100, &deadline, &treasury, &0, &None);
+
+    // Fast-forward past deadline
+    let mut ledger = env.ledger().get();
+    ledger.timestamp = deadline + 1;
+    env.ledger().set(ledger);
+
+    let player = Address::generate(&env);
+    mint_tokens(&env, &token, &player, entry_fee);
+
+    let result = client.try_join(&player);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::DeadlinePassed);
+}
+
+#[test]
+fn join_non_existent_arena_rejected() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    // Do NOT call initialize — no config exists
+    let player = Address::generate(&env);
+
+    let result = client.try_join(&player);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::ConfigNotFound);
+}
+
+#[test]
+fn join_active_arena_rejected() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let entry_fee = 100_000_000;
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &entry_fee, &100, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
+
+    let player1 = Address::generate(&env);
+    let player2 = Address::generate(&env);
+    mint_tokens(&env, &token, &player1, entry_fee);
+    mint_tokens(&env, &token, &player2, entry_fee);
+    client.join(&player1);
+    client.join(&player2);
+
+    // Start the game (state transitions to InProgress)
+    client.start_game();
+
+    // New join attempt should fail
+    let player3 = Address::generate(&env);
+    mint_tokens(&env, &token, &player3, entry_fee);
+    let result = client.try_join(&player3);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::ArenaAlreadyStarted);
+}
+
+#[test]
+fn multiple_players_join_same_arena() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let entry_fee = 100_000_000;
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &entry_fee, &10, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
+
+    let mut players = soroban_sdk::Vec::new(&env);
+    for i in 0..5 {
+        let player = Address::generate(&env);
+        mint_tokens(&env, &token, &player, entry_fee);
+        players.push_back(player);
+    }
+
+    // All 5 join successfully
+    for player in players.iter() {
+        client.join(&player);
+    }
+
+    assert_eq!(client.get_player_count(), 5);
+
+    // Verify player count matches config
+    let config = client.get_config();
+    assert_eq!(config.player_count, 5);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Task 3: Unauthorized Access to Admin Functions
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn non_admin_cannot_start_game() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let entry_fee = 100_000_000;
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &entry_fee, &100, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
+
+    let player1 = Address::generate(&env);
+    let player2 = Address::generate(&env);
+    mint_tokens(&env, &token, &player1, entry_fee);
+    mint_tokens(&env, &token, &player2, entry_fee);
+    client.join(&player1);
+    client.join(&player2);
+
+    // Clear auths to simulate non-admin caller
+    env.set_auths(&[]);
+
+    let non_admin = Address::generate(&env);
+    // Mock auth for non_admin only
+    env.mock_auths(&[
+        soroban_sdk::testutils::MockAuth {
+            address: &non_admin,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &_contract_id,
+                fn_name: "start_game",
+                args: soroban_sdk::Vec::new(&env),
+                sub_invokes: &[],
+            },
+        },
+    ]);
+
+    let result = client.try_start_game();
+    assert!(result.is_err());
+}
+
+#[test]
+fn non_admin_cannot_finish_game() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let entry_fee = 100_000_000;
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &entry_fee, &100, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
+
+    let player1 = Address::generate(&env);
+    let player2 = Address::generate(&env);
+    mint_tokens(&env, &token, &player1, entry_fee);
+    mint_tokens(&env, &token, &player2, entry_fee);
+    client.join(&player1);
+    client.join(&player2);
+    client.start_game();
+
+    // Clear auths and try with non-admin
+    env.set_auths(&[]);
+    let result = client.try_finish_game();
+    assert!(result.is_err());
+}
+
+#[test]
+fn non_admin_cannot_cancel_arena() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let entry_fee = 100_000_000;
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &entry_fee, &100, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
+
+    env.set_auths(&[]);
+    let result = client.try_cancel_arena();
+    assert!(result.is_err());
+}
+
+#[test]
+fn non_admin_cannot_update_config() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
+
+    env.set_auths(&[]);
+    let result = client.try_set_creation_cooldown(&60);
+    assert!(result.is_err());
+}
+
+#[test]
+fn non_admin_cannot_update_treasury() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
+
+    let new_treasury = Address::generate(&env);
+
+    env.set_auths(&[]);
+    let result = client.try_update_treasury(&new_treasury);
+    assert!(result.is_err());
+}
+
+#[test]
+fn non_admin_cannot_set_max_active_pools() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
+
+    env.set_auths(&[]);
+    let result = client.try_set_max_active_pools(&20);
+    assert!(result.is_err());
+}
+
+#[test]
+fn non_admin_cannot_add_approved_token() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
+
+    let new_token = Address::generate(&env);
+
+    env.set_auths(&[]);
+    let result = client.try_add_approved_token(&new_token);
+    assert!(result.is_err());
+}
+
+#[test]
+fn non_admin_cannot_remove_approved_token() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
+
+    env.set_auths(&[]);
+    let result = client.try_remove_approved_token(&token);
+    assert!(result.is_err());
+}
+
+#[test]
+fn admin_can_set_max_active_pools() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
+
+    client.set_max_active_pools(&25);
+    let config = client.get_config();
+    assert_eq!(config.max_active_pools_per_creator, 25);
+}
+
+#[test]
+fn admin_can_add_and_remove_approved_token() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
+
+    let new_token = Address::generate(&env);
+
+    // Add token
+    client.add_approved_token(&new_token);
+    let approved = client.get_approved_tokens();
+    assert!(approved.contains(&new_token));
+
+    // Remove token
+    client.remove_approved_token(&new_token);
+    let approved_after = client.get_approved_tokens();
+    assert!(!approved_after.contains(&new_token));
+}
+
+#[test]
+fn admin_add_approved_token_rejects_duplicate() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
+
+    client.add_approved_token(&token);
+    let result = client.try_add_approved_token(&token);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::TokenAlreadyApproved);
+}
+
+#[test]
+fn admin_succeeds_calling_admin_functions() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let entry_fee = 100_000_000;
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &entry_fee, &100, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
+
+    let player1 = Address::generate(&env);
+    let player2 = Address::generate(&env);
+    mint_tokens(&env, &token, &player1, entry_fee);
+    mint_tokens(&env, &token, &player2, entry_fee);
+    client.join(&player1);
+    client.join(&player2);
+
+    // Admin can start game
+    assert!(client.try_start_game().is_ok());
+    assert_eq!(client.game_state(), GameState::InProgress);
+
+    client.submit_choice(&player1, &Choice::Heads);
+    client.submit_choice(&player2, &Choice::Tails);
+    client.resolve_round();
+
+    // Admin can pause and unpause
+    assert!(client.try_pause(&symbol_short!("test")).is_ok());
+    assert!(client.try_unpause().is_ok());
+
+    // Admin can cancel (new game needed)
+    let (_admin2, token2, _cid2, client2) = setup_arena(&env);
+    client2.initialize(&admin, &token2, &entry_fee, &100, &(env.ledger().timestamp() + 86400), &treasury, &0, &None);
+    assert!(client2.try_cancel_arena().is_ok());
+    assert_eq!(client2.game_state(), GameState::Cancelled);
 }

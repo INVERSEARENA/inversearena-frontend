@@ -82,6 +82,11 @@ impl ArenaEvents {
             .publish((symbol_short!("unpaused"), caller.clone()), ());
     }
 
+    pub fn arena_expired(env: &Env) {
+        env.events()
+            .publish((symbol_short!("expired"),), ());
+    }
+
     pub fn vault_balance_decreased(env: &Env, previous_balance: i128, current_balance: i128) {
         env.events().publish(
             (symbol_short!("vaultdec"),),

@@ -34,24 +34,30 @@ pub enum ArenaError {
     RefundAlreadyClaimed = 14,
     /// Arena is not cancelled
     ArenaNotCancelled = 15,
-    /// No stake to withdraw
-    NoStakeToWithdraw = 16,
     /// Stake already deposited
-    StakeAlreadyDeposited = 17,
+    StakeAlreadyDeposited = 16,
     /// Cooldown period between arena creations has not elapsed
-    CooldownNotElapsed = 18,
+    CooldownNotElapsed = 17,
     /// Treasury address has not been set
-    TreasuryNotSet = 19,
-    /// Contract is paused; state-mutating operations blocked
-    ContractPaused = 14,
+    TreasuryNotSet = 18,
     /// Slash rate in bps cannot exceed 10000 (100%)
-    InvalidSlashRate = 15,
-    /// No stake available to withdraw
-    NoStakeToWithdraw = 16,
+    InvalidSlashRate = 19,
     /// Stake amount must be positive
-    InvalidStakeAmount = 17,
-    ContractPaused = 20,
+    InvalidStakeAmount = 20,
+    /// Contract is paused; state-mutating operations blocked
+    ContractPaused = 21,
+    /// Token is not in the approved whitelist
+    TokenNotApproved = 22,
+    /// Creator has reached the maximum number of active arenas
+    MaxActivePoolsReached = 23,
+    /// No active pools entry found for creator
+    NoActivePoolEntry = 24,
+    /// Token address already in whitelist
+    TokenAlreadyApproved = 25,
+    /// Player already joined this arena
+    AlreadyJoined = 26,
     /// Arena is not in a terminal state (Finished or Cancelled) for cleanup
-    ArenaNotFinished = 21,
+    ArenaNotFinished = 27,
+    /// No stake available to withdraw
+    NoStakeToWithdraw = 28,
 }
-
