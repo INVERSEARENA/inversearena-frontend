@@ -21,4 +21,7 @@ pub enum FactoryError {
     StakeBelowMinimum = 7,
     HostNotWhitelisted = 8,
     WasmHashNotSet = 9,
+    PoolLimitReached = 10,
+    InvalidVault = 11,
+    InvalidOracle = 12,
 }

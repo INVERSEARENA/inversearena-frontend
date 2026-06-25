@@ -60,6 +60,34 @@ impl FactoryContract {
         FactoryStorage::is_whitelisted(&env, &host)
     }
 
+    pub fn add_approved_vault(env: Env, vault: Address) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        FactoryStorage::set_approved_vault(&env, &vault, true);
+        env.events().publish((symbol_short!("VLT_ADD"),), vault);
+        Ok(())
+    }
+
+    pub fn remove_approved_vault(env: Env, vault: Address) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        FactoryStorage::set_approved_vault(&env, &vault, false);
+        env.events().publish((symbol_short!("VLT_REM"),), vault);
+        Ok(())
+    }
+
+    pub fn add_approved_oracle(env: Env, oracle: Address) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        FactoryStorage::set_approved_oracle(&env, &oracle, true);
+        env.events().publish((symbol_short!("ORC_ADD"),), oracle);
+        Ok(())
+    }
+
+    pub fn remove_approved_oracle(env: Env, oracle: Address) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        FactoryStorage::set_approved_oracle(&env, &oracle, false);
+        env.events().publish((symbol_short!("ORC_REM"),), oracle);
+        Ok(())
+    }
+
     pub fn get_min_stake(env: Env) -> Result<i128, FactoryError> {
         FactoryStorage::load_min_stake(&env)
     }
@@ -83,8 +111,15 @@ impl FactoryContract {
             return Err(FactoryError::StakeBelowMinimum);
         }
 
+        if !FactoryStorage::is_approved_vault(&env, &config.yield_vault) {
+            return Err(FactoryError::InvalidVault);
+        }
+        if !FactoryStorage::is_approved_oracle(&env, &config.oracle_contract) {
+            return Err(FactoryError::InvalidOracle);
+        }
+
         let wasm_hash = FactoryStorage::load_arena_wasm_hash(&env)?;
-        let pool_id = FactoryStorage::next_pool_id(&env);
+        let pool_id = FactoryStorage::next_pool_id(&env)?;
         let arena = env
             .deployer()
             .with_current_contract(Self::salt_for_pool(&env, pool_id))
