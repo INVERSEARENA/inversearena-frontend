@@ -347,7 +347,7 @@ impl ArenaContract {
                 if ArenaStorage::load_player_choice(&env, &player).is_none() {
                     ArenaStorage::set_player_active(&env, &player, false);
                     eliminated += 1;
-                    ArenaEvents::player_auto_eliminated(&env, &player);
+                    ArenaEvents::player_eliminated(&env, &player);
                 } else {
                     active_players.push_back(player.clone());
                 }
@@ -581,7 +581,7 @@ impl ArenaContract {
         creator.require_auth();
 
         if amount <= 0 {
-            return Err(ArenaError::InvalidEntryFee);
+            return Err(ArenaError::InvalidStakeAmount);
         }
 
         if ArenaStorage::load_creator_stake(&env) > 0 {
@@ -595,6 +595,12 @@ impl ArenaContract {
         token.transfer(&creator, &env.current_contract_address(), &amount);
 
         ArenaStorage::save_creator_stake(&env, amount);
+
+        // Update config's creator_stake field for consistency
+        if let Ok(mut config) = ArenaStorage::load_config(&env) {
+            config.creator_stake = amount;
+            ArenaStorage::save_config(&env, &config);
+        }
 
         ArenaEvents::creator_stake_deposited(&env, &creator, amount, amount);
         Ok(())
@@ -627,6 +633,12 @@ impl ArenaContract {
         token.transfer(&env.current_contract_address(), &creator, &withdrawn);
 
         ArenaStorage::save_creator_stake(&env, 0);
+
+        // Sync config.creator_stake to 0
+        if let Ok(mut config) = ArenaStorage::load_config(&env) {
+            config.creator_stake = 0;
+            ArenaStorage::save_config(&env, &config);
+        }
 
         if slashed > 0 {
             ArenaEvents::stake_slashed(&env, &creator, slashed, withdrawn);

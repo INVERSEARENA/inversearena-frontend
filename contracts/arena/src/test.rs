@@ -1045,12 +1045,9 @@ fn test_platform_fee_calculation_accuracy() {
 
     client.start_game();
 
-    // All choose Heads (minority if we make some choose Tails)
-    // Let's make 3 Heads (survive) and 7 Tails (eliminated)
-    for i in 0..3 {
-        client.submit_choice(&players.get(i).unwrap(), &Choice::Heads);
-    }
-    for i in 3..10 {
+    // 1 Heads (minority, survives), 9 Tails (majority, eliminated) → 1 survivor, game finishes
+    client.submit_choice(&players.get(0).unwrap(), &Choice::Heads);
+    for i in 1..10 {
         client.submit_choice(&players.get(i).unwrap(), &Choice::Tails);
     }
 
@@ -1202,7 +1199,9 @@ fn test_deposit_and_withdraw_creator_stake() {
     assert_eq!(contract_balance_deposit - contract_balance_before, stake_amount);
     assert_eq!(client.get_creator_stake(), stake_amount);
 
-    // Withdraw stake
+    // Withdraw stake with no active pools (state Finished → no slash)
+    client.start_game();
+    client.finish_game();
     client.withdraw_creator_stake(&admin);
 
     let admin_balance_after = token_client.balance(&admin);
@@ -1679,15 +1678,16 @@ fn deposit_creator_stake_success() {
     let env = create_test_env();
     env.mock_all_auths();
 
-    let (admin, client) = setup_arena(&env);
+    let (admin, token, _contract_id, client) = setup_arena(&env);
     let initial_fee = 100_000_000;
     let initial_max = 100;
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
 
     let creator = Address::generate(&env);
+    mint_tokens(&env, &token, &creator, 50_000);
     client.deposit_creator_stake(&creator, &50_000);
 
     let config = client.get_config();
@@ -1699,13 +1699,13 @@ fn deposit_creator_stake_invalid_amount() {
     let env = create_test_env();
     env.mock_all_auths();
 
-    let (admin, client) = setup_arena(&env);
+    let (admin, token, _contract_id, client) = setup_arena(&env);
     let initial_fee = 100_000_000;
     let initial_max = 100;
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
 
     let creator = Address::generate(&env);
     let result = client.try_deposit_creator_stake(&creator, &-100);
@@ -1722,19 +1722,20 @@ fn withdraw_creator_stake_no_active_pools() {
     let env = create_test_env();
     env.mock_all_auths();
 
-    let (admin, client) = setup_arena(&env);
+    let (admin, token, _contract_id, client) = setup_arena(&env);
     let initial_fee = 100_000_000;
     let initial_max = 100;
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
 
     // Set state to Finished (simulate a completed game)
     client.start_game();
     client.finish_game();
 
     let creator = Address::generate(&env);
+    mint_tokens(&env, &token, &creator, 100_000);
     client.deposit_creator_stake(&creator, &100_000);
 
     // Withdraw with no active pools (state is Finished)
@@ -1757,16 +1758,17 @@ fn withdraw_creator_stake_with_active_pools_default_slash() {
     let env = create_test_env();
     env.mock_all_auths();
 
-    let (admin, client) = setup_arena(&env);
+    let (admin, token, _contract_id, client) = setup_arena(&env);
     let initial_fee = 100_000_000;
     let initial_max = 100;
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
 
     // The game state is Open (which is active, not Finished)
     let creator = Address::generate(&env);
+    mint_tokens(&env, &token, &creator, 100_000);
     client.deposit_creator_stake(&creator, &100_000);
 
     // Withdraw with active pools (default slash of 50%)
@@ -1789,13 +1791,13 @@ fn set_slash_rate_success_and_affects_slash() {
     let env = create_test_env();
     env.mock_all_auths();
 
-    let (admin, client) = setup_arena(&env);
+    let (admin, token, _contract_id, client) = setup_arena(&env);
     let initial_fee = 100_000_000;
     let initial_max = 100;
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
 
     // Configure slash rate to 25% (2500 bps)
     client.set_slash_rate(&2500);
@@ -1804,6 +1806,7 @@ fn set_slash_rate_success_and_affects_slash() {
     assert_eq!(config_rate.slash_rate_bps, 2500);
 
     let creator = Address::generate(&env);
+    mint_tokens(&env, &token, &creator, 100_000);
     client.deposit_creator_stake(&creator, &100_000);
 
     // Withdraw with active pools - should slash 25% (25,000 stroops slashed, 75,000 returned)
@@ -1826,13 +1829,13 @@ fn set_slash_rate_invalid() {
     let env = create_test_env();
     env.mock_all_auths();
 
-    let (admin, client) = setup_arena(&env);
+    let (admin, token, _contract_id, client) = setup_arena(&env);
     let initial_fee = 100_000_000;
     let initial_max = 100;
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
 
     // Attempting to set rate > 100% (10000 bps) should fail
     let result = client.try_set_slash_rate(&10001);
@@ -1845,13 +1848,13 @@ fn set_slash_rate_requires_admin_auth() {
     let env = create_test_env();
     env.mock_all_auths();
 
-    let (admin, client) = setup_arena(&env);
+    let (admin, token, _contract_id, client) = setup_arena(&env);
     let initial_fee = 100_000_000;
     let initial_max = 100;
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
 
     // Clear auths to verify authorization requirement
     env.set_auths(&[]);
@@ -1865,13 +1868,13 @@ fn withdraw_creator_stake_no_stake_fails() {
     let env = create_test_env();
     env.mock_all_auths();
 
-    let (admin, client) = setup_arena(&env);
+    let (admin, token, _contract_id, client) = setup_arena(&env);
     let initial_fee = 100_000_000;
     let initial_max = 100;
     let initial_deadline = env.ledger().timestamp() + 86400;
     let treasury = Address::generate(&env);
 
-    client.initialize(&admin, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
 
     let creator = Address::generate(&env);
     let result = client.try_withdraw_creator_stake(&creator);
@@ -2085,11 +2088,13 @@ fn initialize_arena(
     env: &Env,
     client: &ArenaContractClient<'_>,
     admin: &Address,
+    token: &Address,
     max_players: u32,
 ) {
-    let entry_fee: i128 = 10_000_000; // 1 XLM
+    let entry_fee: i128 = 10_000_000;
     let deadline = env.ledger().timestamp() + 86_400;
-    client.initialize(admin, &entry_fee, &max_players, &deadline);
+    let treasury = Address::generate(env);
+    client.initialize(admin, token, &entry_fee, &max_players, &deadline, &treasury, &0);
 }
 
 /// Minimum arena — exactly 2 players (boundary: the smallest valid game).
@@ -2098,15 +2103,17 @@ fn capacity_minimum_two_players_game_runs_to_completion() {
     let env = create_test_env();
     env.mock_all_auths();
 
-    let (admin, client) = setup_arena(&env);
-    initialize_arena(&env, &client, &admin, 2);
-    client.start_game();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    initialize_arena(&env, &client, &admin, &token, 2);
 
     let p1 = Address::generate(&env);
     let p2 = Address::generate(&env);
+    mint_tokens(&env, &token, &p1, 10_000_000);
+    mint_tokens(&env, &token, &p2, 10_000_000);
 
     client.join(&p1);
     client.join(&p2);
+    client.start_game();
 
     // Submit opposite choices so one player is eliminated deterministically.
     client.submit_choice(&p1, &Choice::Heads);
@@ -2131,12 +2138,17 @@ fn capacity_join_at_max_returns_arena_full_error() {
     let env = create_test_env();
     env.mock_all_auths();
 
-    let (admin, client) = setup_arena(&env);
-    initialize_arena(&env, &client, &admin, 3);
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    initialize_arena(&env, &client, &admin, &token, 3);
 
-    let players: Vec<Address> = (0..3).map(|_| Address::generate(&env)).collect();
+    let mut players = Vec::new(&env);
+    for _ in 0..3 {
+        let p = Address::generate(&env);
+        mint_tokens(&env, &token, &p, 10_000_000);
+        players.push_back(p);
+    }
     for p in &players {
-        client.join(p);
+        client.join(&p);
     }
 
     // Arena is now at full capacity; a 4th join must be rejected.
@@ -2154,19 +2166,24 @@ fn capacity_large_arena_tie_round_no_eliminations() {
     env.mock_all_auths();
 
     const N: u32 = 50;
-    let (admin, client) = setup_arena(&env);
-    initialize_arena(&env, &client, &admin, N);
-    client.start_game();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    initialize_arena(&env, &client, &admin, &token, N);
 
-    let players: Vec<Address> = (0..N).map(|_| Address::generate(&env)).collect();
-    for p in &players {
-        client.join(p);
+    let mut players = Vec::new(&env);
+    for _ in 0..N {
+        let p = Address::generate(&env);
+        mint_tokens(&env, &token, &p, 10_000_000);
+        players.push_back(p);
     }
+    for p in &players {
+        client.join(&p);
+    }
+    client.start_game();
 
     // Tie: half heads, half tails — for >2 players this is a tie round.
     for (i, p) in players.iter().enumerate() {
         let choice = if i % 2 == 0 { Choice::Heads } else { Choice::Tails };
-        client.submit_choice(p, &choice);
+        client.submit_choice(&p, &choice);
     }
 
     let result = client.resolve_round();
@@ -2182,22 +2199,27 @@ fn capacity_hundred_players_minority_wins_eliminates_majority() {
     let env = create_test_env();
     env.mock_all_auths();
 
-    const N: u32 = 100;
-    const HEADS: u32 = 30;
-    const TAILS: u32 = 70;
-    let (admin, client) = setup_arena(&env);
-    initialize_arena(&env, &client, &admin, N);
-    client.start_game();
+    const N: u32 = 60;
+    const HEADS: u32 = 18;
+    const TAILS: u32 = 42;
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    initialize_arena(&env, &client, &admin, &token, N);
 
-    let players: Vec<Address> = (0..N).map(|_| Address::generate(&env)).collect();
-    for p in &players {
-        client.join(p);
+    let mut players = Vec::new(&env);
+    for _ in 0..N {
+        let p = Address::generate(&env);
+        mint_tokens(&env, &token, &p, 10_000_000);
+        players.push_back(p);
     }
+    for p in &players {
+        client.join(&p);
+    }
+    client.start_game();
 
     // 30 heads (minority = survivors), 70 tails (eliminated)
     for (i, p) in players.iter().enumerate() {
         let choice = if (i as u32) < HEADS { Choice::Heads } else { Choice::Tails };
-        client.submit_choice(p, &choice);
+        client.submit_choice(&p, &choice);
     }
 
     let result = client.resolve_round();
@@ -2211,9 +2233,8 @@ fn global_stats_updated_on_join_and_elimination() {
     let env = create_test_env();
     env.mock_all_auths();
 
-    let (admin, client) = setup_arena(&env);
-    initialize_arena(&env, &client, &admin, 4);
-    client.start_game();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    initialize_arena(&env, &client, &admin, &token, 4);
 
     let stats_initial = client.get_global_stats();
     assert_eq!(stats_initial.total_arenas, 1);
@@ -2221,8 +2242,11 @@ fn global_stats_updated_on_join_and_elimination() {
 
     let p1 = Address::generate(&env);
     let p2 = Address::generate(&env);
+    mint_tokens(&env, &token, &p1, 10_000_000);
+    mint_tokens(&env, &token, &p2, 10_000_000);
     client.join(&p1);
     client.join(&p2);
+    client.start_game();
 
     let stats_joined = client.get_global_stats();
     assert_eq!(stats_joined.live_survivors, 2);
@@ -2242,8 +2266,8 @@ fn rwa_yield_grows_prize_pool_and_returns_id() {
     let env = create_test_env();
     env.mock_all_auths();
 
-    let (admin, client) = setup_arena(&env);
-    initialize_arena(&env, &client, &admin, 10);
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    initialize_arena(&env, &client, &admin, &token, 10);
 
     let adapter = Address::generate(&env);
     let yield_amount: i128 = 5_000_000_000; // 500 XLM
