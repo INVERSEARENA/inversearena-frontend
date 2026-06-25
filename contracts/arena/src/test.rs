@@ -938,6 +938,219 @@ fn test_cancel_arena_and_refund() {
 }
 
 #[test]
+fn test_claim_fails_when_game_not_finished() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let entry_fee = 100_000_000;
+    let initial_max = 100;
+    let initial_deadline = env.ledger().timestamp() + 86400;
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, entry_fee);
+    mint_tokens(&env, &token, &bob, entry_fee);
+
+    client.join(&alice);
+    client.join(&bob);
+
+    // Game is still Open, not Finished
+    let result = client.try_claim(&alice);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::GameNotFinished);
+}
+
+#[test]
+fn test_claim_fails_when_game_in_progress() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let entry_fee = 100_000_000;
+    let initial_max = 100;
+    let initial_deadline = env.ledger().timestamp() + 86400;
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, entry_fee);
+    mint_tokens(&env, &token, &bob, entry_fee);
+
+    client.join(&alice);
+    client.join(&bob);
+    client.start_game();
+
+    // Game is InProgress, not Finished
+    let result = client.try_claim(&alice);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::GameNotFinished);
+}
+
+#[test]
+fn test_claim_fails_when_arena_cancelled() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let entry_fee = 100_000_000;
+    let initial_max = 100;
+    let initial_deadline = env.ledger().timestamp() + 86400;
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0);
+
+    let alice = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, entry_fee);
+    client.join(&alice);
+
+    // Cancel the arena
+    client.cancel_arena();
+
+    // Claim should fail because arena is Cancelled, not Finished
+    let result = client.try_claim(&alice);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::GameNotFinished);
+}
+
+#[test]
+fn test_platform_fee_calculation_accuracy() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let entry_fee = 100_000_000;
+    let initial_max = 100;
+    let initial_deadline = env.ledger().timestamp() + 86400;
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0);
+
+    // Test with 10 players
+    let mut players = soroban_sdk::Vec::new(&env);
+    for _ in 0..10 {
+        let player = Address::generate(&env);
+        mint_tokens(&env, &token, &player, entry_fee);
+        players.push_back(player);
+    }
+
+    for player in players.iter() {
+        client.join(&player);
+    }
+
+    client.start_game();
+
+    // All choose Heads (minority if we make some choose Tails)
+    // Let's make 3 Heads (survive) and 7 Tails (eliminated)
+    for i in 0..3 {
+        client.submit_choice(&players.get(i).unwrap(), &Choice::Heads);
+    }
+    for i in 3..10 {
+        client.submit_choice(&players.get(i).unwrap(), &Choice::Tails);
+    }
+
+    client.resolve_round();
+
+    let winner = players.get(0).unwrap();
+
+    let total_pot: i128 = entry_fee * 10;
+    let platform_fee = total_pot * PLATFORM_FEE_BP / 10000;
+    let expected_prize = total_pot - platform_fee;
+
+    let token_client = TokenClient::new(&env, &token);
+    let winner_balance_before = token_client.balance(&winner);
+    let admin_balance_before = token_client.balance(&admin);
+
+    client.claim(&winner);
+
+    let winner_balance_after = token_client.balance(&winner);
+    let admin_balance_after = token_client.balance(&admin);
+
+    assert_eq!(winner_balance_after - winner_balance_before, expected_prize);
+    assert_eq!(admin_balance_after - admin_balance_before, platform_fee);
+}
+
+#[test]
+fn test_platform_fee_with_different_amounts() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let entry_fee = 50_000_000; // 5 XLM
+    let initial_max = 100;
+    let initial_deadline = env.ledger().timestamp() + 86400;
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0);
+
+    // Test with 3 players
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let charlie = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, entry_fee);
+    mint_tokens(&env, &token, &bob, entry_fee);
+    mint_tokens(&env, &token, &charlie, entry_fee);
+
+    client.join(&alice);
+    client.join(&bob);
+    client.join(&charlie);
+
+    client.start_game();
+    client.submit_choice(&alice, &Choice::Heads);
+    client.submit_choice(&bob, &Choice::Tails);
+    client.submit_choice(&charlie, &Choice::Tails);
+    client.resolve_round();
+
+    let total_pot: i128 = entry_fee * 3;
+    let platform_fee = total_pot * PLATFORM_FEE_BP / 10000;
+    let expected_prize = total_pot - platform_fee;
+
+    let token_client = TokenClient::new(&env, &token);
+    let alice_balance_before = token_client.balance(&alice);
+    let admin_balance_before = token_client.balance(&admin);
+
+    client.claim(&alice);
+
+    let alice_balance_after = token_client.balance(&alice);
+    let admin_balance_after = token_client.balance(&admin);
+
+    assert_eq!(alice_balance_after - alice_balance_before, expected_prize);
+    assert_eq!(admin_balance_after - admin_balance_before, platform_fee);
+}
+
+#[test]
+fn test_refund_fails_for_non_player() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let entry_fee = 100_000_000;
+    let initial_max = 100;
+    let initial_deadline = env.ledger().timestamp() + 86400;
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &entry_fee, &initial_max, &initial_deadline, &treasury, &0);
+
+    let player = Address::generate(&env);
+    let non_player = Address::generate(&env);
+    mint_tokens(&env, &token, &player, entry_fee);
+    client.join(&player);
+
+    // Cancel the arena
+    client.cancel_arena();
+
+    // Non-player trying to claim refund should fail
+    let result = client.try_claim_refund(&non_player);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::NotAPlayer);
+}
+
+#[test]
 fn test_claim_refund_fails_if_not_cancelled() {
     let env = create_test_env();
     env.mock_all_auths();
