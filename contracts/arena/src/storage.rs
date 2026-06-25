@@ -11,6 +11,7 @@ const CREATOR_STAKE_KEY: Symbol = Symbol::short("STAKE");
 const GLOBAL_STATS_KEY: Symbol = Symbol::short("GSTATS");
 const RWA_COUNTER_KEY: Symbol = Symbol::short("RWACNT");
 const PRIZE_POOL_KEY: Symbol = Symbol::short("POOL");
+const PLATFORM_FEE_KEY: Symbol = Symbol::short("PFEE");
 
 pub struct ArenaStorage;
 
@@ -225,5 +226,17 @@ impl ArenaStorage {
     pub fn load_rwa_yield(env: &Env, id: u64) -> Option<RwaYieldRecord> {
         let key = (Symbol::short("RWA"), id);
         env.storage().instance().get(&key)
+    }
+
+    // ── Platform fee ─────────────────────────────────────────────────────
+
+    /// Returns the current global platform fee in basis points (default 1000 = 10%).
+    pub fn get_platform_fee_bps(env: &Env) -> u32 {
+        env.storage().instance().get(&PLATFORM_FEE_KEY).unwrap_or(1000u32)
+    }
+
+    /// Persist a new global platform fee in basis points.
+    pub fn set_platform_fee_bps(env: &Env, fee_bps: u32) {
+        env.storage().instance().set(&PLATFORM_FEE_KEY, &fee_bps);
     }
 }
