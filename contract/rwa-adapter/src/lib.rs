@@ -84,7 +84,12 @@ impl RwaAdapter {
         updated.withdrawn = true;
         RwaStorage::save_position(&env, &from, &updated);
 
-        let token_client = token::TokenClient::new(&env, &config.stake_token);
+        // Decrement the global counter so get_total_deposited() reflects net deposits.
+        let mut cfg = config;
+        cfg.total_deposited = cfg.total_deposited.saturating_sub(updated.principal);
+        RwaStorage::save_config(&env, &cfg);
+
+        let token_client = token::TokenClient::new(&env, &cfg.stake_token);
         let contract_addr = env.current_contract_address();
         let balance = token_client.balance(&contract_addr);
         let payable = if total > balance { balance } else { total };
@@ -124,6 +129,13 @@ impl RwaAdapter {
         RwaStorage::load_config(&env)
             .map(|c| c.total_deposited)
             .unwrap_or(0)
+    }
+
+    pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) -> Result<(), RwaError> {
+        let config = RwaStorage::load_config(&env)?;
+        config.admin.require_auth();
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
     }
 }
 
@@ -216,6 +228,41 @@ mod test {
 
         // from has not signed anything; require_auth() should panic.
         client.withdraw_all(&from);
+    }
+
+    /// get_total_deposited() must decrease by the withdrawn principal so the
+    /// metric reflects net deposits rather than growing forever.
+    #[test]
+    fn total_deposited_decremented_after_withdrawal() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, token_id, contract_id) = setup(&env);
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        client.deposit(&alice, &1_000);
+        client.deposit(&bob, &500);
+        assert_eq!(client.get_total_deposited(), 1_500);
+
+        // Fund the contract so both withdrawals can succeed.
+        let payout_alice: i128 = 1_050; // 1000 + 5%
+        let payout_bob: i128 = 525;     // 500 + 5%
+        StellarAssetClient::new(&env, &token_id)
+            .mint(&contract_id, &(payout_alice + payout_bob));
+
+        client.withdraw_all(&alice);
+        assert_eq!(
+            client.get_total_deposited(),
+            500,
+            "alice's 1000 principal must be removed from total"
+        );
+
+        client.withdraw_all(&bob);
+        assert_eq!(
+            client.get_total_deposited(),
+            0,
+            "total must reach 0 after all principals are withdrawn"
+        );
     }
 
     /// withdraw_all() transfers principal + yield to the caller when authorized.

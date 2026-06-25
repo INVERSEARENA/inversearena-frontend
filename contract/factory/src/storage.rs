@@ -9,6 +9,8 @@ pub enum DataKey {
     ArenaWasmHash,
     PoolSequence,
     Whitelisted(Address),
+    ApprovedVault(Address),
+    ApprovedOracle(Address),
     ActivePoolCount(Address),
     MaxActivePools,
     PoolCount,
@@ -80,17 +82,43 @@ impl FactoryStorage {
             .ok_or(FactoryError::WasmHashNotSet)
     }
 
-    pub fn next_pool_id(env: &Env) -> u32 {
-        let next = env
+    pub fn next_pool_id(env: &Env) -> Result<u32, FactoryError> {
+        let current = env
             .storage()
             .persistent()
             .get(&DataKey::PoolSequence)
-            .unwrap_or(0u32)
-            .saturating_add(1);
+            .unwrap_or(0u32);
+        let next = current.checked_add(1).ok_or(FactoryError::PoolLimitReached)?;
         env.storage()
             .persistent()
             .set(&DataKey::PoolSequence, &next);
-        next
+        Ok(next)
+    }
+
+    pub fn set_approved_vault(env: &Env, vault: &Address, approved: bool) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::ApprovedVault(vault.clone()), &approved);
+    }
+
+    pub fn is_approved_vault(env: &Env, vault: &Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ApprovedVault(vault.clone()))
+            .unwrap_or(false)
+    }
+
+    pub fn set_approved_oracle(env: &Env, oracle: &Address, approved: bool) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::ApprovedOracle(oracle.clone()), &approved);
+    }
+
+    pub fn is_approved_oracle(env: &Env, oracle: &Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ApprovedOracle(oracle.clone()))
+            .unwrap_or(false)
     }
 
     pub fn save_creator_stake(env: &Env, arena: &Address, record: &CreatorStakeRecord) {
