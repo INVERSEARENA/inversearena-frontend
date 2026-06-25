@@ -4,7 +4,7 @@ use crate::types::{
     ArenaConfig, ArenaError, Choice, GameState, PendingAdmin, PlayerState, RoundResult,
     YieldSnapshot,
 };
-use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, IntoVal, Val, Vec};
+use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, Vec, contracttype, symbol_short};
 
 const PERSISTENT_TTL_THRESHOLD: u32 = 100;
 const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
@@ -40,9 +40,13 @@ impl ArenaStorage {
     where
         K: IntoVal<Env, Val>,
     {
-        env.storage()
-            .persistent()
-            .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+        if env.storage().persistent().has(key) {
+            env.storage().persistent().extend_ttl(
+                key,
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_EXTEND_TO,
+            );
+        }
     }
 
     pub fn load_config(env: &Env) -> Result<ArenaConfig, ArenaError> {
