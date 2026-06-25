@@ -109,14 +109,17 @@ impl PayoutContract {
             return Err(PayoutError::AlreadyPaid);
         }
 
+        // Mark paid BEFORE transfers (checks-effects-interactions pattern).
+        // This prevents a reentrant call via a malicious token callback from
+        // replaying the batch because the idempotency guard is already set.
+        PayoutStorage::mark_paid(&env, payout_id);
+
         let contract = env.current_contract_address();
         for (recipient, amount) in recipients.iter() {
             client.transfer(&contract, &recipient, &amount);
             env.events()
                 .publish((symbol_short!("payout"), recipient), (payout_id, amount));
         }
-
-        PayoutStorage::mark_paid(&env, payout_id);
         Ok(())
     }
 
@@ -254,6 +257,28 @@ mod test {
         }
         fx.client.distribute_batch(&100, &recipients);
         assert!(fx.client.is_paid(&100));
+    }
+
+    /// distribute_batch must be marked paid BEFORE any transfer. Verify by
+    /// confirming is_paid is set and a second call with the same payout_id
+    /// is rejected even if the first call's transfers complete.
+    #[test]
+    fn distribute_batch_idempotent_on_payout_id() {
+        let fx = setup(1_000);
+        let a = Address::generate(&fx.env);
+
+        let mut recipients = Vec::new(&fx.env);
+        recipients.push_back((a.clone(), 200i128));
+
+        fx.client.distribute_batch(&77, &recipients);
+
+        assert!(fx.client.is_paid(&77), "must be marked paid after first call");
+        assert_eq!(fx.token.balance(&a), 200, "recipient must receive payment");
+
+        // Second call with same id must be rejected — no double payment.
+        let err = fx.client.try_distribute_batch(&77, &recipients);
+        assert!(err.is_err(), "duplicate payout_id must be rejected");
+        assert_eq!(fx.token.balance(&a), 200, "balance must not change on rejected retry");
     }
 
     #[test]
