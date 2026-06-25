@@ -26,6 +26,7 @@ impl PayoutContract {
     /// One-time setup: record the admin authorised to distribute and the token
     /// used for payouts.
     pub fn initialize(env: Env, admin: Address, token: Address) -> Result<(), PayoutError> {
+        admin.require_auth();
         if PayoutStorage::has_admin(&env) {
             return Err(PayoutError::AlreadyInitialised);
         }
@@ -259,6 +260,19 @@ mod test {
         assert!(fx.client.is_paid(&100));
     }
 
+    /// initialize() must require auth from the admin address; an unauthenticated
+    /// caller cannot claim the admin role by frontrunning the deployment.
+    #[test]
+    #[should_panic]
+    fn initialize_without_auth_panics() {
+        let env = Env::default();
+        // Deliberately no mock_all_auths — auth is enforced.
+        let contract_id = env.register(PayoutContract, ());
+        let client = PayoutContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+        // require_auth() inside initialize() must panic because admin hasn't signed.
+        client.initialize(&admin, &token);
     /// distribute_batch must be marked paid BEFORE any transfer. Verify by
     /// confirming is_paid is set and a second call with the same payout_id
     /// is rejected even if the first call's transfers complete.
