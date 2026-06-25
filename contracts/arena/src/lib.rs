@@ -5,6 +5,7 @@ mod types;
 mod events;
 mod errors;
 mod validation;
+mod admin;
 
 #[cfg(test)]
 mod test;
@@ -15,8 +16,6 @@ use types::{ArenaConfig, GameState, Choice, GlobalStats, RoundResult, RwaYieldRe
 use events::ArenaEvents;
 use errors::ArenaError;
 use validation::{validate_deadline, validate_entry_fee};
-
-const PLATFORM_FEE_BP: i128 = 1000; // 10% = 1000 basis points
 
 #[contract]
 pub struct ArenaContract;
@@ -65,6 +64,7 @@ impl ArenaContract {
             creation_cooldown_seconds,
             creator_stake: 0,
             slash_rate_bps: 5000, // 50% default slash rate
+            platform_fee_bps: ArenaStorage::get_platform_fee_bps(&env),
         };
 
         // Save configuration
@@ -347,7 +347,7 @@ impl ArenaContract {
                 if ArenaStorage::load_player_choice(&env, &player).is_none() {
                     ArenaStorage::set_player_active(&env, &player, false);
                     eliminated += 1;
-                    ArenaEvents::player_auto_eliminated(&env, &player);
+                    ArenaEvents::player_eliminated(&env, &player);
                 } else {
                     active_players.push_back(player.clone());
                 }
@@ -479,7 +479,7 @@ impl ArenaContract {
 
         // Calculate prize: total pot minus platform fee
         let total_pot = (config.player_count as i128) * config.entry_fee;
-        let platform_fee = total_pot * PLATFORM_FEE_BP / 10000;
+        let platform_fee = total_pot * config.platform_fee_bps as i128 / 10000;
         let prize = total_pot - platform_fee;
 
         // Transfer platform fee to admin
@@ -656,6 +656,19 @@ impl ArenaContract {
 
         ArenaEvents::slash_rate_configured(&env, &config.admin, slash_rate_bps);
         Ok(())
+    }
+
+    /// Update the global platform fee (0–1000 bps, max 10%). Admin only.
+    ///
+    /// Only affects arenas initialized *after* this call. Ongoing arenas keep the
+    /// fee that was snapshotted into their config at creation time.
+    pub fn update_platform_fee(env: Env, new_fee_bps: u32) -> Result<(), ArenaError> {
+        admin::update_platform_fee(&env, new_fee_bps)
+    }
+
+    /// Return the current global platform fee in basis points.
+    pub fn get_platform_fee_bps(env: Env) -> u32 {
+        ArenaStorage::get_platform_fee_bps(&env)
     }
 
     /// Get the winner address if the game is finished

@@ -97,4 +97,9 @@ impl ArenaEvents {
     pub fn rwa_yield_received(env: &Env, amount: i128) {
         env.events().publish((symbol_short!("RWAYLD"),), amount);
     }
+
+    /// Emit platform fee updated event
+    pub fn platform_fee_updated(env: &Env, admin: &Address, new_fee_bps: u32) {
+        env.events().publish((symbol_short!("FEE_UPD"), admin.clone()), new_fee_bps);
+    }
 }
