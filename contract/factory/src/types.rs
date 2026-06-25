@@ -44,7 +44,8 @@ pub enum FactoryError {
     PoolLimitReached = 10,
     InvalidVault = 11,
     InvalidOracle = 12,
-    MaxActivePoolsReached = 10,
-    PoolNotFound = 11,
-    ContractPaused = 12,
+    MaxActivePoolsReached = 13,
+    PoolNotFound = 14,
+    ContractPaused = 15,
+    UnsupportedToken = 16,
 }

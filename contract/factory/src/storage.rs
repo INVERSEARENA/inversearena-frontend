@@ -16,6 +16,7 @@ pub enum DataKey {
     PoolCount,
     Pool(u32),
     Paused,
+    SupportedToken(Address),
 }
 
 #[contracttype]
@@ -222,5 +223,20 @@ impl FactoryStorage {
         env.storage()
             .persistent()
             .set(&DataKey::MaxActivePools, &max);
+    }
+
+    // ── Supported Token Registry ──────────────────────────────────────────
+
+    pub fn set_supported_token(env: &Env, token: &Address, supported: bool) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::SupportedToken(token.clone()), &supported);
+    }
+
+    pub fn is_supported_token(env: &Env, token: &Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::SupportedToken(token.clone()))
+            .unwrap_or(false)
     }
 }

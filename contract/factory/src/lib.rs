@@ -90,6 +90,24 @@ impl FactoryContract {
         Ok(())
     }
 
+    pub fn add_supported_token(env: Env, token: Address) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        FactoryStorage::set_supported_token(&env, &token, true);
+        env.events().publish((symbol_short!("TOK_ADD"),), token);
+        Ok(())
+    }
+
+    pub fn remove_supported_token(env: Env, token: Address) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        FactoryStorage::set_supported_token(&env, &token, false);
+        env.events().publish((symbol_short!("TOK_REM"),), token);
+        Ok(())
+    }
+
+    pub fn is_token_supported(env: Env, token: Address) -> bool {
+        FactoryStorage::is_supported_token(&env, &token)
+    }
+
     pub fn get_min_stake(env: Env) -> Result<i128, FactoryError> {
         FactoryStorage::load_min_stake(&env)
     }
@@ -162,6 +180,9 @@ impl FactoryContract {
         let min_stake = FactoryStorage::load_min_stake(&env)?;
         if config.entry_fee < min_stake {
             return Err(FactoryError::StakeBelowMinimum);
+        }
+        if !FactoryStorage::is_supported_token(&env, &config.stake_token) {
+            return Err(FactoryError::UnsupportedToken);
         }
 
         // Check active pool limit for this host
@@ -377,5 +398,42 @@ mod test {
             .expect("error must be a contract error");
 
         assert_eq!(err, FactoryError::StakeBelowMinimum);
+    }
+
+    #[test]
+    fn create_pool_rejects_unsupported_stake_token() {
+        let (env, client, _admin, host) = setup();
+        client.add_to_whitelist(&host);
+
+        // No token registered — must be rejected.
+        let cfg = pool_config(&env, 100);
+        let err = client
+            .try_create_pool(&host, &cfg)
+            .err()
+            .expect("unsupported token must error")
+            .expect("error must be a contract error");
+        assert_eq!(err, FactoryError::UnsupportedToken);
+
+        // Register the token and confirm it is now accepted (fails further on
+        // missing WASM hash, not on token validation).
+        client.add_supported_token(&cfg.stake_token);
+        let err_after = client
+            .try_create_pool(&host, &cfg)
+            .err()
+            .expect("must still error (no wasm hash configured)")
+            .expect("error must be a contract error");
+        assert_ne!(err_after, FactoryError::UnsupportedToken);
+    }
+
+    #[test]
+    fn supported_token_add_and_remove_controls_token_status() {
+        let (env, client, _admin, _host) = setup();
+        let token = Address::generate(&env);
+
+        assert!(!client.is_token_supported(&token));
+        client.add_supported_token(&token);
+        assert!(client.is_token_supported(&token));
+        client.remove_supported_token(&token);
+        assert!(!client.is_token_supported(&token));
     }
 }
