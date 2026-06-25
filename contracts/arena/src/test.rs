@@ -2290,3 +2290,429 @@ fn rwa_yield_grows_prize_pool_and_returns_id() {
     let stats = client.get_global_stats();
     assert_eq!(stats.global_pool_total, yield_amount + 1_000_000_000i128);
 }
+
+// ── Issue #892: RoundStarted event tests ────────────────────────────────
+
+#[test]
+fn start_round_emits_event_and_sets_deadline() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    mint_tokens(&env, &token, &bob, 100_000_000);
+    client.join(&alice);
+    client.join(&bob);
+    client.start_game();
+
+    let round_deadline = env.ledger().timestamp() + 3600;
+    let round = client.start_round(&round_deadline);
+    assert_eq!(round, 1);
+
+    let stored_deadline = client.get_round_deadline();
+    assert_eq!(stored_deadline, Some(round_deadline));
+
+    let current_round = client.get_round();
+    assert_eq!(current_round, 1);
+
+    // Verify event emitted
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    let topics = &last_event.1;
+    let expected: soroban_sdk::Val = soroban_sdk::IntoVal::into_val(&symbol_short!("RND_STR"), &env);
+    assert!(topics.contains(&expected));
+}
+
+#[test]
+fn start_round_fails_when_not_in_progress() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let deadline = env.ledger().timestamp() + 3600;
+    let result = client.try_start_round(&deadline);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::InvalidStateTransition);
+}
+
+#[test]
+fn start_round_fails_with_past_deadline() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+    client.start_game();
+
+    let past_deadline = env.ledger().timestamp() - 100;
+    let result = client.try_start_round(&past_deadline);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::DeadlineTooSoon);
+}
+
+// ── Issue #884: get_arena_players tests ─────────────────────────────────
+
+#[test]
+fn get_arena_players_returns_all_players() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let charlie = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    mint_tokens(&env, &token, &bob, 100_000_000);
+    mint_tokens(&env, &token, &charlie, 100_000_000);
+
+    client.join(&alice);
+    client.join(&bob);
+    client.join(&charlie);
+
+    let players = client.get_arena_players();
+    assert_eq!(players.len(), 3);
+    assert!(players.contains(&alice));
+    assert!(players.contains(&bob));
+    assert!(players.contains(&charlie));
+}
+
+#[test]
+fn get_arena_players_returns_empty_when_no_players() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let players = client.get_arena_players();
+    assert_eq!(players.len(), 0);
+}
+
+// ── Issue #870: Commit-reveal tests ─────────────────────────────────────
+
+fn compute_commit_hash(env: &Env, choice: &Choice, salt: &soroban_sdk::BytesN<32>) -> soroban_sdk::BytesN<32> {
+    let choice_byte: u8 = match choice {
+        Choice::Heads => 0,
+        Choice::Tails => 1,
+    };
+    let mut preimage = soroban_sdk::Bytes::new(env);
+    preimage.push_back(choice_byte);
+    let salt_bytes: &[u8] = &salt.to_array();
+    preimage.append(&soroban_sdk::Bytes::from_slice(env, salt_bytes));
+    env.crypto().keccak256(&preimage).into()
+}
+
+#[test]
+fn commit_reveal_full_flow() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    mint_tokens(&env, &token, &bob, 100_000_000);
+    client.join(&alice);
+    client.join(&bob);
+    client.start_game();
+
+    // Start round so round counter is set
+    let round_deadline = env.ledger().timestamp() + 3600;
+    client.start_round(&round_deadline);
+
+    // Generate salts
+    let salt_a = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    let salt_b = soroban_sdk::BytesN::from_array(&env, &[2u8; 32]);
+
+    // Compute hashes
+    let hash_a = compute_commit_hash(&env, &Choice::Heads, &salt_a);
+    let hash_b = compute_commit_hash(&env, &Choice::Tails, &salt_b);
+
+    // Commit phase
+    client.commit_choice(&alice, &hash_a);
+    client.commit_choice(&bob, &hash_b);
+
+    // Reveal phase
+    client.reveal_choice(&alice, &Choice::Heads, &salt_a);
+    client.reveal_choice(&bob, &Choice::Tails, &salt_b);
+}
+
+#[test]
+fn commit_fails_without_being_a_player() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    client.join(&alice);
+    client.start_game();
+
+    let non_player = Address::generate(&env);
+    let hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    let result = client.try_commit_choice(&non_player, &hash);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::NotAPlayer);
+}
+
+#[test]
+fn double_commit_fails() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    mint_tokens(&env, &token, &bob, 100_000_000);
+    client.join(&alice);
+    client.join(&bob);
+    client.start_game();
+
+    let round_deadline = env.ledger().timestamp() + 3600;
+    client.start_round(&round_deadline);
+
+    let hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    client.commit_choice(&alice, &hash);
+
+    let result = client.try_commit_choice(&alice, &hash);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::AlreadyCommitted);
+}
+
+#[test]
+fn reveal_fails_without_commit() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    mint_tokens(&env, &token, &bob, 100_000_000);
+    client.join(&alice);
+    client.join(&bob);
+    client.start_game();
+
+    let round_deadline = env.ledger().timestamp() + 3600;
+    client.start_round(&round_deadline);
+
+    let salt = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    let result = client.try_reveal_choice(&alice, &Choice::Heads, &salt);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::NoCommitFound);
+}
+
+#[test]
+fn reveal_fails_with_wrong_salt() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    mint_tokens(&env, &token, &bob, 100_000_000);
+    client.join(&alice);
+    client.join(&bob);
+    client.start_game();
+
+    let round_deadline = env.ledger().timestamp() + 3600;
+    client.start_round(&round_deadline);
+
+    let correct_salt = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    let wrong_salt = soroban_sdk::BytesN::from_array(&env, &[9u8; 32]);
+    let hash = compute_commit_hash(&env, &Choice::Heads, &correct_salt);
+
+    client.commit_choice(&alice, &hash);
+
+    let result = client.try_reveal_choice(&alice, &Choice::Heads, &wrong_salt);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::RevealMismatch);
+}
+
+#[test]
+fn reveal_fails_with_wrong_choice() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    mint_tokens(&env, &token, &bob, 100_000_000);
+    client.join(&alice);
+    client.join(&bob);
+    client.start_game();
+
+    let round_deadline = env.ledger().timestamp() + 3600;
+    client.start_round(&round_deadline);
+
+    let salt = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    let hash = compute_commit_hash(&env, &Choice::Heads, &salt);
+
+    client.commit_choice(&alice, &hash);
+
+    // Try to reveal with Tails instead of Heads
+    let result = client.try_reveal_choice(&alice, &Choice::Tails, &salt);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::RevealMismatch);
+}
+
+#[test]
+fn double_reveal_fails() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    mint_tokens(&env, &token, &bob, 100_000_000);
+    client.join(&alice);
+    client.join(&bob);
+    client.start_game();
+
+    let round_deadline = env.ledger().timestamp() + 3600;
+    client.start_round(&round_deadline);
+
+    let salt = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    let hash = compute_commit_hash(&env, &Choice::Heads, &salt);
+    client.commit_choice(&alice, &hash);
+    client.reveal_choice(&alice, &Choice::Heads, &salt);
+
+    let result = client.try_reveal_choice(&alice, &Choice::Heads, &salt);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::AlreadyRevealed);
+}
+
+// ── Issue #865: Two-step admin transfer tests ───────────────────────────
+
+#[test]
+fn admin_transfer_full_flow() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let new_admin = Address::generate(&env);
+
+    // Propose
+    client.propose_admin(&new_admin);
+    let pending = client.get_pending_admin();
+    assert_eq!(pending, Some(new_admin.clone()));
+
+    // Accept
+    client.accept_admin();
+    let config = client.get_config();
+    assert_eq!(config.admin, new_admin);
+
+    // Pending should be cleared
+    let pending_after = client.get_pending_admin();
+    assert_eq!(pending_after, None);
+}
+
+#[test]
+fn accept_admin_fails_without_proposal() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let result = client.try_accept_admin();
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::NoPendingAdmin);
+}
+
+#[test]
+fn propose_admin_emits_event() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let new_admin = Address::generate(&env);
+    client.propose_admin(&new_admin);
+
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    let topics = &last_event.1;
+    let expected: soroban_sdk::Val = soroban_sdk::IntoVal::into_val(&symbol_short!("ADM_PROP"), &env);
+    assert!(topics.contains(&expected));
+}
+
+#[test]
+fn accept_admin_emits_event() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let new_admin = Address::generate(&env);
+    client.propose_admin(&new_admin);
+    client.accept_admin();
+
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    let topics = &last_event.1;
+    let expected: soroban_sdk::Val = soroban_sdk::IntoVal::into_val(&symbol_short!("ADM_ACPT"), &env);
+    assert!(topics.contains(&expected));
+}
+
+#[test]
+fn propose_admin_requires_admin_auth() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    env.set_auths(&[]);
+
+    let new_admin = Address::generate(&env);
+    let result = client.try_propose_admin(&new_admin);
+    assert!(result.is_err());
+}

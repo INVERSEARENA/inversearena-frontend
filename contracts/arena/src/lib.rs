@@ -9,7 +9,7 @@ mod validation;
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Env, String, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, BytesN, Env, String, Symbol, Vec};
 use storage::ArenaStorage;
 use types::{ArenaConfig, GameState, Choice, GlobalStats, RoundResult, RwaYieldRecord};
 use events::ArenaEvents;
@@ -727,6 +727,177 @@ impl ArenaContract {
         ArenaEvents::rwa_yield_received(&env, yield_amount);
 
         Ok(record.id)
+    }
+
+    // ── Issue #892: Start round with event emission ───────────────────
+
+    /// Start a new round with a deadline timestamp.
+    /// Emits a RoundStarted event with the round number and deadline.
+    pub fn start_round(env: Env, deadline: u64) -> Result<u32, ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+
+        Self::require_not_paused(&config)?;
+
+        if config.state != GameState::InProgress {
+            return Err(ArenaError::InvalidStateTransition);
+        }
+
+        let now = env.ledger().timestamp();
+        validate_deadline(deadline, now)?;
+
+        let round = ArenaStorage::get_round(&env) + 1;
+        ArenaStorage::set_round(&env, round);
+        ArenaStorage::set_round_deadline(&env, deadline);
+
+        ArenaEvents::round_started(&env, round, deadline);
+
+        Ok(round)
+    }
+
+    /// Get current round number
+    pub fn get_round(env: Env) -> u32 {
+        ArenaStorage::get_round(&env)
+    }
+
+    /// Get current round deadline
+    pub fn get_round_deadline(env: Env) -> Option<u64> {
+        ArenaStorage::get_round_deadline(&env)
+    }
+
+    // ── Issue #884: Get all players in an arena ─────────────────────────
+
+    /// Return all player addresses registered in this arena.
+    pub fn get_arena_players(env: Env) -> Vec<Address> {
+        ArenaStorage::load_all_players(&env)
+    }
+
+    // ── Issue #870: Commit-reveal scheme ────────────────────────────────
+
+    /// Submit a hashed commitment for the current round.
+    /// The hash should be keccak256(choice || salt) computed off-chain.
+    pub fn commit_choice(env: Env, player: Address, hash: BytesN<32>) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+
+        Self::require_not_paused(&config)?;
+
+        if config.state != GameState::InProgress {
+            return Err(ArenaError::InvalidStateTransition);
+        }
+
+        let players = ArenaStorage::load_all_players(&env);
+        if !players.contains(&player) {
+            return Err(ArenaError::NotAPlayer);
+        }
+        if !ArenaStorage::is_player_active(&env, &player) {
+            return Err(ArenaError::PlayerEliminated);
+        }
+
+        player.require_auth();
+
+        let round = ArenaStorage::get_round(&env);
+
+        if ArenaStorage::load_commit_hash(&env, &player, round).is_some() {
+            return Err(ArenaError::AlreadyCommitted);
+        }
+
+        ArenaStorage::save_commit_hash(&env, &player, round, &hash);
+
+        ArenaEvents::commit_submitted(&env, &player);
+
+        Ok(())
+    }
+
+    /// Reveal a previously committed choice by providing the original choice and salt.
+    /// The contract verifies keccak256(choice || salt) matches the stored hash.
+    pub fn reveal_choice(env: Env, player: Address, choice: Choice, salt: BytesN<32>) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+
+        Self::require_not_paused(&config)?;
+
+        if config.state != GameState::InProgress {
+            return Err(ArenaError::InvalidStateTransition);
+        }
+
+        let players = ArenaStorage::load_all_players(&env);
+        if !players.contains(&player) {
+            return Err(ArenaError::NotAPlayer);
+        }
+        if !ArenaStorage::is_player_active(&env, &player) {
+            return Err(ArenaError::PlayerEliminated);
+        }
+
+        player.require_auth();
+
+        let round = ArenaStorage::get_round(&env);
+
+        let stored_hash = ArenaStorage::load_commit_hash(&env, &player, round)
+            .ok_or(ArenaError::NoCommitFound)?;
+
+        if ArenaStorage::is_revealed(&env, &player, round) {
+            return Err(ArenaError::AlreadyRevealed);
+        }
+
+        // Reconstruct hash: keccak256(choice_byte || salt)
+        let choice_byte: u8 = match choice {
+            Choice::Heads => 0,
+            Choice::Tails => 1,
+        };
+
+        let mut preimage = soroban_sdk::Bytes::new(&env);
+        preimage.push_back(choice_byte);
+        let salt_bytes: &[u8] = &salt.to_array();
+        preimage.append(&soroban_sdk::Bytes::from_slice(&env, salt_bytes));
+
+        let computed_hash: BytesN<32> = env.crypto().keccak256(&preimage).into();
+
+        if computed_hash != stored_hash {
+            return Err(ArenaError::RevealMismatch);
+        }
+
+        ArenaStorage::save_player_choice(&env, &player, &choice);
+        ArenaStorage::set_revealed(&env, &player, round);
+
+        ArenaEvents::reveal_submitted(&env, &player);
+
+        Ok(())
+    }
+
+    // ── Issue #865: Two-step admin transfer ─────────────────────────────
+
+    /// Propose a new admin. Only the current admin can call this.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+
+        ArenaStorage::set_pending_admin(&env, &new_admin);
+
+        ArenaEvents::admin_transfer_proposed(&env, &config.admin, &new_admin);
+
+        Ok(())
+    }
+
+    /// Accept the admin role. Only the proposed admin can call this.
+    pub fn accept_admin(env: Env) -> Result<(), ArenaError> {
+        let mut config = ArenaStorage::load_config(&env)?;
+
+        let pending = ArenaStorage::get_pending_admin(&env)
+            .ok_or(ArenaError::NoPendingAdmin)?;
+
+        pending.require_auth();
+
+        config.admin = pending.clone();
+        ArenaStorage::save_config(&env, &config);
+        ArenaStorage::clear_pending_admin(&env);
+
+        ArenaEvents::admin_transfer_accepted(&env, &pending);
+
+        Ok(())
+    }
+
+    /// Get the pending admin address, if any
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        ArenaStorage::get_pending_admin(&env)
     }
 
     fn require_not_paused(config: &ArenaConfig) -> Result<(), ArenaError> {

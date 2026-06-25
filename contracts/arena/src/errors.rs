@@ -60,4 +60,22 @@ pub enum ArenaError {
     ArenaNotFinished = 27,
     /// No stake available to withdraw
     NoStakeToWithdraw = 28,
+    /// Round has not been started yet
+    RoundNotStarted = 29,
+    /// Commit already submitted for this round
+    AlreadyCommitted = 30,
+    /// No commit found for reveal
+    NoCommitFound = 31,
+    /// Reveal does not match commit hash
+    RevealMismatch = 32,
+    /// Already revealed for this round
+    AlreadyRevealed = 33,
+    /// No pending admin transfer
+    NoPendingAdmin = 34,
+    /// Only the proposed admin can accept the transfer
+    NotProposedAdmin = 35,
+    /// Round deadline has not passed yet (reveals still allowed)
+    RoundDeadlineNotPassed = 36,
+    /// Round deadline has passed (no more commits/reveals)
+    RoundDeadlinePassed = 37,
 }

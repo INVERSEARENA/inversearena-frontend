@@ -1,4 +1,4 @@
-use soroban_sdk::{Env, Symbol, Address, Vec};
+use soroban_sdk::{Env, Symbol, Address, BytesN, Vec};
 use crate::types::{ArenaConfig, Choice, GlobalStats, RwaYieldRecord};
 use crate::errors::ArenaError;
 
@@ -11,6 +11,8 @@ const CREATOR_STAKE_KEY: Symbol = Symbol::short("STAKE");
 const GLOBAL_STATS_KEY: Symbol = Symbol::short("GSTATS");
 const RWA_COUNTER_KEY: Symbol = Symbol::short("RWACNT");
 const PRIZE_POOL_KEY: Symbol = Symbol::short("POOL");
+const PENDING_ADMIN_KEY: Symbol = Symbol::short("PADMIN");
+const ROUND_DEADLINE_KEY: Symbol = Symbol::short("RNDDEADL");
 
 pub struct ArenaStorage;
 
@@ -225,5 +227,51 @@ impl ArenaStorage {
     pub fn load_rwa_yield(env: &Env, id: u64) -> Option<RwaYieldRecord> {
         let key = (Symbol::short("RWA"), id);
         env.storage().instance().get(&key)
+    }
+
+    // ── Commit-reveal storage ───────────────────────────────────────────
+
+    pub fn save_commit_hash(env: &Env, player: &Address, round: u32, hash: &BytesN<32>) {
+        let key = (Symbol::short("CMT"), player.clone(), round);
+        env.storage().instance().set(&key, hash);
+    }
+
+    pub fn load_commit_hash(env: &Env, player: &Address, round: u32) -> Option<BytesN<32>> {
+        let key = (Symbol::short("CMT"), player.clone(), round);
+        env.storage().instance().get(&key)
+    }
+
+    pub fn is_revealed(env: &Env, player: &Address, round: u32) -> bool {
+        let key = (Symbol::short("RVLD"), player.clone(), round);
+        env.storage().instance().get(&key).unwrap_or(false)
+    }
+
+    pub fn set_revealed(env: &Env, player: &Address, round: u32) {
+        let key = (Symbol::short("RVLD"), player.clone(), round);
+        env.storage().instance().set(&key, &true);
+    }
+
+    // ── Pending admin transfer ──────────────────────────────────────────
+
+    pub fn set_pending_admin(env: &Env, admin: &Address) {
+        env.storage().instance().set(&PENDING_ADMIN_KEY, admin);
+    }
+
+    pub fn get_pending_admin(env: &Env) -> Option<Address> {
+        env.storage().instance().get(&PENDING_ADMIN_KEY)
+    }
+
+    pub fn clear_pending_admin(env: &Env) {
+        env.storage().instance().remove(&PENDING_ADMIN_KEY);
+    }
+
+    // ── Round deadline ──────────────────────────────────────────────────
+
+    pub fn set_round_deadline(env: &Env, deadline: u64) {
+        env.storage().instance().set(&ROUND_DEADLINE_KEY, &deadline);
+    }
+
+    pub fn get_round_deadline(env: &Env) -> Option<u64> {
+        env.storage().instance().get(&ROUND_DEADLINE_KEY)
     }
 }
