@@ -274,4 +274,16 @@ impl ArenaStorage {
     pub fn get_round_deadline(env: &Env) -> Option<u64> {
         env.storage().instance().get(&ROUND_DEADLINE_KEY)
     }
+
+    // ── Player Arenas Mapping ───────────────────────────────────────────
+
+    pub fn load_player_arenas(env: &Env, player: &Address) -> Vec<u32> {
+        let key = (Symbol::short("PARENAS"), player.clone());
+        env.storage().persistent().get(&key).unwrap_or_else(|| Vec::new(env))
+    }
+
+    pub fn save_player_arenas(env: &Env, player: &Address, arenas: &Vec<u32>) {
+        let key = (Symbol::short("PARENAS"), player.clone());
+        env.storage().persistent().set(&key, arenas);
+    }
 }

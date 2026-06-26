@@ -2716,3 +2716,63 @@ fn propose_admin_requires_admin_auth() {
     let result = client.try_propose_admin(&new_admin);
     assert!(result.is_err());
 }
+
+// ── Player Arenas Mapping Tests ────────────────────────────────────────────
+
+#[test]
+fn player_arenas_mapping_works() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    
+    // First arena
+    let (admin1, token1, _contract_id1, client1) = setup_arena(&env);
+    let initial_fee = 100_000_000;
+    let initial_max = 100;
+    let initial_deadline = env.ledger().timestamp() + 86400;
+    let treasury = Address::generate(&env);
+    
+    // Initialize creates the first arena (ID = 1)
+    client1.initialize(&admin1, &token1, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+    
+    // Admin should have arena 1
+    let admin_arenas = client1.get_player_arenas(&admin1);
+    assert_eq!(admin_arenas.len(), 1);
+    assert_eq!(admin_arenas.get(0).unwrap(), 1);
+    
+    let alice = Address::generate(&env);
+    mint_tokens(&env, &token1, &alice, initial_fee * 10);
+    
+    // Alice joins
+    client1.join(&alice);
+    
+    let alice_arenas = client1.get_player_arenas(&alice);
+    assert_eq!(alice_arenas.len(), 1);
+    assert_eq!(alice_arenas.get(0).unwrap(), 1);
+    
+    // Create a second arena in the same contract instance
+    client1.cleanup_arena();
+    let new_deadline = env.ledger().timestamp() + 172800;
+    
+    // Bob initializes the second arena (ID = 2)
+    let bob = Address::generate(&env);
+    client1.initialize(&bob, &token1, &initial_fee, &initial_max, &new_deadline, &treasury, &0);
+    
+    // Bob should have arena 2
+    let bob_arenas = client1.get_player_arenas(&bob);
+    assert_eq!(bob_arenas.len(), 1);
+    assert_eq!(bob_arenas.get(0).unwrap(), 2);
+    
+    // Alice joins the second arena
+    client1.join(&alice);
+    
+    let alice_arenas_2 = client1.get_player_arenas(&alice);
+    assert_eq!(alice_arenas_2.len(), 2);
+    assert_eq!(alice_arenas_2.get(0).unwrap(), 1);
+    assert_eq!(alice_arenas_2.get(1).unwrap(), 2);
+    
+    // Admin1 should still only have arena 1
+    let admin_arenas_2 = client1.get_player_arenas(&admin1);
+    assert_eq!(admin_arenas_2.len(), 1);
+    assert_eq!(admin_arenas_2.get(0).unwrap(), 1);
+}
+
