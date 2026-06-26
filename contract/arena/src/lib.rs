@@ -260,6 +260,8 @@ impl ArenaContract {
     /// - `ArenaError::RoundNotActive` if the `commit_deadline` has not yet elapsed.
     /// - `ArenaError::MissingCommitment` if no commitment was submitted for this player.
     /// - `ArenaError::InvalidReveal` if the revealed choice and salt do not match the stored commitment.
+    /// - `ArenaError::NotAPlayer` if the caller never joined the arena.
+    /// - `ArenaError::PlayerEliminated` if the caller is no longer an active player.
     pub fn reveal_choice(
         env: Env,
         player: Address,
@@ -269,6 +271,10 @@ impl ArenaContract {
         player.require_auth();
         let config = ArenaStorage::load_config(&env)?;
         Self::require_not_paused(&config)?;
+        let player_state = ArenaStorage::load_player(&env, &player).ok_or(ArenaError::NotAPlayer)?;
+        if !player_state.active {
+            return Err(ArenaError::PlayerEliminated);
+        }
         if ArenaStorage::load_choice(&env, &player).is_some() {
             return Err(ArenaError::ChoiceAlreadyRevealed);
         }
@@ -1075,6 +1081,7 @@ mod test {
                 oracle_contract: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
+            ArenaStorage::add_player(&env, &player);
             ArenaStorage::save_commitment(&env, &player, &commitment);
         });
 
@@ -1085,6 +1092,81 @@ mod test {
             let stored = ArenaStorage::load_choice(&env, &player).unwrap();
             assert_eq!(stored, choice);
         });
+    }
+
+    #[test]
+    fn reveal_non_player_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let player = Address::generate(&env);
+        let salt = BytesN::from_array(&env, &[42u8; 32]);
+        let choice = Choice::Heads;
+        let commitment = compute_commitment(&env, choice, &salt);
+
+        env.as_contract(&contract_id, || {
+            let config = ArenaConfig {
+                admin: Address::generate(&env),
+                stake_token: Address::generate(&env),
+                entry_fee: 100,
+                state: GameState::Open,
+                paused: false,
+                player_count: 0,
+                cumulative_yield: 0,
+                commit_deadline: 0,
+                yield_vault: Address::generate(&env),
+                round_count: 0,
+                oracle_contract: Address::generate(&env),
+            };
+            ArenaStorage::save_config(&env, &config);
+            ArenaStorage::save_commitment(&env, &player, &commitment);
+        });
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let result = client.try_reveal_choice(&player, &choice, &salt);
+        assert_eq!(result, Err(Ok(ArenaError::NotAPlayer)));
+    }
+
+    #[test]
+    fn reveal_eliminated_player_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let player = Address::generate(&env);
+        let salt = BytesN::from_array(&env, &[42u8; 32]);
+        let choice = Choice::Heads;
+        let commitment = compute_commitment(&env, choice, &salt);
+
+        env.as_contract(&contract_id, || {
+            let config = ArenaConfig {
+                admin: Address::generate(&env),
+                stake_token: Address::generate(&env),
+                entry_fee: 100,
+                state: GameState::Open,
+                paused: false,
+                player_count: 0,
+                cumulative_yield: 0,
+                commit_deadline: 0,
+                yield_vault: Address::generate(&env),
+                round_count: 0,
+                oracle_contract: Address::generate(&env),
+            };
+            ArenaStorage::save_config(&env, &config);
+            ArenaStorage::add_player(&env, &player);
+            ArenaStorage::save_player(
+                &env,
+                &player,
+                &PlayerState {
+                    active: false,
+                    rounds_survived: 1,
+                },
+            );
+            ArenaStorage::save_commitment(&env, &player, &commitment);
+        });
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let result = client.try_reveal_choice(&player, &choice, &salt);
+        assert_eq!(result, Err(Ok(ArenaError::PlayerEliminated)));
     }
 
     #[test]
@@ -1111,6 +1193,7 @@ mod test {
                 oracle_contract: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
+            ArenaStorage::add_player(&env, &player);
             ArenaStorage::save_commitment(&env, &player, &commitment);
         });
 
@@ -1143,6 +1226,7 @@ mod test {
                 oracle_contract: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
+            ArenaStorage::add_player(&env, &player);
             ArenaStorage::save_commitment(&env, &player, &commitment);
         });
 
@@ -1176,6 +1260,7 @@ mod test {
                 oracle_contract: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
+            ArenaStorage::add_player(&env, &player);
             ArenaStorage::save_commitment(&env, &player, &commitment);
         });
 
@@ -1969,6 +2054,65 @@ mod test {
 
             assert_eq!(e2.player, p3);
             assert_eq!(e2.rounds_survived, 1);
+        });
+    }
+
+    #[test]
+    fn test_leaderboard_limit_enforcement() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+
+        env.as_contract(&contract_id, || {
+            let config = ArenaConfig {
+                admin: admin.clone(),
+                stake_token: Address::generate(&env),
+                yield_vault: Address::generate(&env),
+                entry_fee: 100,
+                state: GameState::Active,
+                paused: false,
+                player_count: 20,
+                cumulative_yield: 0,
+                commit_deadline: 0,
+                round_count: 0,
+                oracle_contract: oracle_id,
+            };
+            ArenaStorage::save_config(&env, &config);
+
+            for rounds_survived in 0..20 {
+                let player = Address::generate(&env);
+                ArenaStorage::add_player(&env, &player);
+                ArenaStorage::save_player(
+                    &env,
+                    &player,
+                    &PlayerState {
+                        active: true,
+                        rounds_survived,
+                    },
+                );
+            }
+
+            assert_eq!(ArenaStorage::load_leaderboard_limit(&env), 100);
+            build_leaderboard(&env);
+            assert_eq!(ArenaStorage::load_leaderboard(&env).len(), 20);
+        });
+
+        client.configure_leaderboard_limit(&10);
+
+        env.as_contract(&contract_id, || {
+            assert_eq!(ArenaStorage::load_leaderboard_limit(&env), 10);
+            build_leaderboard(&env);
+
+            let leaderboard = ArenaStorage::load_leaderboard(&env);
+            assert_eq!(leaderboard.len(), 10);
+
+            for i in 0..10 {
+                let entry: LeaderboardEntry = leaderboard.get(i).unwrap();
+                assert_eq!(entry.rounds_survived, 19 - i);
+            }
         });
     }
 }
