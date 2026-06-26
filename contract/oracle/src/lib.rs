@@ -18,27 +18,29 @@ pub struct OracleContract;
 #[repr(u32)]
 pub enum OracleError {
     NotInitialized = 1,
+    AlreadyInitialized = 2,
 }
 
 #[contractimpl]
 impl OracleContract {
     /// Initialise the oracle with an admin and an initial yield rate.
     /// Reverts if the oracle has already been initialised.
-    pub fn initialize(env: Env, admin: Address, initial_rate_bps: u32) {
-        admin.require_auth();
+    pub fn initialize(env: Env, admin: Address, initial_rate_bps: u32) -> Result<(), OracleError> {
         if env
             .storage()
             .persistent()
             .has(&soroban_sdk::symbol_short!("ADMIN"))
         {
-            panic!("already initialised");
+            return Err(OracleError::AlreadyInitialized);
         }
+        admin.require_auth();
         env.storage()
             .persistent()
             .set(&soroban_sdk::symbol_short!("ADMIN"), &admin);
         env.storage()
             .persistent()
             .set(&soroban_sdk::symbol_short!("RATE"), &initial_rate_bps);
+        Ok(())
     }
 
     /// Update the current yield rate. Only callable by the admin.

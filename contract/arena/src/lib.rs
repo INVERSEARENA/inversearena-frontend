@@ -443,6 +443,7 @@ impl ArenaContract {
             return Err(ArenaError::NotEnoughPlayers);
         }
 
+        config.commit_deadline = env.ledger().timestamp().saturating_add(duration_seconds);
         config.state = GameState::Active;
         ArenaStorage::save_config(&env, &config);
         ArenaStorage::save_round_start(&env, env.ledger().timestamp());
