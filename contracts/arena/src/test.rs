@@ -2716,3 +2716,59 @@ fn propose_admin_requires_admin_auth() {
     let result = client.try_propose_admin(&new_admin);
     assert!(result.is_err());
 }
+
+// ── Round Bounds Tests ──────────────────────────────────────────────────
+
+#[test]
+fn round_duration_validation_works() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    
+    let initial_fee = 100_000_000;
+    let initial_max = 100;
+    let join_deadline = env.ledger().timestamp() + 86400;
+    let treasury = Address::generate(&env);
+    
+    // Initialize first arena. It gets default bounds (30, 604800).
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &join_deadline, &treasury, &0);
+    
+    client.start_game();
+    
+    let now = env.ledger().timestamp();
+    // Valid round duration: 60s
+    assert!(client.try_start_round(&(now + 60)).is_ok());
+    
+    // Invalid round duration: 10s (below default min 30s)
+    assert_eq!(client.try_start_round(&(now + 10)).err().unwrap().unwrap(), ArenaError::InvalidRoundDuration);
+    
+    // Invalid round duration: 8 days (above default max 7 days)
+    assert_eq!(client.try_start_round(&(now + 691200)).err().unwrap().unwrap(), ArenaError::InvalidRoundDuration);
+    
+    // Admin updates bounds (min 60s, max 1 hour)
+    assert!(client.try_update_round_bounds(&60, &3600).is_ok());
+    
+    // Update should not affect current arena. Current arena still has min=30s
+    assert!(client.try_start_round(&(now + 45)).is_ok()); // 45s is >= 30, but < 60!
+    
+    // Initialize a second arena
+    let bob = Address::generate(&env);
+    client.initialize(&bob, &token, &initial_fee, &initial_max, &join_deadline, &treasury, &0);
+    client.start_game();
+    
+    // New arena has the new bounds (min 60s, max 3600s).
+    let now2 = env.ledger().timestamp();
+    // 45s is now invalid!
+    assert_eq!(client.try_start_round(&(now2 + 45)).err().unwrap().unwrap(), ArenaError::InvalidRoundDuration);
+    // 60s is valid
+    assert!(client.try_start_round(&(now2 + 60)).is_ok());
+    // 4000s is invalid
+    assert_eq!(client.try_start_round(&(now2 + 4000)).err().unwrap().unwrap(), ArenaError::InvalidRoundDuration);
+    
+    // Admin updates with invalid values
+    assert_eq!(client.try_update_round_bounds(&5, &3600).err().unwrap().unwrap(), ArenaError::InvalidRoundBounds);
+    assert_eq!(client.try_update_round_bounds(&60, &3000000).err().unwrap().unwrap(), ArenaError::InvalidRoundBounds);
+    assert_eq!(client.try_update_round_bounds(&60, &30).err().unwrap().unwrap(), ArenaError::InvalidRoundBounds);
+}
+

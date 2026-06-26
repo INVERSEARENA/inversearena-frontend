@@ -13,6 +13,7 @@ const RWA_COUNTER_KEY: Symbol = Symbol::short("RWACNT");
 const PRIZE_POOL_KEY: Symbol = Symbol::short("POOL");
 const PENDING_ADMIN_KEY: Symbol = Symbol::short("PADMIN");
 const ROUND_DEADLINE_KEY: Symbol = Symbol::short("RNDDEADL");
+const GLOBAL_ROUND_BOUNDS_KEY: Symbol = Symbol::short("GRNDBND");
 
 pub struct ArenaStorage;
 
@@ -273,5 +274,25 @@ impl ArenaStorage {
 
     pub fn get_round_deadline(env: &Env) -> Option<u64> {
         env.storage().instance().get(&ROUND_DEADLINE_KEY)
+    }
+
+    // ── Round Bounds ────────────────────────────────────────────────────
+
+    pub fn get_global_round_bounds(env: &Env) -> (u64, u64) {
+        env.storage().instance().get(&GLOBAL_ROUND_BOUNDS_KEY).unwrap_or((30, 604800))
+    }
+
+    pub fn set_global_round_bounds(env: &Env, min: u64, max: u64) {
+        env.storage().instance().set(&GLOBAL_ROUND_BOUNDS_KEY, &(min, max));
+    }
+
+    pub fn get_arena_round_bounds(env: &Env, arena_id: u32) -> (u64, u64) {
+        let key = (Symbol::short("ARNBND"), arena_id);
+        env.storage().persistent().get(&key).unwrap_or((30, 604800))
+    }
+
+    pub fn set_arena_round_bounds(env: &Env, arena_id: u32, min: u64, max: u64) {
+        let key = (Symbol::short("ARNBND"), arena_id);
+        env.storage().persistent().set(&key, &(min, max));
     }
 }
