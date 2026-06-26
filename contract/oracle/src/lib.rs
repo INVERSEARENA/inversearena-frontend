@@ -44,18 +44,20 @@ impl OracleContract {
     }
 
     /// Update the current yield rate. Only callable by the admin.
-    pub fn set_yield_bps(env: Env, rate_bps: u32) {
+    /// Returns `Err(OracleError::NotInitialized)` if called before `initialize`.
+    pub fn set_yield_bps(env: Env, rate_bps: u32) -> Result<(), OracleError> {
         let admin: Address = env
             .storage()
             .persistent()
             .get(&soroban_sdk::symbol_short!("ADMIN"))
-            .unwrap_or_else(|| panic!("not initialised"));
+            .ok_or(OracleError::NotInitialized)?;
         admin.require_auth();
         env.storage()
             .persistent()
             .set(&soroban_sdk::symbol_short!("RATE"), &rate_bps);
         env.events()
             .publish((soroban_sdk::symbol_short!("rate_set"),), rate_bps);
+        Ok(())
     }
 
     /// Upgrade this oracle contract to `new_wasm_hash`.
