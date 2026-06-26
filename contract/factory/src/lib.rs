@@ -37,6 +37,19 @@ impl FactoryContract {
         Ok(())
     }
 
+    /// Upgrade the factory contract's code to `new_wasm_hash`.
+    ///
+    /// Admin-gated. Upgrading in place preserves all existing state — admin,
+    /// whitelist, pool sequence, and creator stakes — so bug fixes and new
+    /// features can ship without redeploying and losing that state.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash);
+        env.events().publish((symbol_short!("UPGRADE"),), ());
+        Ok(())
+    }
+
     pub fn set_arena_wasm_hash(env: Env, wasm_hash: BytesN<32>) -> Result<(), FactoryError> {
         Self::require_admin(&env)?;
         FactoryStorage::save_arena_wasm_hash(&env, &wasm_hash);
@@ -423,6 +436,22 @@ mod test {
             .expect("must still error (no wasm hash configured)")
             .expect("error must be a contract error");
         assert_ne!(err_after, FactoryError::UnsupportedToken);
+    }
+
+    #[test]
+    fn upgrade_rejects_non_admin() {
+        let (env, client, _admin, _host) = setup();
+
+        // Drop the mocked auths so the admin's signature is genuinely required;
+        // a non-admin caller cannot supply it.
+        env.set_auths(&[]);
+
+        let new_wasm = BytesN::from_array(&env, &[0u8; 32]);
+        let err = client.try_upgrade(&new_wasm);
+        assert!(
+            err.is_err(),
+            "upgrade without the admin's authorization must be rejected"
+        );
     }
 
     #[test]
