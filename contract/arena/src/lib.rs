@@ -194,6 +194,12 @@ impl ArenaContract {
         if ArenaStorage::is_player_banned(&env, &player) {
             return Err(ArenaError::PlayerBanned);
         }
+        // Reject a second join by the same player: charging the entry fee twice
+        // and inflating the player count would corrupt the game. A player who
+        // has joined already has stored player state.
+        if ArenaStorage::load_player(&env, &player).is_some() {
+            return Err(ArenaError::AlreadyJoined);
+        }
         if let Some(max_players) = ArenaStorage::load_max_players(&env)
             && config.player_count >= max_players
         {

@@ -221,4 +221,7 @@ pub enum ArenaError {
 
     /// Returned when an operation is attempted before the required deadline has passed.
     DeadlineTooSoon = 28,
+
+    /// Returned when a player who has already joined the arena tries to join again.
+    AlreadyJoined = 29,
 }
