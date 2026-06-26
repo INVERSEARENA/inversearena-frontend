@@ -1,5 +1,5 @@
 use soroban_sdk::{Env, Symbol, Address, BytesN, Vec};
-use crate::types::{ArenaConfig, Choice, GlobalStats, RwaYieldRecord};
+use crate::types::{ArenaConfig, Choice, GlobalStats, RwaYieldRecord, PlayerProfile};
 use crate::errors::ArenaError;
 
 const CONFIG_KEY: Symbol = Symbol::short("CONFIG");
@@ -273,5 +273,17 @@ impl ArenaStorage {
 
     pub fn get_round_deadline(env: &Env) -> Option<u64> {
         env.storage().instance().get(&ROUND_DEADLINE_KEY)
+    }
+
+    // ── Player Profile ──────────────────────────────────────────────────
+
+    pub fn load_player_profile(env: &Env, player: &Address) -> PlayerProfile {
+        let key = (Symbol::short("PROFILE"), player.clone());
+        env.storage().persistent().get(&key).unwrap_or_default()
+    }
+
+    pub fn save_player_profile(env: &Env, player: &Address, profile: &PlayerProfile) {
+        let key = (Symbol::short("PROFILE"), player.clone());
+        env.storage().persistent().set(&key, profile);
     }
 }

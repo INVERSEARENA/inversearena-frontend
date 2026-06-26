@@ -11,7 +11,7 @@ mod test;
 
 use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, BytesN, Env, String, Symbol, Vec};
 use storage::ArenaStorage;
-use types::{ArenaConfig, GameState, Choice, GlobalStats, RoundResult, RwaYieldRecord};
+use types::{ArenaConfig, GameState, Choice, GlobalStats, RoundResult, RwaYieldRecord, PlayerProfile};
 use events::ArenaEvents;
 use errors::ArenaError;
 use validation::{validate_deadline, validate_entry_fee};
@@ -348,6 +348,11 @@ impl ArenaContract {
                     ArenaStorage::set_player_active(&env, &player, false);
                     eliminated += 1;
                     ArenaEvents::player_eliminated(&env, &player);
+
+                    let mut profile = ArenaStorage::load_player_profile(&env, &player);
+                    profile.games_played = profile.games_played.saturating_add(1);
+                    profile.survival_streak = 0;
+                    ArenaStorage::save_player_profile(&env, &player, &profile);
                 } else {
                     active_players.push_back(player.clone());
                 }
@@ -376,6 +381,11 @@ impl ArenaContract {
                                 ArenaStorage::set_player_active(&env, &player, false);
                                 eliminated += 1;
                                 ArenaEvents::player_eliminated(&env, &player);
+
+                                let mut profile = ArenaStorage::load_player_profile(&env, &player);
+                                profile.games_played = profile.games_played.saturating_add(1);
+                                profile.survival_streak = 0;
+                                ArenaStorage::save_player_profile(&env, &player, &profile);
                             }
                             Choice::Heads => {
                                 survivors += 1;
@@ -401,6 +411,11 @@ impl ArenaContract {
                         ArenaStorage::set_player_active(&env, &player, false);
                         eliminated += 1;
                         ArenaEvents::player_eliminated(&env, &player);
+
+                        let mut profile = ArenaStorage::load_player_profile(&env, &player);
+                        profile.games_played = profile.games_played.saturating_add(1);
+                        profile.survival_streak = 0;
+                        ArenaStorage::save_player_profile(&env, &player, &profile);
                     } else {
                         survivors += 1;
                     }
@@ -492,6 +507,16 @@ impl ArenaContract {
         ArenaStorage::set_prize_claimed(&env);
 
         ArenaEvents::prize_claimed(&env, &winner);
+
+        let mut profile = ArenaStorage::load_player_profile(&env, &winner);
+        profile.games_played = profile.games_played.saturating_add(1);
+        profile.games_won = profile.games_won.saturating_add(1);
+        profile.total_earnings = profile.total_earnings.saturating_add(prize);
+        profile.survival_streak = profile.survival_streak.saturating_add(1);
+        if profile.survival_streak > profile.best_streak {
+            profile.best_streak = profile.survival_streak;
+        }
+        ArenaStorage::save_player_profile(&env, &winner, &profile);
 
         Ok(())
     }
@@ -688,6 +713,10 @@ impl ArenaContract {
     /// this is O(1) — no arena scan needed. (Issue #895)
     pub fn get_global_stats(env: Env) -> GlobalStats {
         ArenaStorage::load_global_stats(&env)
+    }
+
+    pub fn get_player_profile(env: Env, player: Address) -> PlayerProfile {
+        ArenaStorage::load_player_profile(&env, &player)
     }
 
     /// Receive a yield deposit from an external RWA adapter and grow the
