@@ -115,7 +115,7 @@ export function LeaderboardTable({
               <RankTableRow
                 key={survivor.id}
                 survivor={survivor}
-                onChallenge={onChallenge}
+                {...(onChallenge !== undefined && { onChallenge })}
               />
             ))}
           </tbody>

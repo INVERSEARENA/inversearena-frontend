@@ -55,8 +55,9 @@ export class SqlTransactionRepository implements TransactionRepository {
       "SELECT * FROM transactions WHERE idempotency_key = $1 LIMIT 1",
       [idempotencyKey]
     );
-    if (result.rows.length === 0) return null;
-    return mapRow(result.rows[0]);
+    const row = result.rows[0];
+    if (row === undefined) return null;
+    return mapRow(row);
   }
 
   async findById(id: string): Promise<TransactionRecord | null> {
@@ -64,8 +65,9 @@ export class SqlTransactionRepository implements TransactionRepository {
       "SELECT * FROM transactions WHERE id = $1 LIMIT 1",
       [id]
     );
-    if (result.rows.length === 0) return null;
-    return mapRow(result.rows[0]);
+    const row = result.rows[0];
+    if (row === undefined) return null;
+    return mapRow(row);
   }
 
   async reserveNextNonce(sourceAccount: string): Promise<number> {

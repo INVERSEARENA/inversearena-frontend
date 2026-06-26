@@ -162,7 +162,7 @@ function randomInt(rng: RNG, min: number, max: number): number {
  */
 function randomChoice<T>(rng: RNG, array: T[]): T {
   const index = Math.floor(rng.next() * array.length);
-  return array[index];
+  return array[index]!;
 }
 
 /**
@@ -403,14 +403,14 @@ export function createMockArena(
   const participantCount = randomInt(rng, 3, 5);
   const participants: PlayerEntry[] = [];
   for (let i = 0; i < participantCount; i++) {
-    participants.push(createMockParticipant({}, { seed: options?.seed ? options.seed + i : undefined }));
+    participants.push(createMockParticipant({}, options?.seed !== undefined ? { seed: options.seed + i } : undefined));
   }
   
   // Generate default rounds (1-3 rounds)
   const roundCount = randomInt(rng, 1, 3);
   const rounds: RoundResult[] = [];
   for (let i = 0; i < roundCount; i++) {
-    rounds.push(createMockRoundResult({ round: i + 1 }, { seed: options?.seed ? options.seed + i + 100 : undefined }));
+    rounds.push(createMockRoundResult({ round: i + 1 }, options?.seed !== undefined ? { seed: options.seed + i + 100 } : undefined));
   }
   
   const defaults: Arena = {
@@ -424,7 +424,7 @@ export function createMockArena(
     createdAt: Date.now(),
     participants,
     rounds,
-    yieldData: createMockYieldSnapshot({}, { seed: options?.seed ? options.seed + 1000 : undefined }),
+    yieldData: createMockYieldSnapshot({}, options?.seed !== undefined ? { seed: options.seed + 1000 } : undefined),
   };
   
   return {

@@ -61,6 +61,46 @@
             "legendFormat": "p95"
           }
         ]
+      },
+      {
+        "title": "Active Arenas",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "inversearena_arenas_active_total",
+            "legendFormat": "active arenas"
+          }
+        ]
+      },
+      {
+        "title": "Arena State Transitions",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(inversearena_arena_state_transitions_total[5m])",
+            "legendFormat": "{{from_state}} -> {{to_state}}"
+          }
+        ]
+      },
+      {
+        "title": "Players Eliminated",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(inversearena_players_eliminated_total[5m])",
+            "legendFormat": "eliminations"
+          }
+        ]
+      },
+      {
+        "title": "Payout Success Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(inversearena_payouts_success_total[5m])",
+            "legendFormat": "{{asset}}"
+          }
+        ]
       }
     ],
     "refresh": "10s",

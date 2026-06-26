@@ -42,6 +42,7 @@ async function testDeterministicResolution() {
       { userId: users[2].id, choice: 'HIGH', stake: 150 },
       { userId: users[3].id, choice: 'LOW', stake: 50 },
     ],
+    allActivePlayerIds: users.map(u => u.id),
     oracleYield: 5.5,
     randomSeed: 'test-seed-123',
   };
@@ -73,6 +74,7 @@ async function testTransactionRollback() {
     playerChoices: [
       { userId: users[0].id, choice: 'HIGH', stake: 100 },
     ],
+    allActivePlayerIds: users.map(u => u.id),
     oracleYield: 5.5,
   };
 
@@ -97,6 +99,7 @@ async function testPayoutCalculation() {
       { userId: users[1].id, choice: 'LOW', stake: 100 },
       { userId: users[2].id, choice: 'HIGH', stake: 100 },
     ],
+    allActivePlayerIds: users.map(u => u.id),
     oracleYield: 10,
     randomSeed: 'payout-test',
   };

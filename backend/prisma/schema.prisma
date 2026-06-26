@@ -81,6 +81,22 @@ model Transaction {
   @@map("transactions")
 }
 
+model AuditLog {
+  id          String   @id @default(uuid())
+  adminId     String   @map("admin_id")
+  action      String
+  resourceId  String?  @map("resource_id")
+  metadata    Json?
+  ipAddress   String   @map("ip_address")
+  userAgent   String?  @map("user_agent")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([adminId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
 model EliminationLog {
   id          String   @id @default(uuid())
   roundId     String   @map("round_id")

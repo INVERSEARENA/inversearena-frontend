@@ -9,9 +9,7 @@
 
 import { useState } from 'react';
 import { fetchArenaState } from '@/shared-d/utils/stellar-transactions';
-// Note: Update this import path based on your actual hook location
-// import { useArenaState } from '@/hooks/arena/useArenaState';
-import { useArenaState } from '../src/hooks/arena/useArenaState';
+import { useArenaState } from '@/features/arena/useArenaState';
 
 /**
  * Example 1: Direct function call
@@ -97,11 +95,9 @@ export function HookExample() {
   const [userAddress, setUserAddress] = useState('');
   const [enabled, setEnabled] = useState(false);
 
-  const { arenaState, loading, error, refetch } = useArenaState(
-    enabled ? arenaId : '',
-    enabled ? userAddress || undefined : undefined,
-    { refreshInterval: 5000 } // Refresh every 5 seconds
-  );
+  const { state: arenaState, health } = useArenaState(enabled ? arenaId : '');
+  const loading = enabled && !arenaState && health === 'connected';
+  const error = health === 'offline' ? 'Arena state is currently offline' : null;
 
   return (
     <div className="p-4 border rounded">
@@ -133,13 +129,9 @@ export function HookExample() {
             {enabled ? 'Stop Polling' : 'Start Polling'}
           </button>
           
-          <button
-            onClick={refetch}
-            disabled={!enabled || loading}
-            className="px-4 py-2 bg-gray-500 text-white rounded disabled:opacity-50"
-          >
-            Refresh Now
-          </button>
+          <span className="px-4 py-2 bg-gray-100 text-gray-700 rounded">
+            {health}
+          </span>
         </div>
       </div>
 
@@ -161,16 +153,16 @@ export function HookExample() {
             <h3 className="font-bold mb-2">Arena State (Auto-updating):</h3>
             <div className="grid grid-cols-2 gap-2 text-sm">
               <div>Arena ID:</div>
-              <div className="font-mono text-xs">{arenaState.arenaId}</div>
+              <div className="font-mono text-xs">{arenaState.id}</div>
               
               <div>Survivors:</div>
-              <div>{arenaState.survivorCount} / {arenaState.maxCapacity}</div>
+              <div>{arenaState.survivorsCount} / {arenaState.maxCapacity}</div>
               
               <div>Round:</div>
-              <div>{arenaState.roundNumber}</div>
+              <div>{arenaState.currentRound}</div>
               
               <div>Game State:</div>
-              <div className="font-bold">{arenaState.gameState}</div>
+              <div className="font-bold">{arenaState.state}</div>
               
               <div>Current Stake:</div>
               <div>{arenaState.currentStake} XLM</div>
@@ -202,7 +194,9 @@ export function ArenaDashboard({ arenaId, userAddress }: {
   arenaId: string; 
   userAddress?: string;
 }) {
-  const { arenaState, loading, error } = useArenaState(arenaId, userAddress);
+  const { state: arenaState, health } = useArenaState(arenaId);
+  const loading = !arenaState && health === 'connected';
+  const error = health === 'offline' ? 'Arena state is currently offline' : null;
 
   if (loading && !arenaState) {
     return (
@@ -225,22 +219,23 @@ export function ArenaDashboard({ arenaId, userAddress }: {
     return null;
   }
 
-  const progressPercent = (arenaState.survivorCount / arenaState.maxCapacity) * 100;
+  const progressPercent = (arenaState.survivorsCount / arenaState.maxCapacity) * 100;
+  const gameState = arenaState.state.toUpperCase();
 
   return (
     <div className="p-6 bg-white rounded-lg shadow-lg">
       <div className="flex justify-between items-start mb-6">
         <div>
-          <h2 className="text-2xl font-bold">Arena #{arenaState.arenaId.slice(-8)}</h2>
-          <p className="text-gray-600">Round {arenaState.roundNumber}</p>
+          <h2 className="text-2xl font-bold">Arena #{arenaState.id.slice(-8)}</h2>
+          <p className="text-gray-600">Round {arenaState.currentRound}</p>
         </div>
         <div className={`px-3 py-1 rounded-full text-sm font-bold ${
-          arenaState.gameState === 'ACTIVE' ? 'bg-green-100 text-green-800' :
-          arenaState.gameState === 'JOINING' ? 'bg-blue-100 text-blue-800' :
-          arenaState.gameState === 'ENDED' ? 'bg-gray-100 text-gray-800' :
+          arenaState.state === 'active' ? 'bg-green-100 text-green-800' :
+          arenaState.state === 'open' ? 'bg-blue-100 text-blue-800' :
+          arenaState.state === 'finished' ? 'bg-gray-100 text-gray-800' :
           'bg-yellow-100 text-yellow-800'
         }`}>
-          {arenaState.gameState}
+          {gameState}
         </div>
       </div>
 
@@ -249,7 +244,7 @@ export function ArenaDashboard({ arenaId, userAddress }: {
           <div className="flex justify-between text-sm mb-1">
             <span>Survivors</span>
             <span className="font-bold">
-              {arenaState.survivorCount} / {arenaState.maxCapacity}
+              {arenaState.survivorsCount} / {arenaState.maxCapacity}
             </span>
           </div>
           <div className="w-full bg-gray-200 rounded-full h-2">

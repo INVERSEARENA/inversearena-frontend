@@ -23,7 +23,7 @@ export default function LeaderboardPage() {
   >();
   const [displayedCount, setDisplayedCount] = useState(INITIAL_PAGE_SIZE);
 
-  const { survivors, loading, error, hasMore, fetchMore } =
+  const { survivors, loading: isLoading, error, hasMore, fetchMore } =
     useLeaderboard(INITIAL_PAGE_SIZE);
 
   // Top 3 go to the podium; the rest fill the table
@@ -64,12 +64,12 @@ export default function LeaderboardPage() {
 
   // Handle loading more data when reaching the end
   const handleLoadMore = useCallback(async () => {
-    if (hasMore && !loading) {
+    if (hasMore && !isLoading) {
       await fetchMore();
       setDisplayedCount((prev) => prev + INITIAL_PAGE_SIZE);
       setCurrentPage(1); // Reset to first page after loading more
     }
-  }, [hasMore, loading, fetchMore]);
+  }, [hasMore, isLoading, fetchMore]);
 
   // Build podium display order: rank 2, rank 1, rank 3 (visual layout)
   const podiumOrdered = [
@@ -251,11 +251,11 @@ export default function LeaderboardPage() {
       <LeaderboardTable
         survivors={paginatedSurvivors}
         onChallenge={handleChallenge}
-        isLoading={loading}
+        isLoading={isLoading}
       />
 
       {/* Pagination & Load More */}
-      {!loading && (
+      {!isLoading && (
         <div className="flex flex-col items-center gap-4">
           <Pagination
             currentPage={currentPage}
@@ -265,7 +265,7 @@ export default function LeaderboardPage() {
           {hasMore && (
             <button
               onClick={handleLoadMore}
-              disabled={loading}
+              disabled={isLoading}
               className="mt-2 border border-[#37FF1C] bg-transparent px-6 py-2 text-sm font-mono uppercase tracking-[0.2em] text-[#37FF1C] transition-colors hover:bg-[#37FF1C] hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
             >
               Load More
@@ -277,7 +277,7 @@ export default function LeaderboardPage() {
       <PoolCreationModal
         isOpen={isChallengeModalOpen}
         onClose={() => setIsChallengeModalOpen(false)}
-        challengedSurvivor={targetedSurvivor}
+        {...(targetedSurvivor !== undefined && { challengedSurvivor: targetedSurvivor })}
       />
     </div>
   );

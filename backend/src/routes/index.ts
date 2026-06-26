@@ -7,6 +7,8 @@ import { createTransactionsRouter } from "./transactions";
 import { createOracleRouter } from "./oracle";
 import { createArenasRouter } from "./arenas";
 import { createLeaderboardRouter } from "./leaderboard";
+import { createPoolsRouter } from "./pools";
+import { createDocsRouter } from "./docs";
 import type { PayoutsController } from "../controllers/payouts.controller";
 import type { WorkerController } from "../controllers/worker.controller";
 import type { AuthController } from "../controllers/auth.controller";
@@ -25,6 +27,7 @@ export function createApiRouter(
 ): Router {
   const router = Router();
 
+  router.use(createDocsRouter());
   router.use("/auth", createAuthRouter(authController, requireAuth));
   router.use("/users", createUsersRouter(usersController, requireAuth));
   router.use("/payouts", createPayoutsRouter(payoutsController));
@@ -35,7 +38,8 @@ export function createApiRouter(
     createTransactionsRouter(transactionsController),
   );
   router.use("/oracle", createOracleRouter());
-  router.use("/arenas", createArenasRouter());
+  router.use("/arenas", createArenasRouter(requireAuth));
+  router.use("/pools", createPoolsRouter(requireAuth));
   router.use(
     "/leaderboard",
     createLeaderboardRouter(leaderboardController, requireAuth),

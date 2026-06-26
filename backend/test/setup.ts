@@ -4,7 +4,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 process.env.JWT_SECRET = "super-secret-test-key-must-be-at-least-32-chars";
 process.env.NONCE_TTL_SECONDS = "300";
-process.env.ADMIN_API_KEY = "test-admin-key";
+process.env.ADMIN_API_KEY = "test-admin-key-at-least-32-chars-long";
+process.env.ORACLE_WEBHOOK_SECRET = "test-oracle-webhook-secret";
 process.env.MONGOMS_MD5_CHECK = "0";
 
 import { redis } from "../src/cache/redisClient";

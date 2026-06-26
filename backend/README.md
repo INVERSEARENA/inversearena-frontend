@@ -105,6 +105,57 @@ Set these values in deployment secrets (never commit private keys):
 
 ---
 
+## API Documentation
+
+- **OpenAPI spec**: `GET /api/docs.json` (OpenAPI 3.1, generated from Zod schemas)
+- **Swagger UI**: `GET /api/docs`
+
+## Rate Limiting
+
+Redis-backed limits (`rate-limiter-flexible`) apply to:
+
+- `POST /api/auth/nonce`
+- `POST /api/auth/verify` (IP + wallet dual scope)
+- `POST /api/auth/refresh`
+- `POST /api/pools`
+
+Violations return HTTP `429` with a `Retry-After` header. Configure via `RATE_LIMIT_*` env vars (see `.env.example`).
+
+## API Endpoints
+
+### Arena Participants
+
+**GET /api/arenas/:id/participants**
+
+Returns a paginated list of participants in a specific arena with their status (active/eliminated).
+
+**Query Parameters:**
+- `limit` (optional): Number of items per page (1-100, default: 25)
+- `cursor` (optional): Opaque pagination cursor from previous response
+
+**Response:**
+```json
+{
+  "items": [
+    {
+      "walletAddress": "GABC...",
+      "status": "active",
+      "joinedAt": "2026-05-29T10:30:00.000Z"
+    }
+  ],
+  "cursor": "eyJvZmZzZXQiOjI1fQ",
+  "hasMore": true
+}
+```
+
+**Status Codes:**
+- `200`: Success
+- `404`: Arena not found
+
+**Cache:** 5 seconds
+
+---
+
 ## Documentation
 
 - **[Metrics & Monitoring](./docs/METRICS.md)** - Prometheus metrics guide

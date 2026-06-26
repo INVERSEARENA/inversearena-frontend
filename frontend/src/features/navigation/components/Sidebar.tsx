@@ -4,6 +4,7 @@ import { dashboardNavItems } from "../navItems";
 import { SidebarNavLink } from "./SidebarNavLink";
 import { useWallet } from "@/features/wallet/useWallet";
 import { ConnectWalletButton } from "@/components/wallet/ConnectWalletButton";
+import { ThemeToggle } from "@/components/ui/ThemeToggle";
 
 import type { ReactNode } from "react";
 
@@ -144,35 +145,9 @@ export function Sidebar() {
             </div>
           </>
         )}
-        <div className="flex items-center gap-2 text-xs font-semibold text-[#39ff14]">
-          <span className="inline-block size-2 rounded-full bg-[#39ff14]" />
-          WALLET CONNECTED
-        </div>
-        <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-white/10 bg-white/5 px-3 py-2">
-          <div className="truncate text-sm font-semibold text-zinc-200">
-            0x71...8A92
-          </div>
-          <button
-            type="button"
-            className="shrink-0 rounded-md p-1.5 text-zinc-400 hover:bg-white/10 hover:text-white"
-            aria-label="Open wallet"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-              <polyline points="15 3 21 3 21 9" />
-              <line x1="10" y1="14" x2="21" y2="3" />
-            </svg>
-          </button>
+        <div className="mt-4 flex items-center justify-between border-t border-white/10 pt-4">
+          <span className="text-xs font-semibold text-zinc-400">THEME</span>
+          <ThemeToggle />
         </div>
       </div>
     </aside>

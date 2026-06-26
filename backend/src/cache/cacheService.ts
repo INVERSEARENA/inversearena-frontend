@@ -42,5 +42,18 @@ export const cacheKeys = {
 export const cacheTTL = {
   ORACLE_YIELD: 60,
   ARENA_STATS: 15,
+  ARENA_ROUNDS: 10,
   LEADERBOARD: 30,
 } as const;
+
+/**
+ * Explicit cache invalidation (#695).
+ *
+ * Arena stats are cached for {@link cacheTTL.ARENA_STATS} to absorb the heavy
+ * per-arena read under polling load. The TTL alone means a resolved round isn't
+ * reflected for up to 15s; invalidating on round resolution drops the entry so
+ * the next read recomputes fresh stats immediately.
+ */
+export async function invalidateArenaStats(arenaId: string): Promise<void> {
+  await cache.del(cacheKeys.arenaStats(arenaId));
+}

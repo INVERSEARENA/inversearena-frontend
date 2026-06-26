@@ -12,10 +12,5 @@ soroban-sdk = { workspace = true }
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
 proptest = "1"
-factory = { path = "../factory" }
-payout = { path = "../payout" }
-serde_json = "1"
-
-[features]
-integration-tests = []
-
+oracle = { path = "../oracle" }
+rwa-adapter = { path = "../rwa-adapter" }

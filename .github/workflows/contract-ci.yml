@@ -34,17 +34,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Run contract tests
-        working-directory: ./contract
-        run: cargo test --workspace
-
       - name: Install Soroban CLI system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libdbus-1-dev libudev-dev libusb-1.0-0-dev
 
-      - name: Install Soroban CLI
-        run: cargo install --locked soroban-cli
+      - name: Run contract tests
+        working-directory: ./contract
+        run: cargo test --workspace
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli
 
       - name: Optimize contract WASM and enforce size budget
         working-directory: ./contract

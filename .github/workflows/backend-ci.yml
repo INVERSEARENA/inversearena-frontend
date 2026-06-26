@@ -2,9 +2,9 @@ name: Backend CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 jobs:
   test:
@@ -36,7 +36,7 @@ jobs:
           --health-retries 5
 
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Node.js
@@ -54,9 +54,7 @@ jobs:
         working-directory: ./backend
         env:
           DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest
-        run: |
-          npx prisma generate
-          npx prisma migrate deploy
+        run: npx prisma migrate deploy
 
       - name: Run Integration Tests
         working-directory: ./backend

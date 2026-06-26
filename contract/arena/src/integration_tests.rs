@@ -1,363 +1,208 @@
-//! Integration tests for the complete game lifecycle.
-//!
-//! These tests exercise all three contracts (Factory, Arena, Payout) together
-//! in a single Soroban test environment, verifying that they interact correctly
-//! across the full sequence: pool creation → rounds → submissions → timeouts →
-//! payout distribution.
 #![cfg(test)]
 
 extern crate std;
 
-use std::vec;
-
-use factory::{FactoryContract, FactoryContractClient};
-use payout::{PayoutContract, PayoutContractClient};
+use super::*;
+use ::oracle::{OracleContract, OracleContractClient};
+use ::rwa_adapter::{RwaAdapter, RwaAdapterClient};
 use soroban_sdk::{
-    Address, BytesN, Env,
-    testutils::{Address as _, Ledger, LedgerInfo},
-    token::{StellarAssetClient, TokenClient},
+    Address, BytesN, Env, Symbol, TryFromVal,
+    testutils::{Address as _, Events as _, Ledger as _},
+    token::StellarAssetClient,
 };
 
-use super::*;
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-fn dummy_wasm_hash(env: &Env) -> BytesN<32> {
-    BytesN::from_array(env, &[0xabu8; 32])
+fn compute_commitment(env: &Env, choice: Choice, salt: &BytesN<32>) -> BytesN<32> {
+    ArenaContract::compute_commitment(env, choice, salt)
 }
 
-/// Set ledger sequence with safe TTL values.
-fn set_seq(env: &Env, seq: u32) {
-    let ledger = env.ledger().get();
-    env.ledger().set(LedgerInfo {
-        sequence_number: seq,
-        timestamp: 1_700_000_000 + seq as u64,
-        protocol_version: 22,
-        network_id: ledger.network_id,
-        base_reserve: ledger.base_reserve,
-        min_temp_entry_ttl: u32::MAX / 4,
-        min_persistent_entry_ttl: u32::MAX / 4,
-        max_entry_ttl: u32::MAX / 4,
-    });
-}
+#[test]
+fn full_game_lifecycle_commit_reveal() {
+    let env = Env::default();
+    env.mock_all_auths();
 
-/// Deploy and initialise all three contracts, returning their clients.
-fn deploy_all(
-    env: &Env,
-    admin: &Address,
-) -> (
-    FactoryContractClient<'static>,
-    PayoutContractClient<'static>,
-) {
-    let env_s: &'static Env = unsafe { &*(env as *const Env) };
+    let mut all_events = std::vec::Vec::new();
 
-    let factory_id = env.register(FactoryContract, ());
-    let payout_id = env.register(PayoutContract, ());
+    // 1. Setup participants
+    let admin = Address::generate(&env);
+    let p1 = Address::generate(&env);
+    let p2 = Address::generate(&env);
+    let p3 = Address::generate(&env);
+    let p4 = Address::generate(&env);
+    let token_admin = Address::generate(&env);
 
-    let factory = FactoryContractClient::new(env_s, &factory_id);
-    let payout = PayoutContractClient::new(env_s, &payout_id);
+    // 2. Deploy and initialize SAC token
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+    let token_client = token::TokenClient::new(&env, &token_id);
+    let token_admin_client = StellarAssetClient::new(&env, &token_id);
 
-    factory.initialize(admin);
-    payout.initialize(admin);
+    // Mint entry fees (100 each)
+    token_admin_client.mint(&p1, &100);
+    token_admin_client.mint(&p2, &100);
+    token_admin_client.mint(&p3, &100);
+    token_admin_client.mint(&p4, &100);
 
-    (factory, payout)
-}
+    assert_eq!(token_client.balance(&p1), 100);
+    assert_eq!(token_client.balance(&p2), 100);
+    assert_eq!(token_client.balance(&p3), 100);
+    assert_eq!(token_client.balance(&p4), 100);
 
-fn deploy_arena(
-    env: &Env,
-    admin: &Address,
-    round_speed: u32,
-    required_stake: i128,
-    token: &Address,
-) -> ArenaContractClient<'static> {
-    let env_s: &'static Env = unsafe { &*(env as *const Env) };
+    // 3. Deploy and initialize Oracle
+    let oracle_id = env.register(OracleContract, ());
+    let oracle_client = OracleContractClient::new(&env, &oracle_id);
+    oracle_client.initialize(&admin, &500); // 5% yield rate
+    all_events.extend(env.events().all().iter());
+
+    // 4. Deploy and initialize RWA Adapter
+    let rwa_id = env.register(RwaAdapter, ());
+    let rwa_client = RwaAdapterClient::new(&env, &rwa_id);
+    rwa_client.initialize(&admin, &token_id);
+    all_events.extend(env.events().all().iter());
+
+    // 5. Deploy and initialize Arena Contract
     let arena_id = env.register(ArenaContract, ());
-    let arena = ArenaContractClient::new(env_s, &arena_id);
+    let arena_client = ArenaContractClient::new(&env, &arena_id);
+    arena_client.initialize(&admin, &token_id, &rwa_id, &100, &oracle_id);
+    all_events.extend(env.events().all().iter());
 
-    arena.init(&round_speed, &required_stake);
-    arena.initialize(admin);
-    arena.set_token(token);
+    // Verify Arena is in Open state
+    assert_eq!(arena_client.player_count(), 0);
 
-    arena
-}
+    // 6. Players join
+    arena_client.join_arena(&p1);
+    arena_client.join_arena(&p2);
+    arena_client.join_arena(&p3);
+    arena_client.join_arena(&p4);
+    all_events.extend(env.events().all().iter());
 
-fn join_players(
-    env: &Env,
-    arena: &ArenaContractClient<'_>,
-    token: &StellarAssetClient<'_>,
-    players: &[Address],
-    stake: i128,
-) {
-    env.mock_all_auths();
-    for player in players {
-        token.mint(player, &(stake * 10));
-        arena.join(player, &stake);
-    }
-}
+    assert_eq!(arena_client.player_count(), 4);
+    assert_eq!(token_client.balance(&p1), 0);
+    assert_eq!(token_client.balance(&p2), 0);
+    assert_eq!(token_client.balance(&p3), 0);
+    assert_eq!(token_client.balance(&p4), 0);
+    // Entry fees (400 total) are held by the Arena Contract
+    assert_eq!(token_client.balance(&arena_id), 400);
 
-// ── AC: Full lifecycle runs without error ─────────────────────────────────────
+    // 7. Start Round 1
+    let start_ts = 1000;
+    env.ledger().with_mut(|li| li.timestamp = start_ts);
+    arena_client.start_round(&3600); // 1 hour duration
+    all_events.extend(env.events().all().iter());
 
-/// Complete game lifecycle: factory creates pool → arena runs 3 rounds with
-/// 8 players → payout distributes winnings to the survivor.
-#[test]
-fn lifecycle_full_game_three_rounds_eight_players() {
-    let env = Env::default();
-    env.mock_all_auths();
-    set_seq(&env, 1_000);
+    // 8. Players submit commitments
+    let salt_1 = BytesN::from_array(&env, &[1u8; 32]);
+    let salt_2 = BytesN::from_array(&env, &[2u8; 32]);
+    let salt_3 = BytesN::from_array(&env, &[3u8; 32]);
+    let salt_4 = BytesN::from_array(&env, &[4u8; 32]);
 
-    let admin = Address::generate(&env);
-    let (_factory, payout) = deploy_all(&env, &admin);
+    // Player 1 chooses Tails (minority), others choose Heads (majority)
+    let c1 = compute_commitment(&env, Choice::Tails, &salt_1);
+    let c2 = compute_commitment(&env, Choice::Heads, &salt_2);
+    let c3 = compute_commitment(&env, Choice::Heads, &salt_3);
+    let c4 = compute_commitment(&env, Choice::Heads, &salt_4);
 
-    let token_admin = Address::generate(&env);
-    let xlm_address = env
-        .register_stellar_asset_contract_v2(token_admin.clone())
-        .address();
-    let token = StellarAssetClient::new(&env, &xlm_address);
-    let round_speed = 10u32;
-    let _capacity = 8u32;
-    let stake = 10_000_000i128;
+    arena_client.submit_commitment(&p1, &c1);
+    arena_client.submit_commitment(&p2, &c2);
+    arena_client.submit_commitment(&p3, &c3);
+    arena_client.submit_commitment(&p4, &c4);
+    all_events.extend(env.events().all().iter());
 
-    let arena = deploy_arena(&env, &admin, round_speed, stake, &xlm_address);
+    // 9. Advance time past the deadline to allow revealing
+    env.ledger().with_mut(|li| li.timestamp = start_ts + 3601);
 
-    // ── Step 2: Rounds ────────────────────────────────────────────────────────
-    // Generate 8 players.
-    let players: std::vec::Vec<Address> = (0..8).map(|_| Address::generate(&env)).collect();
-    join_players(&env, &arena, &token, &players, stake);
+    // 10. Players reveal choice
+    arena_client.reveal_choice(&p1, &Choice::Tails, &salt_1);
+    arena_client.reveal_choice(&p2, &Choice::Heads, &salt_2);
+    arena_client.reveal_choice(&p3, &Choice::Heads, &salt_3);
+    arena_client.reveal_choice(&p4, &Choice::Heads, &salt_4);
+    all_events.extend(env.events().all().iter());
 
-    // ── Step 3: Round 1 — all 8 players submit ────────────────────────────────
-    set_seq(&env, 1_010);
-    let r1 = arena.start_round();
-    assert_eq!(r1.round_number, 1);
+    // 11. Resolve Round (eliminates majority, so p2, p3, p4 are eliminated)
+    arena_client.resolve_round();
+    all_events.extend(env.events().all().iter());
 
-    set_seq(&env, 1_015);
-    for (i, p) in players.iter().enumerate() {
-        let choice = if i % 2 == 0 {
-            Choice::Heads
-        } else {
-            Choice::Tails
-        };
-        arena.submit_choice(p, &r1.round_number, &choice);
-    }
+    // Verify player active status
+    let players = arena_client.get_players(&0);
+    assert_eq!(players.len(), 4);
 
-    set_seq(&env, 1_021);
-    arena.timeout_round();
+    let get_player_active = |p: &Address| -> bool {
+        players
+            .iter()
+            .find(|(addr, _)| addr == p)
+            .map(|(_, state)| state.active)
+            .unwrap_or(false)
+    };
 
-    // ── Step 4 & 5: (Simplified for brevity in this refactored test) ──────────
-
-    // ── Step 6: Payout — distribute winnings using the payout contract ───────
-    let winner = players[0].clone();
-    let prize_amount = 80_000_000i128;
-    token.mint(&payout.address, &prize_amount);
-
-    payout.set_treasury(&admin); // Dust goes to admin for this test
-    payout.distribute_prize(
-        &1u32,
-        &prize_amount,
-        &soroban_sdk::vec![&env, winner.clone()],
-        &xlm_address,
+    assert!(get_player_active(&p1), "Player 1 (minority) must survive");
+    assert!(
+        !get_player_active(&p2),
+        "Player 2 (majority) must be eliminated"
     );
-}
-
-#[test]
-fn lifecycle_full_game_resolve_round_to_claim() {
-    let env = Env::default();
-    env.mock_all_auths();
-    set_seq(&env, 2_000);
-
-    let admin = Address::generate(&env);
-    let (_factory, payout) = deploy_all(&env, &admin);
-
-    let token_admin = Address::generate(&env);
-    let token_id = env
-        .register_stellar_asset_contract_v2(token_admin.clone())
-        .address();
-    let token = StellarAssetClient::new(&env, &token_id);
-    let token_reader = TokenClient::new(&env, &token_id);
-    let stake = 10_000_000i128;
-
-    let arena = deploy_arena(&env, &admin, 5, stake, &token_id);
-
-    let players: std::vec::Vec<Address> = (0..8).map(|_| Address::generate(&env)).collect();
-    join_players(&env, &arena, &token, &players, stake);
-
-    set_seq(&env, 2_010);
-    let round_one = arena.start_round();
-    assert_eq!(round_one.round_number, 1);
-
-    for player in &players[0..5] {
-        arena.submit_choice(player, &1, &Choice::Heads);
-    }
-    for player in &players[5..8] {
-        arena.submit_choice(player, &1, &Choice::Tails);
-    }
-
-    set_seq(&env, 2_016);
-    arena.resolve_round();
-    assert_eq!(arena.get_arena_state().survivors_count, 3);
-
-    let eliminated_round_one = players[0].clone();
-    assert_eq!(
-        arena.try_submit_choice(&eliminated_round_one, &1, &Choice::Heads),
-        Err(Ok(ArenaError::PlayerEliminated))
+    assert!(
+        !get_player_active(&p3),
+        "Player 3 (majority) must be eliminated"
+    );
+    assert!(
+        !get_player_active(&p4),
+        "Player 4 (majority) must be eliminated"
     );
 
-    set_seq(&env, 2_020);
-    let round_two = arena.start_round();
-    assert_eq!(round_two.round_number, 2);
+    // 12. Fund RWA adapter with simulated yield + payout
+    // Principal (400) + Yield (5% of 400 = 20) = 420.
+    // Mint 420 tokens to RWA adapter to satisfy withdraw_all
+    token_admin_client.mint(&rwa_id, &420);
 
-    arena.submit_choice(&players[5], &2, &Choice::Heads);
-    arena.submit_choice(&players[6], &2, &Choice::Heads);
-    arena.submit_choice(&players[7], &2, &Choice::Tails);
+    // 13. Winner claims the prize
+    arena_client.claim(&p1);
+    all_events.extend(env.events().all().iter());
 
-    set_seq(&env, 2_026);
-    arena.resolve_round();
-    assert_eq!(arena.get_arena_state().survivors_count, 1);
+    // 14. Verify final balances
+    // Player 1 (winner) gets 420 tokens
+    assert_eq!(token_client.balance(&p1), 420);
+    // Eliminated players get 0 tokens
+    assert_eq!(token_client.balance(&p2), 0);
+    assert_eq!(token_client.balance(&p3), 0);
+    assert_eq!(token_client.balance(&p4), 0);
 
-    let winner = players[7].clone();
-    assert_eq!(
-        arena.try_submit_choice(&players[5], &2, &Choice::Heads),
-        Err(Ok(ArenaError::PlayerEliminated))
+    // 15. Verify correct event sequence is emitted
+    let has_event = |topic: Symbol| -> bool {
+        all_events.iter().any(|e| {
+            if let Some(val) = e.1.get(0) {
+                if let Ok(symbol) = Symbol::try_from_val(&env, &val) {
+                    return symbol == topic;
+                }
+            }
+            false
+        })
+    };
+
+    assert!(
+        has_event(soroban_sdk::symbol_short!("init")),
+        "Must emit init event"
     );
-
-    let total_prize = stake * players.len() as i128;
-    arena.set_winner(&winner, &total_prize, &0i128);
-    let winner_balance_before_claim = token_reader.balance(&winner);
-    let claimed = arena.claim(&winner);
-    assert_eq!(claimed, total_prize);
-    assert_eq!(
-        token_reader.balance(&winner),
-        winner_balance_before_claim + total_prize
+    assert!(
+        has_event(soroban_sdk::symbol_short!("join")),
+        "Must emit join event"
     );
-
-    payout.set_treasury(&admin);
-    let bonus_prize = 90i128;
-    token.mint(&payout.address, &bonus_prize);
-    let winner_balance_before_bonus = token_reader.balance(&winner);
-    payout.distribute_prize(
-        &42u32,
-        &bonus_prize,
-        &soroban_sdk::vec![&env, winner.clone()],
-        &token_id,
+    assert!(
+        has_event(soroban_sdk::symbol_short!("started")),
+        "Must emit started event"
     );
-    assert_eq!(
-        token_reader.balance(&winner),
-        winner_balance_before_bonus + bonus_prize
+    assert!(
+        has_event(soroban_sdk::symbol_short!("resolved")),
+        "Must emit resolved event"
     );
-}
-
-#[test]
-fn test_double_claim_prevention() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let admin = Address::generate(&env);
-    let (_factory, _) = deploy_all(&env, &admin);
-
-    let token_admin = Address::generate(&env);
-    let token_id = env
-        .register_stellar_asset_contract_v2(token_admin.clone())
-        .address();
-    let token = StellarAssetClient::new(&env, &token_id);
-    let arena = deploy_arena(&env, &admin, 10u32, 10_000_000i128, &token_id);
-
-    let player = Address::generate(&env);
-    let stake = 1000i128;
-    let yield_comp = 10i128;
-    token.mint(&arena.address, &(stake + yield_comp));
-
-    // Set player as winner
-    env.mock_all_auths();
-    arena.set_winner(&player, &stake, &yield_comp);
-    env.as_contract(&arena.address, || {
-        env.storage().instance().set(&GAME_FINISHED_KEY, &true);
-    });
-
-    // First claim succeeds
-    arena.claim(&player);
-
-    // Second claim must fail with AlreadyClaimed even though the pool is empty.
-    let result = arena.try_claim(&player);
-    assert_eq!(result, Err(Ok(ArenaError::AlreadyClaimed)));
-}
-
-#[test]
-fn test_payout_rounding_and_dust() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let admin = Address::generate(&env);
-    let (_, payout) = deploy_all(&env, &admin);
-
-    let treasury = Address::generate(&env);
-    payout.set_treasury(&treasury);
-
-    let total_prize = 100i128;
-    let token_admin = Address::generate(&env);
-    let currency = env
-        .register_stellar_asset_contract_v2(token_admin.clone())
-        .address();
-    let token = StellarAssetClient::new(&env, &currency);
-    token.mint(&payout.address, &total_prize);
-    let winners = soroban_sdk::vec![
-        &env,
-        Address::generate(&env),
-        Address::generate(&env),
-        Address::generate(&env)
-    ]; // 3 winners
-
-    // 100 / 3 = 33 share, 1 dust
-    payout.distribute_prize(&1u32, &total_prize, &winners, &currency);
-
-    // Verification of events (dust emitted) or state if tracked.
-    // For this test, we just ensure it doesn't panic and logic is exercised.
-}
-
-#[test]
-fn test_emergency_pause_and_resume() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let admin = Address::generate(&env);
-    let (_factory, _) = deploy_all(&env, &admin);
-    let token_admin = Address::generate(&env);
-    let xlm_address = env
-        .register_stellar_asset_contract_v2(token_admin.clone())
-        .address();
-    let token = StellarAssetClient::new(&env, &xlm_address);
-    let arena = deploy_arena(&env, &admin, 10u32, 100i128, &xlm_address);
-    let players = vec![Address::generate(&env), Address::generate(&env)];
-    join_players(&env, &arena, &token, &players, 100i128);
-
-    // Pause
-    arena.pause();
-    assert!(arena.is_paused());
-
-    // start_round should fail
-    let result = arena.try_start_round();
-    assert_eq!(result, Err(Ok(ArenaError::Paused)));
-
-    // Unpause
-    arena.unpause();
-    assert!(!arena.is_paused());
-
-    // start_round should succeed
-    arena.start_round();
-}
-
-#[test]
-fn test_upgrade_cancellation() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let admin = Address::generate(&env);
-    let (_factory, _) = deploy_all(&env, &admin);
-
-    let xlm_address = Address::generate(&env);
-    let arena = deploy_arena(&env, &admin, 10u32, 100i128, &xlm_address);
-
-    let new_wasm = dummy_wasm_hash(&env);
-
-    // Propose
-    arena.propose_upgrade(&new_wasm);
-    assert!(arena.pending_upgrade().is_some());
-
-    // Cancel
-    arena.cancel_upgrade();
-    assert!(arena.pending_upgrade().is_none());
+    assert!(
+        has_event(soroban_sdk::symbol_short!("elim")),
+        "Must emit elim event"
+    );
+    assert!(
+        has_event(soroban_sdk::symbol_short!("finished")),
+        "Must emit finished event"
+    );
+    assert!(
+        has_event(soroban_sdk::symbol_short!("claimed")),
+        "Must emit claimed event"
+    );
 }

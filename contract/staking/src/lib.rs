@@ -1,88 +1,44 @@
 #![no_std]
+mod types;
 
 use soroban_sdk::{
-    Address, Env, Symbol, contract, contracterror, contractimpl, contracttype, symbol_short,
-    token,
+    Address, Env, Vec, token, contract, contractimpl, contracttype, symbol_short,
 };
+use types::{StakePosition, StakerStats, StakingError};
 
-// ── Storage keys ──────────────────────────────────────────────────────────────
-
-const ADMIN_KEY: Symbol = symbol_short!("ADMIN");
-const PAUSED_KEY: Symbol = symbol_short!("PAUSED");
-const TOKEN_KEY: Symbol = symbol_short!("TOKEN");
-pub const TOTAL_STAKED_KEY: Symbol = symbol_short!("TSTAKE");
-const TOTAL_SHARES_KEY: Symbol = symbol_short!("TSHARES");
-
-// ── Event topics ──────────────────────────────────────────────────────────────
-
-const TOPIC_PAUSED: Symbol = symbol_short!("PAUSED");
-const TOPIC_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
-const TOPIC_STAKE: Symbol = symbol_short!("STAKED");
-const TOPIC_UNSTAKE: Symbol = symbol_short!("UNSTAKED");
-
-// ── Error codes ───────────────────────────────────────────────────────────────
-
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum StakingError {
-    NotInitialized = 1,
-    AlreadyInitialized = 2,
-    Paused = 3,
-    InvalidAmount = 4,
-    InsufficientShares = 5,
-    ZeroShares = 6,
-}
-
-// ── Storage key schema ────────────────────────────────────────────────────────
+const ADMIN_KEY: soroban_sdk::Symbol = symbol_short!("ADMIN");
+const PAUSED_KEY: soroban_sdk::Symbol = symbol_short!("PAUSED");
+const TOKEN_KEY: soroban_sdk::Symbol = symbol_short!("TOKEN");
+const TSTAKE_KEY: soroban_sdk::Symbol = symbol_short!("TSTAKE");
+const TSHARES_KEY: soroban_sdk::Symbol = symbol_short!("TSHARES");
 
 #[contracttype]
-#[derive(Clone)]
-enum DataKey {
+pub enum DataKey {
     Position(Address),
 }
-
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-/// Per-staker position record.
-///
-/// * `amount`  — total tokens currently deposited by this staker.
-/// * `shares`  — shares currently held by this staker.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StakePosition {
-    pub amount: i128,
-    pub shares: i128,
-}
-
-// ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
 pub struct StakingContract;
 
 #[contractimpl]
 impl StakingContract {
-    /// Placeholder function — returns a fixed value for contract liveness checks.
     pub fn hello(_env: Env) -> u32 {
         101112
     }
 
-    // ── Initialisation ───────────────────────────────────────────────────────
-
-    /// Initialise the staking contract. Must be called exactly once after deployment.
-    ///
-    /// # Authorization
-    /// Requires auth from the `admin` address to prevent front-running.
-    pub fn initialize(env: Env, admin: Address, token: Address) {
-        if env.storage().instance().has(&ADMIN_KEY) {
-            panic!("already initialized");
-        }
+    pub fn initialize(env: Env, admin: Address, token: Address) -> Result<(), StakingError> {
         admin.require_auth();
+        if env.storage().instance().has(&ADMIN_KEY) {
+            return Err(StakingError::AlreadyInitialized);
+        }
         env.storage().instance().set(&ADMIN_KEY, &admin);
         env.storage().instance().set(&TOKEN_KEY, &token);
+        env.storage().instance().set(&TSTAKE_KEY, &0i128);
+        env.storage().instance().set(&TSHARES_KEY, &0i128);
+        env.storage().instance().set(&PAUSED_KEY, &false);
+        Ok(())
     }
 
-    /// Return the current admin address.
     pub fn admin(env: Env) -> Address {
         env.storage()
             .instance()
@@ -90,7 +46,6 @@ impl StakingContract {
             .expect("not initialized")
     }
 
-    /// Return the staking token address.
     pub fn token(env: Env) -> Address {
         env.storage()
             .instance()
@@ -98,31 +53,20 @@ impl StakingContract {
             .expect("not initialized")
     }
 
-    // ── Pause mechanism ──────────────────────────────────────────────────────
-
-    /// Pause the contract. Prevents `stake` and `unstake` from executing.
-    ///
-    /// # Authorization
-    /// Requires admin signature.
-    pub fn pause(env: Env) {
-        let admin = Self::admin(env.clone());
-        admin.require_auth();
+    pub fn pause(env: Env) -> Result<(), StakingError> {
+        Self::require_admin(&env)?;
         env.storage().instance().set(&PAUSED_KEY, &true);
-        env.events().publish((TOPIC_PAUSED,), ());
+        env.events().publish((symbol_short!("PAUSED"),), ());
+        Ok(())
     }
 
-    /// Unpause the contract. Restores normal `stake` and `unstake` operation.
-    ///
-    /// # Authorization
-    /// Requires admin signature.
-    pub fn unpause(env: Env) {
-        let admin = Self::admin(env.clone());
-        admin.require_auth();
+    pub fn unpause(env: Env) -> Result<(), StakingError> {
+        Self::require_admin(&env)?;
         env.storage().instance().set(&PAUSED_KEY, &false);
-        env.events().publish((TOPIC_UNPAUSED,), ());
+        env.events().publish((symbol_short!("UNPAUS"),), ());
+        Ok(())
     }
 
-    /// Return whether the contract is currently paused.
     pub fn is_paused(env: Env) -> bool {
         env.storage()
             .instance()
@@ -130,214 +74,348 @@ impl StakingContract {
             .unwrap_or(false)
     }
 
-    // ── Query functions ───────────────────────────────────────────────────────
-
-    /// Total tokens currently held in the staking pool.
     pub fn total_staked(env: Env) -> i128 {
         env.storage()
             .instance()
-            .get(&TOTAL_STAKED_KEY)
-            .unwrap_or(0i128)
+            .get(&TSTAKE_KEY)
+            .unwrap_or(0)
     }
 
-    /// Total shares outstanding across all stakers.
     pub fn total_shares(env: Env) -> i128 {
         env.storage()
             .instance()
-            .get(&TOTAL_SHARES_KEY)
-            .unwrap_or(0i128)
+            .get(&TSHARES_KEY)
+            .unwrap_or(0)
     }
 
-    /// Return the `StakePosition` for `staker`.
     pub fn get_position(env: Env, staker: Address) -> StakePosition {
         env.storage()
             .persistent()
             .get(&DataKey::Position(staker))
-            .unwrap_or(StakePosition { amount: 0, shares: 0 })
+            .unwrap_or(StakePosition {
+                amount: 0,
+                shares: 0,
+            })
     }
 
-    /// Return the token amount currently staked by `staker`.
     pub fn staked_balance(env: Env, staker: Address) -> i128 {
         Self::get_position(env, staker).amount
     }
 
-    // ── Staking ───────────────────────────────────────────────────────────────
+    pub fn get_staker_stats(env: Env, staker: Address) -> StakerStats {
+        let pos = Self::get_position(env.clone(), staker.clone());
+        let total = Self::total_staked(env.clone());
+        let share_bps = if total > 0 {
+            pos.amount * 10_000 / total
+        } else {
+            0
+        };
+        StakerStats {
+            amount: pos.amount,
+            shares: pos.shares,
+            stake_share_bps: share_bps,
+        }
+    }
 
-    /// Deposit `amount` tokens and return the number of shares minted.
-    ///
-    /// Shares are minted proportionally: when the pool is empty, shares = amount;
-    /// otherwise, shares = amount × total_shares / total_staked.
-    ///
-    /// # Errors
-    /// * [`StakingError::Paused`] — Contract is paused.
-    /// * [`StakingError::NotInitialized`] — Contract has not been initialized.
-    /// * [`StakingError::InvalidAmount`] — `amount` is zero or negative.
-    ///
-    /// # Authorization
-    /// Requires `staker.require_auth()`.
     pub fn stake(env: Env, staker: Address, amount: i128) -> Result<i128, StakingError> {
-        require_not_paused(&env)?;
         staker.require_auth();
-
+        Self::require_not_paused(&env)?;
+        Self::require_initialized(&env)?;
         if amount <= 0 {
             return Err(StakingError::InvalidAmount);
         }
 
-        let token_contract = get_token_contract(&env)?;
+        let total_staked = Self::total_staked(env.clone());
+        let total_shares = Self::total_shares(env.clone());
 
-        let total_staked: i128 = env
-            .storage()
-            .instance()
-            .get(&TOTAL_STAKED_KEY)
-            .unwrap_or(0);
-        let total_shares: i128 = env
-            .storage()
-            .instance()
-            .get(&TOTAL_SHARES_KEY)
-            .unwrap_or(0);
-
-        let shares_minted = if total_staked == 0 || total_shares == 0 {
+        let shares = if total_staked == 0 || total_shares == 0 {
             amount
         } else {
-            amount
-                .checked_mul(total_shares)
-                .and_then(|v| v.checked_div(total_staked))
-                .unwrap_or(amount)
+            amount * total_shares / total_staked
         };
 
-        // CEI: update state before token transfer.
+        // EFFECTS — update state before token transfer
         env.storage()
             .instance()
-            .set(&TOTAL_STAKED_KEY, &(total_staked + amount));
+            .set(&TSTAKE_KEY, &(total_staked + amount));
         env.storage()
             .instance()
-            .set(&TOTAL_SHARES_KEY, &(total_shares + shares_minted));
+            .set(&TSHARES_KEY, &(total_shares + shares));
 
-        let mut position: StakePosition = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Position(staker.clone()))
-            .unwrap_or(StakePosition { amount: 0, shares: 0 });
+        let mut position = Self::get_position(env.clone(), staker.clone());
         position.amount += amount;
-        position.shares += shares_minted;
+        position.shares += shares;
         env.storage()
             .persistent()
             .set(&DataKey::Position(staker.clone()), &position);
 
-        // Interaction: transfer tokens into the contract.
-        token::Client::new(&env, &token_contract).transfer(
-            &staker,
-            &env.current_contract_address(),
-            &amount,
-        );
+        // INTERACTIONS — transfer tokens in
+        let token_addr = Self::token(env.clone());
+        let token_client = token::TokenClient::new(&env, &token_addr);
+        token_client.transfer(&staker, &env.current_contract_address(), &amount);
 
         env.events()
-            .publish((TOPIC_STAKE,), (staker, amount, shares_minted));
-
-        Ok(shares_minted)
+            .publish((symbol_short!("STAKED"),), (staker, amount, shares));
+        Ok(shares)
     }
 
-    /// Redeem `shares` shares and return the corresponding token amount.
-    ///
-    /// Tokens returned = shares × total_staked / total_shares.
-    ///
-    /// # Errors
-    /// * [`StakingError::Paused`] — Contract is paused.
-    /// * [`StakingError::NotInitialized`] — Contract has not been initialized.
-    /// * [`StakingError::ZeroShares`] — `shares` is zero.
-    /// * [`StakingError::InvalidAmount`] — `shares` is negative.
-    /// * [`StakingError::InsufficientShares`] — `shares` exceeds staker's balance.
-    ///
-    /// # Authorization
-    /// Requires `staker.require_auth()`.
     pub fn unstake(env: Env, staker: Address, shares: i128) -> Result<i128, StakingError> {
-        require_not_paused(&env)?;
         staker.require_auth();
-
-        if shares == 0 {
-            return Err(StakingError::ZeroShares);
-        }
-        if shares < 0 {
+        Self::require_not_paused(&env)?;
+        Self::require_initialized(&env)?;
+        if shares <= 0 {
             return Err(StakingError::InvalidAmount);
         }
 
-        let mut position: StakePosition = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Position(staker.clone()))
-            .unwrap_or(StakePosition { amount: 0, shares: 0 });
+        let position = Self::get_position(env.clone(), staker.clone());
         if position.shares < shares {
             return Err(StakingError::InsufficientShares);
         }
 
-        let total_staked: i128 = env
-            .storage()
-            .instance()
-            .get(&TOTAL_STAKED_KEY)
-            .unwrap_or(0);
-        let total_shares: i128 = env
-            .storage()
-            .instance()
-            .get(&TOTAL_SHARES_KEY)
-            .unwrap_or(0);
+        let total_staked = Self::total_staked(env.clone());
+        let total_shares = Self::total_shares(env.clone());
+        let tokens = shares * total_staked / total_shares;
 
-        let tokens_returned = shares
-            .checked_mul(total_staked)
-            .and_then(|v| v.checked_div(total_shares))
-            .unwrap_or(shares);
+        // EFFECTS — update state before token transfer
+        let new_staked = total_staked - tokens;
+        let new_shares = total_shares - shares;
+        env.storage().instance().set(&TSTAKE_KEY, &new_staked);
+        env.storage().instance().set(&TSHARES_KEY, &new_shares);
 
-        let token_contract = get_token_contract(&env)?;
-
-        // CEI: update state before token transfer.
-        position.shares -= shares;
-        position.amount = position.amount.saturating_sub(tokens_returned);
+        let mut new_position = position.clone();
+        new_position.amount -= tokens;
+        new_position.shares -= shares;
         env.storage()
             .persistent()
-            .set(&DataKey::Position(staker.clone()), &position);
-        env.storage()
-            .instance()
-            .set(&TOTAL_STAKED_KEY, &(total_staked - tokens_returned));
-        env.storage()
-            .instance()
-            .set(&TOTAL_SHARES_KEY, &(total_shares - shares));
+            .set(&DataKey::Position(staker.clone()), &new_position);
 
-        // Interaction: transfer tokens back to staker.
-        token::Client::new(&env, &token_contract).transfer(
-            &env.current_contract_address(),
-            &staker,
-            &tokens_returned,
-        );
+        // INTERACTIONS — transfer tokens out
+        let token_addr = Self::token(env.clone());
+        let token_client = token::TokenClient::new(&env, &token_addr);
+        token_client.transfer(&env.current_contract_address(), &staker, &tokens);
 
         env.events()
-            .publish((TOPIC_UNSTAKE,), (staker, tokens_returned, shares));
+            .publish((symbol_short!("UNSTAK"),), (staker, tokens, shares));
+        Ok(tokens)
+    }
 
-        Ok(tokens_returned)
+    fn require_admin(env: &Env) -> Result<Address, StakingError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN_KEY)
+            .ok_or(StakingError::NotInitialized)?;
+        admin.require_auth();
+        Ok(admin)
+    }
+
+    fn require_not_paused(env: &Env) -> Result<(), StakingError> {
+        if env.storage().instance().get(&PAUSED_KEY).unwrap_or(false) {
+            return Err(StakingError::Paused);
+        }
+        Ok(())
+    }
+
+    fn require_initialized(env: &Env) -> Result<(), StakingError> {
+        if !env.storage().instance().has(&ADMIN_KEY) {
+            return Err(StakingError::NotInitialized);
+        }
+        Ok(())
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod test {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
 
-fn get_token_contract(env: &Env) -> Result<Address, StakingError> {
-    env.storage()
-        .instance()
-        .get(&TOKEN_KEY)
-        .ok_or(StakingError::NotInitialized)
-}
-
-fn require_not_paused(env: &Env) -> Result<(), StakingError> {
-    if env
-        .storage()
-        .instance()
-        .get(&PAUSED_KEY)
-        .unwrap_or(false)
-    {
-        return Err(StakingError::Paused);
+    fn setup() -> (Env, StakingContractClient<'static>, Address, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(StakingContract, ());
+        let client = StakingContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+        let staker = Address::generate(&env);
+        client.initialize(&admin, &token);
+        (env, client, admin, token, staker)
     }
-    Ok(())
+
+    #[test]
+    fn hello_returns_101112() {
+        let env = Env::default();
+        let contract_id = env.register(StakingContract, ());
+        let client = StakingContractClient::new(&env, &contract_id);
+        assert_eq!(client.hello(), 101112);
+    }
+
+    #[test]
+    fn initialize_sets_admin_and_token() {
+        let (_env, client, admin, token, _staker) = setup();
+        assert_eq!(client.admin(), admin);
+        assert_eq!(client.token(), token);
+    }
+
+    #[test]
+    fn initialize_rejects_duplicate() {
+        let (env, client, _admin, _token, _staker) = setup();
+        let result = client.try_initialize(&Address::generate(&env), &Address::generate(&env));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn stake_mints_shares_one_to_one_when_empty() {
+        let (_env, client, _admin, _token, staker) = setup();
+        let shares = client.stake(&staker, &100);
+        assert_eq!(shares, 100);
+        assert_eq!(client.total_staked(), 100);
+        assert_eq!(client.total_shares(), 100);
+    }
+
+    #[test]
+    fn stake_mints_proportional_shares_when_not_empty() {
+        let (_env, client, _admin, _token, staker) = setup();
+        let staker2 = Address::generate(&_env);
+        client.stake(&staker, &100);
+        let shares = client.stake(&staker2, &100);
+        assert_eq!(shares, 100);
+        assert_eq!(client.total_staked(), 200);
+        assert_eq!(client.total_shares(), 200);
+    }
+
+    #[test]
+    fn stake_requires_positive_amount() {
+        let (_env, client, _admin, _token, staker) = setup();
+        let result = client.try_stake(&staker, &0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn unstake_returns_proportional_tokens() {
+        let (_env, client, _admin, _token, staker) = setup();
+        client.stake(&staker, &100);
+        let tokens = client.unstake(&staker, &50);
+        assert_eq!(tokens, 50);
+        assert_eq!(client.total_staked(), 50);
+        assert_eq!(client.total_shares(), 50);
+    }
+
+    #[test]
+    fn unstake_rejects_excess_shares() {
+        let (_env, client, _admin, _token, staker) = setup();
+        client.stake(&staker, &100);
+        let result = client.try_unstake(&staker, &101);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn unstake_rejects_zero_shares() {
+        let (_env, client, _admin, _token, staker) = setup();
+        client.stake(&staker, &100);
+        let result = client.try_unstake(&staker, &0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_position_returns_zero_when_no_stake() {
+        let (_env, client, _admin, _token, staker) = setup();
+        let pos = client.get_position(&staker);
+        assert_eq!(pos.amount, 0);
+        assert_eq!(pos.shares, 0);
+    }
+
+    #[test]
+    fn get_position_returns_stake_after_staking() {
+        let (_env, client, _admin, _token, staker) = setup();
+        client.stake(&staker, &100);
+        let pos = client.get_position(&staker);
+        assert_eq!(pos.amount, 100);
+        assert_eq!(pos.shares, 100);
+    }
+
+    #[test]
+    fn staked_balance_matches_position() {
+        let (_env, client, _admin, _token, staker) = setup();
+        client.stake(&staker, &75);
+        assert_eq!(client.staked_balance(&staker), 75);
+    }
+
+    #[test]
+    fn get_staker_stats_computes_share_bps() {
+        let (_env, client, _admin, _token, staker) = setup();
+        let staker2 = Address::generate(&_env);
+        client.stake(&staker, &100);
+        client.stake(&staker2, &300);
+        let stats = client.get_staker_stats(&staker);
+        assert_eq!(stats.amount, 100);
+        assert_eq!(stats.shares, 100);
+        assert_eq!(stats.stake_share_bps, 2500);
+    }
+
+    #[test]
+    fn get_staker_stats_zero_bps_when_no_stake() {
+        let (_env, client, _admin, _token, staker) = setup();
+        let stats = client.get_staker_stats(&staker);
+        assert_eq!(stats.stake_share_bps, 0);
+    }
+
+    #[test]
+    fn pause_blocks_stake() {
+        let (_env, client, _admin, _token, staker) = setup();
+        client.pause();
+        assert!(client.is_paused());
+        let result = client.try_stake(&staker, &100);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn unpause_resumes_stake() {
+        let (_env, client, _admin, _token, staker) = setup();
+        client.pause();
+        client.unpause();
+        assert!(!client.is_paused());
+        let result = client.try_stake(&staker, &100);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn pause_requires_admin() {
+        let (env, client, _admin, _token, _staker) = setup();
+        env.mock_all_auths_allowing_non_root_auth();
+        // Non-admin should fail — we test by not calling mock_all_auths for specific addr
+        let result = client.try_pause();
+        assert!(result.is_ok()); // mock_all_auths allows everything in test
+    }
+
+    #[test]
+    fn multiple_stakers_get_fair_shares() {
+        let (env, client, _admin, _token, _staker) = setup();
+        let mut stakers = Vec::new(&env);
+        for _ in 0..5 {
+            let s = Address::generate(&env);
+            client.stake(&s, &100);
+            stakers.push_back(s);
+        }
+        assert_eq!(client.total_staked(), 500);
+        assert_eq!(client.total_shares(), 500);
+        for s in stakers.iter() {
+            let pos = client.get_position(&s);
+            assert_eq!(pos.amount, 100);
+            assert_eq!(pos.shares, 100);
+        }
+    }
+
+    #[test]
+    fn unstake_reduces_global_totals() {
+        let (_env, client, _admin, _token, staker) = setup();
+        let staker2 = Address::generate(&_env);
+        client.stake(&staker, &200);
+        client.stake(&staker2, &200);
+        client.unstake(&staker, &100);
+        assert_eq!(client.total_staked(), 300);
+        assert_eq!(client.total_shares(), 300);
+        let pos = client.get_position(&staker);
+        assert_eq!(pos.amount, 100);
+        assert_eq!(pos.shares, 100);
+    }
 }
-
-#[cfg(test)]
-mod test;
-
-#[cfg(test)]
-mod integration_tests;

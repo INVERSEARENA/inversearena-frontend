@@ -12,9 +12,9 @@ import {
   SignedXdrSchema,
   StellarPublicKeySchema,
 } from "@/shared-d/utils/security-validation";
-import { STELLAR_NETWORK } from "@/components/hook-d/arenaConstants";
+import { stellarConfig } from "@/lib/stellarConfig";
 
-const HORIZON_URL = STELLAR_NETWORK.HORIZON_URL.replace(/\/+$/, "");
+const HORIZON_URL = stellarConfig.horizonUrl;
 
 /**
  * Wallet connection status
@@ -174,7 +174,7 @@ export function useWallet(): UseWalletReturn {
       const validatedXdr = SignedXdrSchema.parse(xdr);
       const networkPassphrase = network
         ? NetworkPassphraseSchema.parse(network)
-        : "Test SDF Network ; September 2015";
+        : stellarConfig.passphrase;
 
       const result = await freighterSignTransaction(validatedXdr, { networkPassphrase });
       if (result.error) {

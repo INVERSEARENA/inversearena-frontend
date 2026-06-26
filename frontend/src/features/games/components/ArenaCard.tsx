@@ -74,7 +74,7 @@ export const ArenaCard = ({ arena }: ArenaCardProps) => {
                     onClose={handleCloseModal}
                     onConfirm={handleConfirmJoin}
                     arenaId={parseInt(arena.number, 10)}
-                    requiredStake={parseInt(arena.stake.split(' ')[0], 10)}
+                    requiredStake={parseInt(arena.stake.split(' ')[0] ?? '0', 10)}
                     currentPlayers={arena.playersJoined}
                     maxPlayers={arena.maxPlayers}
                     yieldGeneration={5} // Mock data
@@ -129,7 +129,7 @@ export const ArenaCard = ({ arena }: ArenaCardProps) => {
                 onClose={handleCloseModal}
                 onConfirm={handleConfirmJoin}
                 arenaId={parseInt(arena.number, 10)}
-                requiredStake={parseInt(arena.stake.split(' ')[0], 10)}
+                requiredStake={parseInt(arena.stake.split(' ')[0] ?? '0', 10)}
                 currentPlayers={arena.playersJoined}
                 maxPlayers={arena.maxPlayers}
                 yieldGeneration={5} // Mock data

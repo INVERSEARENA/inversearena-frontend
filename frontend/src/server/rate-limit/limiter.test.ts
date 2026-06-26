@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { RouteRateLimitConfig } from "./config.ts";
-import { buildRateLimitRejection, consumeRateLimitByKey } from "./limiter.ts";
+import type { RouteRateLimitConfig } from "./config";
+import { buildRateLimitRejection, consumeRateLimitByKey } from "./limiter";
 
 function createConfig(prefix: string, points: number, durationSeconds: number): RouteRateLimitConfig {
   return {

@@ -112,7 +112,7 @@ export function useProfile(options: UseProfileOptions = {}): UseProfileData & {
     myArenas,
     history,
     status,
-    error,
+    ...(error !== undefined && { error }),
     setMyArenasFilter,
     refetch
   };

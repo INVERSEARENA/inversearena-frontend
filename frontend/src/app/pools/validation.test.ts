@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CreatePoolBodySchema } from "./validation.ts";
+import { CreatePoolBodySchema } from "./validation";
 
 const VALID_WALLET = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
 

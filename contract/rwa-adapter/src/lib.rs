@@ -1,249 +1,291 @@
-//! RWA (Real-World Asset) adapter contract for Inverse Arena.
-//!
-//! This contract bridges on-chain yield accounting to real-world asset tokens
-//! such as Ondo USDY.  The yield rate is **not** hard-coded; it is stored in
-//! [`RwaConfig::rate_bps`] and can be updated by the admin at any time via
-//! [`RwaAdapterContract::set_rate`].  This removes the previous `YIELD_BPS =
-//! 500` constant that made the yield permanently fixed at 5 % and ignored the
-//! oracle entirely.
-
 #![no_std]
+use soroban_sdk::{Address, Env, contract, contractimpl, token};
 
-use soroban_sdk::{Address, Env, Symbol, contract, contracterror, contractimpl, symbol_short};
-
-pub mod storage;
-pub mod types;
+mod storage;
+mod types;
 
 use storage::RwaStorage;
 use types::RwaConfig;
+pub use types::RwaError;
 
-// ── Event topics ──────────────────────────────────────────────────────────────
-
-const TOPIC_INITIALIZED: Symbol = symbol_short!("INIT");
-const TOPIC_RATE_SET: Symbol = symbol_short!("RATE_SET");
-const TOPIC_WITHDRAW: Symbol = symbol_short!("WITHDRAW");
-
-// ── Basis-point scale factor ──────────────────────────────────────────────────
-
-/// Denominator for basis-point calculations (10 000 bps = 100 %).
-const BPS_DENOM: i128 = 10_000;
-
-// ── Error codes ───────────────────────────────────────────────────────────────
-
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum RwaError {
-    /// Contract has not been initialised yet.
-    NotInitialized = 1,
-    /// Contract has already been initialised.
-    AlreadyInitialized = 2,
-    /// Caller is not the admin.
-    Unauthorized = 3,
-    /// The supplied `rate_bps` value exceeds the allowed ceiling.
-    RateTooHigh = 4,
-    /// The supplied deposit amount is zero or negative.
-    InvalidAmount = 5,
-}
-
-// ── Rate ceiling ──────────────────────────────────────────────────────────────
-
-/// Hard upper bound on `rate_bps` (100 % APY = 10 000 bps).
-///
-/// This prevents a misconfigured or compromised admin from setting an
-/// astronomically large rate that would overflow yield calculations.
-const MAX_RATE_BPS: u32 = 10_000;
-
-// ── Contract ──────────────────────────────────────────────────────────────────
+const YIELD_BPS: i128 = 500;
 
 #[contract]
-pub struct RwaAdapterContract;
+pub struct RwaAdapter;
 
 #[contractimpl]
-impl RwaAdapterContract {
-    // ── Initialisation ───────────────────────────────────────────────────────
-
-    /// Initialise the adapter.  Must be called exactly once after deployment.
-    ///
-    /// `initial_rate_bps` is the starting annual yield rate expressed in basis
-    /// points (e.g. `500` for 5 % APY).  It can be changed later by the admin
-    /// via [`set_rate`].
-    ///
-    /// # Errors
-    /// * [`RwaError::AlreadyInitialized`] — contract was already initialised.
-    /// * [`RwaError::RateTooHigh`]        — `initial_rate_bps` > `MAX_RATE_BPS`.
-    ///
-    /// # Authorization
-    /// Requires `admin.require_auth()`.
-    pub fn initialize(
-        env: Env,
-        admin: Address,
-        oracle: Address,
-        token: Address,
-        initial_rate_bps: u32,
-    ) -> Result<(), RwaError> {
-        if RwaStorage::is_initialized(&env) {
+impl RwaAdapter {
+    pub fn initialize(env: Env, admin: Address, stake_token: Address) -> Result<(), RwaError> {
+        admin.require_auth();
+        if RwaStorage::assert_initialized(&env).is_ok() {
             return Err(RwaError::AlreadyInitialized);
         }
-        if initial_rate_bps > MAX_RATE_BPS {
-            return Err(RwaError::RateTooHigh);
-        }
-
-        admin.require_auth();
-
         let config = RwaConfig {
-            admin: admin.clone(),
-            oracle,
-            token,
-            rate_bps: initial_rate_bps,
+            admin,
+            stake_token,
+            total_deposited: 0,
         };
         RwaStorage::save_config(&env, &config);
-
+        RwaStorage::set_initialized(&env);
         env.events()
-            .publish((TOPIC_INITIALIZED,), (admin, initial_rate_bps));
-
+            .publish((soroban_sdk::symbol_short!("init"),), ());
         Ok(())
     }
 
-    // ── Admin — rate management ───────────────────────────────────────────────
+    pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), RwaError> {
+        from.require_auth();
+        if amount <= 0 {
+            return Err(RwaError::InvalidAmount);
+        }
+        let config = RwaStorage::load_config(&env)?;
 
-    /// Update the annual yield rate stored in config.
-    ///
-    /// This replaces the old hard-coded `YIELD_BPS = 500` constant and allows
-    /// the rate to track the real Ondo USDY yield (or any oracle-supplied value)
-    /// without a full contract redeployment.
-    ///
-    /// # Errors
-    /// * [`RwaError::NotInitialized`] — contract has not been initialised.
-    /// * [`RwaError::RateTooHigh`]    — `rate_bps` > `MAX_RATE_BPS` (10 000).
-    ///
-    /// # Authorization
-    /// Requires the admin address stored in config to sign the transaction
-    /// (`config.admin.require_auth()`).
-    pub fn set_rate(env: Env, rate_bps: u32) -> Result<(), RwaError> {
-        let mut config = RwaStorage::load_config(&env)?;
+        let mut pos = RwaStorage::load_position(&env, &from);
+        pos.principal += amount;
+        RwaStorage::save_position(&env, &from, &pos);
 
-        // Auth check: only the stored admin may change the rate.
-        config.admin.require_auth();
+        let mut cfg = config;
+        cfg.total_deposited += amount;
+        RwaStorage::save_config(&env, &cfg);
 
-        if rate_bps > MAX_RATE_BPS {
-            return Err(RwaError::RateTooHigh);
+        env.events().publish(
+            (
+                soroban_sdk::symbol_short!("deposited"),
+                from.clone(),
+                amount,
+            ),
+            (),
+        );
+        Ok(())
+    }
+
+    pub fn withdraw_all(env: Env, from: Address) -> Result<i128, RwaError> {
+        from.require_auth();
+        let config = RwaStorage::load_config(&env)?;
+
+        let pos = RwaStorage::load_position(&env, &from);
+        if pos.principal == 0 {
+            return Err(RwaError::NoDeposit);
+        }
+        if pos.withdrawn {
+            return Err(RwaError::AlreadyWithdrawn);
         }
 
-        let old_rate = config.rate_bps;
-        config.rate_bps = rate_bps;
-        RwaStorage::save_config(&env, &config);
+        let yield_amount = pos
+            .principal
+            .checked_mul(YIELD_BPS)
+            .and_then(|v| v.checked_div(10000))
+            .ok_or(RwaError::ArithmeticOverflow)?;
+        let total = pos
+            .principal
+            .checked_add(yield_amount)
+            .ok_or(RwaError::ArithmeticOverflow)?;
 
-        env.events()
-            .publish((TOPIC_RATE_SET,), (old_rate, rate_bps));
+        let mut updated = pos;
+        updated.withdrawn = true;
+        RwaStorage::save_position(&env, &from, &updated);
 
-        Ok(())
+        // Decrement the global counter so get_total_deposited() reflects net deposits.
+        let mut cfg = config;
+        cfg.total_deposited = cfg.total_deposited.saturating_sub(updated.principal);
+        RwaStorage::save_config(&env, &cfg);
+
+        let token_client = token::TokenClient::new(&env, &cfg.stake_token);
+        let contract_addr = env.current_contract_address();
+        let balance = token_client.balance(&contract_addr);
+        let payable = if total > balance { balance } else { total };
+        token_client.transfer(&contract_addr, &from, &payable);
+
+        env.events().publish(
+            (
+                soroban_sdk::symbol_short!("withdrawn"),
+                from.clone(),
+                payable,
+                payable - pos.principal,
+            ),
+            (),
+        );
+
+        Ok(payable)
     }
 
-    // ── Queries ───────────────────────────────────────────────────────────────
-
-    /// Return the current [`RwaConfig`].
-    pub fn get_config(env: Env) -> Result<RwaConfig, RwaError> {
+    pub fn balance_of(env: Env, user: Address) -> i128 {
         RwaStorage::load_config(&env)
+            .map(|_| {
+                let pos = RwaStorage::load_position(&env, &user);
+                if pos.withdrawn {
+                    0
+                } else {
+                    pos.principal
+                        .checked_mul(YIELD_BPS)
+                        .and_then(|y| y.checked_div(10000))
+                        .and_then(|y| pos.principal.checked_add(y))
+                        .unwrap_or(0)
+                }
+            })
+            .unwrap_or(0)
     }
 
-    /// Return the current annual yield rate in basis points.
-    pub fn get_rate(env: Env) -> Result<u32, RwaError> {
-        Ok(RwaStorage::load_config(&env)?.rate_bps)
+    pub fn get_total_deposited(env: Env) -> i128 {
+        RwaStorage::load_config(&env)
+            .map(|c| c.total_deposited)
+            .unwrap_or(0)
     }
 
-    /// Return the admin address.
-    pub fn admin(env: Env) -> Result<Address, RwaError> {
-        Ok(RwaStorage::load_config(&env)?.admin)
-    }
-
-    /// Calculate the accrued balance for a deposit.
-    ///
-    /// Uses the yield rate stored in config rather than the old constant:
-    ///
-    /// ```text
-    /// balance = principal + (principal × rate_bps × elapsed_days) / (BPS_DENOM × 365)
-    /// ```
-    ///
-    /// # Arguments
-    /// * `principal`    — original deposited amount (in token stroops).
-    /// * `elapsed_days` — number of whole days since the deposit was made.
-    ///
-    /// # Errors
-    /// * [`RwaError::NotInitialized`] — contract has not been initialised.
-    /// * [`RwaError::InvalidAmount`]  — `principal` is zero or negative.
-    pub fn balance_of(env: Env, principal: i128, elapsed_days: u32) -> Result<i128, RwaError> {
-        if principal <= 0 {
-            return Err(RwaError::InvalidAmount);
-        }
-
+    pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) -> Result<(), RwaError> {
         let config = RwaStorage::load_config(&env)?;
-        let rate = config.rate_bps as i128;
-        let days = elapsed_days as i128;
-
-        // accrued = principal * rate_bps * elapsed_days / (BPS_DENOM * 365)
-        let accrued = principal
-            .checked_mul(rate)
-            .and_then(|v| v.checked_mul(days))
-            .and_then(|v| v.checked_div(BPS_DENOM * 365))
-            .unwrap_or(0);
-
-        Ok(principal + accrued)
-    }
-
-    // ── Withdraw ──────────────────────────────────────────────────────────────
-
-    /// Record a full withdrawal, returning the accrued balance.
-    ///
-    /// In a production integration this function would trigger a token transfer;
-    /// here it computes and returns the accrued amount so the calling contract
-    /// can handle the transfer.  The yield calculation reads `rate_bps` from
-    /// the stored config rather than any hard-coded constant.
-    ///
-    /// # Arguments
-    /// * `caller`       — address requesting the withdrawal (must be authed).
-    /// * `principal`    — original deposited amount (in token stroops).
-    /// * `elapsed_days` — number of whole days since the deposit was made.
-    ///
-    /// # Errors
-    /// * [`RwaError::NotInitialized`] — contract has not been initialised.
-    /// * [`RwaError::InvalidAmount`]  — `principal` is zero or negative.
-    ///
-    /// # Authorization
-    /// Requires `caller.require_auth()`.
-    pub fn withdraw_all(
-        env: Env,
-        caller: Address,
-        principal: i128,
-        elapsed_days: u32,
-    ) -> Result<i128, RwaError> {
-        caller.require_auth();
-
-        if principal <= 0 {
-            return Err(RwaError::InvalidAmount);
-        }
-
-        let config = RwaStorage::load_config(&env)?;
-        let rate = config.rate_bps as i128;
-        let days = elapsed_days as i128;
-
-        // accrued = principal * rate_bps * elapsed_days / (BPS_DENOM * 365)
-        let accrued = principal
-            .checked_mul(rate)
-            .and_then(|v| v.checked_mul(days))
-            .and_then(|v| v.checked_div(BPS_DENOM * 365))
-            .unwrap_or(0);
-
-        let total = principal + accrued;
-
-        env.events()
-            .publish((TOPIC_WITHDRAW,), (caller, principal, accrued, total));
-
-        Ok(total)
+        config.admin.require_auth();
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
-mod test;
+mod test {
+    extern crate std;
+
+    use super::*;
+    use soroban_sdk::{Address, Env, testutils::Address as _, token::StellarAssetClient};
+
+    // ── helpers ───────────────────────────────────────────────────────────────
+
+    /// Register the RwaAdapter and wire up a SAC token, writing config directly
+    /// into storage so tests can control auth independently of `initialize`.
+    fn setup(env: &Env) -> (RwaAdapterClient<'static>, Address, Address) {
+        let contract_id = env.register(RwaAdapter, ());
+        let token_admin = Address::generate(env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let admin = Address::generate(env);
+
+        env.as_contract(&contract_id, || {
+            let config = RwaConfig {
+                admin: admin.clone(),
+                stake_token: token_id.clone(),
+                total_deposited: 0,
+            };
+            RwaStorage::save_config(env, &config);
+            RwaStorage::set_initialized(env);
+        });
+
+        let env_static: &'static Env = unsafe { &*(env as *const Env) };
+        let client = RwaAdapterClient::new(env_static, &contract_id);
+        (client, token_id, contract_id)
+    }
+
+    // ── Authorization tests for deposit() ────────────────────────────────────
+
+    /// deposit() must panic when the `from` address has not authorized the call.
+    #[test]
+    #[should_panic]
+    fn deposit_without_auth_panics() {
+        let env = Env::default();
+        // Intentionally no mock_all_auths — auth is enforced.
+        let (client, _, _) = setup(&env);
+        let from = Address::generate(&env);
+        // from has not signed anything; require_auth() should panic.
+        client.deposit(&from, &100);
+    }
+
+    /// deposit() records the position when the caller provides authorization.
+    #[test]
+    fn deposit_with_auth_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _, _) = setup(&env);
+        let from = Address::generate(&env);
+
+        client.deposit(&from, &100);
+
+        // balance_of returns principal + 5% simulated yield
+        assert_eq!(client.balance_of(&from), 105);
+        assert_eq!(client.get_total_deposited(), 100);
+    }
+
+    // ── Authorization tests for withdraw_all() ────────────────────────────────
+
+    /// withdraw_all() must panic when the `from` address has not authorized the call.
+    #[test]
+    #[should_panic]
+    fn withdraw_without_auth_panics() {
+        let env = Env::default();
+        // Intentionally no mock_all_auths — auth is enforced.
+        let (client, _, contract_id) = setup(&env);
+        let from = Address::generate(&env);
+
+        // Seed a position directly so the test reaches require_auth() without
+        // going through deposit (which also requires auth).
+        env.as_contract(&contract_id, || {
+            RwaStorage::save_position(
+                &env,
+                &from,
+                &types::YieldAccrual {
+                    principal: 100,
+                    withdrawn: false,
+                },
+            );
+        });
+
+        // from has not signed anything; require_auth() should panic.
+        client.withdraw_all(&from);
+    }
+
+    /// get_total_deposited() must decrease by the withdrawn principal so the
+    /// metric reflects net deposits rather than growing forever.
+    #[test]
+    fn total_deposited_decremented_after_withdrawal() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, token_id, contract_id) = setup(&env);
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        client.deposit(&alice, &1_000);
+        client.deposit(&bob, &500);
+        assert_eq!(client.get_total_deposited(), 1_500);
+
+        // Fund the contract so both withdrawals can succeed.
+        let payout_alice: i128 = 1_050; // 1000 + 5%
+        let payout_bob: i128 = 525;     // 500 + 5%
+        StellarAssetClient::new(&env, &token_id)
+            .mint(&contract_id, &(payout_alice + payout_bob));
+
+        client.withdraw_all(&alice);
+        assert_eq!(
+            client.get_total_deposited(),
+            500,
+            "alice's 1000 principal must be removed from total"
+        );
+
+        client.withdraw_all(&bob);
+        assert_eq!(
+            client.get_total_deposited(),
+            0,
+            "total must reach 0 after all principals are withdrawn"
+        );
+    }
+
+    /// withdraw_all() transfers principal + yield to the caller when authorized.
+    #[test]
+    fn withdraw_with_auth_returns_correct_amount() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, token_id, contract_id) = setup(&env);
+        let from = Address::generate(&env);
+
+        // Deposit 1000 tokens worth of position.
+        client.deposit(&from, &1_000);
+
+        // Expected payout: 1000 principal + 5% yield = 1050.
+        let expected: i128 = 1_050;
+
+        // Fund the contract so the token transfer in withdraw_all can succeed.
+        StellarAssetClient::new(&env, &token_id).mint(&contract_id, &expected);
+
+        let returned = client.withdraw_all(&from);
+        assert_eq!(returned, expected);
+
+        // After withdrawal the position is closed; balance_of must return 0.
+        assert_eq!(client.balance_of(&from), 0);
+    }
+}

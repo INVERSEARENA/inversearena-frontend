@@ -35,7 +35,7 @@ export function isValidDecimalPrecision(value: string, currency: Currency): bool
     }
 
     if (parts.length === 2) {
-        return parts[1].length <= precision;
+        return parts[1]!.length <= precision;
     }
 
     return false; // Multiple decimal points
@@ -73,7 +73,7 @@ export function formatCurrencyInput(value: string, currency: Currency): string {
     // If there's a decimal point, limit the decimal places
     const parts = sanitized.split(".");
     if (parts.length === 2) {
-        return parts[0] + "." + parts[1].slice(0, precision);
+        return parts[0]! + "." + parts[1]!.slice(0, precision);
     }
 
     return sanitized;

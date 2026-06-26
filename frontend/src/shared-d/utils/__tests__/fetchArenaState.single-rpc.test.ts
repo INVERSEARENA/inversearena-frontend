@@ -32,6 +32,7 @@ jest.mock("@/shared-d/utils/stellar-scval-extract", () => ({
     .mockReturnValueOnce(3),
   extractI128FromScVal: jest.fn().mockReturnValueOnce(10).mockReturnValueOnce(20),
   extractBoolFromScVal: jest.fn().mockReturnValueOnce(true).mockReturnValueOnce(false),
+  stroopsToDisplayAmount: jest.fn((value: bigint) => Number(value) / 10_000_000),
 }));
 
 describe("fetchArenaState single RPC optimization", () => {

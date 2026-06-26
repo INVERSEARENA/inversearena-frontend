@@ -23,6 +23,29 @@ stellar --version
 rustc --version
 ```
 
+### Testnet deployment checklist
+
+Before you deploy to testnet, confirm the following:
+
+1. `main` is up to date with `upstream/main`.
+2. Your working branch is created from that synced `main`.
+3. The deployer account is funded on the target network.
+4. You have the contract IDs and init arguments for each contract you plan to invoke.
+5. You have the frontend env values ready for the new deployment.
+
+### Account setup
+
+Use a dedicated deployer identity for each network:
+
+```bash
+stellar keys generate deployer-testnet
+stellar keys address deployer-testnet
+stellar keys generate deployer-mainnet
+stellar keys address deployer-mainnet
+```
+
+Keep the testnet and mainnet identities separate. Do not reuse a mainnet deployer key on testnet or vice versa.
+
 ---
 
 ## Repository layout
@@ -134,6 +157,16 @@ The command prints the **contract ID** (starts with `C` on Soroban). Save it.
 Repeat for `arena`, `payout`, and `staking` with the correct WASM paths.
 
 > If your CLI uses **upload + deploy** in two steps, follow [Stellar’s upload & deploy cookbook](https://developers.stellar.org/docs/tools/cli/cookbook/upload-deploy): upload WASM, then deploy the contract instance from the uploaded hash.
+
+### Contract initialization sequence
+
+After deployment, initialize the contracts in dependency order:
+
+1. Deploy the shared contracts first if they are referenced by address elsewhere.
+2. Initialize the arena contract with the admin, stake token, yield vault, fee, and oracle addresses.
+3. Initialize payout and staking contracts with the arena or factory addresses they depend on.
+4. Verify each contract can be read back with `stellar contract inspect` or a read-only invoke.
+5. Only after the on-chain addresses are confirmed, publish the values to the frontend environment.
 
 ---
 

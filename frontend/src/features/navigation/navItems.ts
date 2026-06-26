@@ -9,5 +9,6 @@ export const dashboardNavItems: NavItem[] = [
   { label: "My Profile", href: "/dashboard/profile" },
   { label: "Leaderboard", href: "/dashboard/leaderboard" },
   { label: "Settings", href: "/arena-v2/settings" },
+  { label: "Admin", href: "/dashboard/admin" },
 ];
 

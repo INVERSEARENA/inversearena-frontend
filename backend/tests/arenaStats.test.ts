@@ -92,8 +92,7 @@ async function testGetStats() {
   if (assertions.every(a => a)) {
     console.log('✅ PASS: Stats are correct');
   } else {
-    console.log('❌ FAIL: Some stats are incorrect');
-    process.exit(1);
+    throw new Error('❌ FAIL: Some stats are incorrect');
   }
 }
 
@@ -102,14 +101,12 @@ async function testArenaNotFound() {
   
   try {
     await statsService.getArenaStats('non-existent-id');
-    console.log('❌ FAIL: Should have thrown error');
-    process.exit(1);
+    throw new Error('❌ FAIL: Should have thrown error');
   } catch (error) {
     if (error instanceof Error && error.message.includes('not found')) {
       console.log('✅ PASS: Correctly threw not found error');
     } else {
-      console.log('❌ FAIL: Threw unexpected error', error);
-      process.exit(1);
+      throw new Error(`❌ FAIL: Threw unexpected error: ${error}`);
     }
   }
 }
@@ -120,7 +117,7 @@ async function runTests() {
     await testArenaNotFound();
   } catch (error) {
     console.error('Test suite failed:', error);
-    process.exit(1);
+    throw error;
   } finally {
     await prisma.$disconnect();
   }

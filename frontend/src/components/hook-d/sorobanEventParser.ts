@@ -33,7 +33,7 @@ export function parseArenaEvent(raw: RawContractEvent): ArenaDomainEvent | null 
         if (!raw.topic || raw.topic.length === 0) return null;
 
         // The first topic is usually the event name as a symbol
-        const eventNameScVal = xdr.ScVal.fromXDR(raw.topic[0], 'base64');
+        const eventNameScVal = xdr.ScVal.fromXDR(raw.topic[0]!, 'base64');
         const eventName = scValToNative(eventNameScVal);
 
         switch (eventName) {
