@@ -4,6 +4,7 @@ members = [
     "arena",
     "factory",
     "payout",
+    "rwa-adapter",
     "staking",
 ]
 
