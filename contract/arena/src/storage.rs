@@ -374,14 +374,17 @@ impl ArenaStorage {
     }
 
     pub fn get_winner(env: &Env) -> Option<Address> {
+        Self::extend_persistent_ttl(env, &DataKey::Winner);
         env.storage().persistent().get(&DataKey::Winner)
     }
 
     pub fn set_winner(env: &Env, winner: &Address) {
+        Self::extend_persistent_ttl(env, &DataKey::Winner);
         env.storage().persistent().set(&DataKey::Winner, winner);
     }
 
     pub fn is_refund_claimed(env: &Env, player: &Address) -> bool {
+        Self::extend_persistent_ttl(env, &DataKey::RefundClaimed(player.clone()));
         env.storage()
             .persistent()
             .get(&DataKey::RefundClaimed(player.clone()))
@@ -389,12 +392,14 @@ impl ArenaStorage {
     }
 
     pub fn set_refund_claimed(env: &Env, player: &Address) {
+        Self::extend_persistent_ttl(env, &DataKey::RefundClaimed(player.clone()));
         env.storage()
             .persistent()
             .set(&DataKey::RefundClaimed(player.clone()), &true);
     }
 
     pub fn load_leaderboard(env: &Env) -> Vec<crate::types::LeaderboardEntry> {
+        Self::extend_persistent_ttl(env, &DataKey::Leaderboard);
         env.storage()
             .persistent()
             .get(&DataKey::Leaderboard)
@@ -402,12 +407,14 @@ impl ArenaStorage {
     }
 
     pub fn save_leaderboard(env: &Env, leaderboard: &Vec<crate::types::LeaderboardEntry>) {
+        Self::extend_persistent_ttl(env, &DataKey::Leaderboard);
         env.storage()
             .persistent()
             .set(&DataKey::Leaderboard, leaderboard);
     }
 
     pub fn load_leaderboard_limit(env: &Env) -> u32 {
+        Self::extend_persistent_ttl(env, &DataKey::LeaderboardLimit);
         env.storage()
             .persistent()
             .get(&DataKey::LeaderboardLimit)
@@ -415,6 +422,7 @@ impl ArenaStorage {
     }
 
     pub fn save_leaderboard_limit(env: &Env, limit: u32) {
+        Self::extend_persistent_ttl(env, &DataKey::LeaderboardLimit);
         env.storage()
             .persistent()
             .set(&DataKey::LeaderboardLimit, &limit);
