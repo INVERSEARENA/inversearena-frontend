@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::types::{ArenaMetadata, ArenaStatus, FactoryError};
 use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, contracttype};
 
@@ -115,7 +116,9 @@ impl FactoryStorage {
             .persistent()
             .get(&DataKey::PoolSequence)
             .unwrap_or(0u32);
-        let next = current.checked_add(1).ok_or(FactoryError::PoolLimitReached)?;
+        let next = current
+            .checked_add(1)
+            .ok_or(FactoryError::PoolLimitReached)?;
         Self::extend_persistent_ttl(env, &DataKey::PoolSequence);
         env.storage()
             .persistent()
@@ -206,7 +209,10 @@ impl FactoryStorage {
 
     pub fn is_paused(env: &Env) -> bool {
         Self::extend_persistent_ttl(env, &DataKey::Paused);
-        env.storage().persistent().get(&DataKey::Paused).unwrap_or(false)
+        env.storage()
+            .persistent()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
     }
 
     pub fn set_paused(env: &Env, paused: bool) {
@@ -218,7 +224,10 @@ impl FactoryStorage {
 
     pub fn pool_count(env: &Env) -> u32 {
         Self::extend_persistent_ttl(env, &DataKey::PoolCount);
-        env.storage().persistent().get(&DataKey::PoolCount).unwrap_or(0)
+        env.storage()
+            .persistent()
+            .get(&DataKey::PoolCount)
+            .unwrap_or(0)
     }
 
     pub fn save_pool(env: &Env, pool_id: u32, metadata: &ArenaMetadata) {

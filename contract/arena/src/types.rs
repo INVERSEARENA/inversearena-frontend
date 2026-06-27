@@ -222,12 +222,6 @@ pub enum ArenaError {
     /// Returned when an operation is attempted before the required deadline has passed.
     DeadlineTooSoon = 28,
 
-    /// Returned by `start_round` when `duration_seconds` is outside the
-    /// allowed range [`MIN_ROUND_DURATION_SECONDS`, `MAX_ROUND_DURATION_SECONDS`].
-    ///
-    /// A zero or sub-minimum duration would expire the round before any player
-    /// can submit a commitment; an astronomically large value (e.g. `u64::MAX`)
-    /// would lock funds for an unbounded period and make `resolve_round`
-    /// permanently unreachable.
-    InvalidDuration = 29,
+    /// Returned when a player who has already joined the arena tries to join again.
+    AlreadyJoined = 29,
 }

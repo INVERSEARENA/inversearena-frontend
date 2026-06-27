@@ -1,9 +1,7 @@
 #![no_std]
 mod types;
 
-use soroban_sdk::{
-    Address, Env, Vec, token, contract, contractimpl, contracttype, symbol_short,
-};
+use soroban_sdk::{Address, Env, contract, contractimpl, contracttype, symbol_short, token};
 use types::{StakePosition, StakerStats, StakingError};
 
 const ADMIN_KEY: soroban_sdk::Symbol = symbol_short!("ADMIN");
@@ -22,10 +20,6 @@ pub struct StakingContract;
 
 #[contractimpl]
 impl StakingContract {
-    pub fn hello(_env: Env) -> u32 {
-        101112
-    }
-
     pub fn initialize(env: Env, admin: Address, token: Address) -> Result<(), StakingError> {
         admin.require_auth();
         if env.storage().instance().has(&ADMIN_KEY) {
@@ -68,24 +62,15 @@ impl StakingContract {
     }
 
     pub fn is_paused(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&PAUSED_KEY)
-            .unwrap_or(false)
+        env.storage().instance().get(&PAUSED_KEY).unwrap_or(false)
     }
 
     pub fn total_staked(env: Env) -> i128 {
-        env.storage()
-            .instance()
-            .get(&TSTAKE_KEY)
-            .unwrap_or(0)
+        env.storage().instance().get(&TSTAKE_KEY).unwrap_or(0)
     }
 
     pub fn total_shares(env: Env) -> i128 {
-        env.storage()
-            .instance()
-            .get(&TSHARES_KEY)
-            .unwrap_or(0)
+        env.storage().instance().get(&TSHARES_KEY).unwrap_or(0)
     }
 
     pub fn get_position(env: Env, staker: Address) -> StakePosition {
@@ -227,26 +212,34 @@ impl StakingContract {
 #[cfg(test)]
 mod test {
     use super::*;
+    use soroban_sdk::Vec;
     use soroban_sdk::testutils::Address as _;
 
-    fn setup() -> (Env, StakingContractClient<'static>, Address, Address, Address) {
+    fn mint_staker(env: &Env, token: &Address, amount: i128) -> Address {
+        let staker = Address::generate(env);
+        soroban_sdk::token::StellarAssetClient::new(env, token).mint(&staker, &amount);
+        staker
+    }
+
+    fn setup() -> (
+        Env,
+        StakingContractClient<'static>,
+        Address,
+        Address,
+        Address,
+    ) {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(StakingContract, ());
         let client = StakingContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        let token = Address::generate(&env);
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
         let staker = Address::generate(&env);
+        let token_admin = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&staker, &100_000);
         client.initialize(&admin, &token);
         (env, client, admin, token, staker)
-    }
-
-    #[test]
-    fn hello_returns_101112() {
-        let env = Env::default();
-        let contract_id = env.register(StakingContract, ());
-        let client = StakingContractClient::new(&env, &contract_id);
-        assert_eq!(client.hello(), 101112);
     }
 
     #[test]
@@ -275,7 +268,7 @@ mod test {
     #[test]
     fn stake_mints_proportional_shares_when_not_empty() {
         let (_env, client, _admin, _token, staker) = setup();
-        let staker2 = Address::generate(&_env);
+        let staker2 = mint_staker(&_env, &_token, 100_000);
         client.stake(&staker, &100);
         let shares = client.stake(&staker2, &100);
         assert_eq!(shares, 100);
@@ -343,7 +336,7 @@ mod test {
     #[test]
     fn get_staker_stats_computes_share_bps() {
         let (_env, client, _admin, _token, staker) = setup();
-        let staker2 = Address::generate(&_env);
+        let staker2 = mint_staker(&_env, &_token, 100_000);
         client.stake(&staker, &100);
         client.stake(&staker2, &300);
         let stats = client.get_staker_stats(&staker);
@@ -392,7 +385,7 @@ mod test {
         let (env, client, _admin, _token, _staker) = setup();
         let mut stakers = Vec::new(&env);
         for _ in 0..5 {
-            let s = Address::generate(&env);
+            let s = mint_staker(&env, &_token, 100_000);
             client.stake(&s, &100);
             stakers.push_back(s);
         }
@@ -408,7 +401,7 @@ mod test {
     #[test]
     fn unstake_reduces_global_totals() {
         let (_env, client, _admin, _token, staker) = setup();
-        let staker2 = Address::generate(&_env);
+        let staker2 = mint_staker(&_env, &_token, 100_000);
         client.stake(&staker, &200);
         client.stake(&staker2, &200);
         client.unstake(&staker, &100);
