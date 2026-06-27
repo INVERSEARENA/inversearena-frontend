@@ -71,7 +71,8 @@ export function createApp(deps: AppDependencies): express.Application {
       },
     })
   );
-  app.use(cors());
+  const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(",").filter(Boolean) ?? [];
+  app.use(cors({ origin: allowedOrigins.length > 0 ? allowedOrigins : false, credentials: true }));
   app.use(express.json());
   app.use(requestLogger);
   app.use(requestContextMiddleware);
