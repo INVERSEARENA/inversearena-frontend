@@ -58,11 +58,11 @@ const TelemetryPage: React.FC = () => {
   }, []);
 
   const handleNotifications = () => {
-    console.log("Notifications clicked");
+    // TODO: Implement notifications panel
   };
 
   const handleSettings = () => {
-    console.log("Settings clicked");
+    // TODO: Implement settings panel
   };
 
   if (!globalPool) {

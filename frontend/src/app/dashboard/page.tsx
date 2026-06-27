@@ -104,7 +104,6 @@ function DashboardHomeView() {
         isOpen={isPoolModalOpen}
         onClose={() => setIsPoolModalOpen(false)}
         onInitialize={(data) => {
-          console.log("Initializing pool:", data);
           setIsPoolModalOpen(false);
         }}
       />
