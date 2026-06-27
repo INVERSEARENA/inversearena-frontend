@@ -76,3 +76,13 @@ pub struct RoundResult {
     pub survivors: u32,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Default)]
+pub struct PlayerProfile {
+    pub games_played: u32,
+    pub games_won: u32,
+    pub total_earnings: i128,
+    pub survival_streak: u32,
+    pub best_streak: u32,
+}
+

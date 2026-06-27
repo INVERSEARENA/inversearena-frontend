@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{Address, Env, contract, contractimpl};
+use soroban_sdk::{Address, BytesN, Env, contract, contracterror, contractimpl};
 
 /// On-chain yield rate oracle for InverseArena.
 ///
@@ -13,25 +13,34 @@ use soroban_sdk::{Address, Env, contract, contractimpl};
 #[contract]
 pub struct OracleContract;
 
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum OracleError {
+    NotInitialized = 1,
+    AlreadyInitialized = 2,
+}
+
 #[contractimpl]
 impl OracleContract {
     /// Initialise the oracle with an admin and an initial yield rate.
     /// Reverts if the oracle has already been initialised.
-    pub fn initialize(env: Env, admin: Address, initial_rate_bps: u32) {
-        admin.require_auth();
+    pub fn initialize(env: Env, admin: Address, initial_rate_bps: u32) -> Result<(), OracleError> {
         if env
             .storage()
             .persistent()
             .has(&soroban_sdk::symbol_short!("ADMIN"))
         {
-            panic!("already initialised");
+            return Err(OracleError::AlreadyInitialized);
         }
+        admin.require_auth();
         env.storage()
             .persistent()
             .set(&soroban_sdk::symbol_short!("ADMIN"), &admin);
         env.storage()
             .persistent()
             .set(&soroban_sdk::symbol_short!("RATE"), &initial_rate_bps);
+        Ok(())
     }
 
     /// Update the current yield rate. Only callable by the admin.
@@ -47,6 +56,21 @@ impl OracleContract {
             .set(&soroban_sdk::symbol_short!("RATE"), &rate_bps);
         env.events()
             .publish((soroban_sdk::symbol_short!("rate_set"),), rate_bps);
+    }
+
+    /// Upgrade this oracle contract to `new_wasm_hash`.
+    ///
+    /// Only the configured admin may perform upgrades so existing arena
+    /// references continue to resolve against the same contract instance.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), OracleError> {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&soroban_sdk::symbol_short!("ADMIN"))
+            .ok_or(OracleError::NotInitialized)?;
+        admin.require_auth();
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
     }
 
     /// Return the current yield rate in basis points (e.g. 500 = 5.00 % APY).
@@ -103,5 +127,20 @@ mod tests {
         client.initialize(&admin, &300);
         client.set_yield_bps(&750);
         assert_eq!(client.get_current_yield_bps(), 750);
+    }
+
+    #[test]
+    fn upgrade_requires_admin_auth() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(OracleContract, ());
+        let admin = Address::generate(&env);
+        let client = OracleContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &500);
+        env.set_auths(&[]);
+
+        let wasm = BytesN::from_array(&env, &[0u8; 32]);
+        assert!(client.try_upgrade(&wasm).is_err());
     }
 }

@@ -1,5 +1,5 @@
 use soroban_sdk::{Env, Symbol, Address, BytesN, Vec};
-use crate::types::{ArenaConfig, Choice, GlobalStats, RwaYieldRecord};
+use crate::types::{ArenaConfig, Choice, GlobalStats, RwaYieldRecord, PlayerProfile};
 use crate::errors::ArenaError;
 
 const CONFIG_KEY: Symbol = Symbol::short("CONFIG");
@@ -276,23 +276,15 @@ impl ArenaStorage {
         env.storage().instance().get(&ROUND_DEADLINE_KEY)
     }
 
-    // ── Round Bounds ────────────────────────────────────────────────────
+    // ── Player Profile ──────────────────────────────────────────────────
 
-    pub fn get_global_round_bounds(env: &Env) -> (u64, u64) {
-        env.storage().instance().get(&GLOBAL_ROUND_BOUNDS_KEY).unwrap_or((30, 604800))
+    pub fn load_player_profile(env: &Env, player: &Address) -> PlayerProfile {
+        let key = (Symbol::short("PROFILE"), player.clone());
+        env.storage().persistent().get(&key).unwrap_or_default()
     }
 
-    pub fn set_global_round_bounds(env: &Env, min: u64, max: u64) {
-        env.storage().instance().set(&GLOBAL_ROUND_BOUNDS_KEY, &(min, max));
-    }
-
-    pub fn get_arena_round_bounds(env: &Env, arena_id: u32) -> (u64, u64) {
-        let key = (Symbol::short("ARNBND"), arena_id);
-        env.storage().persistent().get(&key).unwrap_or((30, 604800))
-    }
-
-    pub fn set_arena_round_bounds(env: &Env, arena_id: u32, min: u64, max: u64) {
-        let key = (Symbol::short("ARNBND"), arena_id);
-        env.storage().persistent().set(&key, &(min, max));
+    pub fn save_player_profile(env: &Env, player: &Address, profile: &PlayerProfile) {
+        let key = (Symbol::short("PROFILE"), player.clone());
+        env.storage().persistent().set(&key, profile);
     }
 }

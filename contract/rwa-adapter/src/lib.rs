@@ -246,9 +246,8 @@ mod test {
 
         // Fund the contract so both withdrawals can succeed.
         let payout_alice: i128 = 1_050; // 1000 + 5%
-        let payout_bob: i128 = 525;     // 500 + 5%
-        StellarAssetClient::new(&env, &token_id)
-            .mint(&contract_id, &(payout_alice + payout_bob));
+        let payout_bob: i128 = 525; // 500 + 5%
+        StellarAssetClient::new(&env, &token_id).mint(&contract_id, &(payout_alice + payout_bob));
 
         client.withdraw_all(&alice);
         assert_eq!(
