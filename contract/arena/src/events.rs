@@ -93,6 +93,16 @@ impl ArenaEvents {
         );
     }
 
+    /// Emitted when the yield oracle cross-contract call fails. The arena falls
+    /// back to a 0-bps yield, but surfaces the failure so operators can detect a
+    /// misconfigured, unreachable, or malfunctioning oracle.
+    pub fn vault_oracle_failed(env: &Env, oracle: &Address) {
+        env.events().publish(
+            (Symbol::new(env, "vault_oracle_failed"),),
+            oracle.clone(),
+        );
+    }
+
     pub fn arena_cancelled(env: &Env, admin: &Address) {
         env.events()
             .publish((symbol_short!("cancel"), admin.clone()), ());
