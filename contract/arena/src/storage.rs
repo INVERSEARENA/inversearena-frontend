@@ -419,6 +419,21 @@ impl ArenaStorage {
             .persistent()
             .set(&DataKey::LeaderboardLimit, &limit);
     }
+
+    /// Clear all players' choices and commitments for the current round.
+    /// Called at the start of each new round to prevent stale round-N data
+    /// from leaking into round N+1.
+    pub fn clear_round_data(env: &Env) {
+        let players = Self::load_all_players(env);
+        for player in players.iter() {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Choice(player.clone()));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Commitment(player.clone()));
+        }
+    }
 }
 
 #[cfg(test)]

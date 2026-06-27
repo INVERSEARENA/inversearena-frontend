@@ -4,6 +4,9 @@ mod snapshot_tests;
 mod storage;
 mod types;
 
+#[cfg(test)]
+mod integration_tests;
+
 use storage::{CreatorStakeRecord, FactoryStorage};
 use types::{ArenaMetadata, ArenaStatus, FactoryError, PoolConfig};
 
@@ -34,6 +37,19 @@ impl FactoryContract {
         FactoryStorage::save_min_stake(&env, min_stake);
         env.events()
             .publish((symbol_short!("INIT"),), (admin, min_stake));
+        Ok(())
+    }
+
+    /// Upgrade the factory contract's code to `new_wasm_hash`.
+    ///
+    /// Admin-gated. Upgrading in place preserves all existing state — admin,
+    /// whitelist, pool sequence, and creator stakes — so bug fixes and new
+    /// features can ship without redeploying and losing that state.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash);
+        env.events().publish((symbol_short!("UPGRADE"),), ());
         Ok(())
     }
 
@@ -151,12 +167,13 @@ impl FactoryContract {
         let arena = env.current_contract_address();
 
         // Verify this arena was deployed by the factory
-        let record = FactoryStorage::load_creator_stake(&env, &arena)
-            .ok_or(FactoryError::ArenaNotFound)?;
+        let record =
+            FactoryStorage::load_creator_stake(&env, &arena).ok_or(FactoryError::ArenaNotFound)?;
 
         FactoryStorage::decrement_active_pool_count(&env, &record.creator);
 
-        env.events().publish((symbol_short!("POOL_RLS"),), record.creator);
+        env.events()
+            .publish((symbol_short!("POOL_RLS"),), record.creator);
         Ok(())
     }
 
@@ -248,14 +265,19 @@ impl FactoryContract {
     ///
     /// Only callable by the arena contract itself. The calling arena's address
     /// must match the recorded arena_address for the given pool_id.
-    pub fn update_arena_status(env: Env, pool_id: u32, status: ArenaStatus) -> Result<(), FactoryError> {
+    pub fn update_arena_status(
+        env: Env,
+        pool_id: u32,
+        status: ArenaStatus,
+    ) -> Result<(), FactoryError> {
         let caller = env.current_contract_address();
         let meta = FactoryStorage::load_pool(&env, pool_id).ok_or(FactoryError::PoolNotFound)?;
         if meta.arena_address != caller {
             return Err(FactoryError::Unauthorized);
         }
         FactoryStorage::update_pool_status(&env, pool_id, &status);
-        env.events().publish((symbol_short!("POOL_ST"),), (pool_id, status));
+        env.events()
+            .publish((symbol_short!("POOL_ST"),), (pool_id, status));
         Ok(())
     }
 
@@ -423,6 +445,22 @@ mod test {
             .expect("must still error (no wasm hash configured)")
             .expect("error must be a contract error");
         assert_ne!(err_after, FactoryError::UnsupportedToken);
+    }
+
+    #[test]
+    fn upgrade_rejects_non_admin() {
+        let (env, client, _admin, _host) = setup();
+
+        // Drop the mocked auths so the admin's signature is genuinely required;
+        // a non-admin caller cannot supply it.
+        env.set_auths(&[]);
+
+        let new_wasm = BytesN::from_array(&env, &[0u8; 32]);
+        let err = client.try_upgrade(&new_wasm);
+        assert!(
+            err.is_err(),
+            "upgrade without the admin's authorization must be rejected"
+        );
     }
 
     #[test]

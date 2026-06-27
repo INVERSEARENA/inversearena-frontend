@@ -1,6 +1,15 @@
 #![no_std]
-use soroban_sdk::{contracterror, symbol_short, Address, BytesN, Env, contract, contractimpl};
+use soroban_sdk::{Address, BytesN, Env, contract, contracterror, contractimpl};
 
+/// On-chain yield rate oracle for InverseArena.
+///
+/// Stores an admin-updateable yield rate in basis points (bps).
+/// The arena contract calls `get_current_yield_bps` once per `resolve_round`
+/// to snapshot the current USDY / RWA yield rate.
+///
+/// The admin updates the rate before each round closes, sourcing the value
+/// from Ondo's off-chain API or an on-chain Band Protocol feed.
+/// Future upgrades can replace this contract with a fully autonomous oracle.
 #[contract]
 pub struct OracleContract;
 
