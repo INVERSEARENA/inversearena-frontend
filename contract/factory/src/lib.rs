@@ -4,6 +4,9 @@ mod snapshot_tests;
 mod storage;
 mod types;
 
+#[cfg(test)]
+mod integration_tests;
+
 use storage::{CreatorStakeRecord, FactoryStorage};
 use types::{ArenaMetadata, ArenaStatus, FactoryError, PoolConfig};
 

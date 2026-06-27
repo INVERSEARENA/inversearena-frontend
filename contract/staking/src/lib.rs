@@ -20,10 +20,6 @@ pub struct StakingContract;
 
 #[contractimpl]
 impl StakingContract {
-    pub fn hello(_env: Env) -> u32 {
-        101112
-    }
-
     pub fn initialize(env: Env, admin: Address, token: Address) -> Result<(), StakingError> {
         admin.require_auth();
         if env.storage().instance().has(&ADMIN_KEY) {
@@ -244,14 +240,6 @@ mod test {
         token_admin.mint(&staker, &100_000);
         client.initialize(&admin, &token);
         (env, client, admin, token, staker)
-    }
-
-    #[test]
-    fn hello_returns_101112() {
-        let env = Env::default();
-        let contract_id = env.register(StakingContract, ());
-        let client = StakingContractClient::new(&env, &contract_id);
-        assert_eq!(client.hello(), 101112);
     }
 
     #[test]
