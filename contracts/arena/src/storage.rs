@@ -1,5 +1,5 @@
 use soroban_sdk::{Env, Symbol, Address, BytesN, Vec};
-use crate::types::{ArenaConfig, Choice, GlobalStats, RwaYieldRecord};
+use crate::types::{ArenaConfig, Choice, GlobalStats, RwaYieldRecord, PlayerProfile};
 use crate::errors::ArenaError;
 
 const CONFIG_KEY: Symbol = Symbol::short("CONFIG");
@@ -275,15 +275,15 @@ impl ArenaStorage {
         env.storage().instance().get(&ROUND_DEADLINE_KEY)
     }
 
-    // ── Player Arenas Mapping ───────────────────────────────────────────
+    // ── Player Profile ──────────────────────────────────────────────────
 
-    pub fn load_player_arenas(env: &Env, player: &Address) -> Vec<u32> {
-        let key = (Symbol::short("PARENAS"), player.clone());
-        env.storage().persistent().get(&key).unwrap_or_else(|| Vec::new(env))
+    pub fn load_player_profile(env: &Env, player: &Address) -> PlayerProfile {
+        let key = (Symbol::short("PROFILE"), player.clone());
+        env.storage().persistent().get(&key).unwrap_or_default()
     }
 
-    pub fn save_player_arenas(env: &Env, player: &Address, arenas: &Vec<u32>) {
-        let key = (Symbol::short("PARENAS"), player.clone());
-        env.storage().persistent().set(&key, arenas);
+    pub fn save_player_profile(env: &Env, player: &Address, profile: &PlayerProfile) {
+        let key = (Symbol::short("PROFILE"), player.clone());
+        env.storage().persistent().set(&key, profile);
     }
 }

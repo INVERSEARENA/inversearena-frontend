@@ -42,8 +42,7 @@ impl PayoutContract {
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), PayoutError> {
         let admin = PayoutStorage::get_admin(&env)?;
         admin.require_auth();
-        env.deployer()
-            .update_current_contract_wasm(new_wasm_hash);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
         Ok(())
     }
 
@@ -285,6 +284,8 @@ mod test {
         let token = Address::generate(&env);
         // require_auth() inside initialize() must panic because admin hasn't signed.
         client.initialize(&admin, &token);
+    }
+
     /// distribute_batch must be marked paid BEFORE any transfer. Verify by
     /// confirming is_paid is set and a second call with the same payout_id
     /// is rejected even if the first call's transfers complete.
@@ -298,13 +299,20 @@ mod test {
 
         fx.client.distribute_batch(&77, &recipients);
 
-        assert!(fx.client.is_paid(&77), "must be marked paid after first call");
+        assert!(
+            fx.client.is_paid(&77),
+            "must be marked paid after first call"
+        );
         assert_eq!(fx.token.balance(&a), 200, "recipient must receive payment");
 
         // Second call with same id must be rejected — no double payment.
         let err = fx.client.try_distribute_batch(&77, &recipients);
         assert!(err.is_err(), "duplicate payout_id must be rejected");
-        assert_eq!(fx.token.balance(&a), 200, "balance must not change on rejected retry");
+        assert_eq!(
+            fx.token.balance(&a),
+            200,
+            "balance must not change on rejected retry"
+        );
     }
 
     #[test]

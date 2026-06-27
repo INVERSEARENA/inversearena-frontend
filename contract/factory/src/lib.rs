@@ -151,12 +151,13 @@ impl FactoryContract {
         let arena = env.current_contract_address();
 
         // Verify this arena was deployed by the factory
-        let record = FactoryStorage::load_creator_stake(&env, &arena)
-            .ok_or(FactoryError::ArenaNotFound)?;
+        let record =
+            FactoryStorage::load_creator_stake(&env, &arena).ok_or(FactoryError::ArenaNotFound)?;
 
         FactoryStorage::decrement_active_pool_count(&env, &record.creator);
 
-        env.events().publish((symbol_short!("POOL_RLS"),), record.creator);
+        env.events()
+            .publish((symbol_short!("POOL_RLS"),), record.creator);
         Ok(())
     }
 
@@ -248,14 +249,19 @@ impl FactoryContract {
     ///
     /// Only callable by the arena contract itself. The calling arena's address
     /// must match the recorded arena_address for the given pool_id.
-    pub fn update_arena_status(env: Env, pool_id: u32, status: ArenaStatus) -> Result<(), FactoryError> {
+    pub fn update_arena_status(
+        env: Env,
+        pool_id: u32,
+        status: ArenaStatus,
+    ) -> Result<(), FactoryError> {
         let caller = env.current_contract_address();
         let meta = FactoryStorage::load_pool(&env, pool_id).ok_or(FactoryError::PoolNotFound)?;
         if meta.arena_address != caller {
             return Err(FactoryError::Unauthorized);
         }
         FactoryStorage::update_pool_status(&env, pool_id, &status);
-        env.events().publish((symbol_short!("POOL_ST"),), (pool_id, status));
+        env.events()
+            .publish((symbol_short!("POOL_ST"),), (pool_id, status));
         Ok(())
     }
 
