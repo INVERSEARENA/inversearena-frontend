@@ -5,21 +5,36 @@
 //! entry points use, so a security reviewer can reason about state transitions
 //! in one place instead of scanning `lib.rs`.
 //!
-//! Legal transitions:
+//! Legal transitions (mirrors the transitions actually performed in `lib.rs`):
 //! ```text
-//! Open    → Active      (first round starts)
-//! Open    → Cancelled   (admin cancels before the game starts)
-//! Active  → Finished     (last round resolved)
+//! Open     → Active      (start_round — first round starts)
+//! Open     → Cancelled   (cancel_arena / force_cancel_arena before play)
+//! Active   → Open        (resolve_round — more than one survivor remains)
+//! Active   → Finished    (resolve_round last survivor / expire_arena)
+//! Active   → Cancelled   (force_cancel_arena mid-game)
+//! Finished → Active      (start_round — a new round of a multi-round arena)
+//! Finished → Settled     (claim — prize distributed to the winner)
 //! ```
+//!
+//! `Cancelled` and `Settled` are terminal — no transitions leave them.
 
 use crate::types::{ArenaError, GameState};
 
 /// Returns `true` if a direct transition from `from` to `to` is allowed.
+///
+/// Kept in sync with the `config.state = …` assignments in `lib.rs`; see the
+/// module-level table above.
 pub fn can_transition(from: &GameState, to: &GameState) -> bool {
     use GameState::*;
     matches!(
         (from, to),
-        (Open, Active) | (Open, Cancelled) | (Active, Finished)
+        (Open, Active)
+            | (Open, Cancelled)
+            | (Active, Open)
+            | (Active, Finished)
+            | (Active, Cancelled)
+            | (Finished, Active)
+            | (Finished, Settled)
     )
 }
 
@@ -57,19 +72,33 @@ mod tests {
 
     #[test]
     fn legal_transitions() {
+        // Every transition `lib.rs` actually performs must be accepted.
         assert!(can_transition(&Open, &Active));
         assert!(can_transition(&Open, &Cancelled));
+        assert!(can_transition(&Active, &Open));
         assert!(can_transition(&Active, &Finished));
+        assert!(can_transition(&Active, &Cancelled));
+        assert!(can_transition(&Finished, &Active));
+        assert!(can_transition(&Finished, &Settled));
     }
 
     #[test]
     fn illegal_transitions() {
+        // Skipping intermediate states is not allowed.
         assert!(!can_transition(&Open, &Finished));
-        assert!(!can_transition(&Active, &Cancelled));
-        assert!(!can_transition(&Finished, &Active));
+        assert!(!can_transition(&Open, &Settled));
+        assert!(!can_transition(&Active, &Settled));
+        // Finished cannot be cancelled (force_cancel_arena rejects it).
+        assert!(!can_transition(&Finished, &Cancelled));
+        assert!(!can_transition(&Finished, &Open));
+        // Terminal states never transition out.
         assert!(!can_transition(&Cancelled, &Open));
+        assert!(!can_transition(&Cancelled, &Active));
+        assert!(!can_transition(&Settled, &Open));
+        assert!(!can_transition(&Settled, &Active));
         // No self-loops.
         assert!(!can_transition(&Open, &Open));
+        assert!(!can_transition(&Active, &Active));
     }
 
     #[test]
@@ -84,6 +113,11 @@ mod tests {
     #[test]
     fn ensure_transition_guards() {
         assert!(ensure_transition(&Open, &Active, ArenaError::InvalidGameState).is_ok());
-        assert!(ensure_transition(&Finished, &Active, ArenaError::InvalidGameState).is_err());
+        // Finished → Active is legal (a new round); Finished → Cancelled is not.
+        assert!(ensure_transition(&Finished, &Active, ArenaError::InvalidGameState).is_ok());
+        assert_eq!(
+            ensure_transition(&Finished, &Cancelled, ArenaError::InvalidGameState),
+            Err(ArenaError::InvalidGameState),
+        );
     }
 }

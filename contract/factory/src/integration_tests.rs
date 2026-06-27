@@ -87,6 +87,7 @@ fn factory_deploys_arena_and_full_game_plays() {
             &CreatorStakeRecord {
                 creator: host.clone(),
                 amount: 100,
+                stake_token: token_id.clone(),
             },
         );
         crate::storage::FactoryStorage::increment_active_pool_count(&env, &host);
