@@ -239,4 +239,10 @@ pub enum ArenaError {
 
     /// Returned when `execute_upgrade` is called without a prior `propose_upgrade`.
     NoPendingUpgrade = 31,
+
+    /// Returned when `initialize` is called with entry_fee <= 0.
+    InvalidEntryFee = 32,
+
+    /// Returned when `submit_commitment` is called after the commit deadline has passed.
+    CommitPhaseEnded = 33,
 }
