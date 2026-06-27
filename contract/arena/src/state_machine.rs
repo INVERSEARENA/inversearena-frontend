@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Arena lifecycle state machine (#694).
 //!
 //! Centralises the legal `GameState` transitions and the guards the contract
@@ -53,6 +52,7 @@ pub fn ensure_state(
 }
 
 /// Guard requiring a `from → to` transition to be legal before it is applied.
+#[allow(dead_code)]
 pub fn ensure_transition(
     from: &GameState,
     to: &GameState,

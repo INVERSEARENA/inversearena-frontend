@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Round elimination logic (#694).
 //!
 //! Inverse Arena is a *minority-wins* game: the choice made by fewer players
@@ -18,6 +17,7 @@ pub struct Tally {
 }
 
 impl Tally {
+    #[allow(dead_code)]
     pub fn total(&self) -> u32 {
         self.heads + self.tails
     }

@@ -28,6 +28,11 @@ impl ArenaEvents {
             .publish((symbol_short!("limits"),), (min_players, max_players));
     }
 
+    pub fn upgrade_proposed(env: &Env, new_wasm_hash: &BytesN<32>, proposed_at: u64) {
+        env.events()
+            .publish((symbol_short!("up_prop"),), (new_wasm_hash.clone(), proposed_at));
+    }
+
     pub fn upgraded(env: &Env, new_wasm_hash: &BytesN<32>) {
         env.events()
             .publish((symbol_short!("upgrade"),), new_wasm_hash.clone());

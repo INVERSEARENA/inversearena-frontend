@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, contracterror, contracttype};
+use soroban_sdk::{Address, BytesN, contracterror, contracttype};
 
 /// Lifecycle state of an arena.
 ///
@@ -68,6 +68,14 @@ pub struct ArenaConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingAdmin {
     pub new_admin: Address,
+}
+
+/// A two-step upgrade proposal with a timelock.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingUpgrade {
+    pub wasm_hash: BytesN<32>,
+    pub proposed_at: u64,
 }
 
 /// Per-player state stored in persistent storage, keyed by the player address.
@@ -224,4 +232,11 @@ pub enum ArenaError {
 
     /// Returned when a player who has already joined the arena tries to join again.
     AlreadyJoined = 29,
+
+    /// Returned when `execute_upgrade` is called before the timelock has elapsed after
+    /// `propose_upgrade`.
+    UpgradeTimelockPending = 30,
+
+    /// Returned when `execute_upgrade` is called without a prior `propose_upgrade`.
+    NoPendingUpgrade = 31,
 }

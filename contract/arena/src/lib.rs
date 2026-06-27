@@ -19,14 +19,15 @@ use events::ArenaEvents;
 use rwa_client::RwaAdapterClient;
 use storage::ArenaStorage;
 use types::{
-    ArenaConfig, ArenaError, Choice, GameState, LeaderboardEntry, PendingAdmin, PlayerState,
-    RoundResult, YieldSnapshot,
+    ArenaConfig, ArenaError, Choice, GameState, LeaderboardEntry, PendingAdmin, PendingUpgrade,
+    PlayerState, RoundResult, YieldSnapshot,
 };
 
 const PAGE_SIZE: u32 = 50;
 pub(crate) const MIN_PLAYERS_TO_START: u32 = 2;
 const DEFAULT_MAX_PLAYERS: u32 = u32::MAX;
 const CONTRACT_VERSION: u32 = 1;
+const UPGRADE_TIMELOCK_SECONDS: u64 = 86_400; // 1 day
 
 #[contract]
 /// On-chain arena contract. Manages the full lifecycle of a single elimination
@@ -96,6 +97,7 @@ impl ArenaContract {
             oracle_contract,
         };
         ArenaStorage::save_config(&env, &config);
+        ArenaStorage::increment_creator_active_pools(&env, &admin);
         ArenaStorage::save_player_limits(&env, MIN_PLAYERS_TO_START, DEFAULT_MAX_PLAYERS);
         ArenaStorage::save_last_vault_balance(&env, 0);
         ArenaEvents::initialized(&env, &admin);
@@ -107,16 +109,52 @@ impl ArenaContract {
         CONTRACT_VERSION
     }
 
-    /// Upgrade this arena contract to `new_wasm_hash`.
+    /// Propose an upgrade to `new_wasm_hash`.
     ///
-    /// Only the admin may upgrade. This intentionally remains callable while
-    /// paused so an emergency pause can be followed by a recovery upgrade.
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), ArenaError> {
+    /// Stores the proposal and records the current ledger timestamp. The upgrade
+    /// is NOT applied immediately — the admin must call `execute_upgrade` after
+    /// `UPGRADE_TIMELOCK_SECONDS` have elapsed, giving users time to review the
+    /// new code.
+    ///
+    /// Callable while paused so an emergency pause can be followed by a
+    /// timelocked recovery upgrade. If a prior proposal exists it is silently
+    /// overwritten.
+    pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), ArenaError> {
         let config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
+        let proposed_at = env.ledger().timestamp();
+        ArenaStorage::save_pending_upgrade(
+            &env,
+            &PendingUpgrade {
+                wasm_hash: new_wasm_hash.clone(),
+                proposed_at,
+            },
+        );
+        ArenaEvents::upgrade_proposed(&env, &new_wasm_hash, proposed_at);
+        Ok(())
+    }
+
+    /// Execute a previously proposed upgrade after the timelock has elapsed.
+    ///
+    /// Only the admin may execute. The timelock gives users a window to review
+    /// the proposed WASM hash before it takes effect.
+    ///
+    /// # Errors
+    /// - `ArenaError::NoPendingUpgrade` if no proposal exists.
+    /// - `ArenaError::UpgradeTimelockPending` if the timelock has not elapsed.
+    pub fn execute_upgrade(env: Env) -> Result<(), ArenaError> {
+        let pending = ArenaStorage::load_pending_upgrade(&env)
+            .ok_or(ArenaError::NoPendingUpgrade)?;
+        let config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+        let now = env.ledger().timestamp();
+        if now < pending.proposed_at.saturating_add(UPGRADE_TIMELOCK_SECONDS) {
+            return Err(ArenaError::UpgradeTimelockPending);
+        }
         env.deployer()
-            .update_current_contract_wasm(new_wasm_hash.clone());
-        ArenaEvents::upgraded(&env, &new_wasm_hash);
+            .update_current_contract_wasm(pending.wasm_hash.clone());
+        ArenaStorage::clear_pending_upgrade(&env);
+        ArenaEvents::upgraded(&env, &pending.wasm_hash);
         Ok(())
     }
 
@@ -321,6 +359,7 @@ impl ArenaContract {
 
         config.state = GameState::Cancelled;
         ArenaStorage::save_config(&env, &config);
+        ArenaStorage::decrement_creator_active_pools(&env, &config.admin);
 
         let arena_addr = env.current_contract_address();
         if config.player_count > 0 {
@@ -364,6 +403,7 @@ impl ArenaContract {
 
         config.state = GameState::Finished;
         ArenaStorage::save_config(&env, &config);
+        ArenaStorage::decrement_creator_active_pools(&env, &config.admin);
 
         let arena_addr = env.current_contract_address();
         if config.player_count > 0 {
@@ -546,6 +586,9 @@ impl ArenaContract {
             GameState::Open
         };
         ArenaStorage::save_config(&env, &config);
+        if config.state == GameState::Finished {
+            ArenaStorage::decrement_creator_active_pools(&env, &config.admin);
+        }
 
         ArenaEvents::round_resolved(&env, round, resolution.eliminated, resolution.survivors);
         if resolution.tied {
@@ -749,6 +792,7 @@ impl ArenaContract {
 
         config.state = GameState::Cancelled;
         ArenaStorage::save_config(&env, &config);
+        ArenaStorage::decrement_creator_active_pools(&env, &config.admin);
 
         // Attempt to withdraw all funds from the yield vault
         let arena_addr = env.current_contract_address();

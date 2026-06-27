@@ -1,10 +1,9 @@
-#![allow(dead_code)]
-
 use crate::types::{
     ArenaConfig, ArenaError, Choice, GameState, PendingAdmin, PlayerState, RoundResult,
     YieldSnapshot,
 };
 use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, Vec, contracttype, symbol_short};
+use crate::types::PendingUpgrade;
 
 const PERSISTENT_TTL_THRESHOLD: u32 = 100;
 const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
@@ -58,20 +57,6 @@ impl ArenaStorage {
     }
 
     pub fn save_config(env: &Env, config: &ArenaConfig) {
-        let previous: Option<ArenaConfig> =
-            env.storage().persistent().get(&symbol_short!("CONFIG"));
-
-        if previous.is_none() && config.state == GameState::Open {
-            Self::increment_creator_active_pools(env, &config.admin);
-        }
-
-        if let Some(previous_config) = previous
-            && !Self::is_terminal_pool_state(&previous_config.state)
-            && Self::is_terminal_pool_state(&config.state)
-        {
-            Self::decrement_creator_active_pools(env, &previous_config.admin);
-        }
-
         Self::extend_persistent_ttl(env, &symbol_short!("CONFIG"));
         env.storage()
             .persistent()
@@ -353,6 +338,7 @@ impl ArenaStorage {
         }
     }
 
+    #[allow(dead_code)]
     fn is_terminal_pool_state(state: &GameState) -> bool {
         matches!(state, GameState::Finished | GameState::Cancelled)
     }
@@ -428,6 +414,22 @@ impl ArenaStorage {
             .set(&DataKey::LeaderboardLimit, &limit);
     }
 
+    pub fn save_pending_upgrade(env: &Env, upgrade: &PendingUpgrade) {
+        Self::extend_persistent_ttl(env, &symbol_short!("UPGRADE"));
+        env.storage()
+            .persistent()
+            .set(&symbol_short!("UPGRADE"), upgrade);
+    }
+
+    pub fn load_pending_upgrade(env: &Env) -> Option<PendingUpgrade> {
+        Self::extend_persistent_ttl(env, &symbol_short!("UPGRADE"));
+        env.storage().persistent().get(&symbol_short!("UPGRADE"))
+    }
+
+    pub fn clear_pending_upgrade(env: &Env) {
+        env.storage().persistent().remove(&symbol_short!("UPGRADE"));
+    }
+
     /// Clear all players' choices and commitments for the current round.
     /// Called at the start of each new round to prevent stale round-N data
     /// from leaking into round N+1.
@@ -467,42 +469,22 @@ mod tests {
     }
 
     #[test]
-    fn initial_open_config_increments_creator_active_pools() {
+    fn increment_and_decrement_creator_active_pools() {
         let env = Env::default();
         let contract_id = env.register(ArenaContract, ());
         let creator = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
             ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Open));
+            ArenaStorage::increment_creator_active_pools(&env, &creator);
             assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 1);
-        });
-    }
 
-    #[test]
-    fn finished_transition_decrements_creator_active_pools_once() {
-        let env = Env::default();
-        let contract_id = env.register(ArenaContract, ());
-        let creator = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Open));
-            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Active));
             ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Finished));
-            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Finished));
-            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Settled));
+            ArenaStorage::decrement_creator_active_pools(&env, &creator);
             assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 0);
-        });
-    }
 
-    #[test]
-    fn cancelled_transition_decrements_creator_active_pools() {
-        let env = Env::default();
-        let contract_id = env.register(ArenaContract, ());
-        let creator = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Open));
-            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Cancelled));
+            // Repeated decrement is a no-op (saturating at 0).
+            ArenaStorage::decrement_creator_active_pools(&env, &creator);
             assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 0);
         });
     }
