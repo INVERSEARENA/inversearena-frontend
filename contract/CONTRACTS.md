@@ -137,3 +137,26 @@
 
 ## Staking
 
+### Errors
+- `NotInitialized`
+- `AlreadyInitialized`
+- `Paused`
+- `InvalidAmount`
+- `InsufficientShares`
+- `ZeroShares`
+
+### Functions
+- `pub fn initialize(env: Env, admin: Address, token: Address) -> Result<(), StakingError>`
+- `pub fn admin(env: Env) -> Address`
+- `pub fn token(env: Env) -> Address`
+- `pub fn stake(env: Env, staker: Address, amount: i128) -> Result<i128, StakingError>`
+- `pub fn unstake(env: Env, staker: Address, shares: i128) -> Result<i128, StakingError>`
+- `pub fn total_staked(env: Env) -> i128`
+- `pub fn total_shares(env: Env) -> i128`
+- `pub fn get_position(env: Env, staker: Address) -> StakePosition`
+- `pub fn staked_balance(env: Env, staker: Address) -> i128`
+- `pub fn get_staker_stats(env: Env, staker: Address) -> StakerStats`
+- `pub fn pause(env: Env) -> Result<(), StakingError>`
+- `pub fn unpause(env: Env) -> Result<(), StakingError>`
+- `pub fn is_paused(env: Env) -> bool`
+

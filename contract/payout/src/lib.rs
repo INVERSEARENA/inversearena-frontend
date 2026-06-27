@@ -337,4 +337,132 @@ mod test {
     fn env_set_no_auths(env: &Env) {
         env.set_auths(&[]);
     }
+
+    /// A malicious token whose `transfer` callback reenters
+    /// `distribute_batch` on the payout contract, attempting to replay the same
+    /// payout and double-pay the recipient. It implements just enough of the
+    /// SEP-41 surface (`balance` + `transfer`) for the payout contract to use it.
+    #[contract]
+    struct ReentrantToken;
+
+    #[contractimpl]
+    impl ReentrantToken {
+        /// Arm the attack: store the target payout contract and the
+        /// payout_id / recipient / amount the `transfer` callback will replay,
+        /// plus the (fake) balance to report so the payout's balance check passes.
+        pub fn arm(
+            env: Env,
+            payout: Address,
+            payout_id: u64,
+            recipient: Address,
+            amount: i128,
+            balance: i128,
+        ) {
+            let s = env.storage().persistent();
+            s.set(&symbol_short!("PAYOUT"), &payout);
+            s.set(&symbol_short!("PID"), &payout_id);
+            s.set(&symbol_short!("RECIP"), &recipient);
+            s.set(&symbol_short!("AMT"), &amount);
+            s.set(&symbol_short!("BAL"), &balance);
+            s.set(&symbol_short!("TCOUNT"), &0u32);
+            s.set(&symbol_short!("ATTEMPT"), &false);
+            s.set(&symbol_short!("BLOCKED"), &false);
+        }
+
+        /// Number of times `transfer` actually moved funds.
+        pub fn transfer_count(env: Env) -> u32 {
+            env.storage()
+                .persistent()
+                .get(&symbol_short!("TCOUNT"))
+                .unwrap_or(0)
+        }
+
+        /// Whether the reentrant `distribute_batch` call was rejected.
+        pub fn reentry_blocked(env: Env) -> bool {
+            env.storage()
+                .persistent()
+                .get(&symbol_short!("BLOCKED"))
+                .unwrap_or(false)
+        }
+
+        // ── SEP-41 surface used by the payout contract ──
+        pub fn balance(env: Env, _id: Address) -> i128 {
+            env.storage()
+                .persistent()
+                .get(&symbol_short!("BAL"))
+                .unwrap_or(0)
+        }
+
+        pub fn transfer(env: Env, _from: Address, _to: Address, _amount: i128) {
+            let s = env.storage().persistent();
+
+            // Count this (legitimate) transfer. A second count would mean the
+            // reentrant replay managed to pay the recipient again.
+            let count: u32 = s.get(&symbol_short!("TCOUNT")).unwrap_or(0);
+            s.set(&symbol_short!("TCOUNT"), &(count + 1));
+
+            // Reenter once, mid-transfer, and try to replay the batch.
+            let attempted: bool = s.get(&symbol_short!("ATTEMPT")).unwrap_or(false);
+            if !attempted {
+                s.set(&symbol_short!("ATTEMPT"), &true);
+
+                let payout: Address = s.get(&symbol_short!("PAYOUT")).unwrap();
+                let payout_id: u64 = s.get(&symbol_short!("PID")).unwrap();
+                let recipient: Address = s.get(&symbol_short!("RECIP")).unwrap();
+                let amount: i128 = s.get(&symbol_short!("AMT")).unwrap();
+
+                let mut recipients = Vec::new(&env);
+                recipients.push_back((recipient, amount));
+
+                let client = PayoutContractClient::new(&env, &payout);
+                let res = client.try_distribute_batch(&payout_id, &recipients);
+                // Record whether the replay was rejected.
+                s.set(&symbol_short!("BLOCKED"), &res.is_err());
+            }
+        }
+    }
+
+    /// Reentrancy guard: a malicious token that reenters `distribute_batch`
+    /// during its transfer callback must not be able to replay the payout.
+    /// Because the payout marks the id paid BEFORE any transfer
+    /// (checks-effects-interactions), the reentrant call is rejected and the
+    /// recipient is paid exactly once (#968).
+    #[test]
+    fn distribute_batch_blocks_reentrant_token() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        // Deploy the malicious token and a payout contract configured to use it.
+        let token_addr = env.register(ReentrantToken, ());
+        let token = ReentrantTokenClient::new(&env, &token_addr);
+
+        let payout_addr = env.register(PayoutContract, ());
+        let payout = PayoutContractClient::new(&env, &payout_addr);
+        payout.initialize(&admin, &token_addr);
+
+        // During its transfer callback the token replays distribute_batch(7),
+        // trying to pay `recipient` 100 a second time. Report a large balance so
+        // the payout's balance check is never the reason the replay fails.
+        token.arm(&payout_addr, &7u64, &recipient, &100i128, &1_000_000i128);
+
+        let mut recipients = Vec::new(&env);
+        recipients.push_back((recipient.clone(), 100i128));
+
+        // The single legitimate transfer triggers the reentrant attack inside.
+        payout.distribute_batch(&7, &recipients);
+
+        assert!(
+            token.reentry_blocked(),
+            "reentrant distribute_batch replay must be rejected"
+        );
+        assert_eq!(
+            token.transfer_count(),
+            1,
+            "recipient must be paid exactly once — reentrancy must not double-pay"
+        );
+        assert!(payout.is_paid(&7));
+    }
 }

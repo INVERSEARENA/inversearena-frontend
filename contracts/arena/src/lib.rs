@@ -74,8 +74,11 @@ impl ArenaContract {
         ArenaStorage::increment_arena_count(&env);
         let current_arena_id = ArenaStorage::load_global_stats(&env).total_arenas;
 
-        let (min_bound, max_bound) = ArenaStorage::get_global_round_bounds(&env);
-        ArenaStorage::set_arena_round_bounds(&env, current_arena_id, min_bound, max_bound);
+        let mut admin_arenas = ArenaStorage::load_player_arenas(&env, &admin);
+        if !admin_arenas.contains(current_arena_id) {
+            admin_arenas.push_back(current_arena_id);
+            ArenaStorage::save_player_arenas(&env, &admin, &admin_arenas);
+        }
 
         // Emit initialization event
         ArenaEvents::arena_initialized(&env, &admin);
@@ -302,6 +305,13 @@ impl ArenaContract {
         ArenaStorage::add_to_global_pool(&env, config.entry_fee);
         let current_pool = ArenaStorage::get_prize_pool(&env);
         ArenaStorage::set_prize_pool(&env, current_pool.saturating_add(config.entry_fee));
+
+        let current_arena_id = ArenaStorage::load_global_stats(&env).total_arenas;
+        let mut player_arenas = ArenaStorage::load_player_arenas(&env, &player);
+        if !player_arenas.contains(current_arena_id) {
+            player_arenas.push_back(current_arena_id);
+            ArenaStorage::save_player_arenas(&env, &player, &player_arenas);
+        }
 
         ArenaEvents::player_joined(&env, &player);
         Ok(())
