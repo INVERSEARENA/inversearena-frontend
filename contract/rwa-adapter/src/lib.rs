@@ -1,6 +1,9 @@
 #![no_std]
 use soroban_sdk::{Address, Env, contract, contractimpl, token};
 
+const YIELD_BPS_PER_YEAR: i128 = 500;
+const SECONDS_PER_YEAR: u64 = 31_536_000;
+
 mod storage;
 mod types;
 
@@ -8,7 +11,6 @@ use storage::RwaStorage;
 use types::RwaConfig;
 pub use types::RwaError;
 
-const YIELD_BPS: i128 = 500;
 
 #[contract]
 pub struct RwaAdapter;
@@ -72,7 +74,7 @@ impl RwaAdapter {
 
         let yield_amount = pos
             .principal
-            .checked_mul(YIELD_BPS)
+            .checked_mul(YIELD_BPS_PER_YEAR)
             .and_then(|v| v.checked_div(10000))
             .ok_or(RwaError::ArithmeticOverflow)?;
         let total = pos
@@ -115,11 +117,17 @@ impl RwaAdapter {
                 if pos.withdrawn {
                     0
                 } else {
-                    pos.principal
-                        .checked_mul(YIELD_BPS)
+                    let base_yield = pos
+                        .principal
+                        .checked_mul(YIELD_BPS_PER_YEAR)
                         .and_then(|y| y.checked_div(10000))
-                        .and_then(|y| pos.principal.checked_add(y))
-                        .unwrap_or(0)
+                        .unwrap_or(0);
+                    let elapsed = env.ledger().timestamp().saturating_sub(0u64);
+                    let accrued = base_yield
+                        .checked_mul(elapsed as i128)
+                        .and_then(|y| y.checked_div(SECONDS_PER_YEAR as i128))
+                        .unwrap_or(0);
+                    pos.principal.checked_add(base_yield).and_then(|v| v.checked_add(accrued)).unwrap_or(0)
                 }
             })
             .unwrap_or(0)
@@ -144,7 +152,7 @@ mod test {
     extern crate std;
 
     use super::*;
-    use soroban_sdk::{Address, Env, testutils::Address as _, token::StellarAssetClient};
+    use soroban_sdk::{Address, Env, testutils::{Address as _, Ledger}, token::StellarAssetClient};
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -200,6 +208,23 @@ mod test {
         // balance_of returns principal + 5% simulated yield
         assert_eq!(client.balance_of(&from), 105);
         assert_eq!(client.get_total_deposited(), 100);
+    }
+
+    #[test]
+    fn balance_of_accrues_over_time() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _, _) = setup(&env);
+        let from = Address::generate(&env);
+
+        client.deposit(&from, &100);
+        assert_eq!(client.balance_of(&from), 100);
+
+        let mut ledger = env.ledger().get();
+        ledger.timestamp += 31_536_000;
+        env.ledger().set(ledger);
+
+        assert_eq!(client.balance_of(&from), 105);
     }
 
     // ── Authorization tests for withdraw_all() ────────────────────────────────

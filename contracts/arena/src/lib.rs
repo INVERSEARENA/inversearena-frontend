@@ -50,6 +50,10 @@ impl ArenaContract {
             }
         }
 
+        if entry_fee < 4_000_000 || entry_fee > 1_000_000_000_000 {
+            return Err(ArenaError::InvalidEntryFee);
+        }
+
         // Create initial configuration
         let config = ArenaConfig {
             admin: admin.clone(),
@@ -72,13 +76,6 @@ impl ArenaContract {
 
         // Track global arena count for dashboard stats.
         ArenaStorage::increment_arena_count(&env);
-        let current_arena_id = ArenaStorage::load_global_stats(&env).total_arenas;
-
-        let mut admin_arenas = ArenaStorage::load_player_arenas(&env, &admin);
-        if !admin_arenas.contains(current_arena_id) {
-            admin_arenas.push_back(current_arena_id);
-            ArenaStorage::save_player_arenas(&env, &admin, &admin_arenas);
-        }
 
         // Emit initialization event
         ArenaEvents::arena_initialized(&env, &admin);
@@ -292,14 +289,15 @@ impl ArenaContract {
         let current_pool = ArenaStorage::get_prize_pool(&env);
         ArenaStorage::set_prize_pool(&env, current_pool.saturating_add(config.entry_fee));
 
-        let current_arena_id = ArenaStorage::load_global_stats(&env).total_arenas;
-        let mut player_arenas = ArenaStorage::load_player_arenas(&env, &player);
-        if !player_arenas.contains(current_arena_id) {
-            player_arenas.push_back(current_arena_id);
-            ArenaStorage::save_player_arenas(&env, &player, &player_arenas);
+        ArenaEvents::player_joined(&env, &player);
+
+        if config.player_count >= config.max_players {
+            let round_deadline = config.join_deadline.saturating_add(86_400);
+            ArenaStorage::set_round_deadline(&env, round_deadline);
+            ArenaStorage::set_round(&env, 1);
+            ArenaEvents::round_started(&env, 1, round_deadline);
         }
 
-        ArenaEvents::player_joined(&env, &player);
         Ok(())
     }
 
