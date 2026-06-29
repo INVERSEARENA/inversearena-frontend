@@ -127,7 +127,7 @@ impl RwaAdapter {
                         .checked_mul(elapsed as i128)
                         .and_then(|y| y.checked_div(SECONDS_PER_YEAR as i128))
                         .unwrap_or(0);
-                    pos.principal.checked_add(base_yield).and_then(|v| v.checked_add(accrued)).unwrap_or(0)
+                    pos.principal.checked_add(accrued).unwrap_or(0)
                 }
             })
             .unwrap_or(0)
@@ -205,8 +205,8 @@ mod test {
 
         client.deposit(&from, &100);
 
-        // balance_of returns principal + 5% simulated yield
-        assert_eq!(client.balance_of(&from), 105);
+        // balance_of returns principal (yield takes time to accrue)
+        assert_eq!(client.balance_of(&from), 100);
         assert_eq!(client.get_total_deposited(), 100);
     }
 
