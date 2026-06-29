@@ -497,7 +497,14 @@ impl ArenaContract {
             return Err(ArenaError::InvalidGameState);
         }
 
-        if config.player_count < ArenaStorage::load_min_players(&env) {
+        let active_count = ArenaStorage::load_all_players(&env)
+            .iter()
+            .filter(|p| {
+                ArenaStorage::load_player(&env, &p)
+                    .map_or(false, |s| s.active)
+            })
+            .count() as u32;
+        if active_count < ArenaStorage::load_min_players(&env) {
             return Err(ArenaError::NotEnoughPlayers);
         }
 
@@ -1196,7 +1203,7 @@ mod test {
                 oracle_contract: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
-            ArenaStorage::save_commitment(&env, &player, &commitment);
+            ArenaStorage::save_commitment(&env, &player, 1, &commitment);
         });
 
         let client = ArenaContractClient::new(&env, &contract_id);
@@ -1238,7 +1245,7 @@ mod test {
                     rounds_survived: 1,
                 },
             );
-            ArenaStorage::save_commitment(&env, &player, &commitment);
+            ArenaStorage::save_commitment(&env, &player, 1, &commitment);
         });
 
         let client = ArenaContractClient::new(&env, &contract_id);
@@ -1271,7 +1278,7 @@ mod test {
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
-            ArenaStorage::save_commitment(&env, &player, &commitment);
+            ArenaStorage::save_commitment(&env, &player, 1, &commitment);
         });
 
         let client = ArenaContractClient::new(&env, &contract_id);
@@ -1304,7 +1311,7 @@ mod test {
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
-            ArenaStorage::save_commitment(&env, &player, &commitment);
+            ArenaStorage::save_commitment(&env, &player, 1, &commitment);
         });
 
         let client = ArenaContractClient::new(&env, &contract_id);
@@ -1338,7 +1345,7 @@ mod test {
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
-            ArenaStorage::save_commitment(&env, &player, &commitment);
+            ArenaStorage::save_commitment(&env, &player, 1, &commitment);
         });
 
         let client = ArenaContractClient::new(&env, &contract_id);
@@ -1397,6 +1404,11 @@ mod test {
                 oracle_contract: oracle_id,
             };
             ArenaStorage::save_config(&env, &config);
+            // Register 2 active players so active_count check in start_round passes.
+            let p1 = Address::generate(&env);
+            let p2 = Address::generate(&env);
+            ArenaStorage::add_player(&env, &p1);
+            ArenaStorage::add_player(&env, &p2);
         });
         let client = ArenaContractClient::new(&env, &contract_id);
         env.ledger().with_mut(|li| li.timestamp = start_ts);
@@ -1457,7 +1469,7 @@ mod test {
                     rounds_survived: 0,
                 },
             );
-            ArenaStorage::save_commitment(&env, &player, &commitment);
+            ArenaStorage::save_commitment(&env, &player, 1, &commitment);
             ArenaStorage::save_round_start(&env, 0);
             ArenaStorage::save_round_duration(&env, 0);
         });
@@ -1627,6 +1639,8 @@ mod test {
         let vault_id = env.register(MockVault, ());
         let oracle_id = env.register(MockOracle, ());
 
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
         env.as_contract(&contract_id, || {
             ArenaStorage::save_config(
                 &env,
@@ -1644,11 +1658,21 @@ mod test {
                     oracle_contract: oracle_id,
                 },
             );
+            ArenaStorage::add_player(&env, &p1);
+            ArenaStorage::add_player(&env, &p2);
             ArenaStorage::save_last_vault_balance(&env, 100);
         });
 
         let client = ArenaContractClient::new(&env, &contract_id);
         for (idx, balance) in [110i128, 125, 150].iter().enumerate() {
+            // Restore players to active each iteration: resolve_round eliminates
+            // all players who didn't reveal, so without this reset the second
+            // start_round would see 0 active players.
+            env.as_contract(&contract_id, || {
+                let active = PlayerState { active: true, rounds_survived: 0 };
+                ArenaStorage::save_player(&env, &p1, &active);
+                ArenaStorage::save_player(&env, &p2, &active);
+            });
             env.as_contract(&vault_id, || {
                 env.storage()
                     .persistent()
@@ -1928,9 +1952,6 @@ mod test {
     #[test]
     fn start_round_succeeds_with_two_or_more_players() {
         let (_, client) = setup_started(60, 0);
-        // setup_started configures player_count: 0 but the existing test already
-        // called start_round successfully because setup_started uses
-        // player_count: 0 — bump it here to prove the happy path independently.
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(ArenaContract, ());
@@ -1952,6 +1973,10 @@ mod test {
                     oracle_contract: oracle_id,
                 },
             );
+            let p1 = Address::generate(&env);
+            let p2 = Address::generate(&env);
+            ArenaStorage::add_player(&env, &p1);
+            ArenaStorage::add_player(&env, &p2);
         });
         let client2 = ArenaContractClient::new(&env, &contract_id);
         client2.start_round(&60);
@@ -2708,6 +2733,95 @@ mod test {
                 "commitment should be cleared after resolve_round"
             );
         });
+    }
+
+    #[test]
+    fn start_round_rejected_when_only_one_active_player_remains() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+
+        env.as_contract(&contract_id, || {
+            ArenaStorage::save_config(
+                &env,
+                &ArenaConfig {
+                    admin: Address::generate(&env),
+                    stake_token: Address::generate(&env),
+                    yield_vault: Address::generate(&env),
+                    entry_fee: 100,
+                    // Game finished a round; total players ever = 3, but 2 were eliminated.
+                    state: GameState::Open,
+                    paused: false,
+                    player_count: 3,
+                    cumulative_yield: 0,
+                    commit_deadline: 0,
+                    round_count: 1,
+                    oracle_contract: oracle_id,
+                },
+            );
+            // Register 3 players: 2 eliminated, 1 active.
+            let survivor = Address::generate(&env);
+            let elim1 = Address::generate(&env);
+            let elim2 = Address::generate(&env);
+            ArenaStorage::add_player(&env, &survivor);
+            ArenaStorage::add_player(&env, &elim1);
+            ArenaStorage::add_player(&env, &elim2);
+            ArenaStorage::save_player(&env, &survivor, &PlayerState { active: true, rounds_survived: 1 });
+            ArenaStorage::save_player(&env, &elim1, &PlayerState { active: false, rounds_survived: 0 });
+            ArenaStorage::save_player(&env, &elim2, &PlayerState { active: false, rounds_survived: 0 });
+        });
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        // min_players defaults to MIN_PLAYERS_TO_START (2); only 1 active player remains.
+        assert_eq!(
+            client.try_start_round(&60),
+            Err(Ok(ArenaError::NotEnoughPlayers))
+        );
+    }
+
+    #[test]
+    fn start_round_accepted_when_enough_active_players_despite_eliminations() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+
+        env.as_contract(&contract_id, || {
+            ArenaStorage::save_config(
+                &env,
+                &ArenaConfig {
+                    admin: Address::generate(&env),
+                    stake_token: Address::generate(&env),
+                    yield_vault: Address::generate(&env),
+                    entry_fee: 100,
+                    state: GameState::Open,
+                    paused: false,
+                    player_count: 4,
+                    cumulative_yield: 0,
+                    commit_deadline: 0,
+                    round_count: 1,
+                    oracle_contract: oracle_id,
+                },
+            );
+            // 2 active survivors, 2 eliminated — active_count (2) == min_players (2).
+            let p1 = Address::generate(&env);
+            let p2 = Address::generate(&env);
+            let e1 = Address::generate(&env);
+            let e2 = Address::generate(&env);
+            ArenaStorage::add_player(&env, &p1);
+            ArenaStorage::add_player(&env, &p2);
+            ArenaStorage::add_player(&env, &e1);
+            ArenaStorage::add_player(&env, &e2);
+            ArenaStorage::save_player(&env, &p1, &PlayerState { active: true, rounds_survived: 1 });
+            ArenaStorage::save_player(&env, &p2, &PlayerState { active: true, rounds_survived: 1 });
+            ArenaStorage::save_player(&env, &e1, &PlayerState { active: false, rounds_survived: 0 });
+            ArenaStorage::save_player(&env, &e2, &PlayerState { active: false, rounds_survived: 0 });
+        });
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        // 2 active players == min_players (2) — should succeed.
+        assert!(client.try_start_round(&60).is_ok());
     }
 }
 #[cfg(test)]
