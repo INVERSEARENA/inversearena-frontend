@@ -57,13 +57,9 @@ const TelemetryPage: React.FC = () => {
     return () => clearInterval(intervalId);
   }, []);
 
-  const handleNotifications = () => {
-    console.log("Notifications clicked");
-  };
+  const handleNotifications = () => {};
 
-  const handleSettings = () => {
-    console.log("Settings clicked");
-  };
+  const handleSettings = () => {};
 
   if (!globalPool) {
     return (

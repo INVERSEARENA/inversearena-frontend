@@ -19,10 +19,6 @@ export const ArenaCard = ({ arena }: ArenaCardProps) => {
     };
 
     const handleConfirmJoin = async () => {
-        // Here you would typically handle the logic for joining the arena,
-        // like making an API call.
-        console.log(`Joining arena ${arena.id}`);
-        // Close the modal on successful confirmation
         setIsModalOpen(false);
     };
 
