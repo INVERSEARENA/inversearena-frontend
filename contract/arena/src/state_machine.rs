@@ -6,12 +6,11 @@
 //!
 //! Legal transitions (mirrors the transitions actually performed in `lib.rs`):
 //! ```text
-//! Open     → Active      (start_round — first round starts)
+//! Open     → Active      (start_round — the first round starts)
 //! Open     → Cancelled   (cancel_arena / force_cancel_arena before play)
 //! Active   → Open        (resolve_round — more than one survivor remains)
 //! Active   → Finished    (resolve_round last survivor / expire_arena)
 //! Active   → Cancelled   (force_cancel_arena mid-game)
-//! Finished → Active      (start_round — a new round of a multi-round arena)
 //! Finished → Settled     (claim — prize distributed to the winner)
 //! ```
 //!
@@ -32,7 +31,6 @@ pub fn can_transition(from: &GameState, to: &GameState) -> bool {
             | (Active, Open)
             | (Active, Finished)
             | (Active, Cancelled)
-            | (Finished, Active)
             | (Finished, Settled)
     )
 }
@@ -78,7 +76,6 @@ mod tests {
         assert!(can_transition(&Active, &Open));
         assert!(can_transition(&Active, &Finished));
         assert!(can_transition(&Active, &Cancelled));
-        assert!(can_transition(&Finished, &Active));
         assert!(can_transition(&Finished, &Settled));
     }
 
@@ -88,7 +85,8 @@ mod tests {
         assert!(!can_transition(&Open, &Finished));
         assert!(!can_transition(&Open, &Settled));
         assert!(!can_transition(&Active, &Settled));
-        // Finished cannot be cancelled (force_cancel_arena rejects it).
+        // Finished transitions: only Settled is allowed (start_round rejects it).
+        assert!(!can_transition(&Finished, &Active));
         assert!(!can_transition(&Finished, &Cancelled));
         assert!(!can_transition(&Finished, &Open));
         // Terminal states never transition out.
@@ -113,8 +111,8 @@ mod tests {
     #[test]
     fn ensure_transition_guards() {
         assert!(ensure_transition(&Open, &Active, ArenaError::InvalidGameState).is_ok());
-        // Finished → Active is legal (a new round); Finished → Cancelled is not.
-        assert!(ensure_transition(&Finished, &Active, ArenaError::InvalidGameState).is_ok());
+        // Finished → Settled is legal (claim); Finished → Cancelled is not.
+        assert!(ensure_transition(&Finished, &Settled, ArenaError::InvalidGameState).is_ok());
         assert_eq!(
             ensure_transition(&Finished, &Cancelled, ArenaError::InvalidGameState),
             Err(ArenaError::InvalidGameState),

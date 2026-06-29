@@ -217,7 +217,11 @@ fn second_join_by_same_player_is_rejected() {
     );
 
     // The rejected retry must not change state: no extra player, no extra fee.
-    assert_eq!(client.player_count(), 1, "player count must not double-count");
+    assert_eq!(
+        client.player_count(),
+        1,
+        "player count must not double-count"
+    );
     assert_eq!(
         token.balance(&player),
         900,
@@ -332,11 +336,10 @@ fn join_succeeds_when_vault_deposit_fails() {
     // invocation, so the read-only calls below would otherwise clear it.
     let expected_topic: soroban_sdk::Vec<Val> =
         (symbol_short!("join"), player.clone()).into_val(&env);
-    let join_event_emitted = env
-        .events()
-        .all()
-        .iter()
-        .any(|(contract, topics, _data)| contract == client.address && topics == expected_topic);
+    let join_event_emitted =
+        env.events().all().iter().any(|(contract, topics, _data)| {
+            contract == client.address && topics == expected_topic
+        });
     assert!(
         join_event_emitted,
         "a player_joined event must be emitted even when the vault deposit fails"

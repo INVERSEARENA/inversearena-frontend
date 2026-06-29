@@ -13,6 +13,24 @@ BUDGET=65536
 echo "Building WASM artifacts..."
 cargo build --target wasm32-unknown-unknown --release
 
+# Optimise WASM with wasm-opt (binaryen) if available.
+if ! command -v wasm-opt &>/dev/null; then
+  echo "wasm-opt not found, attempting to install binaryen..."
+  if sudo apt-get update -qq && sudo apt-get install -y -qq binaryen; then
+    echo "binaryen installed"
+  else
+    echo "warning: could not install binaryen; skipping WASM optimisation" >&2
+  fi
+fi
+
+if command -v wasm-opt &>/dev/null; then
+  echo "Optimising WASM artifacts with wasm-opt -Oz..."
+  for wasm in "$WASM_DIR"/*.wasm; do
+    [[ -f "$wasm" ]] || continue
+    wasm-opt -Oz "$wasm" -o "$wasm" 2>/dev/null && echo "  optimised $(basename "$wasm")" || echo "  skipped $(basename "$wasm") (wasm-opt failed)"
+  done
+fi
+
 mkdir -p "$METRICS_DIR"
 
 {
