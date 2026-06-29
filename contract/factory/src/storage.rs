@@ -28,6 +28,8 @@ pub enum DataKey {
 pub struct CreatorStakeRecord {
     pub creator: Address,
     pub amount: i128,
+    /// Token the stake was collected in, so it can be refunded on reclaim.
+    pub stake_token: Address,
 }
 
 pub struct FactoryStorage;
@@ -168,6 +170,12 @@ impl FactoryStorage {
         env.storage()
             .persistent()
             .get(&DataKey::CreatorStake(arena.clone()))
+    }
+
+    pub fn remove_creator_stake(env: &Env, arena: &Address) {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::CreatorStake(arena.clone()));
     }
 
     // ── Active Pool Count ─────────────────────────────────────────────────

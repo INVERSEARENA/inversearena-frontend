@@ -385,8 +385,7 @@ export default function AdminDashboardPage() {
       <PoolCreationModal
         isOpen={isPoolModalOpen}
         onClose={() => setIsPoolModalOpen(false)}
-        onInitialize={(data) => {
-          console.log("Initializing pool:", data);
+        onInitialize={() => {
           setIsPoolModalOpen(false);
           loadArenas();
         }}

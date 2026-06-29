@@ -1,6 +1,6 @@
 use crate::errors::ArenaError;
 
-/// Validate that an entry fee is strictly positive.
+/// Validate that an entry fee is within the configured contract bounds.
 pub fn validate_entry_fee(entry_fee: i128) -> Result<(), ArenaError> {
     if entry_fee <= 0 {
         return Err(ArenaError::InvalidEntryFee);

@@ -1,7 +1,9 @@
 #![no_std]
 mod types;
 
-use soroban_sdk::{Address, Env, contract, contractimpl, contracttype, symbol_short, token};
+use soroban_sdk::{
+    Address, BytesN, Env, contract, contractimpl, contracttype, symbol_short, token,
+};
 use types::{StakePosition, StakerStats, StakingError};
 
 const ADMIN_KEY: soroban_sdk::Symbol = symbol_short!("ADMIN");
@@ -182,6 +184,20 @@ impl StakingContract {
         env.events()
             .publish((symbol_short!("UNSTAK"),), (staker, tokens, shares));
         Ok(tokens)
+    }
+
+    /// Upgrade the staking contract's code to `new_wasm_hash`.
+    ///
+    /// Admin-gated. Upgrading in place preserves all state — admin, token,
+    /// global share/stake totals, and every staker position — so a bug in
+    /// share accounting or token transfer logic can be fixed without
+    /// redeploying and losing staker positions.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), StakingError> {
+        Self::require_admin(&env)?;
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+        env.events().publish((symbol_short!("UPGRADE"),), new_wasm_hash);
+        Ok(())
     }
 
     fn require_admin(env: &Env) -> Result<Address, StakingError> {
@@ -378,6 +394,21 @@ mod test {
         // Non-admin should fail — we test by not calling mock_all_auths for specific addr
         let result = client.try_pause();
         assert!(result.is_ok()); // mock_all_auths allows everything in test
+    }
+
+    #[test]
+    fn upgrade_requires_admin_auth() {
+        let (env, client, _admin, _token, _staker) = setup();
+
+        // Drop the mocked auths so the admin's signature is genuinely required;
+        // a non-admin caller cannot supply it.
+        env.set_auths(&[]);
+
+        let new_wasm = BytesN::from_array(&env, &[0u8; 32]);
+        assert!(
+            client.try_upgrade(&new_wasm).is_err(),
+            "upgrade without the admin's authorization must be rejected"
+        );
     }
 
     #[test]
