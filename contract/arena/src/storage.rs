@@ -1,9 +1,9 @@
+use crate::types::PendingUpgrade;
 use crate::types::{
     ArenaConfig, ArenaError, Choice, GameState, PendingAdmin, PlayerState, RoundResult,
     YieldSnapshot,
 };
 use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, Vec, contracttype, symbol_short};
-use crate::types::PendingUpgrade;
 
 const PERSISTENT_TTL_THRESHOLD: u32 = 100;
 const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
