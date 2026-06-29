@@ -6,7 +6,6 @@ const Hero = () => {
     const [isModalOpen, setIsModalOpen] = useState(false);
 
     const handleConfirm = async () => {
-        console.log("confirm logic here");
         await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
