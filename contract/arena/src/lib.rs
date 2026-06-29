@@ -297,7 +297,8 @@ impl ArenaContract {
         if !player_state.active {
             return Err(ArenaError::PlayerEliminated);
         }
-        ArenaStorage::save_commitment(&env, &player, &commitment);
+        let round = config.round_count.saturating_add(1);
+        ArenaStorage::save_commitment(&env, &player, round, &commitment);
         Ok(())
     }
 
@@ -335,7 +336,8 @@ impl ArenaContract {
         if !player_state.active {
             return Err(ArenaError::PlayerEliminated);
         }
-        if ArenaStorage::load_choice(&env, &player).is_some() {
+        let round = config.round_count.saturating_add(1);
+        if ArenaStorage::load_choice(&env, &player, round).is_some() {
             return Err(ArenaError::ChoiceAlreadyRevealed);
         }
         if env.ledger().timestamp() < config.commit_deadline {
@@ -343,11 +345,11 @@ impl ArenaContract {
         }
 
         let commitment =
-            ArenaStorage::load_commitment(&env, &player).ok_or(ArenaError::MissingCommitment)?;
+            ArenaStorage::load_commitment(&env, &player, round).ok_or(ArenaError::MissingCommitment)?;
         if commitment != Self::compute_commitment(&env, choice, &salt) {
             return Err(ArenaError::InvalidReveal);
         }
-        ArenaStorage::save_choice(&env, &player, &choice);
+        ArenaStorage::save_choice(&env, &player, round, &choice);
         Ok(())
     }
 
@@ -380,12 +382,6 @@ impl ArenaContract {
         if config.player_count > 0 {
             let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
             let _ = rwa_client.withdraw_all(&arena_addr);
-        }
-
-        let token_client = token::TokenClient::new(&env, &config.stake_token);
-        let players = ArenaStorage::load_all_players(&env);
-        for player in players.iter() {
-            token_client.transfer(&arena_addr, &player, &config.entry_fee);
         }
 
         ArenaEvents::arena_cancelled(&env, &config.admin);
@@ -507,7 +503,8 @@ impl ArenaContract {
 
         // Clear stale choices/commitments from the previous round so they
         // cannot be reused in the new round.
-        ArenaStorage::clear_round_data(&env);
+        let round = config.round_count.saturating_add(1);
+        ArenaStorage::clear_round_data(&env, round);
 
         config.commit_deadline = env.ledger().timestamp().saturating_add(duration_seconds);
         config.state = GameState::Active;
@@ -615,7 +612,7 @@ impl ArenaContract {
 
         // Clear per-round choice and commitment data to prevent stale data
         // from persisting into a future round.
-        ArenaStorage::clear_round_data(&env);
+        ArenaStorage::clear_round_data(&env, round);
 
         ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
@@ -799,14 +796,17 @@ impl ArenaContract {
     /// Force-cancel the arena (admin only).
     /// Can be called at any state except Finished or Settled.
     pub fn force_cancel_arena(env: Env) -> Result<(), ArenaError> {
+        ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
 
         if config.state == GameState::Finished || config.state == GameState::Settled {
+            ArenaStorage::exit_reentrancy_guard(&env);
             return Err(ArenaError::InvalidGameState);
         }
 
         if config.state == GameState::Cancelled {
+            ArenaStorage::exit_reentrancy_guard(&env);
             return Ok(());
         }
 
@@ -820,6 +820,7 @@ impl ArenaContract {
         let _ = rwa_client.try_withdraw_all(&arena_addr);
 
         ArenaEvents::arena_cancelled(&env, &config.admin);
+        ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
     }
 
@@ -928,7 +929,7 @@ impl ArenaContract {
         for player in players.iter() {
             let state = ArenaStorage::load_player(env, &player).unwrap_or_default();
             if state.active
-                && let Some(choice) = ArenaStorage::load_choice(env, &player)
+                && let Some(choice) = ArenaStorage::load_choice(env, &player, round)
             {
                 active_choices.push_back(choice);
             }
@@ -945,7 +946,7 @@ impl ArenaContract {
             if !state.active {
                 continue;
             }
-            let choice = ArenaStorage::load_choice(env, &player);
+            let choice = ArenaStorage::load_choice(env, &player, round);
             let should_eliminate = choice
                 .map(|c| eliminations::is_eliminated(c, &tally))
                 .unwrap_or(true);
@@ -1158,14 +1159,14 @@ mod test {
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
-            ArenaStorage::save_commitment(&env, &player, &commitment);
+            ArenaStorage::save_commitment(&env, &player, 1, &commitment);
         });
 
         let client = ArenaContractClient::new(&env, &contract_id);
         client.reveal_choice(&player, &choice, &salt);
 
         env.as_contract(&contract_id, || {
-            let stored = ArenaStorage::load_choice(&env, &player).unwrap();
+            let stored = ArenaStorage::load_choice(&env, &player, 1).unwrap();
             assert_eq!(stored, choice);
         });
     }
@@ -1526,7 +1527,7 @@ mod test {
 
         env.as_contract(&client.address, || {
             assert_eq!(
-                ArenaStorage::load_commitment(&env, &p1).unwrap(),
+                ArenaStorage::load_commitment(&env, &p1, 1).unwrap(),
                 commitment
             );
             assert!(!ArenaStorage::load_config(&env).unwrap().paused);
@@ -2691,19 +2692,19 @@ mod test {
 
         env.as_contract(&contract_id, || {
             assert!(
-                ArenaStorage::load_choice(&env, &p1).is_none(),
+                ArenaStorage::load_choice(&env, &p1, 1).is_none(),
                 "choice should be cleared after resolve_round"
             );
             assert!(
-                ArenaStorage::load_commitment(&env, &p1).is_none(),
+                ArenaStorage::load_commitment(&env, &p1, 1).is_none(),
                 "commitment should be cleared after resolve_round"
             );
             assert!(
-                ArenaStorage::load_choice(&env, &p2).is_none(),
+                ArenaStorage::load_choice(&env, &p2, 1).is_none(),
                 "choice should be cleared after resolve_round"
             );
             assert!(
-                ArenaStorage::load_commitment(&env, &p2).is_none(),
+                ArenaStorage::load_commitment(&env, &p2, 1).is_none(),
                 "commitment should be cleared after resolve_round"
             );
         });

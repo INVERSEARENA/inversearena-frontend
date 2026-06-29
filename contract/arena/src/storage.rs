@@ -13,8 +13,8 @@ const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
 enum DataKey {
     Player(Address),
     BannedPlayer(Address),
-    Commitment(Address),
-    Choice(Address),
+    CommitmentForRound(Address, u32),
+    ChoiceForRound(Address, u32),
     YieldSnapshot(u32),
     RoundResult(u32),
     RoundYieldBps(u32),
@@ -161,32 +161,32 @@ impl ArenaStorage {
         env.storage().persistent().get(&DataKey::MaxPlayers)
     }
 
-    pub fn save_commitment(env: &Env, player: &Address, commitment: &BytesN<32>) {
-        Self::extend_persistent_ttl(env, &DataKey::Commitment(player.clone()));
+    pub fn save_commitment(env: &Env, player: &Address, round: u32, commitment: &BytesN<32>) {
+        Self::extend_persistent_ttl(env, &DataKey::CommitmentForRound(player.clone(), round));
         env.storage()
             .persistent()
-            .set(&DataKey::Commitment(player.clone()), commitment);
+            .set(&DataKey::CommitmentForRound(player.clone(), round), commitment);
     }
 
-    pub fn load_commitment(env: &Env, player: &Address) -> Option<BytesN<32>> {
-        Self::extend_persistent_ttl(env, &DataKey::Commitment(player.clone()));
+    pub fn load_commitment(env: &Env, player: &Address, round: u32) -> Option<BytesN<32>> {
+        Self::extend_persistent_ttl(env, &DataKey::CommitmentForRound(player.clone(), round));
         env.storage()
             .persistent()
-            .get(&DataKey::Commitment(player.clone()))
+            .get(&DataKey::CommitmentForRound(player.clone(), round))
     }
 
-    pub fn save_choice(env: &Env, player: &Address, choice: &Choice) {
-        Self::extend_persistent_ttl(env, &DataKey::Choice(player.clone()));
+    pub fn save_choice(env: &Env, player: &Address, round: u32, choice: &Choice) {
+        Self::extend_persistent_ttl(env, &DataKey::ChoiceForRound(player.clone(), round));
         env.storage()
             .persistent()
-            .set(&DataKey::Choice(player.clone()), choice);
+            .set(&DataKey::ChoiceForRound(player.clone(), round), choice);
     }
 
-    pub fn load_choice(env: &Env, player: &Address) -> Option<Choice> {
-        Self::extend_persistent_ttl(env, &DataKey::Choice(player.clone()));
+    pub fn load_choice(env: &Env, player: &Address, round: u32) -> Option<Choice> {
+        Self::extend_persistent_ttl(env, &DataKey::ChoiceForRound(player.clone(), round));
         env.storage()
             .persistent()
-            .get(&DataKey::Choice(player.clone()))
+            .get(&DataKey::ChoiceForRound(player.clone(), round))
     }
 
     pub fn save_round_start(env: &Env, timestamp: u64) {
@@ -340,7 +340,7 @@ impl ArenaStorage {
 
     #[allow(dead_code)]
     fn is_terminal_pool_state(state: &GameState) -> bool {
-        matches!(state, GameState::Finished | GameState::Cancelled)
+        matches!(state, GameState::Finished | GameState::Cancelled | GameState::Settled)
     }
 
     pub fn save_pending_admin(env: &Env, pending: &PendingAdmin) {
@@ -430,18 +430,18 @@ impl ArenaStorage {
         env.storage().persistent().remove(&symbol_short!("UPGRADE"));
     }
 
-    /// Clear all players' choices and commitments for the current round.
-    /// Called at the start of each new round to prevent stale round-N data
-    /// from leaking into round N+1.
-    pub fn clear_round_data(env: &Env) {
+    /// Clear all players' choices and commitments for the specified round.
+    /// Since commitments and choices are now keyed by (Address, round),
+    /// this is primarily for cleanup. May be called at the start or end of a round.
+    pub fn clear_round_data(env: &Env, round: u32) {
         let players = Self::load_all_players(env);
         for player in players.iter() {
             env.storage()
                 .persistent()
-                .remove(&DataKey::Choice(player.clone()));
+                .remove(&DataKey::ChoiceForRound(player.clone(), round));
             env.storage()
                 .persistent()
-                .remove(&DataKey::Commitment(player.clone()));
+                .remove(&DataKey::CommitmentForRound(player.clone(), round));
         }
     }
 }
