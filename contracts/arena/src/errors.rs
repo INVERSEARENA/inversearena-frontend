@@ -78,4 +78,8 @@ pub enum ArenaError {
     RoundDeadlineNotPassed = 36,
     /// Round deadline has passed (no more commits/reveals)
     RoundDeadlinePassed = 37,
+    /// Invalid round duration bounds configuration
+    InvalidRoundBounds = 38,
+    /// Round duration is out of allowed bounds
+    InvalidRoundDuration = 39,
 }

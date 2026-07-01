@@ -122,4 +122,9 @@ impl ArenaEvents {
     pub fn admin_transfer_accepted(env: &Env, new_admin: &Address) {
         env.events().publish((symbol_short!("ADM_ACPT"),), new_admin);
     }
+
+    /// Emit round bounds updated event
+    pub fn round_bounds_updated(env: &Env, admin: &Address, min: u64, max: u64) {
+        env.events().publish((symbol_short!("RNBND"), admin.clone()), (min, max));
+    }
 }

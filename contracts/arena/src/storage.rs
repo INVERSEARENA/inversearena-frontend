@@ -13,6 +13,7 @@ const RWA_COUNTER_KEY: Symbol = Symbol::short("RWACNT");
 const PRIZE_POOL_KEY: Symbol = Symbol::short("POOL");
 const PENDING_ADMIN_KEY: Symbol = Symbol::short("PADMIN");
 const ROUND_DEADLINE_KEY: Symbol = Symbol::short("RNDDEADL");
+const GLOBAL_ROUND_BOUNDS_KEY: Symbol = Symbol::short("GRNDBND");
 
 pub struct ArenaStorage;
 

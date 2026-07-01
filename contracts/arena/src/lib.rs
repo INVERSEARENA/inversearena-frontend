@@ -246,6 +246,20 @@ impl ArenaContract {
         Ok(())
     }
 
+    /// Update global round duration bounds (applies to future arenas only)
+    pub fn update_round_bounds(env: Env, min: u64, max: u64) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+
+        if min < 10 || max > 2_592_000 || min >= max {
+            return Err(ArenaError::InvalidRoundBounds);
+        }
+
+        ArenaStorage::set_global_round_bounds(&env, min, max);
+        ArenaEvents::round_bounds_updated(&env, &config.admin, min, max);
+        Ok(())
+    }
+
     /// Get the current treasury address
     pub fn treasury(env: Env) -> Result<Address, ArenaError> {
         let config = ArenaStorage::load_config(&env)?;
@@ -786,6 +800,14 @@ impl ArenaContract {
 
         let now = env.ledger().timestamp();
         validate_deadline(deadline, now)?;
+
+        let current_arena_id = ArenaStorage::load_global_stats(&env).total_arenas;
+        let (min_duration, max_duration) = ArenaStorage::get_arena_round_bounds(&env, current_arena_id);
+        let duration = deadline.saturating_sub(now);
+
+        if duration < min_duration || duration > max_duration {
+            return Err(ArenaError::InvalidRoundDuration);
+        }
 
         let round = ArenaStorage::get_round(&env) + 1;
         ArenaStorage::set_round(&env, round);
