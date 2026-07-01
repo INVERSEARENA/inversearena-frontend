@@ -13,20 +13,21 @@ mod rwa_client;
 mod snapshot_test;
 mod state_machine;
 mod storage;
-mod types;
+pub mod types;
 
 use events::ArenaEvents;
 use rwa_client::RwaAdapterClient;
 use storage::ArenaStorage;
 use types::{
-    ArenaConfig, ArenaError, Choice, GameState, LeaderboardEntry, PendingAdmin, PlayerState,
-    RoundResult, YieldSnapshot,
+    ArenaConfig, ArenaError, Choice, GameState, LeaderboardEntry, PendingAdmin, PendingUpgrade,
+    PlayerState, RoundResult, YieldSnapshot,
 };
 
 const PAGE_SIZE: u32 = 50;
 pub(crate) const MIN_PLAYERS_TO_START: u32 = 2;
 const DEFAULT_MAX_PLAYERS: u32 = u32::MAX;
 const CONTRACT_VERSION: u32 = 1;
+const UPGRADE_TIMELOCK_SECONDS: u64 = 86_400; // 1 day
 
 #[contract]
 /// On-chain arena contract. Manages the full lifecycle of a single elimination
@@ -73,6 +74,10 @@ impl ArenaContract {
             return Err(ArenaError::AlreadyInitialized);
         }
 
+        if entry_fee <= 0 {
+            return Err(ArenaError::InvalidEntryFee);
+        }
+
         // Validate the provided yield_vault implements the expected RWA adapter interface
         let rwa_client = RwaAdapterClient::new(&env, &yield_vault);
         // Attempt a harmless read to ensure the contract is reachable and implements the interface
@@ -96,6 +101,7 @@ impl ArenaContract {
             oracle_contract,
         };
         ArenaStorage::save_config(&env, &config);
+        ArenaStorage::increment_creator_active_pools(&env, &admin);
         ArenaStorage::save_player_limits(&env, MIN_PLAYERS_TO_START, DEFAULT_MAX_PLAYERS);
         ArenaStorage::save_last_vault_balance(&env, 0);
         ArenaEvents::initialized(&env, &admin);
@@ -107,16 +113,52 @@ impl ArenaContract {
         CONTRACT_VERSION
     }
 
-    /// Upgrade this arena contract to `new_wasm_hash`.
+    /// Propose an upgrade to `new_wasm_hash`.
     ///
-    /// Only the admin may upgrade. This intentionally remains callable while
-    /// paused so an emergency pause can be followed by a recovery upgrade.
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), ArenaError> {
+    /// Stores the proposal and records the current ledger timestamp. The upgrade
+    /// is NOT applied immediately — the admin must call `execute_upgrade` after
+    /// `UPGRADE_TIMELOCK_SECONDS` have elapsed, giving users time to review the
+    /// new code.
+    ///
+    /// Callable while paused so an emergency pause can be followed by a
+    /// timelocked recovery upgrade. If a prior proposal exists it is silently
+    /// overwritten.
+    pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), ArenaError> {
         let config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
+        let proposed_at = env.ledger().timestamp();
+        ArenaStorage::save_pending_upgrade(
+            &env,
+            &PendingUpgrade {
+                wasm_hash: new_wasm_hash.clone(),
+                proposed_at,
+            },
+        );
+        ArenaEvents::upgrade_proposed(&env, &new_wasm_hash, proposed_at);
+        Ok(())
+    }
+
+    /// Execute a previously proposed upgrade after the timelock has elapsed.
+    ///
+    /// Only the admin may execute. The timelock gives users a window to review
+    /// the proposed WASM hash before it takes effect.
+    ///
+    /// # Errors
+    /// - `ArenaError::NoPendingUpgrade` if no proposal exists.
+    /// - `ArenaError::UpgradeTimelockPending` if the timelock has not elapsed.
+    pub fn execute_upgrade(env: Env) -> Result<(), ArenaError> {
+        let pending =
+            ArenaStorage::load_pending_upgrade(&env).ok_or(ArenaError::NoPendingUpgrade)?;
+        let config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+        let now = env.ledger().timestamp();
+        if now < pending.proposed_at.saturating_add(UPGRADE_TIMELOCK_SECONDS) {
+            return Err(ArenaError::UpgradeTimelockPending);
+        }
         env.deployer()
-            .update_current_contract_wasm(new_wasm_hash.clone());
-        ArenaEvents::upgraded(&env, &new_wasm_hash);
+            .update_current_contract_wasm(pending.wasm_hash.clone());
+        ArenaStorage::clear_pending_upgrade(&env);
+        ArenaEvents::upgraded(&env, &pending.wasm_hash);
         Ok(())
     }
 
@@ -194,6 +236,12 @@ impl ArenaContract {
         if ArenaStorage::is_player_banned(&env, &player) {
             return Err(ArenaError::PlayerBanned);
         }
+        // Reject a second join by the same player: charging the entry fee twice
+        // and inflating the player count would corrupt the game. A player who
+        // has joined already has stored player state.
+        if ArenaStorage::load_player(&env, &player).is_some() {
+            return Err(ArenaError::AlreadyJoined);
+        }
         if let Some(max_players) = ArenaStorage::load_max_players(&env)
             && config.player_count >= max_players
         {
@@ -204,11 +252,12 @@ impl ArenaContract {
         let arena_addr = env.current_contract_address();
         token_client.transfer(&player, &arena_addr, &config.entry_fee);
 
-        // Attempt to deposit entry fee into vault; ignore failures
+        // Attempt to deposit entry fee into vault; only update baseline on success
         let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
-        let _ = rwa_client.try_deposit(&arena_addr, &config.entry_fee);
-        let baseline = ArenaStorage::load_last_vault_balance(&env).saturating_add(config.entry_fee);
-        ArenaStorage::save_last_vault_balance(&env, baseline);
+        if rwa_client.try_deposit(&arena_addr, &config.entry_fee).is_ok() {
+            let baseline = ArenaStorage::load_last_vault_balance(&env).saturating_add(config.entry_fee);
+            ArenaStorage::save_last_vault_balance(&env, baseline);
+        }
 
         ArenaStorage::add_player(&env, &player);
         let count = ArenaStorage::load_all_players(&env).len();
@@ -238,7 +287,20 @@ impl ArenaContract {
         player.require_auth();
         let config = ArenaStorage::load_config(&env)?;
         Self::require_not_paused(&config)?;
-        ArenaStorage::save_commitment(&env, &player, &commitment);
+        if config.state != GameState::Active {
+            return Err(ArenaError::RoundNotActive);
+        }
+        if env.ledger().timestamp() >= config.commit_deadline {
+            return Err(ArenaError::CommitPhaseEnded);
+        }
+        let player_state =
+            ArenaStorage::load_player(&env, &player).ok_or(ArenaError::NotAPlayer)?;
+        if !player_state.active {
+            return Err(ArenaError::PlayerEliminated);
+        }
+        let round = config.round_count.saturating_add(1);
+        ArenaStorage::save_commitment(&env, &player, round, &commitment);
+        ArenaEvents::commitment_submitted(&env, &player, round);
         Ok(())
     }
 
@@ -271,11 +333,13 @@ impl ArenaContract {
         player.require_auth();
         let config = ArenaStorage::load_config(&env)?;
         Self::require_not_paused(&config)?;
-        let player_state = ArenaStorage::load_player(&env, &player).ok_or(ArenaError::NotAPlayer)?;
+        let player_state =
+            ArenaStorage::load_player(&env, &player).ok_or(ArenaError::NotAPlayer)?;
         if !player_state.active {
             return Err(ArenaError::PlayerEliminated);
         }
-        if ArenaStorage::load_choice(&env, &player).is_some() {
+        let round = config.round_count.saturating_add(1);
+        if ArenaStorage::load_choice(&env, &player, round).is_some() {
             return Err(ArenaError::ChoiceAlreadyRevealed);
         }
         if env.ledger().timestamp() < config.commit_deadline {
@@ -283,11 +347,12 @@ impl ArenaContract {
         }
 
         let commitment =
-            ArenaStorage::load_commitment(&env, &player).ok_or(ArenaError::MissingCommitment)?;
+            ArenaStorage::load_commitment(&env, &player, round).ok_or(ArenaError::MissingCommitment)?;
         if commitment != Self::compute_commitment(&env, choice, &salt) {
             return Err(ArenaError::InvalidReveal);
         }
-        ArenaStorage::save_choice(&env, &player, &choice);
+        ArenaStorage::save_choice(&env, &player, round, &choice);
+        ArenaEvents::choice_revealed(&env, &player, &choice, round);
         Ok(())
     }
 
@@ -314,17 +379,12 @@ impl ArenaContract {
 
         config.state = GameState::Cancelled;
         ArenaStorage::save_config(&env, &config);
+        ArenaStorage::decrement_creator_active_pools(&env, &config.admin);
 
         let arena_addr = env.current_contract_address();
         if config.player_count > 0 {
             let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
             let _ = rwa_client.withdraw_all(&arena_addr);
-        }
-
-        let token_client = token::TokenClient::new(&env, &config.stake_token);
-        let players = ArenaStorage::load_all_players(&env);
-        for player in players.iter() {
-            token_client.transfer(&arena_addr, &player, &config.entry_fee);
         }
 
         ArenaEvents::arena_cancelled(&env, &config.admin);
@@ -357,6 +417,7 @@ impl ArenaContract {
 
         config.state = GameState::Finished;
         ArenaStorage::save_config(&env, &config);
+        ArenaStorage::decrement_creator_active_pools(&env, &config.admin);
 
         let arena_addr = env.current_contract_address();
         if config.player_count > 0 {
@@ -435,13 +496,25 @@ impl ArenaContract {
         config.admin.require_auth();
         Self::require_not_paused(&config)?;
 
-        if config.state != GameState::Open && config.state != GameState::Finished {
+        if config.state != GameState::Open {
             return Err(ArenaError::InvalidGameState);
         }
 
-        if config.player_count < ArenaStorage::load_min_players(&env) {
+        let active_count = ArenaStorage::load_all_players(&env)
+            .iter()
+            .filter(|p| {
+                ArenaStorage::load_player(&env, &p)
+                    .map_or(false, |s| s.active)
+            })
+            .count() as u32;
+        if active_count < ArenaStorage::load_min_players(&env) {
             return Err(ArenaError::NotEnoughPlayers);
         }
+
+        // Clear stale choices/commitments from the previous round so they
+        // cannot be reused in the new round.
+        let round = config.round_count.saturating_add(1);
+        ArenaStorage::clear_round_data(&env, round);
 
         config.commit_deadline = env.ledger().timestamp().saturating_add(duration_seconds);
         config.state = GameState::Active;
@@ -535,6 +608,9 @@ impl ArenaContract {
             GameState::Open
         };
         ArenaStorage::save_config(&env, &config);
+        if config.state == GameState::Finished {
+            ArenaStorage::decrement_creator_active_pools(&env, &config.admin);
+        }
 
         ArenaEvents::round_resolved(&env, round, resolution.eliminated, resolution.survivors);
         if resolution.tied {
@@ -543,6 +619,11 @@ impl ArenaContract {
         if let Some(winner_addr) = resolution.winner {
             ArenaEvents::game_finished(&env, &winner_addr, round);
         }
+
+        // Clear per-round choice and commitment data to prevent stale data
+        // from persisting into a future round.
+        ArenaStorage::clear_round_data(&env, round);
+
         ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
     }
@@ -725,19 +806,23 @@ impl ArenaContract {
     /// Force-cancel the arena (admin only).
     /// Can be called at any state except Finished or Settled.
     pub fn force_cancel_arena(env: Env) -> Result<(), ArenaError> {
+        ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
 
         if config.state == GameState::Finished || config.state == GameState::Settled {
+            ArenaStorage::exit_reentrancy_guard(&env);
             return Err(ArenaError::InvalidGameState);
         }
 
         if config.state == GameState::Cancelled {
+            ArenaStorage::exit_reentrancy_guard(&env);
             return Ok(());
         }
 
         config.state = GameState::Cancelled;
         ArenaStorage::save_config(&env, &config);
+        ArenaStorage::decrement_creator_active_pools(&env, &config.admin);
 
         // Attempt to withdraw all funds from the yield vault
         let arena_addr = env.current_contract_address();
@@ -745,6 +830,7 @@ impl ArenaContract {
         let _ = rwa_client.try_withdraw_all(&arena_addr);
 
         ArenaEvents::arena_cancelled(&env, &config.admin);
+        ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
     }
 
@@ -853,7 +939,7 @@ impl ArenaContract {
         for player in players.iter() {
             let state = ArenaStorage::load_player(env, &player).unwrap_or_default();
             if state.active
-                && let Some(choice) = ArenaStorage::load_choice(env, &player)
+                && let Some(choice) = ArenaStorage::load_choice(env, &player, round)
             {
                 active_choices.push_back(choice);
             }
@@ -870,10 +956,10 @@ impl ArenaContract {
             if !state.active {
                 continue;
             }
-            let choice = ArenaStorage::load_choice(env, &player);
+            let choice = ArenaStorage::load_choice(env, &player, round);
             let should_eliminate = choice
                 .map(|c| eliminations::is_eliminated(c, &tally))
-                .unwrap_or(false);
+                .unwrap_or(true);
 
             if should_eliminate {
                 state.active = false;
@@ -907,39 +993,41 @@ impl ArenaContract {
 
 fn build_leaderboard(env: &Env) {
     let players = ArenaStorage::load_all_players(env);
-    let mut entries = Vec::new(env);
+    let limit = ArenaStorage::load_leaderboard_limit(env);
+    let n = players.len();
+
+    // Collect all player entries into an unsorted working Vec.
+    let mut entries: Vec<LeaderboardEntry> = Vec::new(env);
     for player in players.iter() {
         let state = ArenaStorage::load_player(env, &player).unwrap_or_default();
-        let entry = LeaderboardEntry {
-            player: player.clone(),
+        entries.push_back(LeaderboardEntry {
+            player,
             rounds_survived: state.rounds_survived,
-        };
-
-        let mut inserted = false;
-        for i in 0..entries.len() {
-            let existing: LeaderboardEntry = entries.get(i).unwrap();
-            if entry.rounds_survived > existing.rounds_survived {
-                entries.insert(i, entry.clone());
-                inserted = true;
-                break;
-            }
-        }
-        if !inserted {
-            entries.push_back(entry);
-        }
+        });
     }
 
-    let limit = ArenaStorage::load_leaderboard_limit(env);
-    let mut truncated = Vec::new(env);
-    for i in 0..entries.len() {
-        if i >= limit {
+    // Partial selection sort: K = min(limit, n) passes, each a single linear scan.
+    // Total work O(K·n) — O(n) for a bounded limit — versus O(n²) for insertion sort.
+    let k = limit.min(n);
+    let mut leaderboard: Vec<LeaderboardEntry> = Vec::new(env);
+    for _ in 0..k {
+        if entries.is_empty() {
             break;
         }
-        let entry: LeaderboardEntry = entries.get(i).unwrap();
-        truncated.push_back(entry);
+        let mut best_i = 0u32;
+        let mut best_rs = entries.get(0).unwrap().rounds_survived;
+        for j in 1..entries.len() {
+            let rs = entries.get(j).unwrap().rounds_survived;
+            if rs > best_rs {
+                best_rs = rs;
+                best_i = j;
+            }
+        }
+        leaderboard.push_back(entries.get(best_i).unwrap());
+        entries.remove(best_i);
     }
 
-    ArenaStorage::save_leaderboard(env, &truncated);
+    ArenaStorage::save_leaderboard(env, &leaderboard);
     ArenaEvents::leaderboard_updated(env);
 }
 
@@ -947,7 +1035,7 @@ fn build_leaderboard(env: &Env) {
 mod test {
     use super::*;
     use soroban_sdk::{
-        contract, contractimpl, symbol_short,
+        IntoVal, Val, contract, contractimpl, symbol_short,
         testutils::{Address as _, Events as _, Ledger as _},
         token::StellarAssetClient,
     };
@@ -1083,14 +1171,14 @@ mod test {
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
-            ArenaStorage::save_commitment(&env, &player, &commitment);
+            ArenaStorage::save_commitment(&env, &player, 1, &commitment);
         });
 
         let client = ArenaContractClient::new(&env, &contract_id);
         client.reveal_choice(&player, &choice, &salt);
 
         env.as_contract(&contract_id, || {
-            let stored = ArenaStorage::load_choice(&env, &player).unwrap();
+            let stored = ArenaStorage::load_choice(&env, &player, 1).unwrap();
             assert_eq!(stored, choice);
         });
     }
@@ -1120,7 +1208,7 @@ mod test {
                 oracle_contract: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
-            ArenaStorage::save_commitment(&env, &player, &commitment);
+            ArenaStorage::save_commitment(&env, &player, 1, &commitment);
         });
 
         let client = ArenaContractClient::new(&env, &contract_id);
@@ -1162,7 +1250,7 @@ mod test {
                     rounds_survived: 1,
                 },
             );
-            ArenaStorage::save_commitment(&env, &player, &commitment);
+            ArenaStorage::save_commitment(&env, &player, 1, &commitment);
         });
 
         let client = ArenaContractClient::new(&env, &contract_id);
@@ -1195,7 +1283,7 @@ mod test {
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
-            ArenaStorage::save_commitment(&env, &player, &commitment);
+            ArenaStorage::save_commitment(&env, &player, 1, &commitment);
         });
 
         let client = ArenaContractClient::new(&env, &contract_id);
@@ -1228,7 +1316,7 @@ mod test {
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
-            ArenaStorage::save_commitment(&env, &player, &commitment);
+            ArenaStorage::save_commitment(&env, &player, 1, &commitment);
         });
 
         let client = ArenaContractClient::new(&env, &contract_id);
@@ -1262,7 +1350,7 @@ mod test {
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
-            ArenaStorage::save_commitment(&env, &player, &commitment);
+            ArenaStorage::save_commitment(&env, &player, 1, &commitment);
         });
 
         let client = ArenaContractClient::new(&env, &contract_id);
@@ -1321,6 +1409,11 @@ mod test {
                 oracle_contract: oracle_id,
             };
             ArenaStorage::save_config(&env, &config);
+            // Register 2 active players so active_count check in start_round passes.
+            let p1 = Address::generate(&env);
+            let p2 = Address::generate(&env);
+            ArenaStorage::add_player(&env, &p1);
+            ArenaStorage::add_player(&env, &p2);
         });
         let client = ArenaContractClient::new(&env, &contract_id);
         env.ledger().with_mut(|li| li.timestamp = start_ts);
@@ -1381,7 +1474,7 @@ mod test {
                     rounds_survived: 0,
                 },
             );
-            ArenaStorage::save_commitment(&env, &player, &commitment);
+            ArenaStorage::save_commitment(&env, &player, 1, &commitment);
             ArenaStorage::save_round_start(&env, 0);
             ArenaStorage::save_round_duration(&env, 0);
         });
@@ -1419,17 +1512,39 @@ mod test {
 
     #[test]
     fn unpause_allows_mutating_gameplay_again() {
-        let (env, client) = setup(0);
-        let player = Address::generate(&env);
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
         let commitment = BytesN::from_array(&env, &[2u8; 32]);
 
         client.pause(&symbol_short!("emerg"));
         client.unpause();
-        client.submit_commitment(&player, &commitment);
+        client.submit_commitment(&p1, &commitment);
 
         env.as_contract(&client.address, || {
             assert_eq!(
-                ArenaStorage::load_commitment(&env, &player).unwrap(),
+                ArenaStorage::load_commitment(&env, &p1, 1).unwrap(),
                 commitment
             );
             assert!(!ArenaStorage::load_config(&env).unwrap().paused);
@@ -1529,6 +1644,8 @@ mod test {
         let vault_id = env.register(MockVault, ());
         let oracle_id = env.register(MockOracle, ());
 
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
         env.as_contract(&contract_id, || {
             ArenaStorage::save_config(
                 &env,
@@ -1546,11 +1663,21 @@ mod test {
                     oracle_contract: oracle_id,
                 },
             );
+            ArenaStorage::add_player(&env, &p1);
+            ArenaStorage::add_player(&env, &p2);
             ArenaStorage::save_last_vault_balance(&env, 100);
         });
 
         let client = ArenaContractClient::new(&env, &contract_id);
         for (idx, balance) in [110i128, 125, 150].iter().enumerate() {
+            // Restore players to active each iteration: resolve_round eliminates
+            // all players who didn't reveal, so without this reset the second
+            // start_round would see 0 active players.
+            env.as_contract(&contract_id, || {
+                let active = PlayerState { active: true, rounds_survived: 0 };
+                ArenaStorage::save_player(&env, &p1, &active);
+                ArenaStorage::save_player(&env, &p2, &active);
+            });
             env.as_contract(&vault_id, || {
                 env.storage()
                     .persistent()
@@ -1558,6 +1685,13 @@ mod test {
             });
             env.ledger()
                 .with_mut(|li| li.timestamp = 1_000 + idx as u64);
+            // Reset to Open before each round because resolve_round transitions
+            // to Finished when there are no survivors (no real players exist).
+            env.as_contract(&contract_id, || {
+                let mut cfg = ArenaStorage::load_config(&env).unwrap();
+                cfg.state = GameState::Open;
+                ArenaStorage::save_config(&env, &cfg);
+            });
             client.start_round(&0);
             client.resolve_round();
         }
@@ -1830,9 +1964,6 @@ mod test {
     #[test]
     fn start_round_succeeds_with_two_or_more_players() {
         let (_, client) = setup_started(60, 0);
-        // setup_started configures player_count: 0 but the existing test already
-        // called start_round successfully because setup_started uses
-        // player_count: 0 — bump it here to prove the happy path independently.
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(ArenaContract, ());
@@ -1854,10 +1985,251 @@ mod test {
                     oracle_contract: oracle_id,
                 },
             );
+            let p1 = Address::generate(&env);
+            let p2 = Address::generate(&env);
+            ArenaStorage::add_player(&env, &p1);
+            ArenaStorage::add_player(&env, &p2);
         });
         let client2 = ArenaContractClient::new(&env, &contract_id);
         client2.start_round(&60);
         let _ = client; // suppress unused warning
+    }
+
+    /// Verify that a player's revealed choice from round N does not persist
+    /// into round N+1. After `start_round` clears round data, the old choice
+    /// must be absent so the player can commit and reveal again.
+    #[test]
+    fn stale_choice_cleared_between_rounds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Round 1: players commit Heads (same side → both survive)
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+        let salt = BytesN::from_array(&env, &[1u8; 32]);
+        let comm = compute_commitment(&env, Choice::Heads, &salt);
+        client.submit_commitment(&p1, &comm);
+        client.submit_commitment(&p2, &comm);
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        // Both reveal Heads — all same choice, both survive
+        client.reveal_choice(&p1, &Choice::Heads, &salt);
+        client.reveal_choice(&p2, &Choice::Heads, &salt);
+        client.resolve_round();
+
+        // Start round 2 – should clear round 1 choices/commitments
+        env.ledger().with_mut(|li| li.timestamp = 2000);
+        client.start_round(&60);
+
+        // Verify choices are cleared: players can commit and reveal again
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let comm2 = compute_commitment(&env, Choice::Heads, &salt2);
+        client.submit_commitment(&p1, &comm2);
+        client.submit_commitment(&p2, &comm2);
+        env.ledger().with_mut(|li| li.timestamp = 2061);
+        // If choices were not cleared, reveal would fail with ChoiceAlreadyRevealed
+        // If stale commitment was present, reveal would succeed but use wrong commitment
+        client.reveal_choice(&p1, &Choice::Heads, &salt2);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.resolve_round();
+    }
+
+    /// Verify that a player who does not reveal their choice is eliminated
+    /// during round resolution (AFK elimination).
+    #[test]
+    fn non_revealing_player_is_eliminated() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Only p1 and p2 commit and reveal (p3 goes AFK)
+        let salt = BytesN::from_array(&env, &[1u8; 32]);
+        let comm = compute_commitment(&env, Choice::Heads, &salt);
+        client.submit_commitment(&p1, &comm);
+        client.submit_commitment(&p2, &comm);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm3 = compute_commitment(&env, Choice::Heads, &salt3);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Heads, &salt);
+        client.reveal_choice(&p2, &Choice::Heads, &salt);
+        // p3 does NOT reveal
+
+        client.resolve_round();
+
+        // p3 should be eliminated (AFK)
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!state.active, "AFK player should be eliminated");
+        });
+
+        // p1 and p2 should still be active (all Heads, no majority to eliminate)
+        env.as_contract(&client.address, || {
+            let s1 = ArenaStorage::load_player(&env, &p1).unwrap();
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            assert!(s1.active);
+            assert!(s2.active);
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// Verify that a commitment submitted in round N cannot be used to reveal
+    /// in round N+1. After `start_round` clears round data, the old commitment
+    /// is removed so the reveal must fail with MissingCommitment.
+    #[test]
+    fn stale_commitment_invalid_in_next_round() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Round 1: both players commit (same side so neither is eliminated)
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+        let salt = BytesN::from_array(&env, &[1u8; 32]);
+        let comm = compute_commitment(&env, Choice::Heads, &salt);
+        client.submit_commitment(&p1, &comm);
+        client.submit_commitment(&p2, &comm);
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Heads, &salt);
+        client.reveal_choice(&p2, &Choice::Heads, &salt);
+        client.resolve_round();
+
+        // Round 2 starts – old commitments are cleared
+        env.ledger().with_mut(|li| li.timestamp = 2000);
+        client.start_round(&60);
+
+        // Try to reveal using round 1's commitment – should fail with MissingCommitment
+        // because the commitment was cleared by start_round
+        env.ledger().with_mut(|li| li.timestamp = 2061);
+        let result = client.try_reveal_choice(&p1, &Choice::Heads, &salt);
+        assert_eq!(result, Err(Ok(ArenaError::MissingCommitment)));
     }
 
     #[test]
@@ -1945,7 +2317,8 @@ mod test {
         let vault_id = env.register(MockVault, ());
 
         let admin = Address::generate(&env);
-        let token = env.register_stellar_asset_contract(admin.clone());
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
         let token_client = token::TokenClient::new(&env, &token);
         let token_admin = StellarAssetClient::new(&env, &token);
 
@@ -2114,6 +2487,462 @@ mod test {
                 let entry: LeaderboardEntry = leaderboard.get(i).unwrap();
                 assert_eq!(entry.rounds_survived, 19 - i);
             }
+        });
+    }
+
+    // --- Issue 1: initialize rejects invalid entry fees ---
+
+    #[test]
+    fn initialize_rejects_zero_entry_fee() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+        let vault_id = env.register(MockVault, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let result = client.try_initialize(&admin, &token_id, &vault_id, &0, &oracle_id);
+        assert_eq!(result, Err(Ok(ArenaError::InvalidEntryFee)));
+    }
+
+    #[test]
+    fn initialize_rejects_negative_entry_fee() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+        let vault_id = env.register(MockVault, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let result = client.try_initialize(&admin, &token_id, &vault_id, &-1, &oracle_id);
+        assert_eq!(result, Err(Ok(ArenaError::InvalidEntryFee)));
+    }
+
+    #[test]
+    fn initialize_accepts_positive_entry_fee() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+        let vault_id = env.register(MockVault, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        assert!(
+            client
+                .try_initialize(&admin, &token_id, &vault_id, &1, &oracle_id)
+                .is_ok()
+        );
+    }
+
+    // --- Issue 2/4: submit_commitment rejects non-players, eliminated players, and timing violations ---
+
+    #[test]
+    fn submit_commitment_rejects_non_player() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+        let vault_id = env.register(MockVault, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+
+        // Add two real players and start round so state is Active
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // A non-player (never joined) tries to submit commitment
+        let stranger = Address::generate(&env);
+        let commitment = BytesN::from_array(&env, &[1u8; 32]);
+        let result = client.try_submit_commitment(&stranger, &commitment);
+        assert_eq!(result, Err(Ok(ArenaError::NotAPlayer)));
+    }
+
+    #[test]
+    fn submit_commitment_rejects_eliminated_player() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+        let vault_id = env.register(MockVault, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Mark p1 as eliminated
+        env.as_contract(&contract_id, || {
+            ArenaStorage::save_player(
+                &env,
+                &p1,
+                &PlayerState {
+                    active: false,
+                    rounds_survived: 0,
+                },
+            );
+        });
+
+        let commitment = BytesN::from_array(&env, &[1u8; 32]);
+        let result = client.try_submit_commitment(&p1, &commitment);
+        assert_eq!(result, Err(Ok(ArenaError::PlayerEliminated)));
+    }
+
+    #[test]
+    fn submit_commitment_rejects_when_round_not_active() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+        let vault_id = env.register(MockVault, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+
+        let player = Address::generate(&env);
+        token_admin_client.mint(&player, &1000);
+        client.join_arena(&player);
+
+        // Arena is Open (not Active) — commitment should be rejected
+        let commitment = BytesN::from_array(&env, &[1u8; 32]);
+        let result = client.try_submit_commitment(&player, &commitment);
+        assert_eq!(result, Err(Ok(ArenaError::RoundNotActive)));
+    }
+
+    #[test]
+    fn submit_commitment_rejects_after_deadline() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+        let vault_id = env.register(MockVault, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance past deadline
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+
+        let commitment = BytesN::from_array(&env, &[1u8; 32]);
+        let result = client.try_submit_commitment(&p1, &commitment);
+        assert_eq!(result, Err(Ok(ArenaError::CommitPhaseEnded)));
+    }
+
+    // --- Issue #953: events emitted for submit_commitment and reveal_choice ---
+
+    #[test]
+    fn commitment_submitted_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+        let vault_id = env.register(MockVault, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        let commitment = BytesN::from_array(&env, &[1u8; 32]);
+        client.submit_commitment(&p1, &commitment);
+
+        let events = env.events().all();
+        let expected_topic: soroban_sdk::Vec<Val> =
+            (symbol_short!("commit"), p1.clone()).into_val(&env);
+        let event_found = events.iter().any(|(contract, topics, _data)| {
+            contract == client.address && topics == expected_topic
+        });
+        assert!(
+            event_found,
+            "commitment_submitted event must be emitted after submit_commitment"
+        );
+    }
+
+    #[test]
+    fn choice_revealed_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+        let vault_id = env.register(MockVault, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        let salt = BytesN::from_array(&env, &[1u8; 32]);
+        let commitment = compute_commitment(&env, Choice::Heads, &salt);
+        client.submit_commitment(&p1, &commitment);
+        client.submit_commitment(&p2, &commitment);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Heads, &salt);
+
+        let events = env.events().all();
+        let expected_topic: soroban_sdk::Vec<Val> =
+            (symbol_short!("reveal"), p1.clone()).into_val(&env);
+        let event_found = events.iter().any(|(contract, topics, _data)| {
+            contract == client.address && topics == expected_topic
+        });
+        assert!(
+            event_found,
+            "choice_revealed event must be emitted after reveal_choice"
+        );
+    }
+
+    // --- Issue #761: start_round rejects Finished state ---
+
+    #[test]
+    fn start_round_rejects_finished_state() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+        let vault_id = env.register(MockVault, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Force state to Finished
+        env.as_contract(&contract_id, || {
+            let mut config = ArenaStorage::load_config(&env).unwrap();
+            config.state = GameState::Finished;
+            ArenaStorage::save_config(&env, &config);
+        });
+
+        let result = client.try_start_round(&60);
+        assert_eq!(result, Err(Ok(ArenaError::InvalidGameState)));
+    }
+
+    // --- Issue 3: choices and commitments cleared after resolve_round ---
+
+    #[test]
+    fn choices_and_commitments_cleared_after_resolve_round() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+        let vault_id = env.register(MockVault, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Round 1: commit and reveal
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+        let salt = BytesN::from_array(&env, &[1u8; 32]);
+        let comm = compute_commitment(&env, Choice::Heads, &salt);
+        client.submit_commitment(&p1, &comm);
+        client.submit_commitment(&p2, &comm);
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Heads, &salt);
+        client.reveal_choice(&p2, &Choice::Heads, &salt);
+
+        // After resolve_round, choices and commitments should be cleared
+        client.resolve_round();
+
+        env.as_contract(&contract_id, || {
+            assert!(
+                ArenaStorage::load_choice(&env, &p1, 1).is_none(),
+                "choice should be cleared after resolve_round"
+            );
+            assert!(
+                ArenaStorage::load_commitment(&env, &p1, 1).is_none(),
+                "commitment should be cleared after resolve_round"
+            );
+            assert!(
+                ArenaStorage::load_choice(&env, &p2, 1).is_none(),
+                "choice should be cleared after resolve_round"
+            );
+            assert!(
+                ArenaStorage::load_commitment(&env, &p2, 1).is_none(),
+                "commitment should be cleared after resolve_round"
+            );
+        });
+    }
+
+    #[test]
+    fn leaderboard_with_120_players_is_sorted_and_capped() {
+        const N: u32 = 120;
+        const LIMIT: u32 = 50;
+
+    fn start_round_rejected_when_only_one_active_player_remains() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+
+        env.as_contract(&contract_id, || {
+            ArenaStorage::save_config(
+                &env,
+                &ArenaConfig {
+                    admin: Address::generate(&env),
+                    stake_token: Address::generate(&env),
+                    yield_vault: Address::generate(&env),
+                    entry_fee: 100,
+                    state: GameState::Open,
+                    paused: false,
+                    player_count: 0,
+                    cumulative_yield: 0,
+                    commit_deadline: 0,
+                    round_count: 0,
+                    oracle_contract: oracle_id,
+                },
+            );
+            ArenaStorage::save_leaderboard_limit(&env, LIMIT);
+
+            // Player i gets rounds_survived = i, so player N-1 has the highest score.
+            for i in 0..N {
+                let player = Address::generate(&env);
+                ArenaStorage::add_player(&env, &player);
+                ArenaStorage::save_player(
+                    &env,
+                    &player,
+                    &PlayerState {
+                        active: true,
+                        rounds_survived: i,
+                    },
+                );
+            }
+
+            build_leaderboard(&env);
+
+            let board = ArenaStorage::load_leaderboard(&env);
+            assert_eq!(board.len(), LIMIT, "leaderboard must be capped at limit");
+
+            // Entries must be in strictly descending order of rounds_survived.
+            let mut prev_rs = u32::MAX;
+            for idx in 0..LIMIT {
+                let entry: LeaderboardEntry = board.get(idx).unwrap();
+                assert!(
+                    entry.rounds_survived <= prev_rs,
+                    "leaderboard not sorted descending at index {idx}"
+                );
+                prev_rs = entry.rounds_survived;
+            }
+
+            // Top entry must have the maximum rounds_survived.
+            assert_eq!(
+                board.get(0).unwrap().rounds_survived,
+                N - 1,
+                "first entry must have the highest rounds_survived"
+            );
         });
     }
 }

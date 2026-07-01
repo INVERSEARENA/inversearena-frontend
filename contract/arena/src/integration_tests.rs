@@ -118,7 +118,9 @@ fn full_game_lifecycle_commit_reveal() {
     arena_client.reveal_choice(&p4, &Choice::Heads, &salt_4);
     all_events.extend(env.events().all().iter());
 
-    // 11. Resolve Round (eliminates majority, so p2, p3, p4 are eliminated)
+    // 11. Advance time by 1 year so vault yield accrues, then resolve the round.
+    //     (eliminates majority, so p2, p3, p4 are eliminated)
+    env.ledger().with_mut(|li| li.timestamp = start_ts + 31_536_000);
     arena_client.resolve_round();
     all_events.extend(env.events().all().iter());
 

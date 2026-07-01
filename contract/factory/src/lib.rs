@@ -4,11 +4,14 @@ mod snapshot_tests;
 mod storage;
 mod types;
 
+#[cfg(test)]
+mod integration_tests;
+
 use storage::{CreatorStakeRecord, FactoryStorage};
 use types::{ArenaMetadata, ArenaStatus, FactoryError, PoolConfig};
 
 use soroban_sdk::{
-    Address, BytesN, Env, IntoVal, Symbol, Vec, contract, contractimpl, symbol_short, vec,
+    Address, BytesN, Env, IntoVal, Symbol, Vec, contract, contractimpl, symbol_short, token, vec,
 };
 
 const MAX_PAGE_SIZE: u32 = 50;
@@ -34,6 +37,19 @@ impl FactoryContract {
         FactoryStorage::save_min_stake(&env, min_stake);
         env.events()
             .publish((symbol_short!("INIT"),), (admin, min_stake));
+        Ok(())
+    }
+
+    /// Upgrade the factory contract's code to `new_wasm_hash`.
+    ///
+    /// Admin-gated. Upgrading in place preserves all existing state — admin,
+    /// whitelist, pool sequence, and creator stakes — so bug fixes and new
+    /// features can ship without redeploying and losing that state.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash);
+        env.events().publish((symbol_short!("UPGRADE"),), ());
         Ok(())
     }
 
@@ -151,12 +167,13 @@ impl FactoryContract {
         let arena = env.current_contract_address();
 
         // Verify this arena was deployed by the factory
-        let record = FactoryStorage::load_creator_stake(&env, &arena)
-            .ok_or(FactoryError::ArenaNotFound)?;
+        let record =
+            FactoryStorage::load_creator_stake(&env, &arena).ok_or(FactoryError::ArenaNotFound)?;
 
         FactoryStorage::decrement_active_pool_count(&env, &record.creator);
 
-        env.events().publish((symbol_short!("POOL_RLS"),), record.creator);
+        env.events()
+            .publish((symbol_short!("POOL_RLS"),), record.creator);
         Ok(())
     }
 
@@ -194,6 +211,12 @@ impl FactoryContract {
 
         let wasm_hash = FactoryStorage::load_arena_wasm_hash(&env)?;
         let pool_id = FactoryStorage::next_pool_id(&env)?;
+
+        // Collect the creator's stake into the factory *before* deploying, so a
+        // host genuinely locks `entry_fee` of skin-in-the-game on-chain rather
+        // than the factory merely recording a stake it never held.
+        Self::collect_creator_stake(&env, &host, &config.stake_token, config.entry_fee);
+
         let arena = env
             .deployer()
             .with_current_contract(Self::salt_for_pool(&env, pool_id))
@@ -205,7 +228,7 @@ impl FactoryContract {
             vec![
                 &env,
                 host.clone().into_val(&env),
-                config.stake_token.into_val(&env),
+                config.stake_token.clone().into_val(&env),
                 config.yield_vault.into_val(&env),
                 config.entry_fee.into_val(&env),
                 config.oracle_contract.into_val(&env),
@@ -218,6 +241,7 @@ impl FactoryContract {
             &CreatorStakeRecord {
                 creator: host.clone(),
                 amount: config.entry_fee,
+                stake_token: config.stake_token.clone(),
             },
         );
         FactoryStorage::increment_active_pool_count(&env, &host);
@@ -244,18 +268,60 @@ impl FactoryContract {
         FactoryStorage::load_creator_stake(&env, &arena)
     }
 
+    /// Refund a creator's locked stake once their arena has completed.
+    ///
+    /// Authorised by the `arena` itself: a deployed arena releases its creator
+    /// stake as part of reaching a terminal state, which is the on-chain
+    /// "arena completed" gate — a host cannot pull their own stake early. The
+    /// recorded amount is transferred from the factory back to the creator and
+    /// the stake record is cleared so it cannot be reclaimed twice.
+    pub fn reclaim_creator_stake(env: Env, arena: Address) -> Result<(), FactoryError> {
+        let record =
+            FactoryStorage::load_creator_stake(&env, &arena).ok_or(FactoryError::ArenaNotFound)?;
+
+        // Only the arena contract can authorise releasing its own creator stake.
+        arena.require_auth();
+
+        let token_client = token::TokenClient::new(&env, &record.stake_token);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &record.creator,
+            &record.amount,
+        );
+
+        FactoryStorage::remove_creator_stake(&env, &arena);
+        env.events().publish(
+            (symbol_short!("STK_RCLM"),),
+            (arena, record.creator, record.amount),
+        );
+        Ok(())
+    }
+
+    /// Transfer `amount` of `stake_token` from the host into the factory.
+    /// Separated out so the collection logic can be exercised directly in unit
+    /// tests without standing up a full arena deployment.
+    fn collect_creator_stake(env: &Env, host: &Address, stake_token: &Address, amount: i128) {
+        let token_client = token::TokenClient::new(env, stake_token);
+        token_client.transfer(host, &env.current_contract_address(), &amount);
+    }
+
     /// Update the status of a deployed arena pool.
     ///
     /// Only callable by the arena contract itself. The calling arena's address
     /// must match the recorded arena_address for the given pool_id.
-    pub fn update_arena_status(env: Env, pool_id: u32, status: ArenaStatus) -> Result<(), FactoryError> {
+    pub fn update_arena_status(
+        env: Env,
+        pool_id: u32,
+        status: ArenaStatus,
+    ) -> Result<(), FactoryError> {
         let caller = env.current_contract_address();
         let meta = FactoryStorage::load_pool(&env, pool_id).ok_or(FactoryError::PoolNotFound)?;
         if meta.arena_address != caller {
             return Err(FactoryError::Unauthorized);
         }
         FactoryStorage::update_pool_status(&env, pool_id, &status);
-        env.events().publish((symbol_short!("POOL_ST"),), (pool_id, status));
+        env.events()
+            .publish((symbol_short!("POOL_ST"),), (pool_id, status));
         Ok(())
     }
 
@@ -423,6 +489,113 @@ mod test {
             .expect("must still error (no wasm hash configured)")
             .expect("error must be a contract error");
         assert_ne!(err_after, FactoryError::UnsupportedToken);
+    }
+
+    #[test]
+    fn upgrade_rejects_non_admin() {
+        let (env, client, _admin, _host) = setup();
+
+        // Drop the mocked auths so the admin's signature is genuinely required;
+        // a non-admin caller cannot supply it.
+        env.set_auths(&[]);
+
+        let new_wasm = BytesN::from_array(&env, &[0u8; 32]);
+        let err = client.try_upgrade(&new_wasm);
+        assert!(
+            err.is_err(),
+            "upgrade without the admin's authorization must be rejected"
+        );
+    }
+
+    #[test]
+    fn create_pool_collects_creator_stake_from_host() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let factory_id = env.register(FactoryContract, ());
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+        let host = Address::generate(&env);
+        soroban_sdk::token::StellarAssetClient::new(&env, &token_id).mint(&host, &1_000);
+
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&host), 1_000);
+
+        // Exercise the exact stake-collection step create_pool runs before deploy.
+        env.as_contract(&factory_id, || {
+            FactoryContract::collect_creator_stake(&env, &host, &token_id, 250);
+        });
+
+        assert_eq!(
+            token_client.balance(&host),
+            750,
+            "host balance must decrease by the staked amount"
+        );
+        assert_eq!(
+            token_client.balance(&factory_id),
+            250,
+            "factory must actually hold the locked stake"
+        );
+    }
+
+    #[test]
+    fn reclaim_creator_stake_refunds_the_creator() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let factory_id = env.register(FactoryContract, ());
+        let client = FactoryContractClient::new(&env, &factory_id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+        let host = Address::generate(&env);
+        let arena = Address::generate(&env);
+
+        // Fund the factory as if it had collected the stake, and record it.
+        soroban_sdk::token::StellarAssetClient::new(&env, &token_id).mint(&factory_id, &250);
+        env.as_contract(&factory_id, || {
+            FactoryStorage::save_creator_stake(
+                &env,
+                &arena,
+                &CreatorStakeRecord {
+                    creator: host.clone(),
+                    amount: 250,
+                    stake_token: token_id.clone(),
+                },
+            );
+        });
+
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&host), 0);
+
+        client.reclaim_creator_stake(&arena);
+
+        assert_eq!(
+            token_client.balance(&host),
+            250,
+            "creator must be refunded the full stake"
+        );
+        assert_eq!(
+            token_client.balance(&factory_id),
+            0,
+            "factory must release the held stake"
+        );
+        assert!(
+            client.get_creator_stake(&arena).is_none(),
+            "stake record must be cleared so it cannot be reclaimed twice"
+        );
+    }
+
+    #[test]
+    fn reclaim_creator_stake_unknown_arena_errors() {
+        let (env, client, _admin, _host) = setup();
+        let unknown = Address::generate(&env);
+
+        let err = client
+            .try_reclaim_creator_stake(&unknown)
+            .err()
+            .expect("reclaiming an unknown arena must error")
+            .expect("error must be a contract error");
+        assert_eq!(err, FactoryError::ArenaNotFound);
     }
 
     #[test]

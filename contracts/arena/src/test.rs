@@ -2158,6 +2158,42 @@ fn capacity_join_at_max_returns_arena_full_error() {
     assert_eq!(err.unwrap_err().unwrap(), ArenaError::ArenaFull);
 }
 
+#[test]
+fn auto_start_when_max_players_reached() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    initialize_arena(&env, &client, &admin, &token, 2);
+
+    let p1 = Address::generate(&env);
+    let p2 = Address::generate(&env);
+    mint_tokens(&env, &token, &p1, 10_000_000);
+    mint_tokens(&env, &token, &p2, 10_000_000);
+
+    client.join(&p1);
+    client.join(&p2);
+
+    assert_eq!(client.game_state(), GameState::InProgress);
+    assert_eq!(client.get_player_count(), 2);
+    assert_eq!(client.get_round(), 1);
+    assert_eq!(client.get_round_deadline(), Some(env.ledger().timestamp() + 86_400 + 86_400));
+}
+
+#[test]
+fn initialize_rejects_entry_fee_outside_bounds() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    let treasury = Address::generate(&env);
+    let deadline = env.ledger().timestamp() + 86_400;
+
+    let result = client.try_initialize(&admin, &token, &(4_000_000 - 1), &2, &deadline, &treasury, &0);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::InvalidEntryFee);
+}
+
 /// Large arena — 50 players all submit the same choice (tie) then the
 /// round produces no eliminations for >2 players.
 #[test]

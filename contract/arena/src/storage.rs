@@ -1,5 +1,4 @@
-#![allow(dead_code)]
-
+use crate::types::PendingUpgrade;
 use crate::types::{
     ArenaConfig, ArenaError, Choice, GameState, PendingAdmin, PlayerState, RoundResult,
     YieldSnapshot,
@@ -14,8 +13,8 @@ const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
 enum DataKey {
     Player(Address),
     BannedPlayer(Address),
-    Commitment(Address),
-    Choice(Address),
+    CommitmentForRound(Address, u32),
+    ChoiceForRound(Address, u32),
     YieldSnapshot(u32),
     RoundResult(u32),
     RoundYieldBps(u32),
@@ -58,20 +57,6 @@ impl ArenaStorage {
     }
 
     pub fn save_config(env: &Env, config: &ArenaConfig) {
-        let previous: Option<ArenaConfig> =
-            env.storage().persistent().get(&symbol_short!("CONFIG"));
-
-        if previous.is_none() && config.state == GameState::Open {
-            Self::increment_creator_active_pools(env, &config.admin);
-        }
-
-        if let Some(previous_config) = previous
-            && !Self::is_terminal_pool_state(&previous_config.state)
-            && Self::is_terminal_pool_state(&config.state)
-        {
-            Self::decrement_creator_active_pools(env, &previous_config.admin);
-        }
-
         Self::extend_persistent_ttl(env, &symbol_short!("CONFIG"));
         env.storage()
             .persistent()
@@ -176,32 +161,32 @@ impl ArenaStorage {
         env.storage().persistent().get(&DataKey::MaxPlayers)
     }
 
-    pub fn save_commitment(env: &Env, player: &Address, commitment: &BytesN<32>) {
-        Self::extend_persistent_ttl(env, &DataKey::Commitment(player.clone()));
+    pub fn save_commitment(env: &Env, player: &Address, round: u32, commitment: &BytesN<32>) {
+        Self::extend_persistent_ttl(env, &DataKey::CommitmentForRound(player.clone(), round));
         env.storage()
             .persistent()
-            .set(&DataKey::Commitment(player.clone()), commitment);
+            .set(&DataKey::CommitmentForRound(player.clone(), round), commitment);
     }
 
-    pub fn load_commitment(env: &Env, player: &Address) -> Option<BytesN<32>> {
-        Self::extend_persistent_ttl(env, &DataKey::Commitment(player.clone()));
+    pub fn load_commitment(env: &Env, player: &Address, round: u32) -> Option<BytesN<32>> {
+        Self::extend_persistent_ttl(env, &DataKey::CommitmentForRound(player.clone(), round));
         env.storage()
             .persistent()
-            .get(&DataKey::Commitment(player.clone()))
+            .get(&DataKey::CommitmentForRound(player.clone(), round))
     }
 
-    pub fn save_choice(env: &Env, player: &Address, choice: &Choice) {
-        Self::extend_persistent_ttl(env, &DataKey::Choice(player.clone()));
+    pub fn save_choice(env: &Env, player: &Address, round: u32, choice: &Choice) {
+        Self::extend_persistent_ttl(env, &DataKey::ChoiceForRound(player.clone(), round));
         env.storage()
             .persistent()
-            .set(&DataKey::Choice(player.clone()), choice);
+            .set(&DataKey::ChoiceForRound(player.clone(), round), choice);
     }
 
-    pub fn load_choice(env: &Env, player: &Address) -> Option<Choice> {
-        Self::extend_persistent_ttl(env, &DataKey::Choice(player.clone()));
+    pub fn load_choice(env: &Env, player: &Address, round: u32) -> Option<Choice> {
+        Self::extend_persistent_ttl(env, &DataKey::ChoiceForRound(player.clone(), round));
         env.storage()
             .persistent()
-            .get(&DataKey::Choice(player.clone()))
+            .get(&DataKey::ChoiceForRound(player.clone(), round))
     }
 
     pub fn save_round_start(env: &Env, timestamp: u64) {
@@ -353,8 +338,9 @@ impl ArenaStorage {
         }
     }
 
+    #[allow(dead_code)]
     fn is_terminal_pool_state(state: &GameState) -> bool {
-        matches!(state, GameState::Finished | GameState::Cancelled)
+        matches!(state, GameState::Finished | GameState::Cancelled | GameState::Settled)
     }
 
     pub fn save_pending_admin(env: &Env, pending: &PendingAdmin) {
@@ -374,14 +360,17 @@ impl ArenaStorage {
     }
 
     pub fn get_winner(env: &Env) -> Option<Address> {
+        Self::extend_persistent_ttl(env, &DataKey::Winner);
         env.storage().persistent().get(&DataKey::Winner)
     }
 
     pub fn set_winner(env: &Env, winner: &Address) {
+        Self::extend_persistent_ttl(env, &DataKey::Winner);
         env.storage().persistent().set(&DataKey::Winner, winner);
     }
 
     pub fn is_refund_claimed(env: &Env, player: &Address) -> bool {
+        Self::extend_persistent_ttl(env, &DataKey::RefundClaimed(player.clone()));
         env.storage()
             .persistent()
             .get(&DataKey::RefundClaimed(player.clone()))
@@ -389,12 +378,14 @@ impl ArenaStorage {
     }
 
     pub fn set_refund_claimed(env: &Env, player: &Address) {
+        Self::extend_persistent_ttl(env, &DataKey::RefundClaimed(player.clone()));
         env.storage()
             .persistent()
             .set(&DataKey::RefundClaimed(player.clone()), &true);
     }
 
     pub fn load_leaderboard(env: &Env) -> Vec<crate::types::LeaderboardEntry> {
+        Self::extend_persistent_ttl(env, &DataKey::Leaderboard);
         env.storage()
             .persistent()
             .get(&DataKey::Leaderboard)
@@ -402,12 +393,14 @@ impl ArenaStorage {
     }
 
     pub fn save_leaderboard(env: &Env, leaderboard: &Vec<crate::types::LeaderboardEntry>) {
+        Self::extend_persistent_ttl(env, &DataKey::Leaderboard);
         env.storage()
             .persistent()
             .set(&DataKey::Leaderboard, leaderboard);
     }
 
     pub fn load_leaderboard_limit(env: &Env) -> u32 {
+        Self::extend_persistent_ttl(env, &DataKey::LeaderboardLimit);
         env.storage()
             .persistent()
             .get(&DataKey::LeaderboardLimit)
@@ -415,9 +408,41 @@ impl ArenaStorage {
     }
 
     pub fn save_leaderboard_limit(env: &Env, limit: u32) {
+        Self::extend_persistent_ttl(env, &DataKey::LeaderboardLimit);
         env.storage()
             .persistent()
             .set(&DataKey::LeaderboardLimit, &limit);
+    }
+
+    pub fn save_pending_upgrade(env: &Env, upgrade: &PendingUpgrade) {
+        Self::extend_persistent_ttl(env, &symbol_short!("UPGRADE"));
+        env.storage()
+            .persistent()
+            .set(&symbol_short!("UPGRADE"), upgrade);
+    }
+
+    pub fn load_pending_upgrade(env: &Env) -> Option<PendingUpgrade> {
+        Self::extend_persistent_ttl(env, &symbol_short!("UPGRADE"));
+        env.storage().persistent().get(&symbol_short!("UPGRADE"))
+    }
+
+    pub fn clear_pending_upgrade(env: &Env) {
+        env.storage().persistent().remove(&symbol_short!("UPGRADE"));
+    }
+
+    /// Clear all players' choices and commitments for the specified round.
+    /// Since commitments and choices are now keyed by (Address, round),
+    /// this is primarily for cleanup. May be called at the start or end of a round.
+    pub fn clear_round_data(env: &Env, round: u32) {
+        let players = Self::load_all_players(env);
+        for player in players.iter() {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::ChoiceForRound(player.clone(), round));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::CommitmentForRound(player.clone(), round));
+        }
     }
 }
 
@@ -444,42 +469,22 @@ mod tests {
     }
 
     #[test]
-    fn initial_open_config_increments_creator_active_pools() {
+    fn increment_and_decrement_creator_active_pools() {
         let env = Env::default();
         let contract_id = env.register(ArenaContract, ());
         let creator = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
             ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Open));
+            ArenaStorage::increment_creator_active_pools(&env, &creator);
             assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 1);
-        });
-    }
 
-    #[test]
-    fn finished_transition_decrements_creator_active_pools_once() {
-        let env = Env::default();
-        let contract_id = env.register(ArenaContract, ());
-        let creator = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Open));
-            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Active));
             ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Finished));
-            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Finished));
-            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Settled));
+            ArenaStorage::decrement_creator_active_pools(&env, &creator);
             assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 0);
-        });
-    }
 
-    #[test]
-    fn cancelled_transition_decrements_creator_active_pools() {
-        let env = Env::default();
-        let contract_id = env.register(ArenaContract, ());
-        let creator = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Open));
-            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Cancelled));
+            // Repeated decrement is a no-op (saturating at 0).
+            ArenaStorage::decrement_creator_active_pools(&env, &creator);
             assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 0);
         });
     }

@@ -1,3 +1,4 @@
+use crate::types::Choice;
 use soroban_sdk::{Address, BytesN, Env, Symbol, symbol_short};
 
 pub struct ArenaEvents;
@@ -26,6 +27,13 @@ impl ArenaEvents {
     pub fn player_limits_configured(env: &Env, min_players: u32, max_players: u32) {
         env.events()
             .publish((symbol_short!("limits"),), (min_players, max_players));
+    }
+
+    pub fn upgrade_proposed(env: &Env, new_wasm_hash: &BytesN<32>, proposed_at: u64) {
+        env.events().publish(
+            (symbol_short!("up_prop"),),
+            (new_wasm_hash.clone(), proposed_at),
+        );
     }
 
     pub fn upgraded(env: &Env, new_wasm_hash: &BytesN<32>) {
@@ -83,8 +91,7 @@ impl ArenaEvents {
     }
 
     pub fn arena_expired(env: &Env) {
-        env.events()
-            .publish((symbol_short!("expired"),), ());
+        env.events().publish((symbol_short!("expired"),), ());
     }
 
     pub fn vault_balance_decreased(env: &Env, previous_balance: i128, current_balance: i128) {
@@ -92,6 +99,14 @@ impl ArenaEvents {
             (symbol_short!("vaultdec"),),
             (previous_balance, current_balance),
         );
+    }
+
+    /// Emitted when the yield oracle cross-contract call fails. The arena falls
+    /// back to a 0-bps yield, but surfaces the failure so operators can detect a
+    /// misconfigured, unreachable, or malfunctioning oracle.
+    pub fn vault_oracle_failed(env: &Env, oracle: &Address) {
+        env.events()
+            .publish((Symbol::new(env, "vault_oracle_failed"),), oracle.clone());
     }
 
     pub fn arena_cancelled(env: &Env, admin: &Address) {
@@ -106,5 +121,15 @@ impl ArenaEvents {
 
     pub fn leaderboard_updated(env: &Env) {
         env.events().publish((symbol_short!("lboard"),), ());
+    }
+
+    pub fn commitment_submitted(env: &Env, player: &Address, round: u32) {
+        env.events()
+            .publish((symbol_short!("commit"), player.clone()), round);
+    }
+
+    pub fn choice_revealed(env: &Env, player: &Address, choice: &Choice, round: u32) {
+        env.events()
+            .publish((symbol_short!("reveal"), player.clone()), (*choice, round));
     }
 }

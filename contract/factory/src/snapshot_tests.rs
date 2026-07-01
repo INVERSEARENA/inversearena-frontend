@@ -38,9 +38,11 @@ mod snapshot_tests {
         let env = Env::default();
         let creator = Address::generate(&env);
 
+        let stake_token = Address::generate(&env);
         let record = CreatorStakeRecord {
             creator: creator.clone(),
             amount: 1_000_000i128,
+            stake_token: stake_token.clone(),
         };
         let bytes = to_xdr(&env, record.clone());
         assert!(bytes.len() > 0);
@@ -49,6 +51,7 @@ mod snapshot_tests {
         let record2 = CreatorStakeRecord {
             creator,
             amount: 2_000_000i128,
+            stake_token,
         };
         assert_ne!(bytes, to_xdr(&env, record2));
 

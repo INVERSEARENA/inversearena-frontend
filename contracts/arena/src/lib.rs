@@ -50,6 +50,10 @@ impl ArenaContract {
             }
         }
 
+        if entry_fee < 4_000_000 || entry_fee > 1_000_000_000_000 {
+            return Err(ArenaError::InvalidEntryFee);
+        }
+
         // Create initial configuration
         let config = ArenaConfig {
             admin: admin.clone(),
@@ -286,6 +290,14 @@ impl ArenaContract {
         ArenaStorage::set_prize_pool(&env, current_pool.saturating_add(config.entry_fee));
 
         ArenaEvents::player_joined(&env, &player);
+
+        if config.player_count >= config.max_players {
+            let round_deadline = config.join_deadline.saturating_add(86_400);
+            ArenaStorage::set_round_deadline(&env, round_deadline);
+            ArenaStorage::set_round(&env, 1);
+            ArenaEvents::round_started(&env, 1, round_deadline);
+        }
+
         Ok(())
     }
 
