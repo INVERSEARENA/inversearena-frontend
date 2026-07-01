@@ -29,6 +29,20 @@ const DEFAULT_MAX_PLAYERS: u32 = u32::MAX;
 const CONTRACT_VERSION: u32 = 1;
 const UPGRADE_TIMELOCK_SECONDS: u64 = 86_400; // 1 day
 
+// ── Round duration bounds ─────────────────────────────────────────────────────
+
+/// Minimum `duration_seconds` accepted by `start_round` (30 seconds).
+///
+/// A duration shorter than this would expire the commit window before players
+/// have a realistic chance to submit their commitment transactions.
+pub const MIN_ROUND_DURATION_SECONDS: u64 = 30;
+
+/// Maximum `duration_seconds` accepted by `start_round` (1 hour = 3 600 s).
+///
+/// An uncapped duration allows a malicious or misconfigured admin to lock all
+/// player funds indefinitely by starting a round with `u64::MAX`.
+pub const MAX_ROUND_DURATION_SECONDS: u64 = 3_600;
+
 #[contract]
 /// On-chain arena contract. Manages the full lifecycle of a single elimination
 /// game: player registration, commit-reveal rounds, yield accounting, winner
@@ -481,12 +495,15 @@ impl ArenaContract {
     ///
     /// # Parameters
     /// - `duration_seconds`: Length of the commit window in ledger seconds.
+    ///   Must be in range [`MIN_ROUND_DURATION_SECONDS`, `MAX_ROUND_DURATION_SECONDS`].
     ///   When this many seconds have passed since the round start, `resolve_round`
     ///   becomes callable.
     ///
     /// # Errors
     /// - `ArenaError::NotInitialized` if `initialize` has not been called.
     /// - `ArenaError::ContractPaused` if the contract is paused.
+    /// - `ArenaError::InvalidDuration` if `duration_seconds` is outside
+    ///   [`MIN_ROUND_DURATION_SECONDS`, `MAX_ROUND_DURATION_SECONDS`].
     /// - `ArenaError::InvalidGameState` if the arena is not in `Open` or `Finished` state.
     ///
     /// # Events
