@@ -1,20 +1,22 @@
+const setTag = jest.fn();
+const setExtras = jest.fn();
+const captureException = jest.fn();
+
+jest.mock("@sentry/node", () => ({
+  withScope: (fn: (scope: { setTag: typeof setTag; setExtras: typeof setExtras }) => void) => {
+    fn({ setTag, setExtras });
+  },
+  captureException: (...args: unknown[]) => captureException(...args),
+}));
+
 import { runWithRequestContext, getRequestId } from "../src/utils/requestContext";
 import { reportErrorToSentry } from "../src/utils/logger";
 
-const mockScope = { setTag: jest.fn(), setExtras: jest.fn() };
-
-jest.mock("@sentry/node", () => ({
-  withScope: jest.fn((fn: (scope: typeof mockScope) => void) => fn(mockScope)),
-  captureException: jest.fn(),
-}));
-
 describe("request context propagation (#661)", () => {
   beforeEach(() => {
-    mockScope.setTag.mockClear();
-    mockScope.setExtras.mockClear();
-    const Sentry = require("@sentry/node");
-    Sentry.withScope.mockClear();
-    Sentry.captureException.mockClear();
+    setTag.mockClear();
+    setExtras.mockClear();
+    captureException.mockClear();
   });
 
   it("has no request id outside a request scope", () => {
@@ -34,13 +36,12 @@ describe("request context propagation (#661)", () => {
     runWithRequestContext({ requestId: "req-abc" }, () => {
       reportErrorToSentry(new Error("boom"));
     });
-    expect(mockScope.setTag).toHaveBeenCalledWith("requestId", "req-abc");
-    const Sentry = require("@sentry/node");
-    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(setTag).toHaveBeenCalledWith("requestId", "req-abc");
+    expect(captureException).toHaveBeenCalledTimes(1);
   });
 
   it("does not tag a request id when there is no active context", () => {
     reportErrorToSentry(new Error("boom"));
-    expect(mockScope.setTag).not.toHaveBeenCalledWith("requestId", expect.anything());
+    expect(setTag).not.toHaveBeenCalledWith("requestId", expect.anything());
   });
 });
