@@ -2963,6 +2963,7 @@ mod test {
         });
     }
 }
+} // close mod test
 #[cfg(test)]
 mod integration_tests;
 #[cfg(test)]

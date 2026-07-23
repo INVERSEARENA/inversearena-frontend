@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{Address, BytesN, Env, contract, contracterror, contractimpl};
+use soroban_sdk::{Address, BytesN, Env, contract, contracterror, contractimpl, symbol_short};
 
 /// On-chain yield rate oracle for InverseArena.
 ///
