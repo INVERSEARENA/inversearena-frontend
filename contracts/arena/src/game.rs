@@ -1,143 +1,95 @@
 use soroban_sdk::{Address, Env, Vec};
-
 use crate::errors::ArenaError;
-use crate::storage::DataKey;
-use crate::types::{ArenaConfig, ArenaState, ArenaStatus, Choice, PlayerInfo};
+use crate::events::ArenaEvents;
+use crate::storage::ArenaStorage;
+use crate::types::{Choice, GameState, RoundResult};
 
-/// Start a new round for an active arena.
-/// Only callable when the arena is Active and no round is in progress.
-pub fn start_round(
-    env: &Env,
-    arena_id: u64,
-    state: &mut ArenaState,
-    config: &ArenaConfig,
-) -> Result<(), ArenaError> {
-    if state.status != ArenaStatus::Active {
-        return Err(ArenaError::ArenaNotActive);
+/// Core round resolution: implements minority-wins elimination.
+///
+/// - Counts Heads and Tails among active players.
+/// - Minority survives; majority is eliminated.
+/// - Tie with > 2 players: no eliminations (re-run round).
+/// - Tie with exactly 2 players: Heads survives (deterministic tie-break).
+/// - Players who did not submit are auto-eliminated.
+/// - When ≤ 1 survivor remains, game transitions to Finished.
+pub fn resolve(env: &Env) -> Result<RoundResult, ArenaError> {
+    let mut config = ArenaStorage::load_config(env)?;
+    if config.state != GameState::InProgress {
+        return Err(ArenaError::InvalidStateTransition);
     }
 
-    state.current_round += 1;
-    state.round_deadline = env.ledger().timestamp() + config.round_duration;
-    state.status = ArenaStatus::Active;
+    let players = ArenaStorage::load_all_players(env);
+    let mut active: Vec<Address> = Vec::new(env);
+    let mut heads = 0u32;
+    let mut tails = 0u32;
 
-    env.storage()
-        .persistent()
-        .set(&DataKey::ArenaState(arena_id), state);
-
-    Ok(())
-}
-
-/// Submit a choice for the current round.
-pub fn submit_choice(
-    env: &Env,
-    arena_id: u64,
-    player: &Address,
-    choice: Choice,
-    state: &ArenaState,
-) -> Result<(), ArenaError> {
-    if state.status != ArenaStatus::Active {
-        return Err(ArenaError::ArenaNotActive);
-    }
-    if choice == Choice::None {
-        return Err(ArenaError::InvalidChoice);
-    }
-    if env.ledger().timestamp() > state.round_deadline {
-        return Err(ArenaError::RoundDeadlinePassed);
-    }
-
-    let key = DataKey::PlayerInfo(arena_id, player.clone());
-    let mut info: PlayerInfo = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .ok_or(ArenaError::NotInArena)?;
-
-    if !info.is_active {
-        return Err(ArenaError::PlayerEliminated);
-    }
-    if info.current_choice != Choice::None {
-        return Err(ArenaError::AlreadySubmitted);
-    }
-
-    info.current_choice = choice;
-    env.storage().persistent().set(&key, &info);
-
-    Ok(())
-}
-
-/// Resolve the current round: eliminate the majority, keep the minority.
-/// Returns the number of eliminated players.
-pub fn resolve_round(
-    env: &Env,
-    arena_id: u64,
-    state: &mut ArenaState,
-    players: &Vec<Address>,
-) -> Result<u32, ArenaError> {
-    if state.status != ArenaStatus::Active {
-        return Err(ArenaError::ArenaNotActive);
-    }
-    if env.ledger().timestamp() < state.round_deadline {
-        return Err(ArenaError::RoundDeadlineNotPassed);
-    }
-
-    let mut heads_count: u32 = 0;
-    let mut tails_count: u32 = 0;
-
-    // Count choices
-    for player in players.iter() {
-        let key = DataKey::PlayerInfo(arena_id, player.clone());
-        if let Some(info) = env.storage().persistent().get::<_, PlayerInfo>(&key) {
-            if info.is_active {
-                match info.current_choice {
-                    Choice::Heads => heads_count += 1,
-                    Choice::Tails => tails_count += 1,
-                    Choice::None => {} // no-choice players handled separately
-                }
+    for p in players.iter() {
+        if ArenaStorage::is_player_active(env, &p) {
+            active.push_back(p.clone());
+            match ArenaStorage::load_player_choice(env, &p) {
+                Some(Choice::Heads) => heads += 1,
+                Some(Choice::Tails) => tails += 1,
+                None => {}
             }
         }
     }
 
-    // Minority wins — eliminate the majority
-    let losing_choice = if heads_count <= tails_count {
-        Choice::Tails
-    } else {
-        Choice::Heads
-    };
-
+    let active_count = active.len();
     let mut eliminated = 0u32;
+    let mut survivors = 0u32;
 
-    for player in players.iter() {
-        let key = DataKey::PlayerInfo(arena_id, player.clone());
-        if let Some(mut info) = env.storage().persistent().get::<_, PlayerInfo>(&key) {
-            if info.is_active {
-                if info.current_choice == losing_choice || info.current_choice == Choice::None {
-                    info.is_active = false;
-                    info.round_eliminated = state.current_round;
-                    eliminated += 1;
+    if heads == tails {
+        if active_count == 2 {
+            // Deterministic tie-break for 2 players: Heads wins
+            for p in active.iter() {
+                match ArenaStorage::load_player_choice(env, &p) {
+                    Some(Choice::Tails) | None => {
+                        ArenaStorage::set_player_active(env, &p, false);
+                        eliminated += 1;
+                        ArenaEvents::player_eliminated(env, &p);
+                    }
+                    Some(Choice::Heads) => {
+                        survivors += 1;
+                    }
                 }
-                info.current_choice = Choice::None; // reset for next round
-                env.storage().persistent().set(&key, &info);
+            }
+        } else {
+            // Tie with > 2 players: no eliminations, re-run round
+            survivors = active_count;
+        }
+    } else {
+        let winning_choice = if heads < tails { Choice::Heads } else { Choice::Tails };
+
+        for p in active.iter() {
+            match ArenaStorage::load_player_choice(env, &p) {
+                Some(choice) if choice == winning_choice => {
+                    survivors += 1;
+                }
+                _ => {
+                    ArenaStorage::set_player_active(env, &p, false);
+                    eliminated += 1;
+                    ArenaEvents::player_eliminated(env, &p);
+                }
             }
         }
     }
 
-    state.survivor_count -= eliminated;
-    state.status = ArenaStatus::Active;
+    ArenaStorage::clear_choices(env);
 
-    // Check for winner
-    if state.survivor_count <= 1 {
-        state.status = ArenaStatus::Finished;
-        // TODO: Find and set the winner address (Issue #XX)
+    let round = ArenaStorage::get_round(env) + 1;
+    ArenaStorage::set_round(env, round);
+
+    if survivors <= 1 {
+        config.state = GameState::Finished;
+        ArenaStorage::save_config(env, &config);
+
+        for p in players.iter() {
+            if ArenaStorage::is_player_active(env, &p) {
+                ArenaStorage::set_winner(env, &p);
+                break;
+            }
+        }
     }
 
-    env.storage()
-        .persistent()
-        .set(&DataKey::ArenaState(arena_id), state);
-
-    Ok(eliminated)
+    Ok(RoundResult { round, eliminated, survivors })
 }
-
-// TODO: Implement commit-reveal scheme instead of plain choice (Issue #XX)
-// TODO: Handle tie scenarios (equal heads/tails) (Issue #XX)
-// TODO: Handle case where no players submit choices (Issue #XX)
-// TODO: Auto-eliminate players who don't submit within deadline (Issue #XX)
