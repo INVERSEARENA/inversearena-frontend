@@ -465,6 +465,9 @@ mod tests {
             commit_deadline: 0,
             round_count: 0,
             oracle_contract: Address::generate(env),
+            factory: Address::generate(env),
+            pool_id: 0,
+            round_duration: 0,
         }
     }
 
