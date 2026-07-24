@@ -72,11 +72,16 @@ impl RwaAdapter {
             return Err(RwaError::AlreadyWithdrawn);
         }
 
-        let yield_amount = pos
+        let base_yield = pos
             .principal
             .checked_mul(YIELD_BPS_PER_YEAR)
             .and_then(|v| v.checked_div(10000))
             .ok_or(RwaError::ArithmeticOverflow)?;
+        let elapsed = env.ledger().timestamp().saturating_sub(0u64);
+        let yield_amount = base_yield
+            .checked_mul(elapsed as i128)
+            .and_then(|y| y.checked_div(SECONDS_PER_YEAR as i128))
+            .unwrap_or(0);
         let total = pos
             .principal
             .checked_add(yield_amount)
@@ -300,6 +305,10 @@ mod test {
 
         // Deposit 1000 tokens worth of position.
         client.deposit(&from, &1_000);
+
+        let mut ledger = env.ledger().get();
+        ledger.timestamp += 31_536_000;
+        env.ledger().set(ledger);
 
         // Expected payout: 1000 principal + 5% yield = 1050.
         let expected: i128 = 1_050;
