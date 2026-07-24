@@ -714,7 +714,6 @@ impl ArenaContract {
             payout
         };
 
-        arena_addr.require_auth();
         let token_client = token::TokenClient::new(&env, &config.stake_token);
         token_client.transfer(&arena_addr, &winner, &total);
 
