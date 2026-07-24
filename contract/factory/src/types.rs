@@ -52,4 +52,5 @@ pub enum FactoryError {
     PoolNotFound = 14,
     ContractPaused = 15,
     UnsupportedToken = 16,
+    EntryFeeTooLow = 17,
 }

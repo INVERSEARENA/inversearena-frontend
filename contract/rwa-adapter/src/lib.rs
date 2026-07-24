@@ -83,12 +83,13 @@ impl RwaAdapter {
             .ok_or(RwaError::ArithmeticOverflow)?;
 
         let mut updated = pos;
+        updated.principal = 0;
         updated.withdrawn = true;
         RwaStorage::save_position(&env, &from, &updated);
 
         // Decrement the global counter so get_total_deposited() reflects net deposits.
         let mut cfg = config;
-        cfg.total_deposited = cfg.total_deposited.saturating_sub(updated.principal);
+        cfg.total_deposited = cfg.total_deposited.saturating_sub(pos.principal);
         RwaStorage::save_config(&env, &cfg);
 
         let token_client = token::TokenClient::new(&env, &cfg.stake_token);
