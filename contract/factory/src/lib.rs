@@ -192,7 +192,7 @@ impl FactoryContract {
             return Err(FactoryError::HostNotWhitelisted);
         }
         if config.entry_fee <= 0 {
-            return Err(FactoryError::InvalidStakeAmount);
+            return Err(FactoryError::EntryFeeTooLow);
         }
         let min_stake = FactoryStorage::load_min_stake(&env)?;
         if config.entry_fee < min_stake {
