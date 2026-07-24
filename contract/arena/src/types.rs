@@ -61,6 +61,9 @@ pub struct ArenaConfig {
     /// basis points. Called once per `resolve_round` to snapshot the rate.
     /// If the oracle is unavailable the round defaults to 0 bps yield.
     pub oracle_contract: Address,
+    pub factory: Address,
+    pub pool_id: u32,
+    pub round_duration: u64,
 }
 
 /// Wrapper for a pending admin transfer proposal.
@@ -245,4 +248,15 @@ pub enum ArenaError {
 
     /// Returned when `submit_commitment` is called after the commit deadline has passed.
     CommitPhaseEnded = 33,
+    /// Returned when `initialize` or `start_round` is called with invalid duration.
+    InvalidDuration = 34,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArenaStatus {
+    Pending,
+    Active,
+    Finished,
+    Cancelled,
 }

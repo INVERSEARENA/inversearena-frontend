@@ -16,6 +16,7 @@ pub struct OracleContract;
 const KEY_ADMIN: soroban_sdk::Symbol = symbol_short!("ADMIN");
 const KEY_RATE: soroban_sdk::Symbol = symbol_short!("RATE");
 const KEY_MAX_RATE: soroban_sdk::Symbol = symbol_short!("MAX_RATE");
+const KEY_PENDING_ADMIN: soroban_sdk::Symbol = symbol_short!("P_ADMIN");
 
 pub const DEFAULT_MAX_YIELD_BPS: u32 = 5_000;
 
@@ -26,7 +27,9 @@ pub enum OracleError {
     NotInitialized = 1,
     AlreadyInitialized = 2,
     RateTooHigh = 3,
+    NoPendingAdmin = 4,
 }
+
 
 #[contractimpl]
 impl OracleContract {
@@ -68,7 +71,26 @@ impl OracleContract {
         env.storage().persistent().get(&KEY_MAX_RATE).unwrap_or(DEFAULT_MAX_YIELD_BPS)
     }
 
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), OracleError> {
+        let admin: Address = env.storage().persistent().get(&KEY_ADMIN).ok_or(OracleError::NotInitialized)?;
+        admin.require_auth();
+        env.storage().persistent().set(&KEY_PENDING_ADMIN, &new_admin);
+        Ok(())
+    }
+
+    pub fn accept_admin(env: Env) -> Result<(), OracleError> {
+        let pending_admin: Address = env.storage().persistent().get(&KEY_PENDING_ADMIN).ok_or(OracleError::NoPendingAdmin)?;
+        pending_admin.require_auth();
+        let old_admin: Address = env.storage().persistent().get(&KEY_ADMIN).ok_or(OracleError::NotInitialized)?;
+        env.storage().persistent().set(&KEY_ADMIN, &pending_admin);
+        env.storage().persistent().remove(&KEY_PENDING_ADMIN);
+        env.events().publish((symbol_short!("adm_chg"),), (old_admin, pending_admin));
+        Ok(())
+    }
+
+
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), OracleError> {
+
         let admin: Address = env.storage().persistent().get(&KEY_ADMIN).ok_or(OracleError::NotInitialized)?;
         admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
@@ -172,4 +194,35 @@ mod tests {
         let client = OracleContractClient::new(env_s, &contract_id);
         assert_eq!(client.try_initialize(&admin, &(DEFAULT_MAX_YIELD_BPS + 1)), Err(Ok(OracleError::RateTooHigh)));
     }
+
+    #[test]
+    fn propose_and_accept_admin_flow() {
+        let (env, client) = setup(500);
+        let new_admin = Address::generate(&env);
+        
+        // Only admin can propose
+        env.set_auths(&[]);
+        assert!(client.try_propose_admin(&new_admin).is_err());
+        
+        env.mock_all_auths();
+        client.propose_admin(&new_admin);
+        
+        // Only new admin can accept
+        env.set_auths(&[]);
+        assert!(client.try_accept_admin().is_err());
+        
+        env.mock_all_auths();
+        client.accept_admin();
+        
+        // Verify setting yield bps works (requires new admin auth)
+        client.set_yield_bps(&600);
+        assert_eq!(client.get_current_yield_bps(), 600);
+    }
+
+    #[test]
+    fn accept_admin_fails_if_none_pending() {
+        let (_env, client) = setup(500);
+        assert_eq!(client.try_accept_admin(), Err(Ok(OracleError::NoPendingAdmin)));
+    }
 }
+

@@ -160,11 +160,11 @@ impl FactoryContract {
     /// Called by the arena contract itself (verified via creator stake record)
     /// when the arena finishes or is cancelled. Decrements the creator's active
     /// pool count, allowing the creator to deploy new arenas.
-    pub fn release_arena(env: Env) -> Result<(), FactoryError> {
+    pub fn release_arena(env: Env, arena: Address) -> Result<(), FactoryError> {
         if FactoryStorage::is_paused(&env) {
             return Err(FactoryError::ContractPaused);
         }
-        let arena = env.current_contract_address();
+        arena.require_auth();
 
         // Verify this arena was deployed by the factory
         let record =
@@ -232,6 +232,11 @@ impl FactoryContract {
                 config.yield_vault.into_val(&env),
                 config.entry_fee.into_val(&env),
                 config.oracle_contract.into_val(&env),
+                env.current_contract_address().into_val(&env),
+                pool_id.into_val(&env),
+                config.min_players.into_val(&env),
+                config.max_players.into_val(&env),
+                config.round_duration.into_val(&env),
             ],
         );
 
@@ -259,7 +264,15 @@ impl FactoryContract {
 
         env.events().publish(
             (symbol_short!("POOL_CRE"),),
-            (pool_id, host, config.entry_fee, arena.clone()),
+            (
+                pool_id,
+                host,
+                config.entry_fee,
+                arena.clone(),
+                config.min_players,
+                config.max_players,
+                config.round_duration,
+            ),
         );
         Ok(arena)
     }
@@ -314,11 +327,8 @@ impl FactoryContract {
         pool_id: u32,
         status: ArenaStatus,
     ) -> Result<(), FactoryError> {
-        let caller = env.current_contract_address();
         let meta = FactoryStorage::load_pool(&env, pool_id).ok_or(FactoryError::PoolNotFound)?;
-        if meta.arena_address != caller {
-            return Err(FactoryError::Unauthorized);
-        }
+        meta.arena_address.require_auth();
         FactoryStorage::update_pool_status(&env, pool_id, &status);
         env.events()
             .publish((symbol_short!("POOL_ST"),), (pool_id, status));
@@ -390,6 +400,9 @@ mod test {
             yield_vault: Address::generate(env),
             entry_fee,
             oracle_contract: Address::generate(env),
+            min_players: 2,
+            max_players: 10,
+            round_duration: 60,
         }
     }
 

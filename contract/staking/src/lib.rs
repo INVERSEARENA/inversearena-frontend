@@ -186,6 +186,33 @@ impl StakingContract {
         Ok(tokens)
     }
 
+    pub fn get_shares(env: Env, staker: Address) -> i128 {
+        Self::get_position(env, staker).shares
+    }
+
+    pub fn distribute_rewards(env: Env, caller: Address, amount: i128) -> Result<(), StakingError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+        Self::require_initialized(&env)?;
+        if amount <= 0 {
+            return Err(StakingError::InvalidAmount);
+        }
+
+        let total_staked = Self::total_staked(env.clone());
+        env.storage()
+            .instance()
+            .set(&TSTAKE_KEY, &(total_staked + amount));
+
+        let token_addr = Self::token(env.clone());
+        let token_client = token::TokenClient::new(&env, &token_addr);
+        token_client.transfer(&caller, &env.current_contract_address(), &amount);
+
+        env.events()
+            .publish((symbol_short!("REWARDS"),), (caller, amount));
+        Ok(())
+    }
+
+
     /// Upgrade the staking contract's code to `new_wasm_hash`.
     ///
     /// Admin-gated. Upgrading in place preserves all state — admin, token,
@@ -442,4 +469,29 @@ mod test {
         assert_eq!(pos.amount, 100);
         assert_eq!(pos.shares, 100);
     }
+
+    #[test]
+    fn get_shares_returns_correct_value() {
+        let (_env, client, _admin, _token, staker) = setup();
+        client.stake(&staker, &150);
+        assert_eq!(client.get_shares(&staker), 150);
+    }
+
+    #[test]
+    fn distribute_rewards_increases_staked_value() {
+        let (env, client, _admin, token, staker) = setup();
+        client.stake(&staker, &100);
+        
+        let reward_provider = mint_staker(&env, &token, 50_000);
+        client.distribute_rewards(&reward_provider, &50);
+        
+        assert_eq!(client.total_staked(), 150);
+        assert_eq!(client.total_shares(), 100);
+        
+        // Unstaking should now yield proportional rewards
+        // 100 shares / 100 total shares * 150 total staked = 150 tokens
+        let returned = client.unstake(&staker, &100);
+        assert_eq!(returned, 150);
+    }
 }
+
