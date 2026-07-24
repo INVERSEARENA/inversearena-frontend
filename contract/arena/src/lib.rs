@@ -19,9 +19,16 @@ use events::ArenaEvents;
 use rwa_client::RwaAdapterClient;
 use storage::ArenaStorage;
 use types::{
-    ArenaConfig, ArenaError, Choice, GameState, LeaderboardEntry, PendingAdmin, PendingUpgrade,
+    ArenaConfig, ArenaError, ArenaStatus, Choice, GameState, LeaderboardEntry, PendingAdmin, PendingUpgrade,
     PlayerState, RoundResult, YieldSnapshot,
 };
+
+#[soroban_sdk::contractclient(name = "FactoryClient")]
+pub trait FactoryInterface {
+    fn release_arena(env: Env, arena: Address);
+    fn reclaim_creator_stake(env: Env, arena: Address);
+    fn update_arena_status(env: Env, pool_id: u32, status: ArenaStatus);
+}
 
 const PAGE_SIZE: u32 = 50;
 pub(crate) const MIN_PLAYERS_TO_START: u32 = 2;
@@ -1542,7 +1549,7 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
 
         let p1 = Address::generate(&env);
         let p2 = Address::generate(&env);
@@ -2035,7 +2042,7 @@ mod test {
 
         let client = ArenaContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
         client.join_arena(&p1);
         client.join_arena(&p2);
 
@@ -2093,7 +2100,7 @@ mod test {
 
         let client = ArenaContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
         client.join_arena(&p1);
         client.join_arena(&p2);
         client.join_arena(&p3);
@@ -2156,7 +2163,7 @@ mod test {
 
         let client = ArenaContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
         client.join_arena(&p1);
         client.join_arena(&p2);
         client.join_arena(&p3);
@@ -2222,7 +2229,7 @@ mod test {
 
         let client = ArenaContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
         client.join_arena(&p1);
         client.join_arena(&p2);
 
@@ -2344,7 +2351,7 @@ mod test {
 
         // Initialize the contract
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token, &vault_id, &100, &oracle_id);
+        client.initialize(&admin, &token, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
 
         // Player joins
         client.join_arena(&p1);
@@ -2583,7 +2590,7 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
 
         // Add two real players and start round so state is Active
         let p1 = Address::generate(&env);
@@ -2617,7 +2624,7 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
 
         let p1 = Address::generate(&env);
         let p2 = Address::generate(&env);
@@ -2660,7 +2667,7 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
 
         let player = Address::generate(&env);
         token_admin_client.mint(&player, &1000);
@@ -2687,7 +2694,7 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
 
         let p1 = Address::generate(&env);
         let p2 = Address::generate(&env);
@@ -2725,7 +2732,7 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
 
         let p1 = Address::generate(&env);
         let p2 = Address::generate(&env);
@@ -2766,7 +2773,7 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
 
         let p1 = Address::generate(&env);
         let p2 = Address::generate(&env);
@@ -2814,7 +2821,7 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
 
         let p1 = Address::generate(&env);
         let p2 = Address::generate(&env);
@@ -2851,7 +2858,7 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
 
         let p1 = Address::generate(&env);
         let p2 = Address::generate(&env);

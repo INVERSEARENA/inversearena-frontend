@@ -63,7 +63,7 @@ fn full_game_lifecycle_commit_reveal() {
     // 5. Deploy and initialize Arena Contract
     let arena_id = env.register(ArenaContract, ());
     let arena_client = ArenaContractClient::new(&env, &arena_id);
-    arena_client.initialize(&admin, &token_id, &rwa_id, &100, &oracle_id);
+    arena_client.initialize(&admin, &token_id, &rwa_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
     all_events.extend(env.events().all().iter());
 
     // Verify Arena is in Open state

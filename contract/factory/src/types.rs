@@ -7,7 +7,11 @@ pub struct PoolConfig {
     pub yield_vault: Address,
     pub entry_fee: i128,
     pub oracle_contract: Address,
+    pub min_players: u32,
+    pub max_players: u32,
+    pub round_duration: u64,
 }
+
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
