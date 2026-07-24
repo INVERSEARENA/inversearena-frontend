@@ -2846,3 +2846,42 @@ fn player_profile_updates_on_elimination_and_win() {
     assert_eq!(alice_profile_3.best_streak, 2); // best streak remains 2
 }
 
+/// All players choose the same side — no one should be eliminated (#1085).
+#[test]
+fn all_same_choice_treats_round_as_inconclusive_no_eliminations() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    initialize_arena(&env, &client, &admin, &token, 5);
+
+    let mut players = Vec::new(&env);
+    for _ in 0..5 {
+        let p = Address::generate(&env);
+        mint_tokens(&env, &token, &p, 10_000_000);
+        players.push_back(p);
+    }
+    for p in &players {
+        client.join(&p);
+    }
+    client.start_game();
+
+    // All 5 players choose Heads — no minority exists.
+    for p in &players {
+        client.submit_choice(&p, &Choice::Heads);
+    }
+
+    let result = client.resolve_round();
+    assert_eq!(result.survivors, 5);
+    assert_eq!(result.eliminated, 0);
+
+    // All 5 players choose Tails — also no eliminations.
+    for p in &players {
+        client.submit_choice(&p, &Choice::Tails);
+    }
+
+    let result2 = client.resolve_round();
+    assert_eq!(result2.survivors, 5);
+    assert_eq!(result2.eliminated, 0);
+}
+

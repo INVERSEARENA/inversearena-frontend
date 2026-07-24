@@ -32,7 +32,7 @@ pub trait FactoryInterface {
 
 const PAGE_SIZE: u32 = 50;
 pub(crate) const MIN_PLAYERS_TO_START: u32 = 2;
-const DEFAULT_MAX_PLAYERS: u32 = u32::MAX;
+const MAX_PLAYERS_ALLOWED: u32 = 100;
 const CONTRACT_VERSION: u32 = 1;
 const UPGRADE_TIMELOCK_SECONDS: u64 = 86_400; // 1 day
 
@@ -89,6 +89,11 @@ impl ArenaContract {
         yield_vault: Address,
         entry_fee: i128,
         oracle_contract: Address,
+        factory: Address,
+        pool_id: u32,
+        min_players: u32,
+        max_players: u32,
+        round_duration: u64,
     ) -> Result<(), ArenaError> {
         admin.require_auth();
         if ArenaStorage::has_config(&env) {
@@ -97,6 +102,12 @@ impl ArenaContract {
 
         if entry_fee <= 0 {
             return Err(ArenaError::InvalidEntryFee);
+        }
+        if min_players < MIN_PLAYERS_TO_START || min_players > max_players {
+            return Err(ArenaError::InvalidPlayerLimits);
+        }
+        if max_players > MAX_PLAYERS_ALLOWED {
+            return Err(ArenaError::InvalidPlayerLimits);
         }
 
         // Validate the provided yield_vault implements the expected RWA adapter interface
@@ -120,10 +131,13 @@ impl ArenaContract {
             commit_deadline: 0,
             round_count: 0,
             oracle_contract,
+            factory,
+            pool_id,
+            round_duration,
         };
         ArenaStorage::save_config(&env, &config);
         ArenaStorage::increment_creator_active_pools(&env, &admin);
-        ArenaStorage::save_player_limits(&env, MIN_PLAYERS_TO_START, DEFAULT_MAX_PLAYERS);
+        ArenaStorage::save_player_limits(&env, min_players, max_players);
         ArenaStorage::save_last_vault_balance(&env, 0);
         ArenaEvents::initialized(&env, &admin);
         Ok(())
@@ -952,6 +966,9 @@ impl ArenaContract {
 
     fn validate_player_limits(min_players: u32, max_players: u32) -> Result<(), ArenaError> {
         if min_players < MIN_PLAYERS_TO_START || min_players > max_players {
+            return Err(ArenaError::InvalidPlayerLimits);
+        }
+        if max_players > MAX_PLAYERS_ALLOWED {
             return Err(ArenaError::InvalidPlayerLimits);
         }
         Ok(())

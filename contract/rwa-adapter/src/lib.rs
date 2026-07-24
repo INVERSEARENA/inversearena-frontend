@@ -51,11 +51,11 @@ impl RwaAdapter {
 
         env.events().publish(
             (
-                soroban_sdk::symbol_short!("deposited"),
+                soroban_sdk::symbol_short!("dep"),
                 from.clone(),
                 amount,
             ),
-            (),
+            cfg.total_deposited,
         );
         Ok(())
     }
@@ -99,12 +99,12 @@ impl RwaAdapter {
 
         env.events().publish(
             (
-                soroban_sdk::symbol_short!("withdrawn"),
+                soroban_sdk::symbol_short!("wdraw"),
                 from.clone(),
                 payable,
                 payable - pos.principal,
             ),
-            (),
+            cfg.total_deposited,
         );
 
         Ok(payable)
@@ -142,7 +142,9 @@ impl RwaAdapter {
     pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) -> Result<(), RwaError> {
         let config = RwaStorage::load_config(&env)?;
         config.admin.require_auth();
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        env.deployer().update_current_contract_wasm(new_wasm_hash.clone());
+        env.events()
+            .publish((soroban_sdk::symbol_short!("upgrade"),), new_wasm_hash);
         Ok(())
     }
 }

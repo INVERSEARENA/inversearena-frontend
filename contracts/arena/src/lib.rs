@@ -14,7 +14,7 @@ use storage::ArenaStorage;
 use types::{ArenaConfig, GameState, Choice, GlobalStats, RoundResult, RwaYieldRecord, PlayerProfile};
 use events::ArenaEvents;
 use errors::ArenaError;
-use validation::{validate_deadline, validate_entry_fee};
+use validation::{validate_deadline, validate_entry_fee, validate_max_players};
 
 const PLATFORM_FEE_BP: i128 = 1000; // 10% = 1000 basis points
 
@@ -37,6 +37,7 @@ impl ArenaContract {
         validate_entry_fee(entry_fee)?;
         let now = env.ledger().timestamp();
         validate_deadline(join_deadline, now)?;
+        validate_max_players(max_players)?;
 
         // Check rate limiting cooldown (admin bypasses cooldown)
         if let Ok(existing_config) = ArenaStorage::load_config(&env) {
@@ -397,7 +398,12 @@ impl ArenaContract {
 
         let active_count = active_players.len();
 
-        if heads_count == tails_count {
+        if heads_count == 0 || tails_count == 0 {
+            // All active players chose the same side — no minority to eliminate.
+            // Treat as an inconclusive round with no eliminations so the prize
+            // pool is not locked with zero winners (#1085).
+            survivors = active_count;
+        } else if heads_count == tails_count {
             if active_count == 2 {
                 // Break tie for exactly 2 players: Heads survives, Tails eliminated
                 for player in active_players.iter() {
