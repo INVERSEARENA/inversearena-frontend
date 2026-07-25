@@ -24,6 +24,7 @@ export function createApiRouter(
   usersController: UsersController,
   leaderboardController: LeaderboardController,
   transactionsController: TransactionsController,
+  adminAuthMiddleware: RequestHandler,
   requireAuth: RequestHandler,
   authService: AuthService,
 ): Router {
@@ -33,7 +34,7 @@ export function createApiRouter(
   router.use("/auth", createAuthRouter(authController, requireAuth));
   router.use("/users", createUsersRouter(usersController, requireAuth));
   router.use("/payouts", createPayoutsRouter(payoutsController, authService));
-  router.use("/worker", createWorkerRouter(workerController));
+  router.use("/worker", createWorkerRouter(workerController, adminAuthMiddleware));
   router.use(
     "/transactions",
     requireAuth,

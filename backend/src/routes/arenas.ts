@@ -2,13 +2,11 @@ import { randomUUID } from "crypto";
 import { Router, type RequestHandler } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../middleware/validate";
-import { cacheMiddleware } from "../middleware/cache";
 import { cacheKeys, cacheTTL } from "../cache/cacheService";
 import { prisma } from "../db/prisma";
 import type { CreateArenaInput } from "../types/arena";
 import { ArenaService } from "../services/arenaService";
 import { ArenaStatsService } from "../services/arenaStatsService";
-import { ArenaController } from "../controllers/arena.controller";
 import { RoundRepository } from "../repositories/roundRepository";
 import { apiError } from "../utils/apiError";
 import type { ArenaParticipant } from "../types/arena";
@@ -122,7 +120,6 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   const arenaService = new ArenaService(prisma);
   const arenaStatsService = new ArenaStatsService(prisma);
   const roundRepository = new RoundRepository(prisma);
-  const arenaController = new ArenaController(prisma);
 
   /**
    * POST /api/arenas
@@ -411,20 +408,6 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
       req.on("close", cleanup);
       void poll();
     }),
-  );
-
-  /**
-   * GET /api/arenas/:id/participants
-   * Returns paginated list of participants in a specific arena.
-   * Cached for 5s — participant status changes with round eliminations.
-   */
-  router.get(
-    "/:id/participants",
-    cacheMiddleware(
-      (req) => `arena:participants:${req.params.id}:${req.query.limit || 25}:${req.query.cursor || ""}`,
-      5
-    ),
-    asyncHandler(arenaController.getParticipants)
   );
 
   return router;
