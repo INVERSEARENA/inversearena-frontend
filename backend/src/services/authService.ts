@@ -166,6 +166,8 @@ export class AuthService {
     if (storedToken.used) {
       // Token reuse detected — this is a theft attempt.
       // Revoke all tokens in this family and wipe the wallet's active JTIs.
+      // Also revoke all JTIs minted from this family to invalidate access tokens
+      // that were issued before the reuse was detected.
       await RefreshTokenModel.updateMany(
         { familyId: storedToken.familyId },
         { $set: { revoked: true } }

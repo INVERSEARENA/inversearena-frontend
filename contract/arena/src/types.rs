@@ -250,6 +250,11 @@ pub enum ArenaError {
     CommitPhaseEnded = 33,
     /// Returned when `initialize` or `start_round` is called with invalid duration.
     InvalidDuration = 34,
+
+    /// Returned when vault deposit fails during `join_arena` or other token staking operations.
+    /// The entry fee token transfer succeeded but the vault deposit did not. The contract
+    /// rolls back the token transfer so no funds are left permanently locked.
+    VaultDepositFailed = 35,
 }
 
 #[contracttype]

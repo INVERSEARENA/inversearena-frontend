@@ -15,6 +15,7 @@ import type { AuthController } from "../controllers/auth.controller";
 import type { UsersController } from "../controllers/users.controller";
 import type { LeaderboardController } from "../controllers/leaderboard.controller";
 import type { TransactionsController } from "../controllers/transactions.controller";
+import type { AuthService } from "../services/authService";
 
 export function createApiRouter(
   payoutsController: PayoutsController,
@@ -24,13 +25,14 @@ export function createApiRouter(
   leaderboardController: LeaderboardController,
   transactionsController: TransactionsController,
   requireAuth: RequestHandler,
+  authService: AuthService,
 ): Router {
   const router = Router();
 
   router.use(createDocsRouter());
   router.use("/auth", createAuthRouter(authController, requireAuth));
   router.use("/users", createUsersRouter(usersController, requireAuth));
-  router.use("/payouts", createPayoutsRouter(payoutsController));
+  router.use("/payouts", createPayoutsRouter(payoutsController, authService));
   router.use("/worker", createWorkerRouter(workerController));
   router.use(
     "/transactions",

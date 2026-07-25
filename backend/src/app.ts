@@ -147,6 +147,7 @@ export function createApp(deps: AppDependencies): express.Application {
       leaderboardController,
       transactionsController,
       userAuthMiddleware,
+      deps.authService,
     ),
   );
   app.use(
