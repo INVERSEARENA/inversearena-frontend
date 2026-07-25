@@ -534,9 +534,12 @@ impl ArenaContract {
         config.admin.require_auth();
         Self::require_not_paused(&config)?;
 
-        if config.state != GameState::Open {
-            return Err(ArenaError::InvalidGameState);
-        }
+        // Use the state machine to enforce Open → Active; rejects Finished, Settled, Cancelled (#1073)
+        state_machine::ensure_transition(
+            &config.state,
+            &GameState::Active,
+            ArenaError::InvalidGameState,
+        )?;
 
         let active_count = ArenaStorage::load_all_players(&env)
             .iter()
@@ -1005,6 +1008,8 @@ impl ArenaContract {
             if should_eliminate {
                 state.active = false;
                 eliminated += 1;
+                // Remove eliminated player's choice so it cannot appear in subsequent rounds (#1075)
+                ArenaStorage::remove_player_choice(env, &player, round);
                 ArenaEvents::player_eliminated(env, &player, round);
             } else {
                 state.rounds_survived = state.rounds_survived.saturating_add(1);
