@@ -287,11 +287,16 @@ impl ArenaContract {
         let arena_addr = env.current_contract_address();
         token_client.transfer(&player, &arena_addr, &config.entry_fee);
 
-        // Deposit entry fee into vault. The yield baseline is captured once per
-        // round in `start_round`, not here, so it reflects the actual vault
-        // balance at round commencement rather than a rolling deposit total.
+        // Deposit entry fee into vault and return an error if it fails.
+        // The token transfer above will be rolled back together with any storage mutations
+        // when we return an error, so no funds are permanently locked.
         let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
-        let _ = rwa_client.try_deposit(&arena_addr, &config.entry_fee);
+        if rwa_client.try_deposit(&arena_addr, &config.entry_fee).is_err() {
+            return Err(ArenaError::VaultDepositFailed);
+        }
+
+        let baseline = ArenaStorage::load_last_vault_balance(&env).saturating_add(config.entry_fee);
+        ArenaStorage::save_last_vault_balance(&env, baseline);
 
         ArenaStorage::add_player(&env, &player);
         let count = ArenaStorage::load_all_players(&env).len();
