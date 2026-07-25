@@ -273,12 +273,11 @@ impl ArenaContract {
         let arena_addr = env.current_contract_address();
         token_client.transfer(&player, &arena_addr, &config.entry_fee);
 
-        // Attempt to deposit entry fee into vault; only update baseline on success
+        // Deposit entry fee into vault. The yield baseline is captured once per
+        // round in `start_round`, not here, so it reflects the actual vault
+        // balance at round commencement rather than a rolling deposit total.
         let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
-        if rwa_client.try_deposit(&arena_addr, &config.entry_fee).is_ok() {
-            let baseline = ArenaStorage::load_last_vault_balance(&env).saturating_add(config.entry_fee);
-            ArenaStorage::save_last_vault_balance(&env, baseline);
-        }
+        let _ = rwa_client.try_deposit(&arena_addr, &config.entry_fee);
 
         ArenaStorage::add_player(&env, &player);
         let count = ArenaStorage::load_all_players(&env).len();
@@ -539,6 +538,18 @@ impl ArenaContract {
         // cannot be reused in the new round.
         let round = config.round_count.saturating_add(1);
         ArenaStorage::clear_round_data(&env, round);
+
+        // Capture the actual vault balance at round commencement as the yield
+        // baseline. This must happen here (not in `join_arena`) so it reflects
+        // the real balance — including any deposits made while the arena sat
+        // in the `Open` state — rather than a rolling sum of entry fees.
+        let arena_addr = env.current_contract_address();
+        let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
+        let vault_balance = rwa_client
+            .try_balance_of(&arena_addr)
+            .unwrap_or(Ok(0))
+            .unwrap_or(0);
+        ArenaStorage::save_last_vault_balance(&env, vault_balance);
 
         config.commit_deadline = env.ledger().timestamp().saturating_add(duration_seconds);
         config.state = GameState::Active;
