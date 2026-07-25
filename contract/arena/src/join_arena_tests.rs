@@ -64,6 +64,9 @@ fn setup_arena(state: GameState) -> (Env, ArenaContractClient<'static>, Address)
             commit_deadline: u64::MAX,
             round_count: 0,
             oracle_contract: oracle,
+            factory: Address::generate(&env),
+            pool_id: 0,
+            round_duration: 0,
         };
         ArenaStorage::save_config(&env, &config);
         ArenaStorage::save_last_vault_balance(&env, 0);
@@ -307,6 +310,9 @@ fn setup_arena_failing_vault() -> (Env, ArenaContractClient<'static>, Address) {
             commit_deadline: u64::MAX,
             round_count: 0,
             oracle_contract: oracle,
+            factory: Address::generate(&env),
+            pool_id: 0,
+            round_duration: 0,
         };
         ArenaStorage::save_config(&env, &config);
         ArenaStorage::save_last_vault_balance(&env, 0);
@@ -317,8 +323,10 @@ fn setup_arena_failing_vault() -> (Env, ArenaContractClient<'static>, Address) {
     (env, client, token_id)
 }
 
-/// (a) join still succeeds when the vault deposit fails, (b) the tracked vault
-/// baseline is advanced by the entry fee, and (c) a join event is emitted.
+/// (a) join still succeeds when the vault deposit fails, (b) the yield
+/// baseline is left untouched by `join_arena` (it is only captured in
+/// `start_round`, from the vault's real balance — see #1072), and (c) a join
+/// event is emitted.
 #[test]
 fn join_succeeds_when_vault_deposit_fails() {
     let (env, client, token_id) = setup_arena_failing_vault();
@@ -353,13 +361,13 @@ fn join_succeeds_when_vault_deposit_fails() {
     assert_eq!(token.balance(&player), 0);
     assert_eq!(token.balance(&client.address), 100);
 
-    // (b) The tracked vault baseline still advances by the entry fee — this is
-    // the baseline used for later yield accrual.
+    // (b) join_arena no longer touches the yield baseline — it is captured
+    // fresh from the real vault balance when `start_round` is called.
     let tracked = env.as_contract(&client.address, || {
         ArenaStorage::load_last_vault_balance(&env)
     });
     assert_eq!(
-        tracked, 100,
-        "tracked vault baseline must advance by the entry fee"
+        tracked, 0,
+        "join_arena must not advance the yield baseline; start_round captures it"
     );
 }

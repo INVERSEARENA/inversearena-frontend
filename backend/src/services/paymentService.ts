@@ -410,11 +410,12 @@ export class PaymentService {
     const contract = new Contract(this.config.payoutContractId);
     const amountStroops = toStroops(request.amount);
 
+    // The payout token is fixed by the contract at initialize time — there is
+    // no per-call asset argument, so `request.asset` is not forwarded here.
     const operation = contract.call(
       this.config.payoutMethodName,
       new Address(request.destinationAccount).toScVal(),
       nativeToScVal(BigInt(amountStroops), { type: "i128" }),
-      nativeToScVal(request.asset),
       nativeToScVal(BigInt(nonce), { type: "u64" }),
       nativeToScVal(request.payoutId)
     );
