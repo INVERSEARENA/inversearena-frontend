@@ -32,7 +32,7 @@ pub trait FactoryInterface {
 
 const PAGE_SIZE: u32 = 50;
 pub(crate) const MIN_PLAYERS_TO_START: u32 = 2;
-const DEFAULT_MAX_PLAYERS: u32 = u32::MAX;
+const MAX_PLAYERS_ALLOWED: u32 = 100;
 const CONTRACT_VERSION: u32 = 1;
 const UPGRADE_TIMELOCK_SECONDS: u64 = 86_400; // 1 day
 
@@ -89,6 +89,11 @@ impl ArenaContract {
         yield_vault: Address,
         entry_fee: i128,
         oracle_contract: Address,
+        factory: Address,
+        pool_id: u32,
+        min_players: u32,
+        max_players: u32,
+        round_duration: u64,
     ) -> Result<(), ArenaError> {
         admin.require_auth();
         if ArenaStorage::has_config(&env) {
@@ -97,6 +102,12 @@ impl ArenaContract {
 
         if entry_fee <= 0 {
             return Err(ArenaError::InvalidEntryFee);
+        }
+        if min_players < MIN_PLAYERS_TO_START || min_players > max_players {
+            return Err(ArenaError::InvalidPlayerLimits);
+        }
+        if max_players > MAX_PLAYERS_ALLOWED {
+            return Err(ArenaError::InvalidPlayerLimits);
         }
 
         // Validate the provided yield_vault implements the expected RWA adapter interface
@@ -120,10 +131,13 @@ impl ArenaContract {
             commit_deadline: 0,
             round_count: 0,
             oracle_contract,
+            factory,
+            pool_id,
+            round_duration,
         };
         ArenaStorage::save_config(&env, &config);
         ArenaStorage::increment_creator_active_pools(&env, &admin);
-        ArenaStorage::save_player_limits(&env, MIN_PLAYERS_TO_START, DEFAULT_MAX_PLAYERS);
+        ArenaStorage::save_player_limits(&env, min_players, max_players);
         ArenaStorage::save_last_vault_balance(&env, 0);
         ArenaEvents::initialized(&env, &admin);
         Ok(())
@@ -954,6 +968,9 @@ impl ArenaContract {
         if min_players < MIN_PLAYERS_TO_START || min_players > max_players {
             return Err(ArenaError::InvalidPlayerLimits);
         }
+        if max_players > MAX_PLAYERS_ALLOWED {
+            return Err(ArenaError::InvalidPlayerLimits);
+        }
         Ok(())
     }
 
@@ -1112,6 +1129,9 @@ mod test {
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: oracle_id,
+                factory: Address::generate(&env),
+                pool_id: 0,
+                round_duration: 0,
             };
             ArenaStorage::save_config(&env, &config);
             for _ in 0..n {
@@ -1192,6 +1212,9 @@ mod test {
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
+                factory: Address::generate(&env),
+                pool_id: 0,
+                round_duration: 0,
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
@@ -1230,6 +1253,9 @@ mod test {
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
+                factory: Address::generate(&env),
+                pool_id: 0,
+                round_duration: 0,
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::save_commitment(&env, &player, 1, &commitment);
@@ -1263,6 +1289,9 @@ mod test {
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
+                factory: Address::generate(&env),
+                pool_id: 0,
+                round_duration: 0,
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
@@ -1304,6 +1333,9 @@ mod test {
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
+                factory: Address::generate(&env),
+                pool_id: 0,
+                round_duration: 0,
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
@@ -1337,6 +1369,9 @@ mod test {
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
+                factory: Address::generate(&env),
+                pool_id: 0,
+                round_duration: 0,
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
@@ -1371,6 +1406,9 @@ mod test {
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
+                factory: Address::generate(&env),
+                pool_id: 0,
+                round_duration: 0,
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
@@ -1404,6 +1442,9 @@ mod test {
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
+                factory: Address::generate(&env),
+                pool_id: 0,
+                round_duration: 0,
             };
             ArenaStorage::save_config(&env, &config);
         });
@@ -1431,6 +1472,9 @@ mod test {
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: oracle_id,
+                factory: Address::generate(&env),
+                pool_id: 0,
+                round_duration: 0,
             };
             ArenaStorage::save_config(&env, &config);
             // Register 2 active players so active_count check in start_round passes.
@@ -1488,6 +1532,9 @@ mod test {
                     yield_vault: Address::generate(&env),
                     round_count: 0,
                     oracle_contract: Address::generate(&env),
+                    factory: Address::generate(&env),
+                    pool_id: 0,
+                    round_duration: 0,
                 },
             );
             ArenaStorage::save_player(
@@ -1609,6 +1656,9 @@ mod test {
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
+                factory: Address::generate(&env),
+                pool_id: 0,
+                round_duration: 0,
             };
             ArenaStorage::save_config(&env, &config);
         });
@@ -1685,6 +1735,9 @@ mod test {
                     yield_vault: vault_id.clone(),
                     round_count: 0,
                     oracle_contract: oracle_id,
+                    factory: Address::generate(&env),
+                    pool_id: 0,
+                    round_duration: 0,
                 },
             );
             ArenaStorage::add_player(&env, &p1);
@@ -1756,6 +1809,9 @@ mod test {
                     yield_vault: Address::generate(&env),
                     round_count: 0,
                     oracle_contract: Address::generate(&env),
+                    factory: Address::generate(&env),
+                    pool_id: 0,
+                    round_duration: 0,
                 },
             );
             ArenaStorage::save_player(
@@ -1805,6 +1861,9 @@ mod test {
                     yield_vault: Address::generate(&env),
                     round_count: 0,
                     oracle_contract: Address::generate(&env),
+                    factory: Address::generate(&env),
+                    pool_id: 0,
+                    round_duration: 0,
                 },
             );
             ArenaStorage::save_player(
@@ -1847,6 +1906,9 @@ mod test {
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
+                factory: Address::generate(&env),
+                pool_id: 0,
+                round_duration: 0,
             };
             ArenaStorage::save_config(&env, &config);
         });
@@ -1881,6 +1943,9 @@ mod test {
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
+                factory: Address::generate(&env),
+                pool_id: 0,
+                round_duration: 0,
             };
             ArenaStorage::save_config(&env, &config);
         });
@@ -1915,6 +1980,9 @@ mod test {
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
+                factory: Address::generate(&env),
+                pool_id: 0,
+                round_duration: 0,
             };
             ArenaStorage::save_config(&env, &config);
         });
@@ -1948,6 +2016,9 @@ mod test {
                     yield_vault: Address::generate(&env),
                     round_count: 0,
                     oracle_contract: oracle_id,
+                    factory: Address::generate(&env),
+                    pool_id: 0,
+                    round_duration: 0,
                 },
             );
         });
@@ -1977,6 +2048,9 @@ mod test {
                     yield_vault: Address::generate(&env),
                     round_count: 0,
                     oracle_contract: oracle_id,
+                    factory: Address::generate(&env),
+                    pool_id: 0,
+                    round_duration: 0,
                 },
             );
         });
@@ -2007,6 +2081,9 @@ mod test {
                     yield_vault: Address::generate(&env),
                     round_count: 0,
                     oracle_contract: oracle_id,
+                    factory: Address::generate(&env),
+                    pool_id: 0,
+                    round_duration: 0,
                 },
             );
             let p1 = Address::generate(&env);
@@ -2307,6 +2384,9 @@ mod test {
                     yield_vault: vault_id,
                     round_count: 0,
                     oracle_contract: oracle_id,
+                    factory: Address::generate(&env),
+                    pool_id: 0,
+                    round_duration: 0,
                 },
             );
             ArenaStorage::save_player_limits(&env, 2, 2);
@@ -2396,6 +2476,9 @@ mod test {
                 commit_deadline: 0,
                 round_count: 0,
                 oracle_contract: oracle_id,
+                factory: Address::generate(&env),
+                pool_id: 0,
+                round_duration: 0,
             };
             ArenaStorage::save_config(&env, &config);
 
@@ -2477,6 +2560,9 @@ mod test {
                 commit_deadline: 0,
                 round_count: 0,
                 oracle_contract: oracle_id,
+                factory: Address::generate(&env),
+                pool_id: 0,
+                round_duration: 0,
             };
             ArenaStorage::save_config(&env, &config);
 
@@ -2530,7 +2616,7 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        let result = client.try_initialize(&admin, &token_id, &vault_id, &0, &oracle_id);
+        let result = client.try_initialize(&admin, &token_id, &vault_id, &0, &oracle_id, &Address::generate(&env), &1u32, &2u32, &10u32, &60u64);
         assert_eq!(result, Err(Ok(ArenaError::InvalidEntryFee)));
     }
 
@@ -2548,7 +2634,7 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        let result = client.try_initialize(&admin, &token_id, &vault_id, &-1, &oracle_id);
+        let result = client.try_initialize(&admin, &token_id, &vault_id, &-1, &oracle_id, &Address::generate(&env), &1u32, &2u32, &10u32, &60u64);
         assert_eq!(result, Err(Ok(ArenaError::InvalidEntryFee)));
     }
 
@@ -2568,7 +2654,7 @@ mod test {
         let client = ArenaContractClient::new(&env, &contract_id);
         assert!(
             client
-                .try_initialize(&admin, &token_id, &vault_id, &1, &oracle_id)
+                .try_initialize(&admin, &token_id, &vault_id, &1, &oracle_id, &Address::generate(&env), &1u32, &2u32, &10u32, &60u64)
                 .is_ok()
         );
     }
@@ -2927,6 +3013,9 @@ mod test {
                     commit_deadline: 0,
                     round_count: 0,
                     oracle_contract: oracle_id,
+                    factory: Address::generate(&env),
+                    pool_id: 0,
+                    round_duration: 0,
                 },
             );
             ArenaStorage::save_leaderboard_limit(&env, LIMIT);
