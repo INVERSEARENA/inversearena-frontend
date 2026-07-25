@@ -129,7 +129,7 @@ export function createRateLimitMiddleware(
     const ip = resolveIp(req);
     const walletAddress =
       typeof req.body?.walletAddress === "string"
-        ? req.body.walletAddress.toLowerCase()
+        ? req.body.walletAddress
         : null;
 
     const keys = buildRateLimitKeys(ip, walletAddress, config.dualScope === true);
