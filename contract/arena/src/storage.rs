@@ -189,6 +189,13 @@ impl ArenaStorage {
             .get(&DataKey::ChoiceForRound(player.clone(), round))
     }
 
+    /// Remove a single player's choice for a round (#1075: clear stale choice on elimination).
+    pub fn remove_player_choice(env: &Env, player: &Address, round: u32) {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ChoiceForRound(player.clone(), round));
+    }
+
     pub fn save_round_start(env: &Env, timestamp: u64) {
         Self::extend_persistent_ttl(env, &DataKey::RoundStart);
         env.storage()
