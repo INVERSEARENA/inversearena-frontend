@@ -1766,8 +1766,19 @@ mod test {
             );
             ArenaStorage::add_player(&env, &p1);
             ArenaStorage::add_player(&env, &p2);
-            ArenaStorage::save_last_vault_balance(&env, 100);
         });
+
+        // Seed the vault's real balance. `start_round` captures this as the
+        // round's baseline (#1072), so yield is whatever the balance grows by
+        // *during* the round.
+        let set_vault_balance = |balance: i128| {
+            env.as_contract(&vault_id, || {
+                env.storage()
+                    .persistent()
+                    .set(&soroban_sdk::symbol_short!("BAL"), &balance);
+            });
+        };
+        set_vault_balance(100);
 
         let client = ArenaContractClient::new(&env, &contract_id);
         for (idx, balance) in [110i128, 125, 150].iter().enumerate() {
@@ -1779,11 +1790,6 @@ mod test {
                 ArenaStorage::save_player(&env, &p1, &active);
                 ArenaStorage::save_player(&env, &p2, &active);
             });
-            env.as_contract(&vault_id, || {
-                env.storage()
-                    .persistent()
-                    .set(&soroban_sdk::symbol_short!("BAL"), balance);
-            });
             env.ledger()
                 .with_mut(|li| li.timestamp = 1_000 + idx as u64);
             // Reset to Open before each round because resolve_round transitions
@@ -1793,7 +1799,11 @@ mod test {
                 cfg.state = GameState::Open;
                 ArenaStorage::save_config(&env, &cfg);
             });
+            // Baseline is captured here, from the balance the previous round
+            // left behind: 100, then 110, then 125.
             client.start_round(&0);
+            // The vault earns during the round: +10, +15, +25.
+            set_vault_balance(*balance);
             client.resolve_round();
         }
 
@@ -2475,6 +2485,156 @@ mod test {
         client.claim_refund(&p1);
         assert_eq!(token_client.balance(&p1), 1000);
         assert_eq!(token_client.balance(&contract_id), 0);
+    }
+
+    /// Initialize an arena with two joined players and hand back the pieces the
+    /// pause / force-cancel / refund tests need. Each player is minted 1000 and
+    /// pays the 100 entry fee on joining, so the contract holds 200.
+    fn setup_cancellable_arena() -> (
+        Env,
+        ArenaContractClient<'static>,
+        Address,
+        token::TokenClient<'static>,
+        Address,
+        Address,
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let oracle_id = env.register(MockOracle, ());
+        let vault_id = env.register(MockVault, ());
+
+        let admin = Address::generate(&env);
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+        let token_client = token::TokenClient::new(&env, &token);
+        let token_admin = StellarAssetClient::new(&env, &token);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        token_admin.mint(&p1, &1000);
+        token_admin.mint(&p2, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        (env, client, contract_id, token_client, p1, p2)
+    }
+
+    /// The operational emergency path: admin pauses, force-cancels the stuck
+    /// arena while it is still paused, then unpauses so players can be made
+    /// whole. `force_cancel_arena` is deliberately reachable while paused;
+    /// `claim_refund` is not, so refunds land only after the admin unpauses.
+    #[test]
+    fn paused_force_cancel_then_refund_after_unpause() {
+        let (env, client, contract_id, token_client, p1, p2) = setup_cancellable_arena();
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        client.pause(&symbol_short!("emerg"));
+
+        // Force-cancel must still work while paused — otherwise a paused arena
+        // could never be wound down without first re-opening it to gameplay.
+        client.force_cancel_arena();
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).unwrap();
+            assert!(config.paused);
+            assert_eq!(config.state, GameState::Cancelled);
+        });
+
+        // Refunds stay blocked while the pause is in force: the pause is the
+        // admin's stop-the-world switch and gates token movement too.
+        assert_eq!(
+            paused_error(client.try_claim_refund(&p1)),
+            ArenaError::ContractPaused
+        );
+        assert_eq!(token_client.balance(&p1), 900);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // After unpausing, every player recovers their entry fee exactly once
+        // and the contract is drained.
+        client.unpause();
+        client.claim_refund(&p1);
+        client.claim_refund(&p2);
+        assert_eq!(token_client.balance(&p1), 1000);
+        assert_eq!(token_client.balance(&p2), 1000);
+        assert_eq!(token_client.balance(&contract_id), 0);
+    }
+
+    /// `claim_refund` checks the pause flag before any of its other guards, so
+    /// a pause masks the cancellation-state and already-claimed errors and no
+    /// tokens move until the admin unpauses.
+    #[test]
+    fn claim_refund_pause_check_precedes_its_other_guards() {
+        let (_env, client, contract_id, token_client, p1, p2) = setup_cancellable_arena();
+
+        // Paused and not cancelled → ContractPaused, not ArenaNotCancelled.
+        client.pause(&symbol_short!("maint"));
+        assert_eq!(
+            paused_error(client.try_claim_refund(&p1)),
+            ArenaError::ContractPaused
+        );
+
+        // Unpaused and not cancelled → the state guard is what rejects it.
+        client.unpause();
+        assert_eq!(
+            client.try_claim_refund(&p1),
+            Err(Ok(ArenaError::ArenaNotCancelled))
+        );
+
+        client.force_cancel_arena();
+        client.claim_refund(&p1);
+        assert_eq!(token_client.balance(&p1), 1000);
+        assert_eq!(token_client.balance(&contract_id), 100);
+
+        // Re-pausing after the cancellation halts the outstanding refund and
+        // also masks the already-claimed guard for the player who was paid.
+        client.pause(&symbol_short!("emerg"));
+        assert_eq!(
+            paused_error(client.try_claim_refund(&p2)),
+            ArenaError::ContractPaused
+        );
+        assert_eq!(
+            paused_error(client.try_claim_refund(&p1)),
+            ArenaError::ContractPaused
+        );
+        assert_eq!(token_client.balance(&p2), 900);
+        assert_eq!(token_client.balance(&contract_id), 100);
+
+        // Unpausing restores the underlying guards untouched: p1 is still
+        // marked as refunded, p2 is still owed.
+        client.unpause();
+        assert_eq!(
+            client.try_claim_refund(&p1),
+            Err(Ok(ArenaError::RefundAlreadyClaimed))
+        );
+        client.claim_refund(&p2);
+        assert_eq!(token_client.balance(&p2), 1000);
+        assert_eq!(token_client.balance(&contract_id), 0);
+    }
+
+    /// A pause must not turn non-players into refund recipients once the
+    /// contract is unpaused again.
+    #[test]
+    fn claim_refund_rejects_non_players_after_paused_force_cancel() {
+        let (env, client, _contract_id, token_client, _p1, _p2) = setup_cancellable_arena();
+        let stranger = Address::generate(&env);
+
+        client.pause(&symbol_short!("emerg"));
+        client.force_cancel_arena();
+        assert_eq!(
+            paused_error(client.try_claim_refund(&stranger)),
+            ArenaError::ContractPaused
+        );
+
+        client.unpause();
+        assert_eq!(
+            client.try_claim_refund(&stranger),
+            Err(Ok(ArenaError::NotAPlayer))
+        );
+        assert_eq!(token_client.balance(&stranger), 0);
     }
 
     #[test]

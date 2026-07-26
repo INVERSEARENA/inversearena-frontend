@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { Router, type RequestHandler } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../middleware/validate";
+import { cacheMiddleware } from "../middleware/cache";
 import { cacheKeys, cacheTTL } from "../cache/cacheService";
 import { prisma } from "../db/prisma";
 import type { CreateArenaInput } from "../types/arena";

@@ -17,9 +17,15 @@ pub struct Tally {
 }
 
 impl Tally {
+    /// Total votes cast this round.
+    ///
+    /// Uses `saturating_add` to match the defensive arithmetic used elsewhere
+    /// in the contract: an arena can never hold enough players to overflow a
+    /// `u32`, but a total that silently wraps would be far worse than one that
+    /// clamps at `u32::MAX`.
     #[allow(dead_code)]
     pub fn total(&self) -> u32 {
-        self.heads + self.tails
+        self.heads.saturating_add(self.tails)
     }
 }
 
@@ -121,6 +127,31 @@ mod tests {
     fn no_choices_has_no_surviving_choice() {
         let t = Tally { heads: 0, tails: 0 };
         assert_eq!(surviving_choice(&t), None);
+    }
+
+    #[test]
+    fn total_sums_both_sides() {
+        let t = Tally {
+            heads: 7,
+            tails: 11,
+        };
+        assert_eq!(t.total(), 18);
+    }
+
+    #[test]
+    fn total_saturates_instead_of_overflowing() {
+        // Unreachable in a real arena, but the sum must clamp rather than wrap.
+        let t = Tally {
+            heads: u32::MAX,
+            tails: 1,
+        };
+        assert_eq!(t.total(), u32::MAX);
+
+        let t = Tally {
+            heads: u32::MAX,
+            tails: u32::MAX,
+        };
+        assert_eq!(t.total(), u32::MAX);
     }
 
     #[test]
