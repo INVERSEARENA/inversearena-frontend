@@ -1763,8 +1763,19 @@ mod test {
             );
             ArenaStorage::add_player(&env, &p1);
             ArenaStorage::add_player(&env, &p2);
-            ArenaStorage::save_last_vault_balance(&env, 100);
         });
+
+        // Seed the vault's real balance. `start_round` captures this as the
+        // round's baseline (#1072), so yield is whatever the balance grows by
+        // *during* the round.
+        let set_vault_balance = |balance: i128| {
+            env.as_contract(&vault_id, || {
+                env.storage()
+                    .persistent()
+                    .set(&soroban_sdk::symbol_short!("BAL"), &balance);
+            });
+        };
+        set_vault_balance(100);
 
         let client = ArenaContractClient::new(&env, &contract_id);
         for (idx, balance) in [110i128, 125, 150].iter().enumerate() {
@@ -1776,11 +1787,6 @@ mod test {
                 ArenaStorage::save_player(&env, &p1, &active);
                 ArenaStorage::save_player(&env, &p2, &active);
             });
-            env.as_contract(&vault_id, || {
-                env.storage()
-                    .persistent()
-                    .set(&soroban_sdk::symbol_short!("BAL"), balance);
-            });
             env.ledger()
                 .with_mut(|li| li.timestamp = 1_000 + idx as u64);
             // Reset to Open before each round because resolve_round transitions
@@ -1790,7 +1796,11 @@ mod test {
                 cfg.state = GameState::Open;
                 ArenaStorage::save_config(&env, &cfg);
             });
+            // Baseline is captured here, from the balance the previous round
+            // left behind: 100, then 110, then 125.
             client.start_round(&0);
+            // The vault earns during the round: +10, +15, +25.
+            set_vault_balance(*balance);
             client.resolve_round();
         }
 
