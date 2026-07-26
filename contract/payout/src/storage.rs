@@ -9,9 +9,25 @@ pub(crate) enum DataKey {
     Paid(u64),
 }
 
+// ~6 months in ledgers (assuming 5s per ledger)
+const PAYOUT_TTL_THRESHOLD: u32 = 3_153_600;
+// ~1 year in ledgers
+const PAYOUT_TTL_EXTEND_TO: u32 = 6_307_200;
+
 pub struct PayoutStorage;
 
 impl PayoutStorage {
+    fn extend_paid_ttl(env: &Env, payout_id: u64) {
+        let key = DataKey::Paid(payout_id);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                PAYOUT_TTL_THRESHOLD,
+                PAYOUT_TTL_EXTEND_TO,
+            );
+        }
+    }
+
     pub fn has_admin(env: &Env) -> bool {
         env.storage().instance().has(&symbol_short!("ADMIN"))
     }
@@ -39,6 +55,7 @@ impl PayoutStorage {
     }
 
     pub fn is_paid(env: &Env, payout_id: u64) -> bool {
+        Self::extend_paid_ttl(env, payout_id);
         env.storage().persistent().has(&DataKey::Paid(payout_id))
     }
 
@@ -46,5 +63,6 @@ impl PayoutStorage {
         env.storage()
             .persistent()
             .set(&DataKey::Paid(payout_id), &true);
+        Self::extend_paid_ttl(env, payout_id);
     }
 }
