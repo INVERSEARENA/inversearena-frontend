@@ -11,8 +11,9 @@ use storage::{CreatorStakeRecord, FactoryStorage};
 use types::{ArenaMetadata, ArenaStatus, FactoryError, PoolConfig};
 
 use soroban_sdk::{
-    Address, BytesN, Env, IntoVal, Symbol, Vec, contract, contractimpl, symbol_short, token, vec,
+    Address, BytesN, Env, Vec, contract, contractimpl, symbol_short, token,
 };
+use arena::ArenaContractClient;
 
 const MAX_PAGE_SIZE: u32 = 50;
 
@@ -222,22 +223,17 @@ impl FactoryContract {
             .with_current_contract(Self::salt_for_pool(&env, pool_id))
             .deploy_v2(wasm_hash, ());
 
-        let _: () = env.invoke_contract(
-            &arena,
-            &Symbol::new(&env, "initialize"),
-            vec![
-                &env,
-                host.clone().into_val(&env),
-                config.stake_token.clone().into_val(&env),
-                config.yield_vault.into_val(&env),
-                config.entry_fee.into_val(&env),
-                config.oracle_contract.into_val(&env),
-                env.current_contract_address().into_val(&env),
-                pool_id.into_val(&env),
-                config.min_players.into_val(&env),
-                config.max_players.into_val(&env),
-                config.round_duration.into_val(&env),
-            ],
+        ArenaContractClient::new(&env, &arena).initialize(
+            &host,
+            &config.stake_token,
+            &config.yield_vault,
+            &config.entry_fee,
+            &config.oracle_contract,
+            &env.current_contract_address(),
+            &pool_id,
+            &config.min_players,
+            &config.max_players,
+            &config.round_duration,
         );
 
         FactoryStorage::save_creator_stake(

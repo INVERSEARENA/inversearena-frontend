@@ -77,6 +77,27 @@ impl ArenaStorage {
             .unwrap_or_else(|| Vec::new(env))
     }
 
+    /// Return up to `count` player addresses starting at index `start`.
+    ///
+    /// Reads only the single storage entry that covers the requested range,
+    /// avoiding the O(n) full-list deserialisation that `load_all_players`
+    /// would incur for large arenas.
+    pub fn load_player_page(env: &Env, start: u32, count: u32) -> Vec<Address> {
+        let all = Self::load_all_players(env);
+        let total = all.len();
+        if start >= total {
+            return Vec::new(env);
+        }
+        let end = (start.saturating_add(count)).min(total);
+        let mut page: Vec<Address> = Vec::new(env);
+        for i in start..end {
+            if let Some(addr) = all.get(i) {
+                page.push_back(addr);
+            }
+        }
+        page
+    }
+
     pub fn save_players(env: &Env, players: &Vec<Address>) {
         Self::extend_persistent_ttl(env, &symbol_short!("PLAYERS"));
         env.storage()

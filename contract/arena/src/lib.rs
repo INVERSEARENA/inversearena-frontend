@@ -488,16 +488,12 @@ impl ArenaContract {
     /// # Parameters
     /// - `page`: Zero-based page index.
     pub fn get_players(env: Env, page: u32) -> Vec<(Address, PlayerState)> {
-        let all = ArenaStorage::load_all_players(&env);
-        let start = (page.saturating_mul(PAGE_SIZE)) as usize;
-        let end = (start.saturating_add(PAGE_SIZE as usize)).min(all.len() as usize);
-
+        let start = page.saturating_mul(PAGE_SIZE);
+        let addrs = ArenaStorage::load_player_page(&env, start, PAGE_SIZE);
         let mut result: Vec<(Address, PlayerState)> = Vec::new(&env);
-        for i in start..end {
-            if let Some(addr) = all.get(i as u32) {
-                let state = ArenaStorage::load_player(&env, &addr).unwrap_or_default();
-                result.push_back((addr, state));
-            }
+        for addr in addrs.iter() {
+            let state = ArenaStorage::load_player(&env, &addr).unwrap_or_default();
+            result.push_back((addr, state));
         }
         result
     }
@@ -736,7 +732,7 @@ impl ArenaContract {
         let arena_addr = env.current_contract_address();
         let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
         let principal = config.entry_fee * i128::from(config.player_count);
-        let payout = principal.saturating_add(Self::get_total_yield(env.clone()));
+        let payout = principal.saturating_add(Self::total_yield(&env));
         let withdrawn = rwa_client
             .try_withdraw_all(&arena_addr)
             .unwrap_or(Ok(payout))
@@ -896,7 +892,11 @@ impl ArenaContract {
         player.require_auth();
 
         let config = ArenaStorage::load_config(&env)?;
-        Self::require_not_paused(&config)?;
+        // Allow refund claims when Cancelled even if paused — a paused+cancelled
+        // arena must not permanently lock player funds.
+        if config.state != GameState::Cancelled {
+            Self::require_not_paused(&config)?;
+        }
 
         if config.state != GameState::Cancelled {
             return Err(ArenaError::ArenaNotCancelled);
@@ -939,7 +939,11 @@ impl ArenaContract {
     /// call. Returns `0` if the contract has not been initialised or no rounds
     /// have been resolved.
     pub fn get_total_yield(env: Env) -> i128 {
-        ArenaStorage::load_config(&env)
+        Self::total_yield(&env)
+    }
+
+    fn total_yield(env: &Env) -> i128 {
+        ArenaStorage::load_config(env)
             .map(|c| c.cumulative_yield)
             .unwrap_or(0)
     }
