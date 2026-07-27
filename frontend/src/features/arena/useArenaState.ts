@@ -8,7 +8,7 @@ export type ArenaHealthStatus = "connected" | "degraded" | "offline";
 
 export interface ArenaState {
   id: string;
-  state: "open" | "active" | "finished" | "cancelled";
+  state: "open" | "round_active" | "resolving" | "finished" | "cancelled" | "settled";
   survivorsCount: number;
   maxCapacity: number;
   currentRound: number;
@@ -16,6 +16,8 @@ export interface ArenaState {
   hasWon: boolean;
   currentStake: number;
   potentialPayout: number;
+  entryFee: number;
+  playerCount: number;
 }
 
 export interface UseArenaStateReturn {
@@ -26,7 +28,17 @@ export interface UseArenaStateReturn {
 function toArenaState(data: ArenaStateResponse): ArenaState {
   return {
     id: data.arenaId,
-    state: data.hasWon ? "finished" : "active",
+    state: (function mapState() {
+      if (data.hasWon && data.gameState === 4) return "finished";
+      switch (data.gameState) {
+        case 0: return "open";
+        case 1: return "round_active";
+        case 2: return "resolving";
+        case 3: return "cancelled";
+        case 4: return "settled";
+        default: return "open";
+      }
+    })(),
     survivorsCount: data.survivorsCount,
     maxCapacity: data.maxCapacity,
     currentRound: data.roundNumber,
@@ -34,6 +46,8 @@ function toArenaState(data: ArenaStateResponse): ArenaState {
     hasWon: data.hasWon,
     currentStake: data.currentStake,
     potentialPayout: data.potentialPayout,
+    entryFee: data.entryFee,
+    playerCount: data.playerCount,
   };
 }
 
