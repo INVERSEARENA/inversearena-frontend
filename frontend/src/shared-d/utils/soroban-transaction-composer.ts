@@ -6,6 +6,7 @@ import { Account, Contract, Transaction, TransactionBuilder } from "@stellar/ste
 import {
   encodeAddress,
   encodeAmount,
+  encodeBytes32,
   encodeChoice,
   encodeRound,
 } from "@/shared-d/utils/scval-helpers";
@@ -102,6 +103,42 @@ export function buildSubmitChoiceCallOperation(
     "submit_choice",
     encodeRound(roundNumber),
     encodeChoice(choice),
+  );
+}
+
+/**
+ * Commit phase (#1137): submit a blinded commitment
+ * (`SHA256([choice_byte] ++ salt_32_bytes)`) without revealing the choice.
+ * Matches `contract/arena/src/lib.rs`'s `submit_commitment(player, commitment)`.
+ */
+export function buildSubmitCommitmentOperation(
+  poolContract: Contract,
+  playerPublicKey: string,
+  commitment: Uint8Array,
+): SorobanOperation {
+  return poolContract.call(
+    "submit_commitment",
+    encodeAddress(playerPublicKey),
+    encodeBytes32(commitment),
+  );
+}
+
+/**
+ * Reveal phase (#1137): reveal the choice + salt committed earlier so the
+ * contract can verify it against the stored commitment hash. Matches
+ * `contract/arena/src/lib.rs`'s `reveal_choice(player, choice, salt)`.
+ */
+export function buildRevealChoiceOperation(
+  poolContract: Contract,
+  playerPublicKey: string,
+  choice: "Heads" | "Tails",
+  salt: Uint8Array,
+): SorobanOperation {
+  return poolContract.call(
+    "reveal_choice",
+    encodeAddress(playerPublicKey),
+    encodeChoice(choice),
+    encodeBytes32(salt),
   );
 }
 

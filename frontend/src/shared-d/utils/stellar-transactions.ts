@@ -39,7 +39,9 @@ import {
   buildCreatePoolCallOperation,
   buildGetFullStateCallOperation,
   buildJoinCallOperation,
+  buildRevealChoiceOperation,
   buildStakeCallOperation,
+  buildSubmitCommitmentOperation,
   buildUnstakeCallOperation,
   buildSubmitChoiceCallOperation,
   composeUnsignedTransaction,
@@ -51,6 +53,13 @@ import {
   extractU32FromScVal,
   stroopsToDisplayAmount,
 } from "@/shared-d/utils/stellar-scval-extract";
+import {
+  clearCommitment,
+  computeCommitment,
+  generateSalt,
+  loadCommitment,
+  saveCommitment,
+} from "@/shared-d/utils/commit-reveal";
 
 // Re-export so consumers can import from one place
 export { ContractError, ContractErrorCode, parseContractError } from "@/shared-d/utils/contract-error";
@@ -258,6 +267,15 @@ export async function buildJoinArenaTransaction(
 
 /**
  * Submit choice (Heads/Tails).
+ *
+ * NOTE (#1137): the arena contract has no `submit_choice` function — it only
+ * exposes the two-phase `submit_commitment` / `reveal_choice` commit-reveal
+ * flow (see below). This function's call would fail on-chain against the
+ * current contract; it's left in place only because `ChoiceSubmission.tsx`
+ * still calls it, which is a known, disclosed gap outside this fix's scope
+ * (`src/app/arena/page.tsx`, `soroban-transaction-composer.ts`) — migrate
+ * that component to `buildSubmitCommitmentTransaction`/
+ * `buildRevealChoiceTransaction` as a follow-up.
  */
 export async function buildSubmitChoiceTransaction(
   publicKey: string,
@@ -289,6 +307,114 @@ export async function buildSubmitChoiceTransaction(
   } catch (error) {
     throw parseContractError(error, FN);
   }
+}
+
+/**
+ * Commit phase (#1137): generate a random salt, compute
+ * `SHA256([choice_byte] ++ salt)` client-side (WebCrypto), persist
+ * `{ choice, salt }` in localStorage keyed by arena + round (needed again at
+ * reveal time — the salt is never sent on-chain here), and build the
+ * `submit_commitment` transaction carrying only the hash.
+ */
+export async function buildSubmitCommitmentTransaction(
+  publicKey: string,
+  poolId: string,
+  choice: "Heads" | "Tails",
+  roundNumber: number,
+) {
+  const FN = "buildSubmitCommitmentTransaction";
+  try {
+    const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
+    const validatedPoolId = StellarContractIdSchema.parse(poolId);
+    const validatedChoice = RoundChoiceSchema.parse(choice);
+    const validatedRoundNumber = RoundNumberSchema.parse(roundNumber);
+
+    const salt = generateSalt();
+    const commitment = await computeCommitment(validatedChoice, salt);
+    saveCommitment(validatedPoolId, validatedRoundNumber, {
+      choice: validatedChoice,
+      salt,
+    });
+
+    const account = await getAccount(validatedPublicKey, FN);
+    const poolContract = defaultSorobanClients.createContract(validatedPoolId);
+    const operation = buildSubmitCommitmentOperation(
+      poolContract,
+      validatedPublicKey,
+      commitment,
+    );
+
+    return composeUnsignedTransaction(account, {
+      fee: getDefaultInvokeBaseFee(),
+      networkPassphrase: NETWORK_PASSPHRASE,
+      timeout: getStandardTxTimeoutSeconds(),
+      operation,
+    });
+  } catch (error) {
+    throw parseContractError(error, FN);
+  }
+}
+
+/**
+ * Reveal phase (#1137): retrieve the `{ choice, salt }` saved during the
+ * commit phase for this arena + round and build the `reveal_choice`
+ * transaction. Throws VALIDATION_FAILED if nothing was committed on this
+ * device for this round — there is no other source for the salt.
+ *
+ * Callers should only call {@link clearCommitmentForRound} once the reveal
+ * transaction has actually been confirmed (see submitSignedTransaction) —
+ * clearing it earlier would strand the only copy of the salt if signing is
+ * cancelled or submission fails.
+ */
+export async function buildRevealChoiceTransaction(
+  publicKey: string,
+  poolId: string,
+  roundNumber: number,
+) {
+  const FN = "buildRevealChoiceTransaction";
+  try {
+    const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
+    const validatedPoolId = StellarContractIdSchema.parse(poolId);
+    const validatedRoundNumber = RoundNumberSchema.parse(roundNumber);
+
+    const stored = loadCommitment(validatedPoolId, validatedRoundNumber);
+    if (!stored) {
+      throw new ContractError({
+        code: ContractErrorCode.VALIDATION_FAILED,
+        message:
+          "No commitment found for this round on this device — cannot reveal a choice that was never committed here.",
+        fn: FN,
+      });
+    }
+
+    const account = await getAccount(validatedPublicKey, FN);
+    const poolContract = defaultSorobanClients.createContract(validatedPoolId);
+    const operation = buildRevealChoiceOperation(
+      poolContract,
+      validatedPublicKey,
+      stored.choice,
+      stored.salt,
+    );
+
+    return composeUnsignedTransaction(account, {
+      fee: getDefaultInvokeBaseFee(),
+      networkPassphrase: NETWORK_PASSPHRASE,
+      timeout: getStandardTxTimeoutSeconds(),
+      operation,
+    });
+  } catch (error) {
+    throw parseContractError(error, FN);
+  }
+}
+
+/** Re-exported so callers can clear a round's stored commitment after a confirmed reveal (#1137). */
+export function clearCommitmentForRound(poolId: string, roundNumber: number): void {
+  clearCommitment(poolId, roundNumber);
+}
+
+/** True if this device has a stored commitment for the round — i.e. reveal is possible (#1137). */
+export function hasStoredCommitmentForRound(poolId: string, roundNumber: number): boolean {
+  return loadCommitment(poolId, roundNumber) !== null;
 }
 
 /**
