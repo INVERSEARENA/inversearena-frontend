@@ -1,5 +1,6 @@
 import '@testing-library/jest-dom';
 import { TextDecoder, TextEncoder } from "util";
+import { webcrypto } from "node:crypto";
 
 process.env.NEXT_PUBLIC_STELLAR_NETWORK ??= "testnet";
 process.env.NEXT_PUBLIC_HORIZON_URL ??= "https://horizon-testnet.stellar.org";
@@ -16,4 +17,10 @@ if (!global.TextEncoder) {
 
 if (!global.TextDecoder) {
   global.TextDecoder = TextDecoder as typeof global.TextDecoder;
+}
+
+if (!global.crypto?.subtle) {
+  // jsdom's crypto has getRandomValues but no SubtleCrypto; needed for
+  // commit-reveal's in-browser SHA-256 hashing (#1137).
+  Object.defineProperty(global, "crypto", { value: webcrypto, configurable: true });
 }

@@ -39,7 +39,9 @@ import {
   buildCreatePoolCallOperation,
   buildGetFullStateCallOperation,
   buildJoinCallOperation,
+  buildRevealChoiceOperation,
   buildStakeCallOperation,
+  buildSubmitCommitmentOperation,
   buildUnstakeCallOperation,
   buildSubmitChoiceCallOperation,
   composeUnsignedTransaction,
@@ -51,6 +53,13 @@ import {
   extractU32FromScVal,
   stroopsToDisplayAmount,
 } from "@/shared-d/utils/stellar-scval-extract";
+import {
+  clearCommitment,
+  computeCommitment,
+  generateSalt,
+  loadCommitment,
+  saveCommitment,
+} from "@/shared-d/utils/commit-reveal";
 
 // Re-export so consumers can import from one place
 export { ContractError, ContractErrorCode, parseContractError } from "@/shared-d/utils/contract-error";
@@ -258,6 +267,15 @@ export async function buildJoinArenaTransaction(
 
 /**
  * Submit choice (Heads/Tails).
+ *
+ * NOTE (#1137): the arena contract has no `submit_choice` function — it only
+ * exposes the two-phase `submit_commitment` / `reveal_choice` commit-reveal
+ * flow (see below). This function's call would fail on-chain against the
+ * current contract; it's left in place only because `ChoiceSubmission.tsx`
+ * still calls it, which is a known, disclosed gap outside this fix's scope
+ * (`src/app/arena/page.tsx`, `soroban-transaction-composer.ts`) — migrate
+ * that component to `buildSubmitCommitmentTransaction`/
+ * `buildRevealChoiceTransaction` as a follow-up.
  */
 export async function buildSubmitChoiceTransaction(
   publicKey: string,
@@ -289,6 +307,114 @@ export async function buildSubmitChoiceTransaction(
   } catch (error) {
     throw parseContractError(error, FN);
   }
+}
+
+/**
+ * Commit phase (#1137): generate a random salt, compute
+ * `SHA256([choice_byte] ++ salt)` client-side (WebCrypto), persist
+ * `{ choice, salt }` in localStorage keyed by arena + round (needed again at
+ * reveal time — the salt is never sent on-chain here), and build the
+ * `submit_commitment` transaction carrying only the hash.
+ */
+export async function buildSubmitCommitmentTransaction(
+  publicKey: string,
+  poolId: string,
+  choice: "Heads" | "Tails",
+  roundNumber: number,
+) {
+  const FN = "buildSubmitCommitmentTransaction";
+  try {
+    const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
+    const validatedPoolId = StellarContractIdSchema.parse(poolId);
+    const validatedChoice = RoundChoiceSchema.parse(choice);
+    const validatedRoundNumber = RoundNumberSchema.parse(roundNumber);
+
+    const salt = generateSalt();
+    const commitment = await computeCommitment(validatedChoice, salt);
+    saveCommitment(validatedPoolId, validatedRoundNumber, {
+      choice: validatedChoice,
+      salt,
+    });
+
+    const account = await getAccount(validatedPublicKey, FN);
+    const poolContract = defaultSorobanClients.createContract(validatedPoolId);
+    const operation = buildSubmitCommitmentOperation(
+      poolContract,
+      validatedPublicKey,
+      commitment,
+    );
+
+    return composeUnsignedTransaction(account, {
+      fee: getDefaultInvokeBaseFee(),
+      networkPassphrase: NETWORK_PASSPHRASE,
+      timeout: getStandardTxTimeoutSeconds(),
+      operation,
+    });
+  } catch (error) {
+    throw parseContractError(error, FN);
+  }
+}
+
+/**
+ * Reveal phase (#1137): retrieve the `{ choice, salt }` saved during the
+ * commit phase for this arena + round and build the `reveal_choice`
+ * transaction. Throws VALIDATION_FAILED if nothing was committed on this
+ * device for this round — there is no other source for the salt.
+ *
+ * Callers should only call {@link clearCommitmentForRound} once the reveal
+ * transaction has actually been confirmed (see submitSignedTransaction) —
+ * clearing it earlier would strand the only copy of the salt if signing is
+ * cancelled or submission fails.
+ */
+export async function buildRevealChoiceTransaction(
+  publicKey: string,
+  poolId: string,
+  roundNumber: number,
+) {
+  const FN = "buildRevealChoiceTransaction";
+  try {
+    const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
+    const validatedPoolId = StellarContractIdSchema.parse(poolId);
+    const validatedRoundNumber = RoundNumberSchema.parse(roundNumber);
+
+    const stored = loadCommitment(validatedPoolId, validatedRoundNumber);
+    if (!stored) {
+      throw new ContractError({
+        code: ContractErrorCode.VALIDATION_FAILED,
+        message:
+          "No commitment found for this round on this device — cannot reveal a choice that was never committed here.",
+        fn: FN,
+      });
+    }
+
+    const account = await getAccount(validatedPublicKey, FN);
+    const poolContract = defaultSorobanClients.createContract(validatedPoolId);
+    const operation = buildRevealChoiceOperation(
+      poolContract,
+      validatedPublicKey,
+      stored.choice,
+      stored.salt,
+    );
+
+    return composeUnsignedTransaction(account, {
+      fee: getDefaultInvokeBaseFee(),
+      networkPassphrase: NETWORK_PASSPHRASE,
+      timeout: getStandardTxTimeoutSeconds(),
+      operation,
+    });
+  } catch (error) {
+    throw parseContractError(error, FN);
+  }
+}
+
+/** Re-exported so callers can clear a round's stored commitment after a confirmed reveal (#1137). */
+export function clearCommitmentForRound(poolId: string, roundNumber: number): void {
+  clearCommitment(poolId, roundNumber);
+}
+
+/** True if this device has a stored commitment for the round — i.e. reveal is possible (#1137). */
+export function hasStoredCommitmentForRound(poolId: string, roundNumber: number): boolean {
+  return loadCommitment(poolId, roundNumber) !== null;
 }
 
 /**
@@ -532,10 +658,19 @@ export async function submitSignedTransaction(signedXdr: string) {
       retries++;
     }
 
-    if (!getTxResponse) {
+    // Soroban RPC's getTransaction() polling window is short, and a
+    // transaction can still land on-chain after this loop gives up. NOT_FOUND
+    // (still pending after every retry) and a total polling failure (every
+    // attempt threw) both mean "unknown," never a hard failure — #1135:
+    // showing TRANSACTION_FAILED here previously told users a transaction had
+    // failed when it may well have succeeded a moment later. Any other
+    // terminal status (e.g. an on-chain FAILED) is a genuine failure.
+    if (!getTxResponse || getTxResponse.status === "NOT_FOUND") {
       throw new ContractError({
         code: ContractErrorCode.TRANSACTION_TIMEOUT,
+        message: `Transaction status could not be confirmed before timing out. It may still succeed — check status manually with hash: ${hash}`,
         fn: FN,
+        hash,
       });
     }
 
@@ -544,6 +679,7 @@ export async function submitSignedTransaction(signedXdr: string) {
         code: ContractErrorCode.TRANSACTION_FAILED,
         message: `Transaction confirmation failed: ${getTxResponse.status}`,
         fn: FN,
+        hash,
       });
     }
 
@@ -551,4 +687,89 @@ export async function submitSignedTransaction(signedXdr: string) {
   } catch (error) {
     throw parseContractError(error, FN);
   }
+}
+
+// ── Horizon reconciliation (#1135) ───────────────────────────────────
+//
+// Soroban RPC's getTransaction() only retains recent history, so a
+// transaction whose confirmation polling timed out isn't necessarily lost —
+// it may simply need more time, or may only be checkable via Horizon (which
+// retains transaction history far longer) by the time anyone looks again.
+
+export type HorizonTransactionStatus = "SUCCESS" | "FAILED" | "NOT_FOUND";
+
+export interface HorizonTransactionResult {
+  hash: string;
+  status: HorizonTransactionStatus;
+}
+
+/**
+ * Look up a transaction's final status directly on Horizon. Used to
+ * reconcile a transaction whose Soroban RPC polling timed out.
+ */
+export async function checkTransactionOnHorizon(
+  hash: string,
+  horizonBaseUrl: string = HORIZON_URL,
+  fetchFn: typeof fetch = fetch,
+): Promise<HorizonTransactionResult> {
+  const base = horizonBaseUrl.replace(/\/+$/, "");
+  const res = await fetchFn(`${base}/transactions/${hash}`);
+
+  if (res.status === 404) {
+    return { hash, status: "NOT_FOUND" };
+  }
+  if (!res.ok) {
+    throw new ContractError({
+      code: ContractErrorCode.UNKNOWN,
+      message: `Horizon transaction lookup failed: ${res.status}`,
+      fn: "checkTransactionOnHorizon",
+      hash,
+    });
+  }
+
+  const data = (await res.json()) as { successful?: boolean };
+  return { hash, status: data.successful ? "SUCCESS" : "FAILED" };
+}
+
+/**
+ * Background reconciler for a transaction left in a pending/unknown state
+ * after submitSignedTransaction times out (TRANSACTION_TIMEOUT). Polls
+ * Horizon at a fixed interval until the transaction resolves to a terminal
+ * status or `maxAttempts` is exhausted (in which case it stays NOT_FOUND —
+ * callers should treat that as "still unknown," not "failed").
+ *
+ * Intended to be driven from a hook/effect after a timeout, e.g.:
+ *   reconcilePendingTransaction(err.hash).then((r) => setStatus(r.status))
+ */
+export async function reconcilePendingTransaction(
+  hash: string,
+  options: {
+    horizonBaseUrl?: string;
+    intervalMs?: number;
+    maxAttempts?: number;
+    fetchFn?: typeof fetch;
+  } = {},
+): Promise<HorizonTransactionResult> {
+  const {
+    horizonBaseUrl = HORIZON_URL,
+    intervalMs = 5_000,
+    maxAttempts = 12,
+    fetchFn = fetch,
+  } = options;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+
+    const result = await checkTransactionOnHorizon(hash, horizonBaseUrl, fetchFn).catch(
+      (): HorizonTransactionResult => ({ hash, status: "NOT_FOUND" }),
+    );
+
+    if (result.status !== "NOT_FOUND") {
+      return result;
+    }
+  }
+
+  return { hash, status: "NOT_FOUND" };
 }
