@@ -475,10 +475,19 @@ export async function submitSignedTransaction(signedXdr: string) {
       retries++;
     }
 
-    if (!getTxResponse) {
+    // Soroban RPC's getTransaction() polling window is short, and a
+    // transaction can still land on-chain after this loop gives up. NOT_FOUND
+    // (still pending after every retry) and a total polling failure (every
+    // attempt threw) both mean "unknown," never a hard failure — #1135:
+    // showing TRANSACTION_FAILED here previously told users a transaction had
+    // failed when it may well have succeeded a moment later. Any other
+    // terminal status (e.g. an on-chain FAILED) is a genuine failure.
+    if (!getTxResponse || getTxResponse.status === "NOT_FOUND") {
       throw new ContractError({
         code: ContractErrorCode.TRANSACTION_TIMEOUT,
+        message: `Transaction status could not be confirmed before timing out. It may still succeed — check status manually with hash: ${hash}`,
         fn: FN,
+        hash,
       });
     }
 
@@ -487,6 +496,7 @@ export async function submitSignedTransaction(signedXdr: string) {
         code: ContractErrorCode.TRANSACTION_FAILED,
         message: `Transaction confirmation failed: ${getTxResponse.status}`,
         fn: FN,
+        hash,
       });
     }
 
@@ -494,4 +504,89 @@ export async function submitSignedTransaction(signedXdr: string) {
   } catch (error) {
     throw parseContractError(error, FN);
   }
+}
+
+// ── Horizon reconciliation (#1135) ───────────────────────────────────
+//
+// Soroban RPC's getTransaction() only retains recent history, so a
+// transaction whose confirmation polling timed out isn't necessarily lost —
+// it may simply need more time, or may only be checkable via Horizon (which
+// retains transaction history far longer) by the time anyone looks again.
+
+export type HorizonTransactionStatus = "SUCCESS" | "FAILED" | "NOT_FOUND";
+
+export interface HorizonTransactionResult {
+  hash: string;
+  status: HorizonTransactionStatus;
+}
+
+/**
+ * Look up a transaction's final status directly on Horizon. Used to
+ * reconcile a transaction whose Soroban RPC polling timed out.
+ */
+export async function checkTransactionOnHorizon(
+  hash: string,
+  horizonBaseUrl: string = HORIZON_URL,
+  fetchFn: typeof fetch = fetch,
+): Promise<HorizonTransactionResult> {
+  const base = horizonBaseUrl.replace(/\/+$/, "");
+  const res = await fetchFn(`${base}/transactions/${hash}`);
+
+  if (res.status === 404) {
+    return { hash, status: "NOT_FOUND" };
+  }
+  if (!res.ok) {
+    throw new ContractError({
+      code: ContractErrorCode.UNKNOWN,
+      message: `Horizon transaction lookup failed: ${res.status}`,
+      fn: "checkTransactionOnHorizon",
+      hash,
+    });
+  }
+
+  const data = (await res.json()) as { successful?: boolean };
+  return { hash, status: data.successful ? "SUCCESS" : "FAILED" };
+}
+
+/**
+ * Background reconciler for a transaction left in a pending/unknown state
+ * after submitSignedTransaction times out (TRANSACTION_TIMEOUT). Polls
+ * Horizon at a fixed interval until the transaction resolves to a terminal
+ * status or `maxAttempts` is exhausted (in which case it stays NOT_FOUND —
+ * callers should treat that as "still unknown," not "failed").
+ *
+ * Intended to be driven from a hook/effect after a timeout, e.g.:
+ *   reconcilePendingTransaction(err.hash).then((r) => setStatus(r.status))
+ */
+export async function reconcilePendingTransaction(
+  hash: string,
+  options: {
+    horizonBaseUrl?: string;
+    intervalMs?: number;
+    maxAttempts?: number;
+    fetchFn?: typeof fetch;
+  } = {},
+): Promise<HorizonTransactionResult> {
+  const {
+    horizonBaseUrl = HORIZON_URL,
+    intervalMs = 5_000,
+    maxAttempts = 12,
+    fetchFn = fetch,
+  } = options;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+
+    const result = await checkTransactionOnHorizon(hash, horizonBaseUrl, fetchFn).catch(
+      (): HorizonTransactionResult => ({ hash, status: "NOT_FOUND" }),
+    );
+
+    if (result.status !== "NOT_FOUND") {
+      return result;
+    }
+  }
+
+  return { hash, status: "NOT_FOUND" };
 }
