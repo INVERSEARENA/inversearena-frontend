@@ -70,6 +70,10 @@ function ArenaGameView() {
   const [currentStake, setCurrentStake] = useState(1200);
   const [potentialPayout, setPotentialPayout] = useState(24420);
   const [isLoadingArena, setIsLoadingArena] = useState(false);
+  const [entryFee, setEntryFee] = useState<number | null>(null);
+  const [playerCount, setPlayerCount] = useState<number | null>(null);
+  const [oracleYield, setOracleYield] = useState<number | null>(null);
+  const [isLoadingYield, setIsLoadingYield] = useState(true);
 
   // Round Resolution State
   const [isRoundResolved, setIsRoundResolved] = useState(false);
@@ -93,11 +97,26 @@ function ArenaGameView() {
   const ARENA_ID = process.env.NEXT_PUBLIC_DEMO_ARENA_ID ?? "";
   const { status: streamStatus, snapshot, feed: streamFeed } = useArenaStream(ARENA_ID);
 
-  // Mock data - would come from API/contract
-  const headsYield = 42;
-  const tailsYield = 58;
   const headsPercentage = 42;
   const tailsPercentage = 58;
+
+  useEffect(() => {
+    async function fetchYield() {
+      try {
+        const response = await fetch("/api/oracle/yield");
+        const data = await response.json();
+        setOracleYield(data.currentAPY);
+      } catch (err) {
+        console.error("Failed to fetch oracle yield", err);
+      } finally {
+        setIsLoadingYield(false);
+      }
+    }
+    fetchYield();
+  }, []);
+
+  const headsYield = oracleYield !== null ? oracleYield : 42;
+  const tailsYield = oracleYield !== null ? oracleYield : 58;
 
   useEffect(() => {
     if (!snapshot) return;
@@ -149,6 +168,9 @@ function ArenaGameView() {
       setUserStatus(state.hasWon ? "WINNER!" : "STILL IN");
       setCurrentStake(state.currentStake);
       setPotentialPayout(state.potentialPayout);
+      setEntryFee(state.entryFee);
+      setPlayerCount(state.playerCount);
+      setCurrentRound(state.roundNumber);
     } catch (error) {
       console.error("Failed to fetch arena state:", error);
     } finally {
@@ -259,12 +281,22 @@ function ArenaGameView() {
                   isSelected={selectedChoice === "heads"}
                   onSelect={() => roundPhase === "commit" && setSelectedChoice("heads")}
                 />
-                <ChoiceCard
-                  type="tails"
-                  estimatedYield={tailsYield}
-                  isSelected={selectedChoice === "tails"}
-                  onSelect={() => roundPhase === "commit" && setSelectedChoice("tails")}
-                />
+            
+                {isLoadingYield ? (
+                  <>
+                    <div className="h-48 bg-zinc-800/50 animate-pulse border-2 border-zinc-700" />
+                    <div className="h-48 bg-zinc-800/50 animate-pulse border-2 border-zinc-700" />
+                  </>
+                ) : (
+                  <>
+                    <ChoiceCard
+                      type="tails"
+                      estimatedYield={tailsYield}
+                      isSelected={selectedChoice === "tails"}
+                      onSelect={() => setSelectedChoice("tails")}
+                    />
+                  </>
+                )}
               </div>
 
               {/* Commit Button */}
@@ -275,8 +307,8 @@ function ArenaGameView() {
                       if (!ARENA_ID) return;
                       setTxType("COMMIT");
                       setTxDetails([
-                        { label: "Action", value: "Commit Choice" },
-                        { label: "Choice", value: "Hidden until reveal" },
+                        { label: "Action", value: "Submit Choice" },
+                        { label: "Choice", value: selectedChoice.toUpperCase() },
                         { label: "Round", value: `#${currentRound}` },
                       ]);
                       setShowTxModal(true);
@@ -320,11 +352,11 @@ function ArenaGameView() {
 
           {/* Right column - Stats */}
           <div className="space-y-4">
-            {isLoadingArena ? (
+            {isLoadingArena || isLoadingYield || entryFee === null || playerCount === null ? (
               <ArenaStatsSkeleton />
             ) : (
             <>
-            <TotalYieldPot amount={42850.12} apr={12.4} />
+            <TotalYieldPot amount={entryFee * playerCount} apr={oracleYield ?? 12.4} />
 
             {/* Survivors placeholder */}
             <div className="bg-card-bg border border-neon-green p-4">
@@ -473,15 +505,8 @@ function ArenaGameView() {
             let tx;
             if (txType === "JOIN") {
               tx = await buildJoinArenaTransaction(address, ARENA_ID, 100);
-            } else if (txType === "COMMIT" && selectedChoice) {
-              tx = await buildSubmitCommitmentTransaction(
-                address,
-                ARENA_ID,
-                selectedChoice === "heads" ? "Heads" : "Tails",
-                currentRound,
-              );
-            } else if (txType === "REVEAL") {
-              tx = await buildRevealChoiceTransaction(address, ARENA_ID, currentRound);
+            } else if (txType === "SUBMIT" && selectedChoice) {
+              tx = await buildSubmitChoiceTransaction(address, ARENA_ID, selectedChoice === "heads" ? "Heads" : "Tails", currentRound);
             } else if (txType === "CLAIM") {
               tx = await buildClaimWinningsTransaction(address, ARENA_ID);
             } else {

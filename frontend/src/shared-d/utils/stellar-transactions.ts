@@ -470,6 +470,9 @@ export interface ArenaStateResponse {
   currentStake: number;
   potentialPayout: number;
   roundNumber: number;
+  gameState: number;
+  entryFee: number;
+  playerCount: number;
 }
 
 /**
@@ -540,6 +543,57 @@ export async function fetchArenaState(
     const isUserIn = extractBoolFromScVal(stateData, "is_active") || false;
     const hasWon = extractBoolFromScVal(stateData, "has_won") || false;
 
+    // Fetch config for entry_fee
+    let entryFeeStroops = 0n;
+    try {
+      const configTx = composeUnsignedTransaction(dummyAccount, {
+        fee: getDefaultInvokeBaseFee(),
+        networkPassphrase: NETWORK_PASSPHRASE,
+        timeout: getShortTxTimeoutSeconds(),
+        operation: arenaContract.call("get_config"),
+      });
+      const configSim = await server.simulateTransaction(configTx);
+      if (!("error" in configSim) && configSim.result?.retval) {
+        entryFeeStroops = extractI128FromScVal(configSim.result.retval, "entry_fee") ?? 0n;
+      }
+    } catch (e) {
+      console.warn("Failed to fetch get_config", e);
+    }
+
+    // Fetch player_count
+    let playerCount = survivorsCount;
+    try {
+      const pcTx = composeUnsignedTransaction(dummyAccount, {
+        fee: getDefaultInvokeBaseFee(),
+        networkPassphrase: NETWORK_PASSPHRASE,
+        timeout: getShortTxTimeoutSeconds(),
+        operation: arenaContract.call("get_player_count"),
+      });
+      const pcSim = await server.simulateTransaction(pcTx);
+      if (!("error" in pcSim) && pcSim.result?.retval) {
+        playerCount = extractU32FromScVal(pcSim.result.retval) ?? survivorsCount;
+      }
+    } catch (e) {
+      console.warn("Failed to fetch get_player_count", e);
+    }
+
+    // Fetch game_state
+    let gameState = 0;
+    try {
+      const gsTx = composeUnsignedTransaction(dummyAccount, {
+        fee: getDefaultInvokeBaseFee(),
+        networkPassphrase: NETWORK_PASSPHRASE,
+        timeout: getShortTxTimeoutSeconds(),
+        operation: arenaContract.call("game_state"),
+      });
+      const gsSim = await server.simulateTransaction(gsTx);
+      if (!("error" in gsSim) && gsSim.result?.retval) {
+        gameState = extractU32FromScVal(gsSim.result.retval) ?? 0;
+      }
+    } catch (e) {
+      console.warn("Failed to fetch game_state", e);
+    }
+
     return {
       arenaId: validatedArenaId,
       survivorsCount,
@@ -549,6 +603,9 @@ export async function fetchArenaState(
       currentStake: stroopsToDisplayAmount(currentStakeStroops),
       potentialPayout: stroopsToDisplayAmount(potentialPayout),
       roundNumber,
+      gameState,
+      entryFee: stroopsToDisplayAmount(entryFeeStroops),
+      playerCount,
     };
   } catch (error) {
     throw parseContractError(error, FN);
