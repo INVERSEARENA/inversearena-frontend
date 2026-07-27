@@ -98,6 +98,9 @@ impl PayoutContract {
         if recipients.len() > MAX_BATCH_SIZE {
             return Err(PayoutError::BatchTooLarge);
         }
+        // Duplicate check is O(n²) via Vec::contains. With MAX_BATCH_SIZE = 50
+        // this is at most 1,250 comparisons — within compute budget and
+        // acceptable given the cap (issue #1027).
         let mut seen: Vec<Address> = Vec::new(&env);
         let mut total_amount: i128 = 0;
         for (recipient, amount) in recipients.iter() {
