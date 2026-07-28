@@ -100,6 +100,12 @@ export class PaymentService {
     return this.breaker.getStats();
   }
 
+  destroy(): void {
+    if (this.breaker && typeof (this.breaker as any).destroy === "function") {
+      (this.breaker as any).destroy();
+    }
+  }
+
   async createPayoutTransaction(input: unknown): Promise<BuildPayoutResult> {
     const request = CreatePayoutRequestSchema.parse(input) as CreatePayoutRequest;
 
@@ -385,7 +391,7 @@ export class PaymentService {
     // args[2] = amount
     // args[3] = asset (skipped in validation)
     // args[4] = nonce (skipped in validation)
-    const destination = Address.fromScAddress(scValToNative(args[1]!)).toString();
+    const destination = String(scValToNative(args[1]!));
     if (destination !== transaction.destinationAccount) {
       throw new Error("Signed transaction destination does not match the payout record");
     }
@@ -410,14 +416,13 @@ export class PaymentService {
     const contract = new Contract(this.config.payoutContractId);
     const amountStroops = toStroops(request.amount);
 
-    // The payout token is fixed by the contract at initialize time — there is
-    // no per-call asset argument, so `request.asset` is not forwarded here.
     const operation = contract.call(
       this.config.payoutMethodName,
+      nativeToScVal(request.payoutId),
       new Address(request.destinationAccount).toScVal(),
       nativeToScVal(BigInt(amountStroops), { type: "i128" }),
-      nativeToScVal(BigInt(nonce), { type: "u64" }),
-      nativeToScVal(request.payoutId)
+      nativeToScVal(request.asset),
+      nativeToScVal(BigInt(nonce), { type: "u64" })
     );
 
     const built = new TransactionBuilder(sourceAccount, {

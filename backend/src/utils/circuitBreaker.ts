@@ -24,6 +24,7 @@ export class CircuitBreaker {
   private readonly windowStart: number;
   private readonly options: Required<CircuitBreakerOptions>;
   private readonly listeners: Map<string, Array<() => void>> = new Map();
+  private readonly activeTimeouts: Set<ReturnType<typeof setTimeout>> = new Set();
 
   constructor(options: CircuitBreakerOptions) {
     this.options = {
@@ -42,12 +43,14 @@ export class CircuitBreaker {
       }
     }
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timerId = setTimeout(
         () => reject(new Error(`Soroban RPC call timed out after ${this.options.timeout}ms`)),
         this.options.timeout,
-      ),
-    );
+      );
+      this.activeTimeouts.add(timerId);
+    });
 
     try {
       const result = await Promise.race([action(), timeoutPromise]);
@@ -56,6 +59,11 @@ export class CircuitBreaker {
     } catch (err) {
       this.onFailure();
       throw err;
+    } finally {
+      if (timerId) {
+        clearTimeout(timerId);
+        this.activeTimeouts.delete(timerId);
+      }
     }
   }
 
@@ -71,6 +79,14 @@ export class CircuitBreaker {
   on(event: "open" | "close" | "halfOpen", listener: () => void): void {
     if (!this.listeners.has(event)) this.listeners.set(event, []);
     this.listeners.get(event)!.push(listener);
+  }
+
+  destroy(): void {
+    for (const timerId of this.activeTimeouts) {
+      clearTimeout(timerId);
+    }
+    this.activeTimeouts.clear();
+    this.listeners.clear();
   }
 
   private onSuccess(): void {
@@ -175,5 +191,8 @@ export function getSorobanBreaker(): CircuitBreaker {
 }
 
 export function resetSorobanBreakerForTest(): void {
-  _sorobanBreaker = null;
+  if (_sorobanBreaker) {
+    _sorobanBreaker.destroy();
+    _sorobanBreaker = null;
+  }
 }

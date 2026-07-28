@@ -2,6 +2,7 @@
 module.exports = {
   preset: "ts-jest",
   testEnvironment: "node",
+  detectOpenHandles: true,
   roots: ["<rootDir>/src", "<rootDir>/test", "<rootDir>/tests"],
   testMatch: ["**/*.test.ts"],
   testPathIgnorePatterns: [

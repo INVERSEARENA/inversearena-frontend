@@ -16,6 +16,7 @@ import {
   rpc,
 } from "@stellar/stellar-sdk";
 import { PaymentService } from "../src/services/paymentService";
+import { resetSorobanBreakerForTest } from "../src/utils/circuitBreaker";
 import { InMemoryTransactionRepository } from "../src/repositories/inMemoryTransactionRepository";
 import type { PaymentConfig } from "../src/config/paymentConfig";
 
@@ -81,6 +82,10 @@ async function createAndSign(
 }
 
 describe("PaymentService signed-XDR audit (#667)", () => {
+  afterEach(() => {
+    resetSorobanBreakerForTest();
+  });
+
   it("queues a signed transaction that matches the payout record", async () => {
     const { service } = makeService(makeRpc());
     const { id, signedXdr } = await createAndSign(service, DEST_A, "10", "idem-ok-0001");
@@ -133,11 +138,11 @@ describe("PaymentService signed-XDR audit (#667)", () => {
     // A correctly-formed payout invocation, but built under a foreign source.
     const op = new Contract(CONTRACT).call(
       "distribute_winnings",
+      nativeToScVal("p-src"),
       new Address(DEST_A).toScVal(),
       nativeToScVal(BigInt("100000000"), { type: "i128" }),
       nativeToScVal("XLM"),
       nativeToScVal(BigInt(0), { type: "u64" }),
-      nativeToScVal("p-src"),
     );
     const foreign = new TransactionBuilder(new Account(DEST_B, "5"), {
       fee: "100",
@@ -152,6 +157,9 @@ describe("PaymentService signed-XDR audit (#667)", () => {
 });
 
 describe("PaymentService status machine (#681)", () => {
+  afterEach(() => {
+    resetSorobanBreakerForTest();
+  });
   let idemCounter = 0;
   async function queuedTransaction(service: PaymentService) {
     idemCounter += 1;
