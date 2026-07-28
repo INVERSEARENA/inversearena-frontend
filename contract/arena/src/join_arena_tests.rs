@@ -37,7 +37,7 @@ impl MockVault {
 
 /// Build an arena contract whose on-chain config is set to `state`.
 /// Returns (Env, ArenaContractClient, token_address).
-fn setup_arena(state: GameState) -> (Env, ArenaContractClient<'static>, Address) {
+fn setup_arena(state: GameState) -> (Env, ArenaContractClient<'_>, Address) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -72,8 +72,7 @@ fn setup_arena(state: GameState) -> (Env, ArenaContractClient<'static>, Address)
         ArenaStorage::save_last_vault_balance(&env, 0);
     });
 
-    let env_static: &'static Env = unsafe { &*(&env as *const Env) };
-    let client = ArenaContractClient::new(env_static, &contract_id);
+    let client = ArenaContractClient::new(&env, &contract_id);
     (env, client, token_id)
 }
 
@@ -283,7 +282,7 @@ mod failing_vault {
 
 /// Build an Open arena whose yield vault always rejects deposits.
 /// Returns (Env, ArenaContractClient, token_address).
-fn setup_arena_failing_vault() -> (Env, ArenaContractClient<'static>, Address) {
+fn setup_arena_failing_vault() -> (Env, ArenaContractClient<'_>, Address) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -318,8 +317,7 @@ fn setup_arena_failing_vault() -> (Env, ArenaContractClient<'static>, Address) {
         ArenaStorage::save_last_vault_balance(&env, 0);
     });
 
-    let env_static: &'static Env = unsafe { &*(&env as *const Env) };
-    let client = ArenaContractClient::new(env_static, &contract_id);
+    let client = ArenaContractClient::new(&env, &contract_id);
     (env, client, token_id)
 }
 

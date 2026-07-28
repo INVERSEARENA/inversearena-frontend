@@ -366,7 +366,10 @@ function ArenaGameView() {
               <p className="font-pixel text-3xl text-neon-green">{survivors.current}</p>
               <p className="font-pixel text-sm text-white/40">/{survivors.max}</p>
               <div className="mt-3 h-2 bg-dark-bg">
-                <div className="h-full bg-neon-green w-[12.5%]" />
+                <div
+                  className="h-full bg-neon-green"
+                  style={{ width: `${survivors.max > 0 ? (survivors.current / survivors.max) * 100 : 0}%` }}
+                />
               </div>
             </div>
 

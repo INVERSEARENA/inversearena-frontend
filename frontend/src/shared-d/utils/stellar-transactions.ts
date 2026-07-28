@@ -121,7 +121,7 @@ export async function buildCreatePoolTransaction(
     const operation = buildCreatePoolCallOperation(factory, validatedParams, {
       xlmContractId: XLM_CONTRACT_ID,
       usdcContractId: USDC_CONTRACT_ID,
-    });
+    }, publicKey);
 
     return composeUnsignedTransaction(account, {
       fee: getDefaultInvokeBaseFee(),
@@ -441,6 +441,8 @@ export interface ArenaStateResponse {
   gameState: number;
   entryFee: number;
   playerCount: number;
+  commitDeadline: number | null;
+  revealDeadline: number | null;
 }
 
 /**
@@ -574,6 +576,8 @@ export async function fetchArenaState(
       gameState,
       entryFee: stroopsToDisplayAmount(entryFeeStroops),
       playerCount,
+      commitDeadline: null,
+      revealDeadline: null,
     };
   } catch (error) {
     throw parseContractError(error, FN);

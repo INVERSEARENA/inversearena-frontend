@@ -141,13 +141,12 @@ mod tests {
     use super::*;
     use soroban_sdk::{Env, testutils::Address as _};
 
-    fn setup(initial_rate: u32) -> (Env, OracleContractClient<'static>) {
+    fn setup(initial_rate: u32) -> (Env, OracleContractClient<'_>) {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(OracleContract, ());
         let admin = Address::generate(&env);
-        let env_s: &'static Env = unsafe { &*(&env as *const Env) };
-        let client = OracleContractClient::new(env_s, &contract_id);
+        let client = OracleContractClient::new(&env, &contract_id);
         client.initialize(&admin, &initial_rate);
         (env, client)
     }
@@ -236,8 +235,7 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register(OracleContract, ());
         let admin = Address::generate(&env);
-        let env_s: &'static Env = unsafe { &*(&env as *const Env) };
-        let client = OracleContractClient::new(env_s, &contract_id);
+        let client = OracleContractClient::new(&env, &contract_id);
         assert_eq!(
             client.try_initialize(&admin, &(DEFAULT_MAX_YIELD_BPS + 1)),
             Err(Ok(OracleError::RateTooHigh))
@@ -284,8 +282,7 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(OracleContract, ());
-        let env_s: &'static Env = unsafe { &*(&env as *const Env) };
-        let client = OracleContractClient::new(env_s, &contract_id);
+        let client = OracleContractClient::new(&env, &contract_id);
 
         assert_eq!(
             client.try_set_yield_bps(&500),
