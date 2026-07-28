@@ -10,8 +10,12 @@ const ParticipantsQuerySchema = z.object({
 
 // ── Response shape ──────────────────────────────────────────────────
 export interface Participant {
+  id: string;
   walletAddress: string;
-  status: "active" | "eliminated";
+  choice: "heads" | "tails";
+  stake: number;
+  status: "ACTIVE" | "ELIMINATED";
+  roundNumber: number;
   joinedAt: string;
 }
 
@@ -68,9 +72,11 @@ export class ArenaController {
     const nextCursor = hasMore ? this.encodeCursor(offset + limit) : null;
 
     res.json({
-      items: page,
-      cursor: nextCursor,
+      arenaId,
+      total: participants.length,
+      nextCursor,
       hasMore,
+      items: page,
     });
   };
 
@@ -105,7 +111,7 @@ export class ArenaController {
     // Extract participants from the first round's metadata
     const firstRound = rounds[0]!;
     const metadata = (firstRound.metadata as Record<string, unknown>) || {};
-    const playerChoices = (metadata.playerChoices as Array<{ userId: string; stake?: number }>) || [];
+    const playerChoices = (metadata.playerChoices as Array<{ userId: string; choice: string; stake: number }>) || [];
 
     if (playerChoices.length === 0) {
       return [];
@@ -130,15 +136,23 @@ export class ArenaController {
       });
     });
 
+    // Map choice string to valid union
+    const normalizeChoice = (c: string): "heads" | "tails" =>
+      c === "tails" ? "tails" : "heads";
+
     // Build participant list
     const participants: Participant[] = playerChoices
-      .map((choice) => {
-        const user = userMap.get(choice.userId);
+      .map((pc) => {
+        const user = userMap.get(pc.userId);
         if (!user) return null;
 
         return {
+          id: user.id,
           walletAddress: user.walletAddress,
-          status: eliminatedUserIds.has(user.id) ? ("eliminated" as const) : ("active" as const),
+          choice: normalizeChoice(pc.choice),
+          stake: pc.stake,
+          status: eliminatedUserIds.has(user.id) ? ("ELIMINATED" as const) : ("ACTIVE" as const),
+          roundNumber: firstRound.roundNumber,
           joinedAt: user.createdAt.toISOString(),
         };
       })
