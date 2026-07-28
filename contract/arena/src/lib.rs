@@ -2547,6 +2547,115 @@ mod test {
         });
     }
 
+    /// #1145 — when every active player reveals the same choice, there is no
+    /// opposing majority to eliminate. `eliminations::surviving_choice` (see
+    /// `all_players_on_one_side_survive` in eliminations.rs) already handles
+    /// this correctly as a pure function: `(_, 0) => Some(Heads)` and
+    /// `(0, _) => Some(Tails)` mean the unanimous side survives, it is never
+    /// treated as a tie. This test is the missing integration-level coverage
+    /// through the real `resolve_round` entry point (auth, storage,
+    /// commit-reveal) rather than just the pure tally logic: with 3 active
+    /// players all revealing Heads, all three must survive, nobody is
+    /// eliminated, and — since more than one player survives — the round
+    /// resolves without a winner rather than exposing the
+    /// silent-total-elimination bug the issue warns about.
+    #[test]
+    fn all_players_choosing_the_same_side_all_survive() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // All three active players choose Heads — no Tails votes at all.
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, Choice::Heads, &salt1);
+        let comm2 = compute_commitment(&env, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Heads, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // All three must survive: unanimous Heads has no opposing majority.
+        env.as_contract(&client.address, || {
+            let s1 = ArenaStorage::load_player(&env, &p1).unwrap();
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(s1.active, "unanimous choice must not eliminate anyone");
+            assert!(s2.active, "unanimous choice must not eliminate anyone");
+            assert!(s3.active, "unanimous choice must not eliminate anyone");
+            assert_eq!(s1.rounds_survived, 1);
+            assert_eq!(s2.rounds_survived, 1);
+            assert_eq!(s3.rounds_survived, 1);
+        });
+
+        // With 3 (not 1) survivors, the game continues — no winner is set and
+        // the arena is back in Open, ready for the next round. If this ever
+        // regresses to "everyone eliminated" (the bug the issue warns about),
+        // survivors would be 0 and the arena would incorrectly reach
+        // Finished with no winner, locking the prize pool.
+        env.as_contract(&client.address, || {
+            let config = ArenaStorage::load_config(&env).unwrap();
+            assert_eq!(config.state, GameState::Open, "game must continue with 3 survivors");
+            assert!(
+                ArenaStorage::get_winner(&env).is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+
+        let events = env.events().all();
+        let finished_topic: soroban_sdk::Vec<Val> = (symbol_short!("finished"),).into_val(&env);
+        let has_game_finished = events
+            .iter()
+            .any(|(contract, topics, _data)| contract == client.address && topics == finished_topic);
+        assert!(
+            !has_game_finished,
+            "game_finished must not fire when the round was a full survival, not a win"
+        );
+    }
+
     /// Verify that a commitment submitted in round N cannot be used to reveal
     /// in round N+1. After `start_round` clears round data, the old commitment
     /// is removed so the reveal must fail with MissingCommitment.
