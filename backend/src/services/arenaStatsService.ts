@@ -3,6 +3,7 @@ import { ArenaStats } from "../types/arena";
 import {
   getOnChainGameState,
   getOnChainPlayerCount,
+  getOnChainTotalYield,
   mapGameStateToStatus,
 } from "./onChainReader";
 
@@ -73,14 +74,35 @@ export class ArenaStatsService {
     const latestChoices = (latestRoundMetadata.playerChoices as Array<{ stake?: number }>) ?? [];
     const currentPot = latestChoices.reduce((sum: number, p) => sum + (p.stake ?? 0), 0);
 
+    // ── #1120: Source yieldAccrued from on-chain rwa-adapter vault ─────────
+    // The previous implementation summed the oracleYield column from DB records,
+    // which is disconnected from actual on-chain token flows. Now we attempt
+    // to read from the rwa-adapter vault's get_total_yield if available.
     let yieldAccrued = 0;
-    rounds.forEach((round) => {
-      if (round.state === "RESOLVED") {
-        const roundMetadata = (round.metadata as Record<string, unknown>) ?? {};
-        const roundYield = (roundMetadata.oracleYield as number | undefined) ?? 0;
-        yieldAccrued += roundYield;
+    const vaultContractAddress = (metadata.vaultContractAddress as string | undefined) ?? contractAddress;
+    if (vaultContractAddress) {
+      try {
+        yieldAccrued = await getOnChainTotalYield(vaultContractAddress);
+      } catch {
+        // Fallback to DB-based calculation if on-chain read fails
+        rounds.forEach((round) => {
+          if (round.state === "RESOLVED") {
+            const roundMetadata = (round.metadata as Record<string, unknown>) ?? {};
+            const roundYield = (roundMetadata.oracleYield as number | undefined) ?? 0;
+            yieldAccrued += roundYield;
+          }
+        });
       }
-    });
+    } else {
+      // No contract address available, use DB-based calculation
+      rounds.forEach((round) => {
+        if (round.state === "RESOLVED") {
+          const roundMetadata = (round.metadata as Record<string, unknown>) ?? {};
+          const roundYield = (roundMetadata.oracleYield as number | undefined) ?? 0;
+          yieldAccrued += roundYield;
+        }
+      });
+    }
 
     // ── #1124: Derive status from on-chain game_state() ──────────────────
     // The previous implementation only used latestRound.state which only

@@ -5,11 +5,6 @@ import { cache, cacheKeys, cacheTTL } from "../cache/cacheService";
 import { redis } from "../cache/redisClient";
 import { verifyWebhookSignature } from "../middleware/verifyWebhook";
 
-const ORACLE_WEBHOOK_SECRET = process.env.ORACLE_WEBHOOK_SECRET;
-if (!ORACLE_WEBHOOK_SECRET) {
-  throw new Error("ORACLE_WEBHOOK_SECRET environment variable is required");
-}
-
 interface YieldData {
   protocol: string;
   currentAPY: number;
@@ -44,7 +39,14 @@ export function createOracleRouter(): Router {
 
   router.post(
     "/yield",
-    verifyWebhookSignature(ORACLE_WEBHOOK_SECRET!),
+    asyncHandler(async (req, res, next) => {
+      const ORACLE_WEBHOOK_SECRET = process.env.ORACLE_WEBHOOK_SECRET;
+      if (!ORACLE_WEBHOOK_SECRET) {
+        res.status(503).json({ error: "ORACLE_WEBHOOK_SECRET not configured" });
+        return;
+      }
+      verifyWebhookSignature(ORACLE_WEBHOOK_SECRET)(req, res, next);
+    }),
     asyncHandler(async (req, res) => {
       const { currentAPY, baseRate, surgeMultiplier, protocol, asset } =
         req.body;
