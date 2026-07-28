@@ -184,9 +184,10 @@ impl ArenaStorage {
 
     pub fn save_commitment(env: &Env, player: &Address, round: u32, commitment: &BytesN<32>) {
         Self::extend_persistent_ttl(env, &DataKey::CommitmentForRound(player.clone(), round));
-        env.storage()
-            .persistent()
-            .set(&DataKey::CommitmentForRound(player.clone(), round), commitment);
+        env.storage().persistent().set(
+            &DataKey::CommitmentForRound(player.clone(), round),
+            commitment,
+        );
     }
 
     pub fn load_commitment(env: &Env, player: &Address, round: u32) -> Option<BytesN<32>> {
@@ -368,7 +369,10 @@ impl ArenaStorage {
 
     #[allow(dead_code)]
     fn is_terminal_pool_state(state: &GameState) -> bool {
-        matches!(state, GameState::Finished | GameState::Cancelled | GameState::Settled)
+        matches!(
+            state,
+            GameState::Finished | GameState::Cancelled | GameState::Settled
+        )
     }
 
     pub fn save_pending_admin(env: &Env, pending: &PendingAdmin) {

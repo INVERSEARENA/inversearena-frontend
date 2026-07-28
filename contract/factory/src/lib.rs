@@ -10,10 +10,8 @@ mod integration_tests;
 use storage::{CreatorStakeRecord, FactoryStorage};
 use types::{ArenaMetadata, ArenaStatus, FactoryError, PoolConfig};
 
-use soroban_sdk::{
-    Address, BytesN, Env, Vec, contract, contractimpl, symbol_short, token,
-};
 use arena::ArenaContractClient;
+use soroban_sdk::{Address, BytesN, Env, Vec, contract, contractimpl, symbol_short, token};
 
 const MAX_PAGE_SIZE: u32 = 50;
 
@@ -48,8 +46,7 @@ impl FactoryContract {
     /// features can ship without redeploying and losing that state.
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), FactoryError> {
         Self::require_admin(&env)?;
-        env.deployer()
-            .update_current_contract_wasm(new_wasm_hash);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
         env.events().publish((symbol_short!("UPGRADE"),), ());
         Ok(())
     }
@@ -523,7 +520,9 @@ mod test {
         let factory_id = env.register(FactoryContract, ());
 
         let token_admin = Address::generate(&env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
         let host = Address::generate(&env);
         soroban_sdk::token::StellarAssetClient::new(&env, &token_id).mint(&host, &1_000);
 
@@ -555,7 +554,9 @@ mod test {
         let client = FactoryContractClient::new(&env, &factory_id);
 
         let token_admin = Address::generate(&env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
         let host = Address::generate(&env);
         let arena = Address::generate(&env);
 

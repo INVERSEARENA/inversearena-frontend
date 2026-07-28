@@ -19,8 +19,8 @@ use events::ArenaEvents;
 use rwa_client::RwaAdapterClient;
 use storage::ArenaStorage;
 use types::{
-    ArenaConfig, ArenaError, ArenaStatus, Choice, GameState, LeaderboardEntry, PendingAdmin, PendingUpgrade,
-    PlayerState, RoundResult, YieldSnapshot,
+    ArenaConfig, ArenaError, ArenaStatus, Choice, GameState, LeaderboardEntry, PendingAdmin,
+    PendingUpgrade, PlayerState, RoundResult, YieldSnapshot,
 };
 
 #[soroban_sdk::contractclient(name = "FactoryClient")]
@@ -291,7 +291,10 @@ impl ArenaContract {
         // The token transfer above will be rolled back together with any storage mutations
         // when we return an error, so no funds are permanently locked.
         let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
-        if rwa_client.try_deposit(&arena_addr, &config.entry_fee).is_err() {
+        if rwa_client
+            .try_deposit(&arena_addr, &config.entry_fee)
+            .is_err()
+        {
             return Err(ArenaError::VaultDepositFailed);
         }
 
@@ -385,8 +388,8 @@ impl ArenaContract {
             return Err(ArenaError::RoundNotActive);
         }
 
-        let commitment =
-            ArenaStorage::load_commitment(&env, &player, round).ok_or(ArenaError::MissingCommitment)?;
+        let commitment = ArenaStorage::load_commitment(&env, &player, round)
+            .ok_or(ArenaError::MissingCommitment)?;
         if commitment != Self::compute_commitment(&env, choice, &salt) {
             return Err(ArenaError::InvalidReveal);
         }
@@ -543,10 +546,7 @@ impl ArenaContract {
 
         let active_count = ArenaStorage::load_all_players(&env)
             .iter()
-            .filter(|p| {
-                ArenaStorage::load_player(&env, &p)
-                    .map_or(false, |s| s.active)
-            })
+            .filter(|p| ArenaStorage::load_player(&env, &p).map_or(false, |s| s.active))
             .count() as u32;
         if active_count < ArenaStorage::load_min_players(&env) {
             return Err(ArenaError::NotEnoughPlayers);
@@ -1620,7 +1620,18 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
 
         let p1 = Address::generate(&env);
         let p2 = Address::generate(&env);
@@ -1786,7 +1797,10 @@ mod test {
             // all players who didn't reveal, so without this reset the second
             // start_round would see 0 active players.
             env.as_contract(&contract_id, || {
-                let active = PlayerState { active: true, rounds_survived: 0 };
+                let active = PlayerState {
+                    active: true,
+                    rounds_survived: 0,
+                };
                 ArenaStorage::save_player(&env, &p1, &active);
                 ArenaStorage::save_player(&env, &p2, &active);
             });
@@ -2029,6 +2043,63 @@ mod test {
             assert_eq!(pending.new_admin, new_admin);
         });
     }
+
+    /// Second propose_admin overwrites the first. The original proposed admin
+    /// is replaced and can no longer accept the transfer.
+    #[test]
+    fn second_propose_admin_overwrites_first() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let admin = Address::generate(&env);
+        let addr_a = Address::generate(&env);
+        let addr_b = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            let config = ArenaConfig {
+                admin: admin.clone(),
+                stake_token: Address::generate(&env),
+                entry_fee: 100,
+                state: GameState::Open,
+                paused: false,
+                player_count: 0,
+                cumulative_yield: 0,
+                commit_deadline: 0,
+                yield_vault: Address::generate(&env),
+                round_count: 0,
+                oracle_contract: Address::generate(&env),
+                factory: Address::generate(&env),
+                pool_id: 0,
+                round_duration: 0,
+            };
+            ArenaStorage::save_config(&env, &config);
+        });
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+
+        // First proposal
+        client.propose_admin(&addr_a);
+        env.as_contract(&contract_id, || {
+            let pending = ArenaStorage::load_pending_admin(&env).unwrap();
+            assert_eq!(pending.new_admin, addr_a);
+        });
+
+        // Second proposal overwrites first
+        client.propose_admin(&addr_b);
+        env.as_contract(&contract_id, || {
+            let pending = ArenaStorage::load_pending_admin(&env).unwrap();
+            assert_eq!(pending.new_admin, addr_b);
+        });
+
+        // Accept admin — since pending is now addr_b (not addr_a), the admin
+        // becomes addr_b, proving the overwrite invalidated addr_a's proposal.
+        client.accept_admin();
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).unwrap();
+            assert_eq!(config.admin, addr_b);
+        });
+    }
+
     #[test]
     fn start_round_rejected_with_zero_players() {
         let env = Env::default();
@@ -2153,7 +2224,18 @@ mod test {
 
         let client = ArenaContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
         client.join_arena(&p1);
         client.join_arena(&p2);
 
@@ -2211,7 +2293,18 @@ mod test {
 
         let client = ArenaContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
         client.join_arena(&p1);
         client.join_arena(&p2);
         client.join_arena(&p3);
@@ -2274,7 +2367,18 @@ mod test {
 
         let client = ArenaContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
         client.join_arena(&p1);
         client.join_arena(&p2);
         client.join_arena(&p3);
@@ -2340,7 +2444,18 @@ mod test {
 
         let client = ArenaContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
         client.join_arena(&p1);
         client.join_arena(&p2);
 
@@ -2465,7 +2580,18 @@ mod test {
 
         // Initialize the contract
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.initialize(
+            &admin,
+            &token,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
 
         // Player joins
         client.join_arena(&p1);
@@ -2516,7 +2642,18 @@ mod test {
         token_admin.mint(&p2, &1000);
 
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.initialize(
+            &admin,
+            &token,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
 
         client.join_arena(&p1);
         client.join_arena(&p2);
@@ -2800,7 +2937,18 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        let result = client.try_initialize(&admin, &token_id, &vault_id, &0, &oracle_id, &Address::generate(&env), &1u32, &2u32, &10u32, &60u64);
+        let result = client.try_initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &0,
+            &oracle_id,
+            &Address::generate(&env),
+            &1u32,
+            &2u32,
+            &10u32,
+            &60u64,
+        );
         assert_eq!(result, Err(Ok(ArenaError::InvalidEntryFee)));
     }
 
@@ -2818,7 +2966,18 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        let result = client.try_initialize(&admin, &token_id, &vault_id, &-1, &oracle_id, &Address::generate(&env), &1u32, &2u32, &10u32, &60u64);
+        let result = client.try_initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &-1,
+            &oracle_id,
+            &Address::generate(&env),
+            &1u32,
+            &2u32,
+            &10u32,
+            &60u64,
+        );
         assert_eq!(result, Err(Ok(ArenaError::InvalidEntryFee)));
     }
 
@@ -2838,7 +2997,18 @@ mod test {
         let client = ArenaContractClient::new(&env, &contract_id);
         assert!(
             client
-                .try_initialize(&admin, &token_id, &vault_id, &1, &oracle_id, &Address::generate(&env), &1u32, &2u32, &10u32, &60u64)
+                .try_initialize(
+                    &admin,
+                    &token_id,
+                    &vault_id,
+                    &1,
+                    &oracle_id,
+                    &Address::generate(&env),
+                    &1u32,
+                    &2u32,
+                    &10u32,
+                    &60u64
+                )
                 .is_ok()
         );
     }
@@ -2860,7 +3030,18 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
 
         // Add two real players and start round so state is Active
         let p1 = Address::generate(&env);
@@ -2894,7 +3075,18 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
 
         let p1 = Address::generate(&env);
         let p2 = Address::generate(&env);
@@ -2937,7 +3129,18 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
 
         let player = Address::generate(&env);
         token_admin_client.mint(&player, &1000);
@@ -2964,7 +3167,18 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
 
         let p1 = Address::generate(&env);
         let p2 = Address::generate(&env);
@@ -3002,7 +3216,18 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
 
         let p1 = Address::generate(&env);
         let p2 = Address::generate(&env);
@@ -3043,7 +3268,18 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
 
         let p1 = Address::generate(&env);
         let p2 = Address::generate(&env);
@@ -3091,7 +3327,18 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
 
         let p1 = Address::generate(&env);
         let p2 = Address::generate(&env);
@@ -3128,7 +3375,18 @@ mod test {
 
         let admin = Address::generate(&env);
         let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
 
         let p1 = Address::generate(&env);
         let p2 = Address::generate(&env);
@@ -3176,73 +3434,73 @@ mod test {
         const N: u32 = 120;
         const LIMIT: u32 = 50;
 
-    fn start_round_rejected_when_only_one_active_player_remains() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
+        fn start_round_rejected_when_only_one_active_player_remains() {
+            let env = Env::default();
+            env.mock_all_auths();
+            let contract_id = env.register(ArenaContract, ());
+            let oracle_id = env.register(MockOracle, ());
 
-        env.as_contract(&contract_id, || {
-            ArenaStorage::save_config(
-                &env,
-                &ArenaConfig {
-                    admin: Address::generate(&env),
-                    stake_token: Address::generate(&env),
-                    yield_vault: Address::generate(&env),
-                    entry_fee: 100,
-                    state: GameState::Open,
-                    paused: false,
-                    player_count: 0,
-                    cumulative_yield: 0,
-                    commit_deadline: 0,
-                    round_count: 0,
-                    oracle_contract: oracle_id,
-                    factory: Address::generate(&env),
-                    pool_id: 0,
-                    round_duration: 0,
-                },
-            );
-            ArenaStorage::save_leaderboard_limit(&env, LIMIT);
-
-            // Player i gets rounds_survived = i, so player N-1 has the highest score.
-            for i in 0..N {
-                let player = Address::generate(&env);
-                ArenaStorage::add_player(&env, &player);
-                ArenaStorage::save_player(
+            env.as_contract(&contract_id, || {
+                ArenaStorage::save_config(
                     &env,
-                    &player,
-                    &PlayerState {
-                        active: true,
-                        rounds_survived: i,
+                    &ArenaConfig {
+                        admin: Address::generate(&env),
+                        stake_token: Address::generate(&env),
+                        yield_vault: Address::generate(&env),
+                        entry_fee: 100,
+                        state: GameState::Open,
+                        paused: false,
+                        player_count: 0,
+                        cumulative_yield: 0,
+                        commit_deadline: 0,
+                        round_count: 0,
+                        oracle_contract: oracle_id,
+                        factory: Address::generate(&env),
+                        pool_id: 0,
+                        round_duration: 0,
                     },
                 );
-            }
+                ArenaStorage::save_leaderboard_limit(&env, LIMIT);
 
-            build_leaderboard(&env);
+                // Player i gets rounds_survived = i, so player N-1 has the highest score.
+                for i in 0..N {
+                    let player = Address::generate(&env);
+                    ArenaStorage::add_player(&env, &player);
+                    ArenaStorage::save_player(
+                        &env,
+                        &player,
+                        &PlayerState {
+                            active: true,
+                            rounds_survived: i,
+                        },
+                    );
+                }
 
-            let board = ArenaStorage::load_leaderboard(&env);
-            assert_eq!(board.len(), LIMIT, "leaderboard must be capped at limit");
+                build_leaderboard(&env);
 
-            // Entries must be in strictly descending order of rounds_survived.
-            let mut prev_rs = u32::MAX;
-            for idx in 0..LIMIT {
-                let entry: LeaderboardEntry = board.get(idx).unwrap();
-                assert!(
-                    entry.rounds_survived <= prev_rs,
-                    "leaderboard not sorted descending at index {idx}"
+                let board = ArenaStorage::load_leaderboard(&env);
+                assert_eq!(board.len(), LIMIT, "leaderboard must be capped at limit");
+
+                // Entries must be in strictly descending order of rounds_survived.
+                let mut prev_rs = u32::MAX;
+                for idx in 0..LIMIT {
+                    let entry: LeaderboardEntry = board.get(idx).unwrap();
+                    assert!(
+                        entry.rounds_survived <= prev_rs,
+                        "leaderboard not sorted descending at index {idx}"
+                    );
+                    prev_rs = entry.rounds_survived;
+                }
+
+                // Top entry must have the maximum rounds_survived.
+                assert_eq!(
+                    board.get(0).unwrap().rounds_survived,
+                    N - 1,
+                    "first entry must have the highest rounds_survived"
                 );
-                prev_rs = entry.rounds_survived;
-            }
-
-            // Top entry must have the maximum rounds_survived.
-            assert_eq!(
-                board.get(0).unwrap().rounds_survived,
-                N - 1,
-                "first entry must have the highest rounds_survived"
-            );
-        });
+            });
+        }
     }
-}
 } // close mod test
 #[cfg(test)]
 mod integration_tests;

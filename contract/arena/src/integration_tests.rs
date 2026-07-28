@@ -63,7 +63,18 @@ fn full_game_lifecycle_commit_reveal() {
     // 5. Deploy and initialize Arena Contract
     let arena_id = env.register(ArenaContract, ());
     let arena_client = ArenaContractClient::new(&env, &arena_id);
-    arena_client.initialize(&admin, &token_id, &rwa_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+    arena_client.initialize(
+        &admin,
+        &token_id,
+        &rwa_id,
+        &100,
+        &oracle_id,
+        &Address::generate(&env),
+        &1,
+        &2,
+        &10,
+        &60,
+    );
     all_events.extend(env.events().all().iter());
 
     // Verify Arena is in Open state
@@ -120,7 +131,8 @@ fn full_game_lifecycle_commit_reveal() {
 
     // 11. Advance time by 1 year so vault yield accrues, then resolve the round.
     //     (eliminates majority, so p2, p3, p4 are eliminated)
-    env.ledger().with_mut(|li| li.timestamp = start_ts + 31_536_000);
+    env.ledger()
+        .with_mut(|li| li.timestamp = start_ts + 31_536_000);
     arena_client.resolve_round();
     all_events.extend(env.events().all().iter());
 
