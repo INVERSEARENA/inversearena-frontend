@@ -16,6 +16,8 @@ const mockConfig: PaymentConfig = {
   maxAttempts: 5,
   confirmPollMs: 100,
   confirmMaxPolls: 3,
+  failedRetryMax: 3,
+  failedRetryBaseMs: 5000,
   payoutMethodName: "distribute_winnings",
   payoutContractId: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
   sourceAccount: VALID_ADDRESS,

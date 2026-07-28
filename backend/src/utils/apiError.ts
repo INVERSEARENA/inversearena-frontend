@@ -39,6 +39,8 @@ export function defaultErrorCode(status: number): string {
       return "GONE";
     case 429:
       return "RATE_LIMITED";
+    case 503:
+      return "SERVICE_UNAVAILABLE";
     default:
       return status >= 500 ? "INTERNAL_SERVER_ERROR" : "REQUEST_FAILED";
   }
