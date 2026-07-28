@@ -14,6 +14,10 @@ use arena::ArenaContractClient;
 use soroban_sdk::{Address, BytesN, Env, Vec, contract, contractimpl, symbol_short, token};
 
 const MAX_PAGE_SIZE: u32 = 50;
+const MIN_ROUND_DURATION: u64 = 60;
+const MAX_ROUND_DURATION: u64 = 604_800;
+const MIN_PLAYERS: u32 = 2;
+const MAX_PLAYERS: u32 = 1_000;
 
 /// Factory contract — deploys arena instances and enforces protocol-level rules.
 ///
@@ -186,6 +190,14 @@ impl FactoryContract {
         host.require_auth();
         FactoryStorage::load_admin(&env)?;
 
+        if config.round_duration < MIN_ROUND_DURATION
+            || config.round_duration > MAX_ROUND_DURATION
+            || config.min_players < MIN_PLAYERS
+            || config.min_players > config.max_players
+            || config.max_players > MAX_PLAYERS
+        {
+            return Err(FactoryError::InvalidConfig);
+        }
         if !FactoryStorage::is_whitelisted(&env, &host) {
             return Err(FactoryError::HostNotWhitelisted);
         }
@@ -420,6 +432,49 @@ mod test {
             .expect("error must be a contract error");
 
         assert_eq!(err, FactoryError::HostNotWhitelisted);
+    }
+
+    fn assert_invalid_config(update: impl FnOnce(&mut PoolConfig)) {
+        let (env, client, _admin, host) = setup();
+        let mut config = pool_config(&env, 100);
+        update(&mut config);
+        let error = client
+            .try_create_pool(&host, &config)
+            .err()
+            .expect("invalid config must be rejected")
+            .expect("error must be a contract error");
+        assert_eq!(error, FactoryError::InvalidConfig);
+    }
+
+    #[test]
+    fn create_pool_rejects_round_duration_below_minimum() {
+        assert_invalid_config(|config| config.round_duration = 59);
+    }
+
+    #[test]
+    fn create_pool_rejects_round_duration_above_maximum() {
+        assert_invalid_config(|config| {
+            config.round_duration = 604_801
+        });
+    }
+
+    #[test]
+    fn create_pool_rejects_fewer_than_two_players() {
+        assert_invalid_config(|config| config.min_players = 1);
+    }
+
+    #[test]
+    fn create_pool_rejects_min_players_above_max_players() {
+        assert_invalid_config(|config| {
+            config.min_players = 11
+        });
+    }
+
+    #[test]
+    fn create_pool_rejects_more_than_one_thousand_players() {
+        assert_invalid_config(|config| {
+            config.max_players = 1_001
+        });
     }
 
     #[test]
