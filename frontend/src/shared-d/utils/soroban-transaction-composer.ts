@@ -90,8 +90,11 @@ export function buildUnstakeCallOperation(
   );
 }
 
-export function buildJoinCallOperation(poolContract: Contract): SorobanOperation {
-  return poolContract.call("join");
+export function buildJoinCallOperation(
+  poolContract: Contract,
+  playerPublicKey: string,
+): SorobanOperation {
+  return poolContract.call("join_arena", encodeAddress(playerPublicKey));
 }
 
 /**
@@ -130,8 +133,11 @@ export function buildRevealChoiceOperation(
   );
 }
 
-export function buildClaimCallOperation(poolContract: Contract): SorobanOperation {
-  return poolContract.call("claim");
+export function buildClaimCallOperation(
+  poolContract: Contract,
+  winnerPublicKey: string,
+): SorobanOperation {
+  return poolContract.call("claim", encodeAddress(winnerPublicKey));
 }
 
 export function buildGetArenaStateCallOperation(
