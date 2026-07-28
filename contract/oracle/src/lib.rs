@@ -292,4 +292,24 @@ mod tests {
             Err(Ok(OracleError::NotInitialized))
         );
     }
+
+    #[test]
+    fn set_yield_bps_without_admin_auth_is_rejected() {
+        let (env, client) = setup(500);
+
+        // Drop mocked auths so the admin's signature is genuinely required;
+        // a non-admin caller cannot supply it.
+        env.set_auths(&[]);
+
+        let result = client.try_set_yield_bps(&600);
+        assert!(
+            result.is_err(),
+            "set_yield_bps without the admin's authorization must be rejected"
+        );
+        assert_eq!(
+            client.get_current_yield_bps(),
+            500,
+            "rate must be unchanged after a rejected call"
+        );
+    }
 }
