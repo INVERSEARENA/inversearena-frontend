@@ -27,7 +27,9 @@ export function startTxReconcilerWorker(
   // configures attempts: 10 with exponential backoff (see txQueue.ts).
   worker.on("failed", async (job: Job<ConfirmJobData> | undefined, err: Error) => {
     if (!job) return;
-    const maxAttempts = job.opts.attempts;
+    // job.opts.attempts is always set (txQueue.ts configures attempts: 10),
+    // but BullMQ's type is optional — fall back to that same default.
+    const maxAttempts = job.opts.attempts ?? 10;
     if (job.attemptsMade < maxAttempts) {
       logger.info(
         {

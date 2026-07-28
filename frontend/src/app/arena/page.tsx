@@ -522,8 +522,10 @@ function ArenaGameView() {
             let tx;
             if (txType === "JOIN") {
               tx = await buildJoinArenaTransaction(address, ARENA_ID, 100);
-            } else if (txType === "SUBMIT" && selectedChoice) {
-              tx = await buildSubmitChoiceTransaction(address, ARENA_ID, selectedChoice === "heads" ? "Heads" : "Tails", currentRound);
+            } else if (txType === "COMMIT" && selectedChoice) {
+              tx = await buildSubmitCommitmentTransaction(address, ARENA_ID, selectedChoice === "heads" ? "Heads" : "Tails", currentRound);
+            } else if (txType === "REVEAL") {
+              tx = await buildRevealChoiceTransaction(address, ARENA_ID, currentRound);
             } else if (txType === "CLAIM") {
               tx = await buildClaimWinningsTransaction(address, ARENA_ID);
             } else {
