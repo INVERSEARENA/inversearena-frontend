@@ -276,4 +276,40 @@ mod tests {
             Err(Ok(OracleError::NoPendingAdmin))
         );
     }
+
+    // ── Coverage added for issue #1144 ────────────────────────────────────
+
+    #[test]
+    fn set_yield_bps_before_initialize_returns_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(OracleContract, ());
+        let env_s: &'static Env = unsafe { &*(&env as *const Env) };
+        let client = OracleContractClient::new(env_s, &contract_id);
+
+        assert_eq!(
+            client.try_set_yield_bps(&500),
+            Err(Ok(OracleError::NotInitialized))
+        );
+    }
+
+    #[test]
+    fn set_yield_bps_without_admin_auth_is_rejected() {
+        let (env, client) = setup(500);
+
+        // Drop mocked auths so the admin's signature is genuinely required;
+        // a non-admin caller cannot supply it.
+        env.set_auths(&[]);
+
+        let result = client.try_set_yield_bps(&600);
+        assert!(
+            result.is_err(),
+            "set_yield_bps without the admin's authorization must be rejected"
+        );
+        assert_eq!(
+            client.get_current_yield_bps(),
+            500,
+            "rate must be unchanged after a rejected call"
+        );
+    }
 }
