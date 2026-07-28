@@ -62,14 +62,17 @@ function makeService(rpcServer: ReturnType<typeof makeRpc>) {
   return { service, repo };
 }
 
+let payoutIdCounter = 0;
+
 async function createAndSign(
   service: PaymentService,
   dest: string,
   amount: string,
   idem: string,
 ) {
+  payoutIdCounter += 1;
   const built = await service.createPayoutTransaction({
-    payoutId: `p-${idem}`,
+    payoutId: String(payoutIdCounter),
     destinationAccount: dest,
     amount,
     asset: "XLM",
@@ -100,7 +103,7 @@ describe("PaymentService signed-XDR audit (#667)", () => {
     const { service } = makeService(makeRpc());
     // Record #1 is for DEST_A; the signer returns a tx paying DEST_B.
     const rec = await service.createPayoutTransaction({
-      payoutId: "p-dest",
+      payoutId: "100",
       destinationAccount: DEST_A,
       amount: "10",
       asset: "XLM",
@@ -115,7 +118,7 @@ describe("PaymentService signed-XDR audit (#667)", () => {
   it("rejects a transaction whose amount was altered", async () => {
     const { service } = makeService(makeRpc());
     const rec = await service.createPayoutTransaction({
-      payoutId: "p-amt",
+      payoutId: "200",
       destinationAccount: DEST_A,
       amount: "10",
       asset: "XLM",
@@ -133,11 +136,9 @@ describe("PaymentService signed-XDR audit (#667)", () => {
     // A correctly-formed payout invocation, but built under a foreign source.
     const op = new Contract(CONTRACT).call(
       "distribute_winnings",
+      nativeToScVal(BigInt("99"), { type: "u64" }),
       new Address(DEST_A).toScVal(),
       nativeToScVal(BigInt("100000000"), { type: "i128" }),
-      nativeToScVal("XLM"),
-      nativeToScVal(BigInt(0), { type: "u64" }),
-      nativeToScVal("p-src"),
     );
     const foreign = new TransactionBuilder(new Account(DEST_B, "5"), {
       fee: "100",
