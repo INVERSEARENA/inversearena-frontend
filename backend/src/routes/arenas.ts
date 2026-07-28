@@ -308,6 +308,7 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
 
       const sendSnapshot = (data: unknown): void => {
         if (res.writableEnded) return;
+        res.write(`event: snapshot\n`);
         res.write(`data: ${JSON.stringify(data)}\n\n`);
       };
 
