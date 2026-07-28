@@ -276,4 +276,20 @@ mod tests {
             Err(Ok(OracleError::NoPendingAdmin))
         );
     }
+
+    // ── Coverage added for issue #1144 ────────────────────────────────────
+
+    #[test]
+    fn set_yield_bps_before_initialize_returns_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(OracleContract, ());
+        let env_s: &'static Env = unsafe { &*(&env as *const Env) };
+        let client = OracleContractClient::new(env_s, &contract_id);
+
+        assert_eq!(
+            client.try_set_yield_bps(&500),
+            Err(Ok(OracleError::NotInitialized))
+        );
+    }
 }
