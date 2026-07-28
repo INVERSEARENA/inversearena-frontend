@@ -12,7 +12,6 @@ pub struct PoolConfig {
     pub round_duration: u64,
 }
 
-
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArenaStatus {

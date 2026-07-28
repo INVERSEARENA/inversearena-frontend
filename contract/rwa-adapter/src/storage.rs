@@ -1,4 +1,4 @@
-use crate::types::{RwaConfig, RwaError, YieldAccrual};
+use crate::types::{PendingAdmin, RwaConfig, RwaError, YieldAccrual};
 use soroban_sdk::{Address, Env, symbol_short};
 
 // Extend TTL whenever a persistent key is read or written (#1076, #1077).
@@ -74,5 +74,23 @@ impl RwaStorage {
         env.storage()
             .persistent()
             .set(&DataKey::Position(user.clone()), pos);
+    }
+
+    // ── Pending Admin ─────────────────────────────────────────────────────
+
+    pub fn save_pending_admin(env: &Env, pending: &PendingAdmin) {
+        Self::extend_ttl(env, &symbol_short!("PADMIN"));
+        env.storage()
+            .persistent()
+            .set(&symbol_short!("PADMIN"), pending);
+    }
+
+    pub fn load_pending_admin(env: &Env) -> Option<PendingAdmin> {
+        Self::extend_ttl(env, &symbol_short!("PADMIN"));
+        env.storage().persistent().get(&symbol_short!("PADMIN"))
+    }
+
+    pub fn delete_pending_admin(env: &Env) {
+        env.storage().persistent().remove(&symbol_short!("PADMIN"));
     }
 }

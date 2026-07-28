@@ -51,3 +51,6 @@ issues.md
 contract/**/test_snapshots/
 contracts/**/test_snapshots/
 contract/**/compile_err.txt
+
+# AI assistant artifacts
+.claude/

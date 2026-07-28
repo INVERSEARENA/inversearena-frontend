@@ -32,11 +32,9 @@ impl PayoutStorage {
     fn extend_paid_ttl(env: &Env, payout_id: u64) {
         let key = DataKey::Paid(payout_id);
         if env.storage().persistent().has(&key) {
-            env.storage().persistent().extend_ttl(
-                &key,
-                PAYOUT_TTL_THRESHOLD,
-                PAYOUT_TTL_EXTEND_TO,
-            );
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, PAYOUT_TTL_THRESHOLD, PAYOUT_TTL_EXTEND_TO);
         }
     }
 
@@ -46,9 +44,11 @@ impl PayoutStorage {
 
     pub fn set_admin(env: &Env, admin: &Address) {
         env.storage().persistent().set(&DataKey::Admin, admin);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Admin, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_TARGET);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Admin,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_TARGET,
+        );
     }
 
     pub fn get_admin(env: &Env) -> Result<Address, PayoutError> {
@@ -58,17 +58,21 @@ impl PayoutStorage {
             .persistent()
             .get(&key)
             .ok_or(PayoutError::NotInitialised)?;
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_TARGET);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_TARGET,
+        );
         Ok(admin)
     }
 
     pub fn set_token(env: &Env, token: &Address) {
         env.storage().persistent().set(&DataKey::Token, token);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Token, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_TARGET);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Token,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_TARGET,
+        );
     }
 
     pub fn get_token(env: &Env) -> Result<Address, PayoutError> {
@@ -78,9 +82,11 @@ impl PayoutStorage {
             .persistent()
             .get(&key)
             .ok_or(PayoutError::NotInitialised)?;
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_TARGET);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_TARGET,
+        );
         Ok(token)
     }
 
@@ -92,8 +98,10 @@ impl PayoutStorage {
     pub fn mark_paid(env: &Env, payout_id: u64) {
         let key = DataKey::Paid(payout_id);
         env.storage().persistent().set(&key, &true);
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_TARGET);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_TARGET,
+        );
     }
 }
