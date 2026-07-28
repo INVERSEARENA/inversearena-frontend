@@ -1827,6 +1827,132 @@ mod test {
         assert_eq!(client.get_yield_snapshot(&3).unwrap().accrued, 25);
     }
 
+    /// #1146 — `join_arena` writes to `last_vault_balance` on every join
+    /// (`baseline = load_last_vault_balance + entry_fee`, saved back after
+    /// each join). If that write were the actual yield baseline, three
+    /// sequential 100-USDC joins would inflate it to 300 before the round
+    /// even starts, so any later vault growth would be undercounted or
+    /// (if the real vault balance ends up below the inflated baseline)
+    /// silently clamped to zero accrued yield via `resolve_round`'s
+    /// `vault_balance >= previous_balance` check.
+    ///
+    /// This test drives `join_arena` for real (not direct storage injection,
+    /// unlike `resolve_round_tracks_yield_across_three_vault_snapshots`
+    /// above, which never exercises `join_arena`'s per-join write at all) so
+    /// the per-join baseline write is actually on the call path. It asserts
+    /// the round-start baseline directly (must be 0, the vault's real
+    /// balance — MockVault's own `deposit` is a no-op — not 300, the sum
+    /// `join_arena` would have left behind across three joins), then
+    /// confirms the round's yield snapshot matches the issue's own worked
+    /// example: 15 accrued after the vault "earns 15 USDC yield externally".
+    #[test]
+    fn join_arena_per_join_write_does_not_corrupt_the_yield_baseline() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+
+        let set_vault_balance = |balance: i128| {
+            env.as_contract(&vault_id, || {
+                env.storage()
+                    .persistent()
+                    .set(&soroban_sdk::symbol_short!("BAL"), &balance);
+            });
+        };
+
+        // Each join_arena call transfers the 100 USDC entry fee and, on the
+        // buggy path, also adds 100 to last_vault_balance directly — three
+        // joins would leave last_vault_balance at 300 if that write were
+        // ever actually read as the round's yield baseline. MockVault's own
+        // deposit() is a no-op, so the vault's *real* tracked balance stays
+        // at 0 regardless of how many players join.
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Assert the round-start baseline directly, before checking any
+        // yield math: it must be 0 (the vault's real, un-inflated balance
+        // start_round just captured), not 300 (join_arena's running sum of
+        // three 100-USDC joins). This is the concrete proof that the
+        // per-join write in join_arena never reaches the baseline
+        // resolve_round actually uses.
+        env.as_contract(&contract_id, || {
+            let baseline = ArenaStorage::load_last_vault_balance(&env);
+            assert_eq!(
+                baseline, 0,
+                "start_round must capture the vault's real (mock) balance, not join_arena's running sum"
+            );
+        });
+
+        // The vault "earns 15 USDC yield externally" on top of the 0
+        // baseline just captured; the real balance is now 15. If the
+        // inflated 300 baseline were ever read instead, this would clamp to
+        // 0 accrued (via resolve_round's vault_balance >= previous_balance
+        // guard) rather than genuinely track the deposit.
+        set_vault_balance(15);
+
+        // p1 and p2 must reveal so the round has a well-defined outcome;
+        // resolve_round is what actually snapshots the yield.
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, Choice::Heads, &salt1);
+        let comm2 = compute_commitment(&env, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Heads, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // Accrued yield is 15 (real vault balance) - 0 (real baseline
+        // start_round captured) = 15 — matching the issue's own worked
+        // example exactly, and confirming resolve_round's math is driven by
+        // start_round's capture, not join_arena's inflated running sum. If
+        // the bug were live, this would instead read 0 (315's hypothetical
+        // stand-in would clamp against a 300 baseline; here the true
+        // baseline of 0 makes any live regression surface as "0 accrued"
+        // instead of the correct 15).
+        assert_eq!(client.get_total_yield(), 15);
+        assert_eq!(client.get_yield_snapshot(&1).unwrap().accrued, 15);
+    }
+
     /// Reentrancy guard: if the prize-claimed flag has been set (which `claim`
     /// does *before* it performs any external token transfer) a subsequent
     /// call to `claim` — including a reentrant call triggered by a malicious
