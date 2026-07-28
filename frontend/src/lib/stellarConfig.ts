@@ -17,6 +17,8 @@ const StellarEnvSchema = z.object({
   NEXT_PUBLIC_XLM_CONTRACT_ID: z.string().trim().min(3).optional(),
   NEXT_PUBLIC_STAKING_CONTRACT_ID: z.string().trim().min(3).optional(),
   NEXT_PUBLIC_STELLAR_NETWORK_PASSPHRASE: z.string().trim().min(3).optional(),
+  NEXT_PUBLIC_RWA_VAULT_CONTRACT_ID: z.string().trim().min(3).optional(),
+  NEXT_PUBLIC_ORACLE_CONTRACT_ID: z.string().trim().min(3).optional(),
 });
 
 export interface StellarConfig {
@@ -29,6 +31,8 @@ export interface StellarConfig {
   usdcContractId: string;
   xlmContractId: string;
   stakingContractId: string | undefined;
+  rwaVaultContractId: string | undefined;
+  oracleContractId: string | undefined;
 }
 
 function buildStellarConfig():
@@ -47,6 +51,10 @@ function buildStellarConfig():
       process.env.NEXT_PUBLIC_STAKING_CONTRACT_ID,
     NEXT_PUBLIC_STELLAR_NETWORK_PASSPHRASE:
       process.env.NEXT_PUBLIC_STELLAR_NETWORK_PASSPHRASE,
+    NEXT_PUBLIC_RWA_VAULT_CONTRACT_ID:
+      process.env.NEXT_PUBLIC_RWA_VAULT_CONTRACT_ID,
+    NEXT_PUBLIC_ORACLE_CONTRACT_ID:
+      process.env.NEXT_PUBLIC_ORACLE_CONTRACT_ID,
   });
 
   if (!result.success) {
@@ -75,6 +83,8 @@ function buildStellarConfig():
       usdcContractId: env.NEXT_PUBLIC_USDC_CONTRACT_ID,
       xlmContractId: env.NEXT_PUBLIC_XLM_CONTRACT_ID ?? DEFAULT_XLM_CONTRACT_ID,
       stakingContractId: env.NEXT_PUBLIC_STAKING_CONTRACT_ID,
+      rwaVaultContractId: env.NEXT_PUBLIC_RWA_VAULT_CONTRACT_ID,
+      oracleContractId: env.NEXT_PUBLIC_ORACLE_CONTRACT_ID,
     },
     error: null,
   };

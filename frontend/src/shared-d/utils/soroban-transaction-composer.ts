@@ -2,15 +2,16 @@
  * Soroban invoke operations and unsigned transaction assembly (#245).
  * Named “composer” here to avoid clashing with the SDK’s `TransactionBuilder` class.
  */
-import { Account, Contract, Transaction, TransactionBuilder, nativeToScVal } from "@stellar/stellar-sdk";
+import { Account, Contract, Transaction, TransactionBuilder, nativeToScVal } from “@stellar/stellar-sdk”;
 import {
   encodeAddress,
   encodeAmount,
   encodeBytes32,
   encodeChoice,
   encodeRound,
-} from "@/shared-d/utils/scval-helpers";
-import type { CreatePoolParamsValidated } from "@/shared-d/utils/stellar-transaction-schemas";
+} from “@/shared-d/utils/scval-helpers”;
+import type { CreatePoolParamsValidated } from “@/shared-d/utils/stellar-transaction-schemas”;
+import { stellarConfig } from “@/lib/stellarConfig”;
 
 type SorobanOperation = ReturnType<Contract["call"]>;
 
@@ -48,6 +49,7 @@ export function buildCreatePoolCallOperation(
   factory: Contract,
   params: CreatePoolParamsValidated,
   tokenContractIds: { xlmContractId: string; usdcContractId: string },
+  creatorPublicKey: string,
 ): SorobanOperation {
   const amountBigInt = BigInt(Math.floor(params.stakeAmount * 10_000_000));
   const currencyContractId =
@@ -56,21 +58,31 @@ export function buildCreatePoolCallOperation(
       : tokenContractIds.xlmContractId;
   const roundSpeedSeconds = roundSpeedToSeconds(params.roundSpeed);
 
+  const yieldVaultContractId = stellarConfig.rwaVaultContractId;
+  const oracleContractId = stellarConfig.oracleContractId;
+
+  if (!yieldVaultContractId) {
+    throw new Error("NEXT_PUBLIC_RWA_VAULT_CONTRACT_ID is not configured");
+  }
+  if (!oracleContractId) {
+    throw new Error("NEXT_PUBLIC_ORACLE_CONTRACT_ID is not configured");
+  }
+
   // Encode PoolConfig struct as required by factory contract (#1105)
   // PoolConfig { stake_token, yield_vault, entry_fee, oracle_contract, min_players, max_players, round_duration }
   const poolConfig = nativeToScVal({
     stake_token: currencyContractId,
-    yield_vault: currencyContractId, // Using same token contract as yield vault placeholder
+    yield_vault: yieldVaultContractId,
     entry_fee: amountBigInt,
-    oracle_contract: currencyContractId, // Using token contract as oracle placeholder
-    min_players: 2, // Minimum 2 players
+    oracle_contract: oracleContractId,
+    min_players: 2,
     max_players: params.arenaCapacity,
     round_duration: BigInt(roundSpeedSeconds),
   }, { type: "PoolConfig" });
 
   // Factory.create_pool(host: Address, config: PoolConfig)
-  // Note: host address would typically be the creator's address, passed from the caller
-  const hostAddress = encodeAddress(currencyContractId); // Placeholder: should be creator address
+  // host is the pool creator's wallet address
+  const hostAddress = encodeAddress(creatorPublicKey);
 
   return factory.call("create_pool", hostAddress, poolConfig);
 }

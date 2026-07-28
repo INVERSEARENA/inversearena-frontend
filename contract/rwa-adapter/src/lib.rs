@@ -199,7 +199,7 @@ mod test {
 
     /// Register the RwaAdapter and wire up a SAC token, writing config directly
     /// into storage so tests can control auth independently of `initialize`.
-    fn setup(env: &Env) -> (RwaAdapterClient<'static>, Address, Address) {
+    fn setup(env: &Env) -> (RwaAdapterClient<'_>, Address, Address) {
         let contract_id = env.register(RwaAdapter, ());
         let token_admin = Address::generate(env);
         let token_id = env
@@ -217,8 +217,7 @@ mod test {
             RwaStorage::set_initialized(env);
         });
 
-        let env_static: &'static Env = unsafe { &*(env as *const Env) };
-        let client = RwaAdapterClient::new(env_static, &contract_id);
+        let client = RwaAdapterClient::new(env, &contract_id);
         (client, token_id, contract_id)
     }
 
@@ -382,8 +381,7 @@ mod test {
             RwaStorage::set_initialized(&env);
         });
 
-        let env_static: &'static Env = unsafe { &*(&env as *const Env) };
-        let client = RwaAdapterClient::new(env_static, &contract_id);
+        let client = RwaAdapterClient::new(&env, &contract_id);
 
         client.propose_admin(&new_admin);
 
@@ -415,8 +413,7 @@ mod test {
             RwaStorage::set_initialized(&env);
         });
 
-        let env_static: &'static Env = unsafe { &*(&env as *const Env) };
-        let client = RwaAdapterClient::new(env_static, &contract_id);
+        let client = RwaAdapterClient::new(&env, &contract_id);
 
         client.propose_admin(&new_admin);
         client.accept_admin();
@@ -447,8 +444,7 @@ mod test {
             RwaStorage::set_initialized(&env);
         });
 
-        let env_static: &'static Env = unsafe { &*(&env as *const Env) };
-        let client = RwaAdapterClient::new(env_static, &contract_id);
+        let client = RwaAdapterClient::new(&env, &contract_id);
 
         let err = client
             .try_accept_admin()
