@@ -1,5 +1,5 @@
-use soroban_sdk::{Env, Symbol, Address, Vec};
-use crate::types::{ArenaConfig, Choice, GlobalStats, RwaYieldRecord};
+use soroban_sdk::{Env, Symbol, Address, BytesN, Vec};
+use crate::types::{ArenaConfig, Choice, GlobalStats, RwaYieldRecord, PlayerProfile};
 use crate::errors::ArenaError;
 
 const CONFIG_KEY: Symbol = Symbol::short("CONFIG");
@@ -11,7 +11,9 @@ const CREATOR_STAKE_KEY: Symbol = Symbol::short("STAKE");
 const GLOBAL_STATS_KEY: Symbol = Symbol::short("GSTATS");
 const RWA_COUNTER_KEY: Symbol = Symbol::short("RWACNT");
 const PRIZE_POOL_KEY: Symbol = Symbol::short("POOL");
-const PLATFORM_FEE_KEY: Symbol = Symbol::short("PFEE");
+const PENDING_ADMIN_KEY: Symbol = Symbol::short("PADMIN");
+const ROUND_DEADLINE_KEY: Symbol = Symbol::short("RNDDEADL");
+const GLOBAL_ROUND_BOUNDS_KEY: Symbol = Symbol::short("GRNDBND");
 
 pub struct ArenaStorage;
 
@@ -228,15 +230,61 @@ impl ArenaStorage {
         env.storage().instance().get(&key)
     }
 
-    // ── Platform fee ─────────────────────────────────────────────────────
+    // ── Commit-reveal storage ───────────────────────────────────────────
 
-    /// Returns the current global platform fee in basis points (default 1000 = 10%).
-    pub fn get_platform_fee_bps(env: &Env) -> u32 {
-        env.storage().instance().get(&PLATFORM_FEE_KEY).unwrap_or(1000u32)
+    pub fn save_commit_hash(env: &Env, player: &Address, round: u32, hash: &BytesN<32>) {
+        let key = (Symbol::short("CMT"), player.clone(), round);
+        env.storage().instance().set(&key, hash);
     }
 
-    /// Persist a new global platform fee in basis points.
-    pub fn set_platform_fee_bps(env: &Env, fee_bps: u32) {
-        env.storage().instance().set(&PLATFORM_FEE_KEY, &fee_bps);
+    pub fn load_commit_hash(env: &Env, player: &Address, round: u32) -> Option<BytesN<32>> {
+        let key = (Symbol::short("CMT"), player.clone(), round);
+        env.storage().instance().get(&key)
+    }
+
+    pub fn is_revealed(env: &Env, player: &Address, round: u32) -> bool {
+        let key = (Symbol::short("RVLD"), player.clone(), round);
+        env.storage().instance().get(&key).unwrap_or(false)
+    }
+
+    pub fn set_revealed(env: &Env, player: &Address, round: u32) {
+        let key = (Symbol::short("RVLD"), player.clone(), round);
+        env.storage().instance().set(&key, &true);
+    }
+
+    // ── Pending admin transfer ──────────────────────────────────────────
+
+    pub fn set_pending_admin(env: &Env, admin: &Address) {
+        env.storage().instance().set(&PENDING_ADMIN_KEY, admin);
+    }
+
+    pub fn get_pending_admin(env: &Env) -> Option<Address> {
+        env.storage().instance().get(&PENDING_ADMIN_KEY)
+    }
+
+    pub fn clear_pending_admin(env: &Env) {
+        env.storage().instance().remove(&PENDING_ADMIN_KEY);
+    }
+
+    // ── Round deadline ──────────────────────────────────────────────────
+
+    pub fn set_round_deadline(env: &Env, deadline: u64) {
+        env.storage().instance().set(&ROUND_DEADLINE_KEY, &deadline);
+    }
+
+    pub fn get_round_deadline(env: &Env) -> Option<u64> {
+        env.storage().instance().get(&ROUND_DEADLINE_KEY)
+    }
+
+    // ── Player Profile ──────────────────────────────────────────────────
+
+    pub fn load_player_profile(env: &Env, player: &Address) -> PlayerProfile {
+        let key = (Symbol::short("PROFILE"), player.clone());
+        env.storage().persistent().get(&key).unwrap_or_default()
+    }
+
+    pub fn save_player_profile(env: &Env, player: &Address, profile: &PlayerProfile) {
+        let key = (Symbol::short("PROFILE"), player.clone());
+        env.storage().persistent().set(&key, profile);
     }
 }

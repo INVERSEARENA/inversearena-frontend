@@ -85,3 +85,12 @@ test("GET /api/arenas/:id/rounds returns paginated round history", async () => {
   assert.strictEqual(response.body.hasMore, true);
   assert.strictEqual(typeof response.body.cursor, "string");
 });
+
+test("createArenasRouter registers GET /:id/participants only once", () => {
+  const router = createArenasRouter(authMiddleware);
+  const participantRoutes = (router as any).stack.filter(
+    (layer: any) => layer.route?.path === "/:id/participants" && layer.route?.methods?.get,
+  );
+
+  assert.strictEqual(participantRoutes.length, 1);
+});

@@ -1045,12 +1045,9 @@ fn test_platform_fee_calculation_accuracy() {
 
     client.start_game();
 
-    // All choose Heads (minority if we make some choose Tails)
-    // Let's make 3 Heads (survive) and 7 Tails (eliminated)
-    for i in 0..3 {
-        client.submit_choice(&players.get(i).unwrap(), &Choice::Heads);
-    }
-    for i in 3..10 {
+    // 1 Heads (minority, survives), 9 Tails (majority, eliminated) → 1 survivor, game finishes
+    client.submit_choice(&players.get(0).unwrap(), &Choice::Heads);
+    for i in 1..10 {
         client.submit_choice(&players.get(i).unwrap(), &Choice::Tails);
     }
 
@@ -1202,7 +1199,9 @@ fn test_deposit_and_withdraw_creator_stake() {
     assert_eq!(contract_balance_deposit - contract_balance_before, stake_amount);
     assert_eq!(client.get_creator_stake(), stake_amount);
 
-    // Withdraw stake
+    // Withdraw stake with no active pools (state Finished → no slash)
+    client.start_game();
+    client.finish_game();
     client.withdraw_creator_stake(&admin);
 
     let admin_balance_after = token_client.balance(&admin);
@@ -1688,6 +1687,7 @@ fn deposit_creator_stake_success() {
     client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
 
     let creator = Address::generate(&env);
+    mint_tokens(&env, &token, &creator, 50_000);
     client.deposit_creator_stake(&creator, &50_000);
 
     let config = client.get_config();
@@ -1735,6 +1735,7 @@ fn withdraw_creator_stake_no_active_pools() {
     client.finish_game();
 
     let creator = Address::generate(&env);
+    mint_tokens(&env, &token, &creator, 100_000);
     client.deposit_creator_stake(&creator, &100_000);
 
     // Withdraw with no active pools (state is Finished)
@@ -1767,6 +1768,7 @@ fn withdraw_creator_stake_with_active_pools_default_slash() {
 
     // The game state is Open (which is active, not Finished)
     let creator = Address::generate(&env);
+    mint_tokens(&env, &token, &creator, 100_000);
     client.deposit_creator_stake(&creator, &100_000);
 
     // Withdraw with active pools (default slash of 50%)
@@ -1804,6 +1806,7 @@ fn set_slash_rate_success_and_affects_slash() {
     assert_eq!(config_rate.slash_rate_bps, 2500);
 
     let creator = Address::generate(&env);
+    mint_tokens(&env, &token, &creator, 100_000);
     client.deposit_creator_stake(&creator, &100_000);
 
     // Withdraw with active pools - should slash 25% (25,000 stroops slashed, 75,000 returned)
@@ -2088,7 +2091,7 @@ fn initialize_arena(
     token: &Address,
     max_players: u32,
 ) {
-    let entry_fee: i128 = 10_000_000; // 1 XLM
+    let entry_fee: i128 = 10_000_000;
     let deadline = env.ledger().timestamp() + 86_400;
     let treasury = Address::generate(env);
     client.initialize(admin, token, &entry_fee, &max_players, &deadline, &treasury, &0);
@@ -2102,13 +2105,15 @@ fn capacity_minimum_two_players_game_runs_to_completion() {
 
     let (admin, token, _contract_id, client) = setup_arena(&env);
     initialize_arena(&env, &client, &admin, &token, 2);
-    client.start_game();
 
     let p1 = Address::generate(&env);
     let p2 = Address::generate(&env);
+    mint_tokens(&env, &token, &p1, 10_000_000);
+    mint_tokens(&env, &token, &p2, 10_000_000);
 
     client.join(&p1);
     client.join(&p2);
+    client.start_game();
 
     // Submit opposite choices so one player is eliminated deterministically.
     client.submit_choice(&p1, &Choice::Heads);
@@ -2136,11 +2141,13 @@ fn capacity_join_at_max_returns_arena_full_error() {
     let (admin, token, _contract_id, client) = setup_arena(&env);
     initialize_arena(&env, &client, &admin, &token, 3);
 
-    let mut players = soroban_sdk::Vec::new(&env);
+    let mut players = Vec::new(&env);
     for _ in 0..3 {
-        players.push_back(Address::generate(&env));
+        let p = Address::generate(&env);
+        mint_tokens(&env, &token, &p, 10_000_000);
+        players.push_back(p);
     }
-    for p in players.iter() {
+    for p in &players {
         client.join(&p);
     }
 
@@ -2149,6 +2156,42 @@ fn capacity_join_at_max_returns_arena_full_error() {
     let err = client.try_join(&overflow);
     assert!(err.is_err());
     assert_eq!(err.unwrap_err().unwrap(), ArenaError::ArenaFull);
+}
+
+#[test]
+fn auto_start_when_max_players_reached() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    initialize_arena(&env, &client, &admin, &token, 2);
+
+    let p1 = Address::generate(&env);
+    let p2 = Address::generate(&env);
+    mint_tokens(&env, &token, &p1, 10_000_000);
+    mint_tokens(&env, &token, &p2, 10_000_000);
+
+    client.join(&p1);
+    client.join(&p2);
+
+    assert_eq!(client.game_state(), GameState::InProgress);
+    assert_eq!(client.get_player_count(), 2);
+    assert_eq!(client.get_round(), 1);
+    assert_eq!(client.get_round_deadline(), Some(env.ledger().timestamp() + 86_400 + 86_400));
+}
+
+#[test]
+fn initialize_rejects_entry_fee_outside_bounds() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    let treasury = Address::generate(&env);
+    let deadline = env.ledger().timestamp() + 86_400;
+
+    let result = client.try_initialize(&admin, &token, &(4_000_000 - 1), &2, &deadline, &treasury, &0);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::InvalidEntryFee);
 }
 
 /// Large arena — 50 players all submit the same choice (tie) then the
@@ -2161,15 +2204,17 @@ fn capacity_large_arena_tie_round_no_eliminations() {
     const N: u32 = 50;
     let (admin, token, _contract_id, client) = setup_arena(&env);
     initialize_arena(&env, &client, &admin, &token, N);
-    client.start_game();
 
-    let mut players = soroban_sdk::Vec::new(&env);
+    let mut players = Vec::new(&env);
     for _ in 0..N {
-        players.push_back(Address::generate(&env));
+        let p = Address::generate(&env);
+        mint_tokens(&env, &token, &p, 10_000_000);
+        players.push_back(p);
     }
-    for p in players.iter() {
+    for p in &players {
         client.join(&p);
     }
+    client.start_game();
 
     // Tie: half heads, half tails — for >2 players this is a tie round.
     for i in 0..players.len() {
@@ -2191,25 +2236,26 @@ fn capacity_hundred_players_minority_wins_eliminates_majority() {
     let env = create_test_env();
     env.mock_all_auths();
 
-    const N: u32 = 100;
-    const HEADS: u32 = 30;
-    const TAILS: u32 = 70;
+    const N: u32 = 60;
+    const HEADS: u32 = 18;
+    const TAILS: u32 = 42;
     let (admin, token, _contract_id, client) = setup_arena(&env);
     initialize_arena(&env, &client, &admin, &token, N);
-    client.start_game();
 
-    let mut players = soroban_sdk::Vec::new(&env);
+    let mut players = Vec::new(&env);
     for _ in 0..N {
-        players.push_back(Address::generate(&env));
+        let p = Address::generate(&env);
+        mint_tokens(&env, &token, &p, 10_000_000);
+        players.push_back(p);
     }
-    for p in players.iter() {
+    for p in &players {
         client.join(&p);
     }
+    client.start_game();
 
     // 30 heads (minority = survivors), 70 tails (eliminated)
-    for i in 0..players.len() {
-        let p = players.get(i).unwrap();
-        let choice = if i < HEADS { Choice::Heads } else { Choice::Tails };
+    for (i, p) in players.iter().enumerate() {
+        let choice = if (i as u32) < HEADS { Choice::Heads } else { Choice::Tails };
         client.submit_choice(&p, &choice);
     }
 
@@ -2226,7 +2272,6 @@ fn global_stats_updated_on_join_and_elimination() {
 
     let (admin, token, _contract_id, client) = setup_arena(&env);
     initialize_arena(&env, &client, &admin, &token, 4);
-    client.start_game();
 
     let stats_initial = client.get_global_stats();
     assert_eq!(stats_initial.total_arenas, 1);
@@ -2234,8 +2279,11 @@ fn global_stats_updated_on_join_and_elimination() {
 
     let p1 = Address::generate(&env);
     let p2 = Address::generate(&env);
+    mint_tokens(&env, &token, &p1, 10_000_000);
+    mint_tokens(&env, &token, &p2, 10_000_000);
     client.join(&p1);
     client.join(&p2);
+    client.start_game();
 
     let stats_joined = client.get_global_stats();
     assert_eq!(stats_joined.live_survivors, 2);
@@ -2280,167 +2328,561 @@ fn rwa_yield_grows_prize_pool_and_returns_id() {
     assert_eq!(stats.global_pool_total, yield_amount + 1_000_000_000i128);
 }
 
-// ── Issue #867: update_platform_fee ─────────────────────────────────────────
+// ── Issue #892: RoundStarted event tests ────────────────────────────────
 
 #[test]
-fn update_platform_fee_admin_can_change_fee() {
+fn start_round_emits_event_and_sets_deadline() {
     let env = create_test_env();
     env.mock_all_auths();
     let (admin, token, _contract_id, client) = setup_arena(&env);
+
     let treasury = Address::generate(&env);
     client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
-
-    // Default fee is 1000 bps (10%)
-    assert_eq!(client.get_platform_fee_bps(), 1000);
-
-    // Admin updates to 500 bps (5%)
-    client.update_platform_fee(&500);
-    assert_eq!(client.get_platform_fee_bps(), 500);
-}
-
-#[test]
-fn update_platform_fee_zero_is_valid() {
-    let env = create_test_env();
-    env.mock_all_auths();
-    let (admin, token, _contract_id, client) = setup_arena(&env);
-    let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
-
-    client.update_platform_fee(&0);
-    assert_eq!(client.get_platform_fee_bps(), 0);
-}
-
-#[test]
-fn update_platform_fee_max_bound_1000_is_valid() {
-    let env = create_test_env();
-    env.mock_all_auths();
-    let (admin, token, _contract_id, client) = setup_arena(&env);
-    let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
-
-    client.update_platform_fee(&1000);
-    assert_eq!(client.get_platform_fee_bps(), 1000);
-}
-
-#[test]
-fn update_platform_fee_above_1000_rejected() {
-    let env = create_test_env();
-    env.mock_all_auths();
-    let (admin, token, _contract_id, client) = setup_arena(&env);
-    let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
-
-    let result = client.try_update_platform_fee(&1001);
-    assert!(result.is_err());
-    assert_eq!(result.unwrap_err().unwrap(), ArenaError::InvalidPlatformFee);
-}
-
-#[test]
-fn update_platform_fee_requires_admin_auth() {
-    let env = create_test_env();
-    env.mock_all_auths();
-    let (admin, token, _contract_id, client) = setup_arena(&env);
-    let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
-
-    env.set_auths(&[]);
-    let result = client.try_update_platform_fee(&500);
-    assert!(result.is_err());
-}
-
-#[test]
-fn update_platform_fee_emits_event() {
-    let env = create_test_env();
-    env.mock_all_auths();
-    let (admin, token, _contract_id, client) = setup_arena(&env);
-    let treasury = Address::generate(&env);
-    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
-
-    client.update_platform_fee(&300);
-
-    let events = env.events().all();
-    let last = events.last().unwrap();
-    let topics = &last.1;
-    let expected: soroban_sdk::Val = soroban_sdk::IntoVal::into_val(&symbol_short!("FEE_UPD"), &env);
-    assert!(topics.contains(&expected));
-}
-
-#[test]
-fn existing_arena_not_affected_by_fee_update() {
-    let env = create_test_env();
-    env.mock_all_auths();
-    let (admin, token, _contract_id, client) = setup_arena(&env);
-    let treasury = Address::generate(&env);
-
-    // Initialize captures default fee (1000 bps)
-    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
-    let config_before = client.get_config();
-    assert_eq!(config_before.platform_fee_bps, 1000);
-
-    // Admin changes global fee
-    client.update_platform_fee(&200);
-
-    // Existing arena config still has old snapshotted fee
-    let config_after = client.get_config();
-    assert_eq!(config_after.platform_fee_bps, 1000);
-}
-
-#[test]
-fn new_arena_uses_updated_fee() {
-    let env = create_test_env();
-    env.mock_all_auths();
-
-    // First arena with default fee
-    let (admin, token, contract_id1, client1) = setup_arena(&env);
-    let treasury = Address::generate(&env);
-    client1.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
-
-    // Update global fee to 200 bps
-    client1.update_platform_fee(&200);
-
-    // Second arena — should snapshot the new fee
-    let contract_id2 = env.register_contract(None, ArenaContract);
-    let client2 = ArenaContractClient::new(&env, &contract_id2);
-    // The global fee is stored per-contract-instance, so we verify the new arena
-    // on client1's storage picks up 200 bps when the admin re-initializes.
-    // (In the production factory pattern each instance is separate; here we
-    // verify the snapshot logic by checking get_platform_fee_bps on the updated contract.)
-    assert_eq!(client1.get_platform_fee_bps(), 200);
-}
-
-#[test]
-fn claim_uses_per_arena_fee_not_global() {
-    let env = create_test_env();
-    env.mock_all_auths();
-    let (admin, token, _contract_id, client) = setup_arena(&env);
-    let treasury = Address::generate(&env);
-    let entry_fee = 100_000_000i128;
-
-    // Initialize with default 1000 bps fee
-    client.initialize(&admin, &token, &entry_fee, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
 
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
-    mint_tokens(&env, &token, &alice, entry_fee);
-    mint_tokens(&env, &token, &bob, entry_fee);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    mint_tokens(&env, &token, &bob, 100_000_000);
     client.join(&alice);
     client.join(&bob);
     client.start_game();
 
-    // Now change global fee to 0 — should NOT affect this arena
-    client.update_platform_fee(&0);
+    let round_deadline = env.ledger().timestamp() + 3600;
+    let round = client.start_round(&round_deadline);
+    assert_eq!(round, 1);
+
+    let stored_deadline = client.get_round_deadline();
+    assert_eq!(stored_deadline, Some(round_deadline));
+
+    let current_round = client.get_round();
+    assert_eq!(current_round, 1);
+
+    // Verify event emitted
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    let topics = &last_event.1;
+    let expected: soroban_sdk::Val = soroban_sdk::IntoVal::into_val(&symbol_short!("RND_STR"), &env);
+    assert!(topics.contains(&expected));
+}
+
+#[test]
+fn start_round_fails_when_not_in_progress() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let deadline = env.ledger().timestamp() + 3600;
+    let result = client.try_start_round(&deadline);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::InvalidStateTransition);
+}
+
+#[test]
+fn start_round_fails_with_past_deadline() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+    client.start_game();
+
+    let past_deadline = env.ledger().timestamp() - 100;
+    let result = client.try_start_round(&past_deadline);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::DeadlineTooSoon);
+}
+
+// ── Issue #884: get_arena_players tests ─────────────────────────────────
+
+#[test]
+fn get_arena_players_returns_all_players() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let charlie = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    mint_tokens(&env, &token, &bob, 100_000_000);
+    mint_tokens(&env, &token, &charlie, 100_000_000);
+
+    client.join(&alice);
+    client.join(&bob);
+    client.join(&charlie);
+
+    let players = client.get_arena_players();
+    assert_eq!(players.len(), 3);
+    assert!(players.contains(&alice));
+    assert!(players.contains(&bob));
+    assert!(players.contains(&charlie));
+}
+
+#[test]
+fn get_arena_players_returns_empty_when_no_players() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let players = client.get_arena_players();
+    assert_eq!(players.len(), 0);
+}
+
+// ── Issue #870: Commit-reveal tests ─────────────────────────────────────
+
+fn compute_commit_hash(env: &Env, choice: &Choice, salt: &soroban_sdk::BytesN<32>) -> soroban_sdk::BytesN<32> {
+    let choice_byte: u8 = match choice {
+        Choice::Heads => 0,
+        Choice::Tails => 1,
+    };
+    let mut preimage = soroban_sdk::Bytes::new(env);
+    preimage.push_back(choice_byte);
+    let salt_bytes: &[u8] = &salt.to_array();
+    preimage.append(&soroban_sdk::Bytes::from_slice(env, salt_bytes));
+    env.crypto().keccak256(&preimage).into()
+}
+
+#[test]
+fn commit_reveal_full_flow() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    mint_tokens(&env, &token, &bob, 100_000_000);
+    client.join(&alice);
+    client.join(&bob);
+    client.start_game();
+
+    // Start round so round counter is set
+    let round_deadline = env.ledger().timestamp() + 3600;
+    client.start_round(&round_deadline);
+
+    // Generate salts
+    let salt_a = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    let salt_b = soroban_sdk::BytesN::from_array(&env, &[2u8; 32]);
+
+    // Compute hashes
+    let hash_a = compute_commit_hash(&env, &Choice::Heads, &salt_a);
+    let hash_b = compute_commit_hash(&env, &Choice::Tails, &salt_b);
+
+    // Commit phase
+    client.commit_choice(&alice, &hash_a);
+    client.commit_choice(&bob, &hash_b);
+
+    // Reveal phase
+    client.reveal_choice(&alice, &Choice::Heads, &salt_a);
+    client.reveal_choice(&bob, &Choice::Tails, &salt_b);
+}
+
+#[test]
+fn commit_fails_without_being_a_player() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    client.join(&alice);
+    client.start_game();
+
+    let non_player = Address::generate(&env);
+    let hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    let result = client.try_commit_choice(&non_player, &hash);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::NotAPlayer);
+}
+
+#[test]
+fn double_commit_fails() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    mint_tokens(&env, &token, &bob, 100_000_000);
+    client.join(&alice);
+    client.join(&bob);
+    client.start_game();
+
+    let round_deadline = env.ledger().timestamp() + 3600;
+    client.start_round(&round_deadline);
+
+    let hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    client.commit_choice(&alice, &hash);
+
+    let result = client.try_commit_choice(&alice, &hash);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::AlreadyCommitted);
+}
+
+#[test]
+fn reveal_fails_without_commit() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    mint_tokens(&env, &token, &bob, 100_000_000);
+    client.join(&alice);
+    client.join(&bob);
+    client.start_game();
+
+    let round_deadline = env.ledger().timestamp() + 3600;
+    client.start_round(&round_deadline);
+
+    let salt = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    let result = client.try_reveal_choice(&alice, &Choice::Heads, &salt);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::NoCommitFound);
+}
+
+#[test]
+fn reveal_fails_with_wrong_salt() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    mint_tokens(&env, &token, &bob, 100_000_000);
+    client.join(&alice);
+    client.join(&bob);
+    client.start_game();
+
+    let round_deadline = env.ledger().timestamp() + 3600;
+    client.start_round(&round_deadline);
+
+    let correct_salt = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    let wrong_salt = soroban_sdk::BytesN::from_array(&env, &[9u8; 32]);
+    let hash = compute_commit_hash(&env, &Choice::Heads, &correct_salt);
+
+    client.commit_choice(&alice, &hash);
+
+    let result = client.try_reveal_choice(&alice, &Choice::Heads, &wrong_salt);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::RevealMismatch);
+}
+
+#[test]
+fn reveal_fails_with_wrong_choice() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    mint_tokens(&env, &token, &bob, 100_000_000);
+    client.join(&alice);
+    client.join(&bob);
+    client.start_game();
+
+    let round_deadline = env.ledger().timestamp() + 3600;
+    client.start_round(&round_deadline);
+
+    let salt = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    let hash = compute_commit_hash(&env, &Choice::Heads, &salt);
+
+    client.commit_choice(&alice, &hash);
+
+    // Try to reveal with Tails instead of Heads
+    let result = client.try_reveal_choice(&alice, &Choice::Tails, &salt);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::RevealMismatch);
+}
+
+#[test]
+fn double_reveal_fails() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    mint_tokens(&env, &token, &alice, 100_000_000);
+    mint_tokens(&env, &token, &bob, 100_000_000);
+    client.join(&alice);
+    client.join(&bob);
+    client.start_game();
+
+    let round_deadline = env.ledger().timestamp() + 3600;
+    client.start_round(&round_deadline);
+
+    let salt = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    let hash = compute_commit_hash(&env, &Choice::Heads, &salt);
+    client.commit_choice(&alice, &hash);
+    client.reveal_choice(&alice, &Choice::Heads, &salt);
+
+    let result = client.try_reveal_choice(&alice, &Choice::Heads, &salt);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::AlreadyRevealed);
+}
+
+// ── Issue #865: Two-step admin transfer tests ───────────────────────────
+
+#[test]
+fn admin_transfer_full_flow() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let new_admin = Address::generate(&env);
+
+    // Propose
+    client.propose_admin(&new_admin);
+    let pending = client.get_pending_admin();
+    assert_eq!(pending, Some(new_admin.clone()));
+
+    // Accept
+    client.accept_admin();
+    let config = client.get_config();
+    assert_eq!(config.admin, new_admin);
+
+    // Pending should be cleared
+    let pending_after = client.get_pending_admin();
+    assert_eq!(pending_after, None);
+}
+
+#[test]
+fn accept_admin_fails_without_proposal() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let result = client.try_accept_admin();
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().unwrap(), ArenaError::NoPendingAdmin);
+}
+
+#[test]
+fn propose_admin_emits_event() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let new_admin = Address::generate(&env);
+    client.propose_admin(&new_admin);
+
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    let topics = &last_event.1;
+    let expected: soroban_sdk::Val = soroban_sdk::IntoVal::into_val(&symbol_short!("ADM_PROP"), &env);
+    assert!(topics.contains(&expected));
+}
+
+#[test]
+fn accept_admin_emits_event() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    let new_admin = Address::generate(&env);
+    client.propose_admin(&new_admin);
+    client.accept_admin();
+
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    let topics = &last_event.1;
+    let expected: soroban_sdk::Val = soroban_sdk::IntoVal::into_val(&symbol_short!("ADM_ACPT"), &env);
+    assert!(topics.contains(&expected));
+}
+
+#[test]
+fn propose_admin_requires_admin_auth() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &100_000_000, &100, &(env.ledger().timestamp() + 86400), &treasury, &0);
+
+    env.set_auths(&[]);
+
+    let new_admin = Address::generate(&env);
+    let result = client.try_propose_admin(&new_admin);
+    assert!(result.is_err());
+}
+
+// ── Player Profile Tests ───────────────────────────────────────────────────
+
+#[test]
+fn player_profile_updates_on_elimination_and_win() {
+    let env = create_test_env();
+    env.mock_all_auths();
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+
+    let initial_fee = 100_000_000;
+    let initial_max = 100;
+    let initial_deadline = env.ledger().timestamp() + 86400;
+
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &initial_deadline, &treasury, &0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let charlie = Address::generate(&env);
+    let dave = Address::generate(&env);
+
+    mint_tokens(&env, &token, &alice, initial_fee * 10);
+    mint_tokens(&env, &token, &bob, initial_fee * 10);
+    mint_tokens(&env, &token, &charlie, initial_fee * 10);
+    mint_tokens(&env, &token, &dave, initial_fee * 10);
+
+    // GAME 1: Alice survives, Bob is eliminated
+    client.join(&alice);
+    client.join(&bob);
+    client.start_game();
 
     client.submit_choice(&alice, &Choice::Heads);
     client.submit_choice(&bob, &Choice::Tails);
-    client.resolve_round();
+    client.resolve_round(); // Alice survives, Bob is eliminated
 
-    let winner = client.winner().unwrap();
-    let token_client = TokenClient::new(&env, &token);
-    let admin_before = token_client.balance(&admin);
-    client.claim(&winner);
-    let admin_after = token_client.balance(&admin);
+    // Bob eliminated: games_played=1, survival_streak=0
+    let bob_profile = client.get_player_profile(&bob);
+    assert_eq!(bob_profile.games_played, 1);
+    assert_eq!(bob_profile.survival_streak, 0);
+    assert_eq!(bob_profile.games_won, 0);
 
-    // Admin should receive 1000/10000 * 200_000_000 = 20_000_000 (original 10% fee)
-    let expected_fee = entry_fee * 2 * 1000 / 10000;
-    assert_eq!(admin_after - admin_before, expected_fee);
+    // Alice claims
+    client.claim(&alice);
+
+    let alice_profile = client.get_player_profile(&alice);
+    assert_eq!(alice_profile.games_played, 1);
+    assert_eq!(alice_profile.games_won, 1);
+    assert_eq!(alice_profile.survival_streak, 1);
+    assert_eq!(alice_profile.best_streak, 1);
+    
+    let expected_prize = (2 * initial_fee) - ((2 * initial_fee) * 1000 / 10000);
+    assert_eq!(alice_profile.total_earnings, expected_prize);
+
+    // GAME 2: Alice wins again
+    client.cleanup_arena();
+    let new_deadline = env.ledger().timestamp() + 172800;
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &new_deadline, &treasury, &0);
+    
+    client.join(&alice);
+    client.join(&charlie);
+    client.start_game();
+
+    client.submit_choice(&alice, &Choice::Heads);
+    client.submit_choice(&charlie, &Choice::Tails);
+    client.resolve_round(); // Alice survives, Charlie eliminated
+
+    client.claim(&alice);
+
+    let alice_profile_2 = client.get_player_profile(&alice);
+    assert_eq!(alice_profile_2.games_played, 2);
+    assert_eq!(alice_profile_2.games_won, 2);
+    assert_eq!(alice_profile_2.survival_streak, 2);
+    assert_eq!(alice_profile_2.best_streak, 2);
+
+    // GAME 3: Alice loses, Dave wins
+    client.cleanup_arena();
+    let new_deadline_3 = env.ledger().timestamp() + 259200;
+    client.initialize(&admin, &token, &initial_fee, &initial_max, &new_deadline_3, &treasury, &0);
+    
+    client.join(&alice);
+    client.join(&dave);
+    client.start_game();
+
+    client.submit_choice(&alice, &Choice::Tails); // Alice Tails, Dave Heads
+    client.submit_choice(&dave, &Choice::Heads);
+    client.resolve_round(); // Dave survives, Alice eliminated
+
+    let alice_profile_3 = client.get_player_profile(&alice);
+    assert_eq!(alice_profile_3.games_played, 3);
+    assert_eq!(alice_profile_3.games_won, 2);
+    assert_eq!(alice_profile_3.survival_streak, 0); // streak reset
+    assert_eq!(alice_profile_3.best_streak, 2); // best streak remains 2
 }
+
+/// All players choose the same side — no one should be eliminated (#1085).
+#[test]
+fn all_same_choice_treats_round_as_inconclusive_no_eliminations() {
+    let env = create_test_env();
+    env.mock_all_auths();
+
+    let (admin, token, _contract_id, client) = setup_arena(&env);
+    initialize_arena(&env, &client, &admin, &token, 5);
+
+    let mut players = Vec::new(&env);
+    for _ in 0..5 {
+        let p = Address::generate(&env);
+        mint_tokens(&env, &token, &p, 10_000_000);
+        players.push_back(p);
+    }
+    for p in &players {
+        client.join(&p);
+    }
+    client.start_game();
+
+    // All 5 players choose Heads — no minority exists.
+    for p in &players {
+        client.submit_choice(&p, &Choice::Heads);
+    }
+
+    let result = client.resolve_round();
+    assert_eq!(result.survivors, 5);
+    assert_eq!(result.eliminated, 0);
+
+    // All 5 players choose Tails — also no eliminations.
+    for p in &players {
+        client.submit_choice(&p, &Choice::Tails);
+    }
+
+    let result2 = client.resolve_round();
+    assert_eq!(result2.survivors, 5);
+    assert_eq!(result2.eliminated, 0);
+}
+

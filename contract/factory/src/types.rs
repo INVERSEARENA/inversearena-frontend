@@ -7,6 +7,29 @@ pub struct PoolConfig {
     pub yield_vault: Address,
     pub entry_fee: i128,
     pub oracle_contract: Address,
+    pub min_players: u32,
+    pub max_players: u32,
+    pub round_duration: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArenaStatus {
+    Pending,
+    Active,
+    Finished,
+    Cancelled,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArenaMetadata {
+    pub arena_address: Address,
+    pub pool_id: u32,
+    pub host: Address,
+    pub entry_fee: i128,
+    pub status: ArenaStatus,
+    pub created_at: u64,
 }
 
 #[contracterror]
@@ -21,4 +44,12 @@ pub enum FactoryError {
     StakeBelowMinimum = 7,
     HostNotWhitelisted = 8,
     WasmHashNotSet = 9,
+    PoolLimitReached = 10,
+    InvalidVault = 11,
+    InvalidOracle = 12,
+    MaxActivePoolsReached = 13,
+    PoolNotFound = 14,
+    ContractPaused = 15,
+    UnsupportedToken = 16,
+    EntryFeeTooLow = 17,
 }

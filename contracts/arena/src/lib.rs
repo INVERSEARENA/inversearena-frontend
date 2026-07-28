@@ -10,12 +10,12 @@ mod admin;
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Env, String, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, BytesN, Env, String, Symbol, Vec};
 use storage::ArenaStorage;
-use types::{ArenaConfig, GameState, Choice, GlobalStats, RoundResult, RwaYieldRecord};
+use types::{ArenaConfig, GameState, Choice, GlobalStats, RoundResult, RwaYieldRecord, PlayerProfile};
 use events::ArenaEvents;
 use errors::ArenaError;
-use validation::{validate_deadline, validate_entry_fee};
+use validation::{validate_deadline, validate_entry_fee, validate_max_players};
 
 #[contract]
 pub struct ArenaContract;
@@ -36,6 +36,7 @@ impl ArenaContract {
         validate_entry_fee(entry_fee)?;
         let now = env.ledger().timestamp();
         validate_deadline(join_deadline, now)?;
+        validate_max_players(max_players)?;
 
         // Check rate limiting cooldown (admin bypasses cooldown)
         if let Ok(existing_config) = ArenaStorage::load_config(&env) {
@@ -47,6 +48,10 @@ impl ArenaContract {
                     }
                 }
             }
+        }
+
+        if entry_fee < 4_000_000 || entry_fee > 1_000_000_000_000 {
+            return Err(ArenaError::InvalidEntryFee);
         }
 
         // Create initial configuration
@@ -242,6 +247,20 @@ impl ArenaContract {
         Ok(())
     }
 
+    /// Update global round duration bounds (applies to future arenas only)
+    pub fn update_round_bounds(env: Env, min: u64, max: u64) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+
+        if min < 10 || max > 2_592_000 || min >= max {
+            return Err(ArenaError::InvalidRoundBounds);
+        }
+
+        ArenaStorage::set_global_round_bounds(&env, min, max);
+        ArenaEvents::round_bounds_updated(&env, &config.admin, min, max);
+        Ok(())
+    }
+
     /// Get the current treasury address
     pub fn treasury(env: Env) -> Result<Address, ArenaError> {
         let config = ArenaStorage::load_config(&env)?;
@@ -286,6 +305,14 @@ impl ArenaContract {
         ArenaStorage::set_prize_pool(&env, current_pool.saturating_add(config.entry_fee));
 
         ArenaEvents::player_joined(&env, &player);
+
+        if config.player_count >= config.max_players {
+            let round_deadline = config.join_deadline.saturating_add(86_400);
+            ArenaStorage::set_round_deadline(&env, round_deadline);
+            ArenaStorage::set_round(&env, 1);
+            ArenaEvents::round_started(&env, 1, round_deadline);
+        }
+
         Ok(())
     }
 
@@ -348,6 +375,11 @@ impl ArenaContract {
                     ArenaStorage::set_player_active(&env, &player, false);
                     eliminated += 1;
                     ArenaEvents::player_eliminated(&env, &player);
+
+                    let mut profile = ArenaStorage::load_player_profile(&env, &player);
+                    profile.games_played = profile.games_played.saturating_add(1);
+                    profile.survival_streak = 0;
+                    ArenaStorage::save_player_profile(&env, &player, &profile);
                 } else {
                     active_players.push_back(player.clone());
                 }
@@ -366,7 +398,12 @@ impl ArenaContract {
 
         let active_count = active_players.len();
 
-        if heads_count == tails_count {
+        if heads_count == 0 || tails_count == 0 {
+            // All active players chose the same side — no minority to eliminate.
+            // Treat as an inconclusive round with no eliminations so the prize
+            // pool is not locked with zero winners (#1085).
+            survivors = active_count;
+        } else if heads_count == tails_count {
             if active_count == 2 {
                 // Break tie for exactly 2 players: Heads survives, Tails eliminated
                 for player in active_players.iter() {
@@ -376,6 +413,11 @@ impl ArenaContract {
                                 ArenaStorage::set_player_active(&env, &player, false);
                                 eliminated += 1;
                                 ArenaEvents::player_eliminated(&env, &player);
+
+                                let mut profile = ArenaStorage::load_player_profile(&env, &player);
+                                profile.games_played = profile.games_played.saturating_add(1);
+                                profile.survival_streak = 0;
+                                ArenaStorage::save_player_profile(&env, &player, &profile);
                             }
                             Choice::Heads => {
                                 survivors += 1;
@@ -401,6 +443,11 @@ impl ArenaContract {
                         ArenaStorage::set_player_active(&env, &player, false);
                         eliminated += 1;
                         ArenaEvents::player_eliminated(&env, &player);
+
+                        let mut profile = ArenaStorage::load_player_profile(&env, &player);
+                        profile.games_played = profile.games_played.saturating_add(1);
+                        profile.survival_streak = 0;
+                        ArenaStorage::save_player_profile(&env, &player, &profile);
                     } else {
                         survivors += 1;
                     }
@@ -493,6 +540,16 @@ impl ArenaContract {
 
         ArenaEvents::prize_claimed(&env, &winner);
 
+        let mut profile = ArenaStorage::load_player_profile(&env, &winner);
+        profile.games_played = profile.games_played.saturating_add(1);
+        profile.games_won = profile.games_won.saturating_add(1);
+        profile.total_earnings = profile.total_earnings.saturating_add(prize);
+        profile.survival_streak = profile.survival_streak.saturating_add(1);
+        if profile.survival_streak > profile.best_streak {
+            profile.best_streak = profile.survival_streak;
+        }
+        ArenaStorage::save_player_profile(&env, &winner, &profile);
+
         Ok(())
     }
 
@@ -581,7 +638,7 @@ impl ArenaContract {
         creator.require_auth();
 
         if amount <= 0 {
-            return Err(ArenaError::InvalidEntryFee);
+            return Err(ArenaError::InvalidStakeAmount);
         }
 
         if ArenaStorage::load_creator_stake(&env) > 0 {
@@ -595,6 +652,12 @@ impl ArenaContract {
         token.transfer(&creator, &env.current_contract_address(), &amount);
 
         ArenaStorage::save_creator_stake(&env, amount);
+
+        // Update config's creator_stake field for consistency
+        if let Ok(mut config) = ArenaStorage::load_config(&env) {
+            config.creator_stake = amount;
+            ArenaStorage::save_config(&env, &config);
+        }
 
         ArenaEvents::creator_stake_deposited(&env, &creator, amount, amount);
         Ok(())
@@ -627,6 +690,12 @@ impl ArenaContract {
         token.transfer(&env.current_contract_address(), &creator, &withdrawn);
 
         ArenaStorage::save_creator_stake(&env, 0);
+
+        // Sync config.creator_stake to 0
+        if let Ok(mut config) = ArenaStorage::load_config(&env) {
+            config.creator_stake = 0;
+            ArenaStorage::save_config(&env, &config);
+        }
 
         if slashed > 0 {
             ArenaEvents::stake_slashed(&env, &creator, slashed, withdrawn);
@@ -691,6 +760,10 @@ impl ArenaContract {
         ArenaStorage::load_global_stats(&env)
     }
 
+    pub fn get_player_profile(env: Env, player: Address) -> PlayerProfile {
+        ArenaStorage::load_player_profile(&env, &player)
+    }
+
     /// Receive a yield deposit from an external RWA adapter and grow the
     /// prize pool. The adapter contract must authorize the call.
     ///
@@ -728,6 +801,185 @@ impl ArenaContract {
         ArenaEvents::rwa_yield_received(&env, yield_amount);
 
         Ok(record.id)
+    }
+
+    // ── Issue #892: Start round with event emission ───────────────────
+
+    /// Start a new round with a deadline timestamp.
+    /// Emits a RoundStarted event with the round number and deadline.
+    pub fn start_round(env: Env, deadline: u64) -> Result<u32, ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+
+        Self::require_not_paused(&config)?;
+
+        if config.state != GameState::InProgress {
+            return Err(ArenaError::InvalidStateTransition);
+        }
+
+        let now = env.ledger().timestamp();
+        validate_deadline(deadline, now)?;
+
+        let current_arena_id = ArenaStorage::load_global_stats(&env).total_arenas;
+        let (min_duration, max_duration) = ArenaStorage::get_arena_round_bounds(&env, current_arena_id);
+        let duration = deadline.saturating_sub(now);
+
+        if duration < min_duration || duration > max_duration {
+            return Err(ArenaError::InvalidRoundDuration);
+        }
+
+        let round = ArenaStorage::get_round(&env) + 1;
+        ArenaStorage::set_round(&env, round);
+        ArenaStorage::set_round_deadline(&env, deadline);
+
+        ArenaEvents::round_started(&env, round, deadline);
+
+        Ok(round)
+    }
+
+    /// Get current round number
+    pub fn get_round(env: Env) -> u32 {
+        ArenaStorage::get_round(&env)
+    }
+
+    /// Get current round deadline
+    pub fn get_round_deadline(env: Env) -> Option<u64> {
+        ArenaStorage::get_round_deadline(&env)
+    }
+
+    // ── Issue #884: Get all players in an arena ─────────────────────────
+
+    /// Return all player addresses registered in this arena.
+    pub fn get_arena_players(env: Env) -> Vec<Address> {
+        ArenaStorage::load_all_players(&env)
+    }
+
+    // ── Issue #870: Commit-reveal scheme ────────────────────────────────
+
+    /// Submit a hashed commitment for the current round.
+    /// The hash should be keccak256(choice || salt) computed off-chain.
+    pub fn commit_choice(env: Env, player: Address, hash: BytesN<32>) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+
+        Self::require_not_paused(&config)?;
+
+        if config.state != GameState::InProgress {
+            return Err(ArenaError::InvalidStateTransition);
+        }
+
+        let players = ArenaStorage::load_all_players(&env);
+        if !players.contains(&player) {
+            return Err(ArenaError::NotAPlayer);
+        }
+        if !ArenaStorage::is_player_active(&env, &player) {
+            return Err(ArenaError::PlayerEliminated);
+        }
+
+        player.require_auth();
+
+        let round = ArenaStorage::get_round(&env);
+
+        if ArenaStorage::load_commit_hash(&env, &player, round).is_some() {
+            return Err(ArenaError::AlreadyCommitted);
+        }
+
+        ArenaStorage::save_commit_hash(&env, &player, round, &hash);
+
+        ArenaEvents::commit_submitted(&env, &player);
+
+        Ok(())
+    }
+
+    /// Reveal a previously committed choice by providing the original choice and salt.
+    /// The contract verifies keccak256(choice || salt) matches the stored hash.
+    pub fn reveal_choice(env: Env, player: Address, choice: Choice, salt: BytesN<32>) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+
+        Self::require_not_paused(&config)?;
+
+        if config.state != GameState::InProgress {
+            return Err(ArenaError::InvalidStateTransition);
+        }
+
+        let players = ArenaStorage::load_all_players(&env);
+        if !players.contains(&player) {
+            return Err(ArenaError::NotAPlayer);
+        }
+        if !ArenaStorage::is_player_active(&env, &player) {
+            return Err(ArenaError::PlayerEliminated);
+        }
+
+        player.require_auth();
+
+        let round = ArenaStorage::get_round(&env);
+
+        let stored_hash = ArenaStorage::load_commit_hash(&env, &player, round)
+            .ok_or(ArenaError::NoCommitFound)?;
+
+        if ArenaStorage::is_revealed(&env, &player, round) {
+            return Err(ArenaError::AlreadyRevealed);
+        }
+
+        // Reconstruct hash: keccak256(choice_byte || salt)
+        let choice_byte: u8 = match choice {
+            Choice::Heads => 0,
+            Choice::Tails => 1,
+        };
+
+        let mut preimage = soroban_sdk::Bytes::new(&env);
+        preimage.push_back(choice_byte);
+        let salt_bytes: &[u8] = &salt.to_array();
+        preimage.append(&soroban_sdk::Bytes::from_slice(&env, salt_bytes));
+
+        let computed_hash: BytesN<32> = env.crypto().keccak256(&preimage).into();
+
+        if computed_hash != stored_hash {
+            return Err(ArenaError::RevealMismatch);
+        }
+
+        ArenaStorage::save_player_choice(&env, &player, &choice);
+        ArenaStorage::set_revealed(&env, &player, round);
+
+        ArenaEvents::reveal_submitted(&env, &player);
+
+        Ok(())
+    }
+
+    // ── Issue #865: Two-step admin transfer ─────────────────────────────
+
+    /// Propose a new admin. Only the current admin can call this.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+
+        ArenaStorage::set_pending_admin(&env, &new_admin);
+
+        ArenaEvents::admin_transfer_proposed(&env, &config.admin, &new_admin);
+
+        Ok(())
+    }
+
+    /// Accept the admin role. Only the proposed admin can call this.
+    pub fn accept_admin(env: Env) -> Result<(), ArenaError> {
+        let mut config = ArenaStorage::load_config(&env)?;
+
+        let pending = ArenaStorage::get_pending_admin(&env)
+            .ok_or(ArenaError::NoPendingAdmin)?;
+
+        pending.require_auth();
+
+        config.admin = pending.clone();
+        ArenaStorage::save_config(&env, &config);
+        ArenaStorage::clear_pending_admin(&env);
+
+        ArenaEvents::admin_transfer_accepted(&env, &pending);
+
+        Ok(())
+    }
+
+    /// Get the pending admin address, if any
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        ArenaStorage::get_pending_admin(&env)
     }
 
     fn require_not_paused(config: &ArenaConfig) -> Result<(), ArenaError> {

@@ -375,11 +375,21 @@ export class PaymentService {
     }
 
     const args = invoke.args();
-    const destination = String(scValToNative(args[0]!));
+    if (args.length !== 5) {
+      throw new Error("Signed transaction must have exactly 5 contract arguments");
+    }
+
+    // distribute_winnings(payout_id: u64, winner: Address, amount: i128, asset: Symbol, nonce: u64)
+    // args[0] = payout_id (skipped in validation)
+    // args[1] = winner (destination address)
+    // args[2] = amount
+    // args[3] = asset (skipped in validation)
+    // args[4] = nonce (skipped in validation)
+    const destination = Address.fromScAddress(scValToNative(args[1]!)).toString();
     if (destination !== transaction.destinationAccount) {
       throw new Error("Signed transaction destination does not match the payout record");
     }
-    const amount = String(scValToNative(args[1]!));
+    const amount = String(scValToNative(args[2]!));
     if (amount !== transaction.amountStroops) {
       throw new Error("Signed transaction amount does not match the payout record");
     }
@@ -400,11 +410,12 @@ export class PaymentService {
     const contract = new Contract(this.config.payoutContractId);
     const amountStroops = toStroops(request.amount);
 
+    // The payout token is fixed by the contract at initialize time — there is
+    // no per-call asset argument, so `request.asset` is not forwarded here.
     const operation = contract.call(
       this.config.payoutMethodName,
       new Address(request.destinationAccount).toScVal(),
       nativeToScVal(BigInt(amountStroops), { type: "i128" }),
-      nativeToScVal(request.asset),
       nativeToScVal(BigInt(nonce), { type: "u64" }),
       nativeToScVal(request.payoutId)
     );

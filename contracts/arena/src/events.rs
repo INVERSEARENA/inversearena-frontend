@@ -98,8 +98,33 @@ impl ArenaEvents {
         env.events().publish((symbol_short!("RWAYLD"),), amount);
     }
 
-    /// Emit platform fee updated event
-    pub fn platform_fee_updated(env: &Env, admin: &Address, new_fee_bps: u32) {
-        env.events().publish((symbol_short!("FEE_UPD"), admin.clone()), new_fee_bps);
+    /// Emit round started event with round number and deadline
+    pub fn round_started(env: &Env, round: u32, deadline: u64) {
+        env.events().publish((symbol_short!("RND_STR"),), (round, deadline));
+    }
+
+    /// Emit commit submitted event (commit-reveal scheme)
+    pub fn commit_submitted(env: &Env, player: &Address) {
+        env.events().publish((symbol_short!("COMMIT"),), player);
+    }
+
+    /// Emit reveal submitted event (commit-reveal scheme)
+    pub fn reveal_submitted(env: &Env, player: &Address) {
+        env.events().publish((symbol_short!("REVEAL"),), player);
+    }
+
+    /// Emit admin transfer proposed event
+    pub fn admin_transfer_proposed(env: &Env, current_admin: &Address, proposed_admin: &Address) {
+        env.events().publish((symbol_short!("ADM_PROP"), current_admin.clone()), proposed_admin);
+    }
+
+    /// Emit admin transfer accepted event
+    pub fn admin_transfer_accepted(env: &Env, new_admin: &Address) {
+        env.events().publish((symbol_short!("ADM_ACPT"),), new_admin);
+    }
+
+    /// Emit round bounds updated event
+    pub fn round_bounds_updated(env: &Env, admin: &Address, min: u64, max: u64) {
+        env.events().publish((symbol_short!("RNBND"), admin.clone()), (min, max));
     }
 }

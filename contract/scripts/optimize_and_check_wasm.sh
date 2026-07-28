@@ -13,6 +13,25 @@ BUDGET=65536
 echo "Building WASM artifacts..."
 cargo build --target wasm32-unknown-unknown --release
 
+# Optimise WASM with wasm-opt (binaryen) if available.
+if ! command -v wasm-opt &>/dev/null; then
+  echo "wasm-opt not found, attempting to install binaryen (v121)..."
+  BINARYEN_DIR="/tmp/binaryen"
+  if [ ! -f "$BINARYEN_DIR/bin/wasm-opt" ]; then
+    mkdir -p "$BINARYEN_DIR"
+    curl -sL "https://github.com/WebAssembly/binaryen/releases/download/version_121/binaryen-version_121-x86_64-linux.tar.gz" | tar xz -C "$BINARYEN_DIR" --strip-components=1
+  fi
+  export PATH="$BINARYEN_DIR/bin:$PATH"
+fi
+
+if command -v wasm-opt &>/dev/null; then
+  echo "Optimising WASM artifacts with wasm-opt -Oz..."
+  for wasm in "$WASM_DIR"/*.wasm; do
+    [[ -f "$wasm" ]] || continue
+    wasm-opt -Oz --enable-bulk-memory-opt "$wasm" -o "$wasm" && echo "  optimised $(basename "$wasm")" || echo "  skipped $(basename "$wasm") (wasm-opt failed)"
+  done
+fi
+
 mkdir -p "$METRICS_DIR"
 
 {
