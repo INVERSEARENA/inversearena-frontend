@@ -21,7 +21,6 @@ jest.mock("@/shared-d/utils/soroban-transaction-composer", () => ({
   buildCreatePoolCallOperation: jest.fn(),
   buildJoinCallOperation: jest.fn(),
   buildStakeCallOperation: jest.fn(),
-  buildSubmitChoiceCallOperation: jest.fn(),
 }));
 
 jest.mock("@/shared-d/utils/stellar-scval-extract", () => ({

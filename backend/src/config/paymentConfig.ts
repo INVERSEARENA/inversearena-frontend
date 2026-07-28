@@ -42,6 +42,16 @@ const EnvSchema = z.object({
     .optional()
     .transform((value) => Number(value ?? "20"))
     .pipe(z.number().int().positive()),
+  PAYOUTS_FAILED_RETRY_MAX: z
+    .string()
+    .optional()
+    .transform((value) => Number(value ?? "3"))
+    .pipe(z.number().int().nonnegative()),
+  PAYOUTS_FAILED_RETRY_BASE_MS: z
+    .string()
+    .optional()
+    .transform((value) => Number(value ?? "5000"))
+    .pipe(z.number().int().positive()),
   PAYOUT_METHOD_NAME: z.string().optional(),
   PAYOUT_CONTRACT_ID: stellarContractId,
   PAYOUT_SOURCE_ACCOUNT: stellarAccountId,
@@ -60,6 +70,8 @@ export function getPaymentConfig() {
     PAYOUTS_MAX_ATTEMPTS: process.env.PAYOUTS_MAX_ATTEMPTS,
     PAYOUTS_CONFIRM_POLL_MS: process.env.PAYOUTS_CONFIRM_POLL_MS,
     PAYOUTS_CONFIRM_MAX_POLLS: process.env.PAYOUTS_CONFIRM_MAX_POLLS,
+    PAYOUTS_FAILED_RETRY_MAX: process.env.PAYOUTS_FAILED_RETRY_MAX,
+    PAYOUTS_FAILED_RETRY_BASE_MS: process.env.PAYOUTS_FAILED_RETRY_BASE_MS,
     PAYOUT_METHOD_NAME: process.env.PAYOUT_METHOD_NAME,
     PAYOUT_CONTRACT_ID: process.env.PAYOUT_CONTRACT_ID,
     PAYOUT_SOURCE_ACCOUNT: process.env.PAYOUT_SOURCE_ACCOUNT,
@@ -76,6 +88,8 @@ export function getPaymentConfig() {
     maxAttempts: parsed.PAYOUTS_MAX_ATTEMPTS,
     confirmPollMs: parsed.PAYOUTS_CONFIRM_POLL_MS,
     confirmMaxPolls: parsed.PAYOUTS_CONFIRM_MAX_POLLS,
+    failedRetryMax: parsed.PAYOUTS_FAILED_RETRY_MAX,
+    failedRetryBaseMs: parsed.PAYOUTS_FAILED_RETRY_BASE_MS,
     payoutMethodName: parsed.PAYOUT_METHOD_NAME ?? "distribute_winnings",
     payoutContractId: parsed.PAYOUT_CONTRACT_ID,
     sourceAccount: parsed.PAYOUT_SOURCE_ACCOUNT,

@@ -118,18 +118,16 @@ export class RoundRepository {
     metadata: RoundMetadata,
   ): Promise<void> {
     await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      if (resolution.eliminatedPlayers.length > 0) {
-        await tx.eliminationLog.createMany({
-          data: resolution.eliminatedPlayers.map((userId) => ({
-            roundId,
-            userId,
-            reason: 'ELIMINATED_BY_ROUND',
-          })),
-        });
-      }
-
-      await tx.round.update({
-        where: { id: roundId },
+      // Optimistic lock (#1125): claim the round first with a conditional
+      // UPDATE. Two concurrent resolutions can both pass the service-level
+      // state check at ReadCommitted isolation, but only one of them matches
+      // this guard — the loser sees zero updated rows and aborts before any
+      // elimination logs are written, preventing duplicate records.
+      const claimed = await tx.round.updateMany({
+        where: {
+          id: roundId,
+          state: { in: [RoundState.OPEN, RoundState.CLOSED] },
+        },
         data: {
           state,
           metadata: this.toJsonMetadata({
@@ -139,6 +137,20 @@ export class RoundRepository {
           updatedAt: new Date(),
         },
       });
+
+      if (claimed.count === 0) {
+        throw new Error(`Round ${roundId} was already resolved by a concurrent request`);
+      }
+
+      if (resolution.eliminatedPlayers.length > 0) {
+        await tx.eliminationLog.createMany({
+          data: resolution.eliminatedPlayers.map((userId) => ({
+            roundId,
+            userId,
+            reason: 'ELIMINATED_BY_ROUND',
+          })),
+        });
+      }
     });
   }
 

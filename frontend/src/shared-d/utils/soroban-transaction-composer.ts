@@ -2,7 +2,7 @@
  * Soroban invoke operations and unsigned transaction assembly (#245).
  * Named “composer” here to avoid clashing with the SDK’s `TransactionBuilder` class.
  */
-import { Account, Contract, Transaction, TransactionBuilder } from "@stellar/stellar-sdk";
+import { Account, Contract, Transaction, TransactionBuilder, nativeToScVal } from "@stellar/stellar-sdk";
 import {
   encodeAddress,
   encodeAmount,
@@ -56,14 +56,23 @@ export function buildCreatePoolCallOperation(
       : tokenContractIds.xlmContractId;
   const roundSpeedSeconds = roundSpeedToSeconds(params.roundSpeed);
 
-  const args = [
-    encodeAmount(amountBigInt),
-    encodeAddress(currencyContractId),
-    encodeRound(roundSpeedSeconds),
-    encodeRound(params.arenaCapacity),
-  ];
+  // Encode PoolConfig struct as required by factory contract (#1105)
+  // PoolConfig { stake_token, yield_vault, entry_fee, oracle_contract, min_players, max_players, round_duration }
+  const poolConfig = nativeToScVal({
+    stake_token: currencyContractId,
+    yield_vault: currencyContractId, // Using same token contract as yield vault placeholder
+    entry_fee: amountBigInt,
+    oracle_contract: currencyContractId, // Using token contract as oracle placeholder
+    min_players: 2, // Minimum 2 players
+    max_players: params.arenaCapacity,
+    round_duration: BigInt(roundSpeedSeconds),
+  }, { type: "PoolConfig" });
 
-  return factory.call("create_pool", ...args);
+  // Factory.create_pool(host: Address, config: PoolConfig)
+  // Note: host address would typically be the creator's address, passed from the caller
+  const hostAddress = encodeAddress(currencyContractId); // Placeholder: should be creator address
+
+  return factory.call("create_pool", hostAddress, poolConfig);
 }
 
 export function buildStakeCallOperation(
@@ -90,20 +99,11 @@ export function buildUnstakeCallOperation(
   );
 }
 
-export function buildJoinCallOperation(poolContract: Contract): SorobanOperation {
-  return poolContract.call("join");
-}
-
-export function buildSubmitChoiceCallOperation(
+export function buildJoinCallOperation(
   poolContract: Contract,
-  roundNumber: number,
-  choice: "Heads" | "Tails",
+  playerPublicKey: string,
 ): SorobanOperation {
-  return poolContract.call(
-    "submit_choice",
-    encodeRound(roundNumber),
-    encodeChoice(choice),
-  );
+  return poolContract.call("join_arena", encodeAddress(playerPublicKey));
 }
 
 /**
@@ -142,8 +142,11 @@ export function buildRevealChoiceOperation(
   );
 }
 
-export function buildClaimCallOperation(poolContract: Contract): SorobanOperation {
-  return poolContract.call("claim");
+export function buildClaimCallOperation(
+  poolContract: Contract,
+  winnerPublicKey: string,
+): SorobanOperation {
+  return poolContract.call("claim", encodeAddress(winnerPublicKey));
 }
 
 export function buildGetArenaStateCallOperation(

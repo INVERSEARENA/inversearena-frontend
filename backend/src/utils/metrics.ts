@@ -76,6 +76,13 @@ export const payoutsSuccessTotal = new Counter({
   registers: [register],
 });
 
+export const payoutsDeadLetterTotal = new Counter({
+  name: 'inversearena_payouts_dead_letter_total',
+  help: 'Total payouts moved to dead status after exhausting failed retries',
+  labelNames: ['reason'],
+  registers: [register],
+});
+
 // 0 = closed (healthy), 1 = half-open (probing), 2 = open (failing)
 export const sorobanCircuitBreakerState = new Gauge({
   name: 'inversearena_soroban_circuit_breaker_state',

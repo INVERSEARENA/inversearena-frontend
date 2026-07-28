@@ -76,6 +76,11 @@ export function createApp(deps: AppDependencies): express.Application {
     origin: allowedOrigins.length > 0 ? allowedOrigins : undefined,
     credentials: true,
   }));
+  // Oracle webhook (#1127): enforce a strict body size cap before the default
+  // JSON parser buffers the payload. Mounted ahead of the global parser so
+  // oversized webhook bodies are rejected with 413 at the network layer
+  // instead of being accumulated in memory.
+  app.use("/api/oracle", express.json({ limit: "4kb" }));
   app.use(express.json());
   app.use(requestLogger);
   app.use(requestContextMiddleware);

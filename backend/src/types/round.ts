@@ -19,6 +19,7 @@ export const RoundInputSchema = z.object({
   allActivePlayerIds: z.array(z.string().uuid()).min(1).max(500),
   oracleYield: z.number().finite().min(0).max(100),
   randomSeed: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  arenaContractId: z.string().regex(/^C[A-Z2-7]{55}$/, "must be a valid Stellar contract ID (C...)"),
 });
 
 export interface PlayerChoice {
@@ -33,6 +34,7 @@ export interface RoundInput {
   allActivePlayerIds: string[];
   oracleYield: number;
   randomSeed?: string;
+  arenaContractId: string;
 }
 
 export interface Payout {

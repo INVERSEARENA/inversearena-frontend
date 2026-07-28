@@ -1,8 +1,5 @@
-import { Address, scValToNative } from "@stellar/stellar-sdk";
-// @ts-ignore
-import { rpc } from "@stellar/stellar-sdk";
-const { Server } = rpc;
-import type { PrismaClient, Prisma } from "@prisma/client";
+import { createHash, randomUUID } from "crypto";
+import { PrismaClient, Prisma } from "@prisma/client";
 import type {
   ArenaCreationResult,
   ArenaStreamEvent,
@@ -115,25 +112,32 @@ export class ArenaService {
   }
 
   async getSnapshot(arenaId: string): Promise<ArenaSnapshot> {
-    const arena = await this.prisma.arena.findUnique({
-      where: { id: arenaId },
-      include: {
-        rounds: {
-          orderBy: { roundNumber: "asc" },
+    const [arena, stats] = await this.prisma.$transaction(
+      [
+        this.prisma.arena.findUnique({
+          where: { id: arenaId },
           include: {
-            eliminationLogs: {
-              orderBy: { eliminatedAt: "asc" },
+            rounds: {
+              orderBy: { roundNumber: "asc" },
+              include: {
+                eliminationLogs: {
+                  orderBy: { eliminatedAt: "asc" },
+                },
+              },
             },
           },
-        },
+        }),
+        this.statsService.getArenaStats(arenaId),
+      ],
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
       },
-    });
+    );
 
     if (!arena) {
       throw new Error(`Arena with ID ${arenaId} not found`);
     }
 
-    const stats = await this.statsService.getArenaStats(arenaId);
     const lastRound = arena.rounds.at(-1) ?? null;
     const recentEliminations = arena.rounds.flatMap((round) =>
       round.eliminationLogs.map((log) => ({

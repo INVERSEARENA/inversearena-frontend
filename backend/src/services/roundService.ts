@@ -1,4 +1,8 @@
 import { PrismaClient } from '@prisma/client';
+import { Contract, Keypair, TransactionBuilder, xdr } from "@stellar/stellar-sdk";
+// @ts-ignore
+import { rpc } from "@stellar/stellar-sdk";
+const { Server, Api } = rpc;
 import { RoundRepository } from '../repositories/roundRepository';
 import type { RoundInput, RoundMetadata, RoundResolution, Payout } from '../types/round';
 import { RoundState } from '../types/round';
@@ -16,6 +20,65 @@ export class RoundService {
 
   constructor(private prisma: PrismaClient) {
     this.roundRepo = new RoundRepository(prisma);
+  }
+
+  /**
+   * Build, sign, submit, and confirm a resolve_round call on the arena contract.
+   * Returns the on-chain round number on success.
+   */
+  private async submitOnChainResolve(
+    contractId: string,
+    roundNumber: number,
+  ): Promise<number> {
+    const rpcUrl = process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
+    const passphrase = process.env.STELLAR_NETWORK_PASSPHRASE ?? "Test SDF Network ; September 2015";
+    const signerSecret = process.env.ARENA_ADMIN_SECRET;
+
+    if (!signerSecret) {
+      throw new Error("ARENA_ADMIN_SECRET is not configured. Cannot submit on-chain resolve_round.");
+    }
+
+    const server = new Server(rpcUrl, { allowHttp: false });
+    const signer = Keypair.fromSecret(signerSecret);
+    const sourceAccount = await server.getAccount(signer.publicKey());
+    const contract = new Contract(contractId);
+
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: "100",
+      networkPassphrase: passphrase,
+    })
+      .addOperation(contract.call("resolve_round", xdr.ScVal.scvU32(roundNumber)))
+      .setTimeout(60)
+      .build();
+
+    const simulated = await server.simulateTransaction(tx);
+    if (Api.isSimulationError(simulated)) {
+      throw new Error(`resolve_round simulation failed: ${simulated.error}`);
+    }
+    if (!Api.isSimulationSuccess(simulated)) {
+      throw new Error("resolve_round simulation returned no result");
+    }
+
+    const prepared = Api.assembleTransaction(tx, simulated);
+    prepared.sign(signer);
+
+    const sendResult = await server.sendTransaction(prepared);
+    if (sendResult.status === "PENDING" || sendResult.status === "DUPLICATE") {
+      const hash = sendResult.hash;
+      // Poll for confirmation
+      for (let attempt = 0; attempt < 20; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        const status = await server.getTransaction(hash);
+        if (status.status === "SUCCESS") {
+          return roundNumber;
+        }
+        if (status.status === "FAILED") {
+          throw new Error(`resolve_round transaction failed (${status.errorResultXdr ?? "unknown"})`);
+        }
+      }
+      throw new Error("resolve_round transaction timed out after 20 polls");
+    }
+    throw new Error(`resolve_round send failed: ${sendResult.errorResultXdr ?? sendResult.status}`);
   }
 
   async resolveRound(input: RoundInput): Promise<RoundResolution> {
@@ -53,6 +116,10 @@ export class RoundService {
         randomSeed: input.randomSeed,
         resolution: result,
       };
+
+      // Submit on-chain resolve_round transaction BEFORE writing to DB.
+      // If the on-chain call fails, the DB is not updated, preventing desync.
+      await this.submitOnChainResolve(input.arenaContractId, round.roundNumber);
 
       await this.roundRepo.resolveAtomically(
         input.roundId,
