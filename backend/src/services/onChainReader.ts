@@ -110,6 +110,36 @@ export async function getOnChainPlayerCount(contractId: string): Promise<number>
 }
 
 /**
+ * Read the on-chain player list for an arena contract.
+ * Returns an array of player wallet addresses.
+ */
+export async function getOnChainPlayers(contractId: string): Promise<string[]> {
+  try {
+    const result = await simulateViewCall(contractId, "get_players");
+    // The contract returns a Vec<Address>; scValToNative converts it to an array of strings.
+    const players = result as string[];
+    return players;
+  } catch {
+    // If the contract call fails, return empty array.
+    return [];
+  }
+}
+
+/**
+ * Read the total yield accrued from the rwa-adapter vault.
+ * Returns the total yield amount as a number.
+ */
+export async function getOnChainTotalYield(contractId: string): Promise<number> {
+  try {
+    const result = await simulateViewCall(contractId, "get_total_yield");
+    return Number(result as bigint | number);
+  } catch {
+    // If the contract call fails, fall back to 0.
+    return 0;
+  }
+}
+
+/**
  * Map an on-chain GameState to the backend status string.
  *
  * The backend ArenaStats status field uses lowercase strings:

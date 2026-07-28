@@ -12,6 +12,7 @@ import { ArenaStatsService } from "../services/arenaStatsService";
 import { RoundRepository } from "../repositories/roundRepository";
 import { apiError } from "../utils/apiError";
 import type { ArenaParticipant } from "../types/arena";
+import { getOnChainPlayers } from "../services/onChainReader";
 
 const PaginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
@@ -319,6 +320,56 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
       );
 
       req.on("close", unsubscribe);
+    }),
+  );
+
+  /**
+   * POST /api/arenas/:id/sync-players
+   * Syncs on-chain player list to the database.
+   * Reads the contract's get_players() paginated response and upserts player records.
+   */
+  router.post(
+    "/:id/sync-players",
+    authMiddleware,
+    asyncHandler(async (req, res) => {
+      const id = req.params.id;
+      if (!id) {
+        throw apiError(400, "INVALID_ARENA_ID", "Arena id is required");
+      }
+
+      const arena = await prisma.arena.findUnique({ where: { id } });
+      if (!arena) {
+        throw apiError(404, "ARENA_NOT_FOUND", `Arena with ID ${id} not found`);
+      }
+
+      const metadata = (arena.metadata as Record<string, unknown>) ?? {};
+      const contractAddress = metadata.contractAddress as string | undefined;
+
+      if (!contractAddress) {
+        throw apiError(400, "NO_CONTRACT_ADDRESS", "Arena has no contract address");
+      }
+
+      // Fetch on-chain player list
+      const onChainPlayers = await getOnChainPlayers(contractAddress);
+
+      // Upsert players: create User records if they don't exist
+      let syncedCount = 0;
+      for (const walletAddress of onChainPlayers) {
+        // Find or create user by wallet address
+        await prisma.user.upsert({
+          where: { walletAddress },
+          update: {},
+          create: { walletAddress },
+        });
+        syncedCount++;
+      }
+
+      res.json({
+        arenaId: id,
+        totalPlayers: onChainPlayers.length,
+        syncedPlayers: syncedCount,
+        message: `Synced ${syncedCount} players from on-chain`,
+      });
     }),
   );
 
