@@ -42,6 +42,10 @@ const CreateArenaSchema = z.object({
   joinDeadline: z.string().datetime(),
   stakeToken: z.string().trim().min(1).max(32),
   name: z.string().trim().min(1).max(120),
+  // Hash of the caller's own `create_pool` invocation on the factory contract.
+  // The backend verifies this on-chain and reads the real arena address from
+  // it — it never generates a contract address itself.
+  txHash: z.string().trim().regex(/^[0-9a-f]{64}$/i, "Invalid transaction hash"),
 });
 
 function formatRound(round: {
@@ -122,14 +126,15 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
     "/",
     authMiddleware,
     asyncHandler(async (req, res) => {
-      const input = CreateArenaSchema.parse(req.body) as unknown as CreateArenaInput;
+      const { txHash, ...rest } = CreateArenaSchema.parse(req.body);
+      const input = rest as unknown as CreateArenaInput;
       const createdBy = req.user?.walletAddress;
 
       if (!createdBy) {
         throw apiError(401, "UNAUTHORIZED", "Unauthorized");
       }
 
-      const arena = await arenaService.createArena(input, createdBy);
+      const arena = await arenaService.confirmArenaDeployment(input, createdBy, txHash);
       res.status(201).json({
         arena,
         requestId: randomUUID(),
