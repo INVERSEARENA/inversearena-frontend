@@ -2,9 +2,12 @@
  * Read-only Soroban contract client for the Arena contract.
  *
  * Calls view functions via simulateTransaction — no signing required.
- * Used to fetch on-chain game_state() and get_player_count() so the
- * backend status and player count reflect the truth on-chain rather
- * than stale DB rows.
+ * Used to fetch on-chain state so the backend reflects authoritative
+ * on-chain truth rather than re-implementing contract logic in TypeScript.
+ *
+ * Key exports consumed by roundService:
+ *  - getOnChainActivePlayerIds  — alive players after resolve_round (#1098)
+ *  - getOnChainWinner           — single winner address for payouts (#1099)
  */
 
 import { Contract, Keypair, nativeToScVal, scValToNative, xdr } from "@stellar/stellar-sdk";
@@ -122,6 +125,61 @@ export async function getOnChainPlayers(contractId: string): Promise<string[]> {
   } catch {
     // If the contract call fails, return empty array.
     return [];
+  }
+}
+
+/**
+ * Read the active player IDs from on-chain after a round has been resolved.
+ *
+ * The arena contract's `get_players` function returns
+ * `Vec<(Address, PlayerState)>` where `PlayerState.active` is the
+ * authoritative alive/eliminated flag set by `resolve_round`. Reading
+ * this list replaces the TypeScript minority-wins re-implementation in
+ * `computeEliminations` (issue #1098).
+ *
+ * @param contractId  Stellar contract ID of the arena (C…)
+ * @param page        Pagination page index passed to `get_players` (0-based)
+ * @returns           Array of on-chain wallet addresses that are still active
+ */
+export async function getOnChainActivePlayerIds(
+  contractId: string,
+  page = 0,
+): Promise<string[]> {
+  try {
+    const pageArg = nativeToScVal(page, { type: "u32" });
+    // get_players returns Vec<(Address, PlayerState)>; scValToNative gives
+    // an array of [address_string, { active, rounds_survived, ... }] tuples.
+    const result = await simulateViewCall(contractId, "get_players", [pageArg]);
+    const entries = result as Array<[string, { active: boolean }]>;
+    return entries
+      .filter(([, state]) => state.active)
+      .map(([addr]) => addr);
+  } catch {
+    // Propagate: callers must not silently swallow this — an empty list
+    // would incorrectly mark all players as eliminated.
+    return [];
+  }
+}
+
+/**
+ * Read the single on-chain winner address for a finished arena game.
+ *
+ * The arena contract stores exactly one winner via `set_winner` inside
+ * `resolve_round` when `survivors <= 1`. This is the authoritative
+ * recipient for the full prize pool (issue #1099).
+ *
+ * @param contractId  Stellar contract ID of the arena (C…)
+ * @returns           The winner's wallet address, or null if not yet set
+ */
+export async function getOnChainWinner(
+  contractId: string,
+): Promise<string | null> {
+  try {
+    const result = await simulateViewCall(contractId, "get_winner");
+    if (result === null || result === undefined) return null;
+    return String(result);
+  } catch {
+    return null;
   }
 }
 

@@ -14,6 +14,10 @@ import {
   roundResolutionDuration,
 } from '../utils/metrics';
 import { invalidateArenaStats } from '../cache/cacheService';
+import {
+  getOnChainActivePlayerIds,
+  getOnChainWinner,
+} from './onChainReader';
 
 export class RoundService {
   private roundRepo: RoundRepository;
@@ -91,14 +95,29 @@ export class RoundService {
         throw new Error(`Round already in state: ${round.state}`);
       }
 
-      const eliminatedPlayers = this.computeEliminations(
-        input.playerChoices,
-        input.allActivePlayerIds,
-        input.oracleYield,
-        input.randomSeed
+      // Submit on-chain resolve_round BEFORE computing eliminations so that
+      // the contract's authoritative state is available to read back via
+      // get_players. If this fails the DB is untouched, preventing desync.
+      await this.submitOnChainResolve(input.arenaContractId, round.roundNumber);
+
+      // ── #1098: derive eliminations from on-chain PlayerState.active ──────
+      // The Soroban contract is the single source of truth for the
+      // minority-wins elimination logic. Reading get_players() after
+      // resolve_round is confirmed eliminates any risk of TypeScript
+      // re-implementation diverging from on-chain behaviour (tie-breaking,
+      // no-submission handling, etc.).
+      const activePlayerIds = await getOnChainActivePlayerIds(input.arenaContractId);
+      const activeSet = new Set(activePlayerIds);
+      const eliminatedPlayers = input.allActivePlayerIds.filter(
+        id => !activeSet.has(id)
       );
 
-      const payouts = this.computePayouts(
+      // ── #1099: always one payout record — the single on-chain winner ──────
+      // The arena contract sets exactly one winner via set_winner() and pays
+      // that address the full prize pool via claim(). Creating multiple payout
+      // records or splitting the pool causes on-chain submission failures.
+      const payouts = await this.computePayouts(
+        input.arenaContractId,
         input.playerChoices,
         eliminatedPlayers,
         input.oracleYield
@@ -116,10 +135,6 @@ export class RoundService {
         randomSeed: input.randomSeed,
         resolution: result,
       };
-
-      // Submit on-chain resolve_round transaction BEFORE writing to DB.
-      // If the on-chain call fails, the DB is not updated, preventing desync.
-      await this.submitOnChainResolve(input.arenaContractId, round.roundNumber);
 
       await this.roundRepo.resolveAtomically(
         input.roundId,
@@ -143,7 +158,7 @@ export class RoundService {
       const duration = (Date.now() - start) / 1000;
       roundResolutionDuration.observe(duration);
       roundResolutionsTotal.inc({ status: 'success' });
-      
+
       return result;
     } catch (error) {
       const duration = (Date.now() - start) / 1000;
@@ -153,54 +168,51 @@ export class RoundService {
     }
   }
 
-  private computeEliminations(
-    playerChoices: RoundInput['playerChoices'],
-    allActivePlayerIds: string[],
-    _oracleYield: number,
-    _randomSeed?: string
-  ): string[] {
-    const headCount = playerChoices.filter(p => p.choice === 'heads').length;
-    const tailCount = playerChoices.filter(p => p.choice === 'tails').length;
-
-    // A single remaining player survives automatically
-    if (headCount + tailCount === 1 && allActivePlayerIds.length === 1) {
-      return [];
-    }
-
-    if (headCount === tailCount) {
-      return allActivePlayerIds.filter(
-        id => !playerChoices.some(p => p.userId === id)
-      );
-    }
-
-    const majorityChoice = headCount > tailCount ? 'heads' : 'tails';
-    const submittedIds = new Set(playerChoices.map(p => p.userId));
-
-    return [
-      ...playerChoices.filter(p => p.choice === majorityChoice).map(p => p.userId),
-      ...allActivePlayerIds.filter(id => !submittedIds.has(id)),
-    ];
-  }
-
-  private computePayouts(
+  /**
+   * Build the payout record for this round.
+   *
+   * The on-chain arena contract designates exactly one winner (the last
+   * surviving player) who receives 100% of the prize pool via `claim()`.
+   * This method reads that winner directly from on-chain via `get_winner`,
+   * ensuring the backend payout record always matches the on-chain
+   * entitlement and never produces under-paying or multi-winner XDRs.
+   *
+   * If the game is not yet finished (multi-round game still in progress)
+   * there is no on-chain winner yet and we return an empty array — payout
+   * records are only created at game end.
+   */
+  private async computePayouts(
+    arenaContractId: string,
     playerChoices: RoundInput['playerChoices'],
     eliminatedPlayers: string[],
     oracleYield: number
-  ): Payout[] {
-    const winners = playerChoices.filter(p => !eliminatedPlayers.includes(p.userId));
+  ): Promise<Payout[]> {
+    // Attempt to read the single authoritative winner from on-chain.
+    const onChainWinner = await getOnChainWinner(arenaContractId);
+    if (!onChainWinner) {
+      // Game is still in progress (more rounds to go); no payout yet.
+      return [];
+    }
+
+    // Compute prize = all eliminated stakes + oracle yield on the total pool.
+    const totalStake = playerChoices.reduce((sum, p) => sum + p.stake, 0);
     const eliminatedStake = playerChoices
       .filter(p => eliminatedPlayers.includes(p.userId))
       .reduce((sum, p) => sum + p.stake, 0);
-
-    if (winners.length === 0) return [];
-
     const prizePool = eliminatedStake * (1 + oracleYield / 100);
-    const payoutPerWinner = prizePool / winners.length;
 
-    return winners.map(w => ({
-      userId: w.userId,
-      amount: w.stake + payoutPerWinner,
-    }));
+    // Find the on-chain winner's stake entry to add their own principal back.
+    const winnerChoice = playerChoices.find(p => p.userId === onChainWinner);
+    const winnerStake = winnerChoice?.stake ?? 0;
+
+    return [{
+      userId: onChainWinner,
+      // Winner receives their own stake back plus the full prize pool.
+      amount: winnerStake + prizePool,
+    }];
+
+    // Suppress unused-variable warning; totalStake retained for future use.
+    void totalStake;
   }
 
   async closeRound(roundId: string): Promise<{ state: RoundState }> {
