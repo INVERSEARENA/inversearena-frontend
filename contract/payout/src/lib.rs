@@ -253,6 +253,49 @@ mod test {
     }
 
     #[test]
+    fn distribute_batch_rejects_zero_amount_without_paying_anyone() {
+        let fx = setup(1_000);
+        let valid = Address::generate(&fx.env);
+        let invalid = Address::generate(&fx.env);
+        let mut recipients = Vec::new(&fx.env);
+        recipients.push_back((valid.clone(), 100));
+        recipients.push_back((invalid.clone(), 0));
+
+        assert!(fx.client.try_distribute_batch(&2, &recipients).is_err());
+        assert_eq!(fx.token.balance(&valid), 0);
+        assert_eq!(fx.token.balance(&invalid), 0);
+        assert!(!fx.client.is_paid(&2));
+    }
+
+    #[test]
+    fn distribute_batch_is_atomic_when_balance_is_insufficient() {
+        let fx = setup(100);
+        let first = Address::generate(&fx.env);
+        let second = Address::generate(&fx.env);
+        let mut recipients = Vec::new(&fx.env);
+        recipients.push_back((first.clone(), 60));
+        recipients.push_back((second.clone(), 60));
+
+        assert!(fx.client.try_distribute_batch(&3, &recipients).is_err());
+        assert_eq!(fx.token.balance(&first), 0);
+        assert_eq!(fx.token.balance(&second), 0);
+        assert!(!fx.client.is_paid(&3));
+    }
+
+    #[test]
+    fn distribute_batch_requires_admin_auth() {
+        let fx = setup(1_000);
+        let recipient = Address::generate(&fx.env);
+        let mut recipients = Vec::new(&fx.env);
+        recipients.push_back((recipient.clone(), 100));
+        fx.env.set_auths(&[]);
+
+        assert!(fx.client.try_distribute_batch(&4, &recipients).is_err());
+        assert_eq!(fx.token.balance(&recipient), 0);
+        assert!(!fx.client.is_paid(&4));
+    }
+
+    #[test]
     fn rejects_oversized_batch() {
         let fx = setup(100_000);
         let mut recipients = Vec::new(&fx.env);
