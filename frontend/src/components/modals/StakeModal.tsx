@@ -1,12 +1,14 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { TrendingUp, CheckSquare, Zap, Info, Loader2, TerminalSquare, ShieldCheck } from "lucide-react";
+import { TrendingUp, CheckSquare, Zap, Info, Loader2, TerminalSquare, ShieldCheck, AlertTriangle } from "lucide-react";
 import { useWallet } from "@/shared-d/hooks/useWallet";
 import {
   buildStakeProtocolTransaction,
   submitSignedTransaction,
   parseStellarError,
+  STAKING_CONTRACT_ID,
+  STELLAR_PLACEHOLDERS,
 } from "@/shared-d/utils/stellar-transactions";
 
 type TransactionState = "idle" | "signing" | "submitting" | "success" | "error";
@@ -37,10 +39,18 @@ export default function StakeModal({
   const displayBalance = balance.xlm;
   const numAmount = parseFloat(amount) || 0;
   const isValidAmount = numAmount > 0 && numAmount <= displayBalance;
+  
+  // Block staking if contract is not configured (#1112)
+  const isStakingContractConfigured =
+    STAKING_CONTRACT_ID &&
+    STAKING_CONTRACT_ID !== STELLAR_PLACEHOLDERS.stakingContractId &&
+    !STAKING_CONTRACT_ID.includes("...");
+  
   const isButtonDisabled =
     isProcessing ||
     txState === "success" ||
-    (isConnected && !isValidAmount);
+    (isConnected && !isValidAmount) ||
+    !isStakingContractConfigured;
 
   useEffect(() => {
     if (!isOpen) {
@@ -196,6 +206,17 @@ export default function StakeModal({
               WALLET.
             </p>
           </div>
+
+          {/* Staking Contract Not Configured Warning (#1112) */}
+          {!isStakingContractConfigured && (
+            <div className="flex gap-3 rounded-sm border-l-4 border-red-500 bg-red-200/50 p-4">
+              <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-red-600" />
+              <p className="font-mono text-xs uppercase leading-relaxed tracking-wide text-zinc-800">
+                STAKING CONTRACT NOT CONFIGURED: THE STAKING FEATURE IS CURRENTLY
+                UNAVAILABLE. PLEASE CONTACT THE ADMINISTRATOR OR CHECK BACK LATER.
+              </p>
+            </div>
+          )}
 
           {/* Success Message */}
           {txState === "success" && (

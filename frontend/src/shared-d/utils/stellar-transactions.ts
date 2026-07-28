@@ -16,6 +16,9 @@ import {
 import {
 } from "@/components/hook-d/arenaConstants";
 import { STELLAR_PLACEHOLDERS, stellarConfig } from "@/lib/stellarConfig";
+
+// Re-export for use in components
+export { STELLAR_PLACEHOLDERS };
 import {
   ContractError,
   ContractErrorCode,
@@ -43,7 +46,6 @@ import {
   buildStakeCallOperation,
   buildSubmitCommitmentOperation,
   buildUnstakeCallOperation,
-  buildSubmitChoiceCallOperation,
   composeUnsignedTransaction,
 } from "@/shared-d/utils/soroban-transaction-composer";
 import { CreatePoolParamsSchema } from "@/shared-d/utils/stellar-transaction-schemas";
@@ -256,50 +258,6 @@ export async function buildJoinArenaTransaction(
 
     return composeUnsignedTransaction(account, {
       fee: getJoinArenaFee(),
-      networkPassphrase: NETWORK_PASSPHRASE,
-      timeout: getStandardTxTimeoutSeconds(),
-      operation,
-    });
-  } catch (error) {
-    throw parseContractError(error, FN);
-  }
-}
-
-/**
- * Submit choice (Heads/Tails).
- *
- * NOTE (#1137): the arena contract has no `submit_choice` function — it only
- * exposes the two-phase `submit_commitment` / `reveal_choice` commit-reveal
- * flow (see below). This function's call would fail on-chain against the
- * current contract; it's left in place only because `ChoiceSubmission.tsx`
- * still calls it, which is a known, disclosed gap outside this fix's scope
- * (`src/app/arena/page.tsx`, `soroban-transaction-composer.ts`) — migrate
- * that component to `buildSubmitCommitmentTransaction`/
- * `buildRevealChoiceTransaction` as a follow-up.
- */
-export async function buildSubmitChoiceTransaction(
-  publicKey: string,
-  poolId: string,
-  choice: "Heads" | "Tails",
-  roundNumber: number,
-) {
-  const FN = "buildSubmitChoiceTransaction";
-  try {
-    const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
-    const validatedPoolId = StellarContractIdSchema.parse(poolId);
-    const validatedChoice = RoundChoiceSchema.parse(choice);
-    const validatedRoundNumber = RoundNumberSchema.parse(roundNumber);
-
-    const account = await getAccount(validatedPublicKey, FN);
-    const poolContract = defaultSorobanClients.createContract(validatedPoolId);
-    const operation = buildSubmitChoiceCallOperation(
-      poolContract,
-      validatedRoundNumber,
-      validatedChoice,
-    );
-
-    return composeUnsignedTransaction(account, {
-      fee: getDefaultInvokeBaseFee(),
       networkPassphrase: NETWORK_PASSPHRASE,
       timeout: getStandardTxTimeoutSeconds(),
       operation,

@@ -94,18 +94,6 @@ export function buildJoinCallOperation(poolContract: Contract): SorobanOperation
   return poolContract.call("join");
 }
 
-export function buildSubmitChoiceCallOperation(
-  poolContract: Contract,
-  roundNumber: number,
-  choice: "Heads" | "Tails",
-): SorobanOperation {
-  return poolContract.call(
-    "submit_choice",
-    encodeRound(roundNumber),
-    encodeChoice(choice),
-  );
-}
-
 /**
  * Commit phase (#1137): submit a blinded commitment
  * (`SHA256([choice_byte] ++ salt_32_bytes)`) without revealing the choice.

@@ -6,36 +6,30 @@
  */
 export const CONTRACT_PANIC_USER_MESSAGES: Readonly<Record<number, string>> =
   Object.freeze({
-    // General 1–99
-    1: "You do not have permission to perform this action.",
-    2: "The supplied values are invalid. Please check them and try again.",
-    3: "Your balance is too low for this operation.",
-    4: "This action cannot be done in the current game or pool state.",
-    5: "This resource already exists.",
-    6: "The pool or resource could not be found.",
-    7: "The time window for this action has closed.",
-    8: "The arena has reached its maximum capacity.",
-    // Factory 100–199
-    100: "Stake amount does not meet the rules for creating a pool.",
-    101: "This token is not supported for pool creation.",
-    // Arena 200–299
-    200: "You need to join this arena before doing that.",
-    201: "You have already submitted a choice for this round.",
-    202: "This round is not valid for the current game.",
-    203: "Choices are not being accepted right now.",
-    204: "There is nothing to claim right now.",
     // Arena `ArenaError` (Rust enum numeric codes — see contract/arena/src/types.rs)
-    // Codes 1–13 are covered by the General section above.
-    14: "There is no pending admin transfer to accept. No admin change was requested.",
-    15: "The vault address provided is invalid. It may not be a contract or does not support the required interface.",
-    16: "The contract is paused. State-changing actions are temporarily disabled by the admin.",
-    17: "This action cannot be performed in the current arena state (Open/Active/Finished/Cancelled).",
+    1: "You do not have permission to perform this action.",
+    2: "Cannot cancel a game that has already started.",
+    3: "This arena has not been initialized yet.",
+    4: "This action cannot be done in the current round state.",
+    5: "The round has not started yet.",
+    6: "The grace period for this round has not elapsed yet.",
+    7: "Your revealed choice and salt do not match your commitment.",
+    8: "You have not submitted a commitment for this round.",
+    9: "You have already revealed your choice for this round.",
+    10: "This arena has already been initialized.",
+    11: "The game is not finished yet.",
+    12: "You have already claimed your prize.",
+    13: "You have been eliminated from this arena.",
+    14: "There is no pending admin transfer to accept.",
+    15: "The vault address provided is invalid.",
+    16: "The contract is paused. State-changing actions are temporarily disabled.",
+    17: "This action cannot be performed in the current arena state.",
     18: "This arena has not been initialized yet.",
     19: "Not enough players to start a round. At least 2 active players are required.",
     20: "You have been banned from joining arenas.",
     21: "You cannot join your own arena.",
     22: "This arena is full. No more players can join.",
-    23: "Invalid player limits configured. Check minimum and maximum player settings.",
+    23: "Invalid player limits configured.",
     24: "A reentrant call was detected. Please wait for the current operation to finish.",
     25: "You have already claimed your refund.",
     26: "You can only claim a refund when the arena has been cancelled.",
@@ -48,11 +42,9 @@ export const CONTRACT_PANIC_USER_MESSAGES: Readonly<Record<number, string>> =
     33: "The commitment phase has ended. You can no longer submit choices for this round.",
     34: "Invalid round duration. Please check the duration parameter.",
     35: "Vault deposit failed. The token transfer has been rolled back.",
-    // Staking 300–399
-    300: "Stake amount is invalid.",
-    301: "Staking is temporarily unavailable.",
-    // Payout 400–499
-    400: "Payout is not available yet.",
+    // Factory 100–199
+    100: "Stake amount does not meet the rules for creating a pool.",
+    101: "This token is not supported for pool creation.",
   });
 
 /**
