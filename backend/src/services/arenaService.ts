@@ -7,6 +7,19 @@ import type {
 } from "../types/arena";
 import { ArenaStatsService } from "./arenaStatsService";
 
+const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
+const TX_HASH_REGEX = /^[0-9a-f]{64}$/i;
+
+let rpcServer: rpc.Server | null = null;
+
+function getRpcServer(): rpc.Server {
+  if (!rpcServer) {
+    const url = process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
+    rpcServer = new Server(url, { allowHttp: false });
+  }
+  return rpcServer;
+}
+
 interface ArenaSnapshot {
   arenaId: string;
   currentRound: number;
@@ -23,45 +36,48 @@ interface ArenaSnapshot {
   lastRoundState: string | null;
 }
 
-const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-
-function toBase32(input: Buffer): string {
-  let bits = "";
-  for (const byte of input.values()) {
-    bits += byte.toString(2).padStart(8, "0");
-  }
-
-  let output = "";
-  for (let offset = 0; offset < bits.length; offset += 5) {
-    const chunk = bits.slice(offset, offset + 5);
-    if (chunk.length < 5) {
-      break;
-    }
-    output += BASE32_ALPHABET[Number.parseInt(chunk, 2)];
-  }
-
-  return output;
-}
-
-function makeContractId(seed: string): string {
-  const digest = createHash("sha256").update(seed).digest();
-  const base32 = toBase32(digest).padEnd(55, "A").slice(0, 55);
-  return `C${base32}`;
-}
-
 export class ArenaService {
   constructor(
     private readonly prisma: PrismaClient,
     private readonly statsService = new ArenaStatsService(prisma),
   ) {}
 
-  async createArena(
+  /**
+   * Confirms an arena deployment and persists it under its real contract address.
+   *
+   * The factory's `create_pool` requires the host's own signature (it moves
+   * their stake), so the backend cannot deploy on the caller's behalf. The
+   * caller must submit `create_pool` on-chain themselves and pass us the
+   * resulting txHash; we verify the transaction succeeded against the
+   * configured factory contract and take the deployed arena address from its
+   * return value — never inventing one — before writing the DB row.
+   */
+  async confirmArenaDeployment(
     input: CreateArenaInput,
     createdBy: string,
+    txHash: string,
   ): Promise<ArenaCreationResult> {
-    const arenaId = makeContractId(
-      `${createdBy}:${input.name}:${input.joinDeadline}:${input.stakeToken}:${randomUUID()}`,
-    );
+    if (!TX_HASH_REGEX.test(txHash)) {
+      throw new Error("Invalid transaction hash");
+    }
+
+    const factoryContractId = process.env.ARENA_FACTORY_CONTRACT_ID ?? null;
+
+    const server = getRpcServer();
+    const tx = await server.getTransaction(txHash);
+
+    if (tx.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
+      throw new Error(`Arena deployment transaction ${txHash} did not succeed on-chain`);
+    }
+
+    if (!tx.returnValue) {
+      throw new Error(`Arena deployment transaction ${txHash} returned no arena address`);
+    }
+
+    const arenaId = Address.fromScAddress(scValToNative(tx.returnValue)).toString();
+    if (!CONTRACT_ID_REGEX.test(arenaId)) {
+      throw new Error("Deployed arena address is not a valid Soroban contract ID");
+    }
 
     const metadata: Prisma.InputJsonValue = JSON.parse(
       JSON.stringify({
@@ -73,8 +89,9 @@ export class ArenaService {
         createdBy,
         contractAddress: arenaId,
         deployment: {
-          status: "queued",
-          factoryContractId: process.env.ARENA_FACTORY_CONTRACT_ID ?? null,
+          status: "confirmed",
+          txHash,
+          factoryContractId,
         },
       }),
     ) as Prisma.InputJsonValue;

@@ -11,8 +11,10 @@ import {
   Address,
   Contract,
   Keypair,
+  Transaction,
   TransactionBuilder,
   nativeToScVal,
+  scValToNative,
   rpc,
 } from "@stellar/stellar-sdk";
 import { PaymentService } from "../src/services/paymentService";
@@ -133,11 +135,9 @@ describe("PaymentService signed-XDR audit (#667)", () => {
     // A correctly-formed payout invocation, but built under a foreign source.
     const op = new Contract(CONTRACT).call(
       "distribute_winnings",
+      nativeToScVal(BigInt(0), { type: "u64" }),
       new Address(DEST_A).toScVal(),
       nativeToScVal(BigInt("100000000"), { type: "i128" }),
-      nativeToScVal("XLM"),
-      nativeToScVal(BigInt(0), { type: "u64" }),
-      nativeToScVal("p-src"),
     );
     const foreign = new TransactionBuilder(new Account(DEST_B, "5"), {
       fee: "100",
@@ -148,6 +148,26 @@ describe("PaymentService signed-XDR audit (#667)", () => {
       .build();
     foreign.sign(Keypair.random());
     await expect(service.queueSignedTransaction(id, foreign.toXDR())).rejects.toThrow(/source/i);
+  });
+
+  it("pins the on-chain call to distribute_winnings(payout_id, winner, amount) — 3 args, matching contract/payout/src/lib.rs:51", async () => {
+    const { service } = makeService(makeRpc());
+    const built = await service.createPayoutTransaction({
+      payoutId: "p-pin",
+      destinationAccount: DEST_A,
+      amount: "10",
+      asset: "XLM",
+      idempotencyKey: "idem-pin-0009",
+    });
+
+    const tx = TransactionBuilder.fromXDR(built.unsignedXdr!, PASSPHRASE) as Transaction;
+    const op = tx.operations[0] as { func: { invokeContract: () => { args: () => unknown[] } } };
+    const args = op.func.invokeContract().args();
+
+    expect(args).toHaveLength(3);
+    expect(scValToNative(args[0] as never)).toBe(BigInt(built.transaction.nonce));
+    expect(String(scValToNative(args[1] as never))).toBe(DEST_A);
+    expect(String(scValToNative(args[2] as never))).toBe(built.transaction.amountStroops);
   });
 });
 
