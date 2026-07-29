@@ -1478,6 +1478,14 @@ mod test {
         assert!(result.is_err());
     }
 
+    /// `player_count: 2` plus two registered active players is required,
+    /// not incidental: `start_round` rejects any config with `player_count
+    /// < MIN_PLAYERS_TO_START` (see #767/#1059), so a `player_count: 0`
+    /// version of this helper would make every test built on it fail with
+    /// `NotEnoughPlayers` regardless of what each test is actually trying
+    /// to exercise (grace-period timing, yield tracking, etc.) — that
+    /// exact regression was #1150. Keep this at 2 (or higher) if this
+    /// helper is ever touched again.
     fn setup_started(duration: u64, start_ts: u64) -> (Env, ArenaContractClient<'static>) {
         let env = Env::default();
         env.mock_all_auths();
