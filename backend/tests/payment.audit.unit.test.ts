@@ -64,14 +64,17 @@ function makeService(rpcServer: ReturnType<typeof makeRpc>) {
   return { service, repo };
 }
 
+let payoutIdCounter = 0;
+
 async function createAndSign(
   service: PaymentService,
   dest: string,
   amount: string,
   idem: string,
 ) {
+  payoutIdCounter += 1;
   const built = await service.createPayoutTransaction({
-    payoutId: `p-${idem}`,
+    payoutId: String(payoutIdCounter),
     destinationAccount: dest,
     amount,
     asset: "XLM",
@@ -102,7 +105,7 @@ describe("PaymentService signed-XDR audit (#667)", () => {
     const { service } = makeService(makeRpc());
     // Record #1 is for DEST_A; the signer returns a tx paying DEST_B.
     const rec = await service.createPayoutTransaction({
-      payoutId: "p-dest",
+      payoutId: "100",
       destinationAccount: DEST_A,
       amount: "10",
       asset: "XLM",
@@ -117,7 +120,7 @@ describe("PaymentService signed-XDR audit (#667)", () => {
   it("rejects a transaction whose amount was altered", async () => {
     const { service } = makeService(makeRpc());
     const rec = await service.createPayoutTransaction({
-      payoutId: "p-amt",
+      payoutId: "200",
       destinationAccount: DEST_A,
       amount: "10",
       asset: "XLM",

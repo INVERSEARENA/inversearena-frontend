@@ -380,14 +380,10 @@ export class PaymentService {
     }
 
     // distribute_winnings(payout_id: u64, winner: Address, amount: i128)
-    // — contract/payout/src/lib.rs:51. Must stay in lockstep with
-    // buildPreparedTransaction above; see the pinning test in
-    // tests/payment.audit.unit.test.ts.
-    // args[0] = payout_id (skipped in validation — off-chain idempotency is
-    //   enforced via `idempotencyKey`, not this on-chain nonce)
+    // args[0] = payout_id (skipped in validation)
     // args[1] = winner (destination address)
     // args[2] = amount
-    const destination = String(scValToNative(args[1]!));
+    const destination = Address.fromScAddress(scValToNative(args[1]!)).toString();
     if (destination !== transaction.destinationAccount) {
       throw new Error("Signed transaction destination does not match the payout record");
     }
@@ -412,15 +408,9 @@ export class PaymentService {
     const contract = new Contract(this.config.payoutContractId);
     const amountStroops = toStroops(request.amount);
 
-    // Must match contract/payout/src/lib.rs distribute_winnings(payout_id: u64,
-    // winner: Address, amount: i128) exactly — 3 args, this order. The token is
-    // fixed by the contract at initialize time (no per-call asset argument),
-    // and the contract has no nonce param, so the reserved per-source `nonce`
-    // doubles as the on-chain idempotency key (`payout_id`). Our string
-    // `request.payoutId` stays an off-chain-only identifier.
     const operation = contract.call(
       this.config.payoutMethodName,
-      nativeToScVal(BigInt(nonce), { type: "u64" }),
+      nativeToScVal(BigInt(request.payoutId), { type: "u64" }),
       new Address(request.destinationAccount).toScVal(),
       nativeToScVal(BigInt(amountStroops), { type: "i128" })
     );
