@@ -20,6 +20,7 @@ import {
 import { PaymentService } from "../src/services/paymentService";
 import { InMemoryTransactionRepository } from "../src/repositories/inMemoryTransactionRepository";
 import type { PaymentConfig } from "../src/config/paymentConfig";
+import { resetSorobanBreakerForTest } from "../src/utils/circuitBreaker";
 
 const SOURCE = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
 const DEST_A = Keypair.random().publicKey();
@@ -84,6 +85,12 @@ async function createAndSign(
   tx.sign(Keypair.random());
   return { id: built.transaction.id, signedXdr: tx.toXDR() };
 }
+
+// Tear down the shared circuit-breaker singleton after every suite so that
+// no async timers or cached state bleed between test files (#1194).
+afterAll(() => {
+  resetSorobanBreakerForTest();
+});
 
 describe("PaymentService signed-XDR audit (#667)", () => {
   it("queues a signed transaction that matches the payout record", async () => {

@@ -71,18 +71,39 @@ export class RoundService {
     const sendResult = await server.sendTransaction(prepared);
     if (sendResult.status === "PENDING" || sendResult.status === "DUPLICATE") {
       const hash = sendResult.hash;
-      // Poll for confirmation
-      for (let attempt = 0; attempt < 20; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 2500));
+      const maxPolls = this.stellarConfig.roundConfirmMaxPolls;
+      const basePollMs = this.stellarConfig.roundConfirmPollMs;
+      const start = Date.now();
+
+      for (let attempt = 0; attempt < maxPolls; attempt++) {
+        // Exponential backoff with ±10 % jitter, capped at 30 s.
+        const delay = Math.min(
+          basePollMs * Math.pow(1.5, attempt) * (0.9 + Math.random() * 0.2),
+          30_000,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+
+        const elapsed = Date.now() - start;
         const status = await server.getTransaction(hash);
+
+        console.info(
+          `[roundService] resolve_round poll attempt=${attempt + 1}/${maxPolls} ` +
+          `status=${status.status} elapsed=${elapsed}ms hash=${hash}`,
+        );
+
         if (status.status === "SUCCESS") {
           return roundNumber;
         }
         if (status.status === "FAILED") {
-          throw new Error(`resolve_round transaction failed (${status.errorResultXdr ?? "unknown"})`);
+          throw new Error(
+            `resolve_round transaction failed: hash=${hash} ` +
+            `errorResultXdr=${status.errorResultXdr ?? "unknown"}`,
+          );
         }
       }
-      throw new Error("resolve_round transaction timed out after 20 polls");
+      throw new Error(
+        `resolve_round transaction timed out after ${maxPolls} polls: hash=${hash}`,
+      );
     }
     throw new Error(`resolve_round send failed: ${sendResult.errorResultXdr ?? sendResult.status}`);
   }

@@ -30,4 +30,7 @@ module.exports = {
   moduleNameMapper: {
     "^@/(.*)$": "<rootDir>/src/$1",
   },
+  // Surface open async handle sources so tests cannot silently leave timers or
+  // connections running after the suite finishes (#1194).
+  detectOpenHandles: true,
 };

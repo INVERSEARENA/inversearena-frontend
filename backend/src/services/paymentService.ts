@@ -18,7 +18,7 @@ import { z } from "zod";
 import { getPaymentConfig, type PaymentConfig } from "../config/paymentConfig";
 import type { TransactionRepository } from "../repositories/transactionRepository";
 import { payoutsSuccessTotal } from "../utils/metrics";
-import { CircuitOpenError, getSorobanBreaker, type CircuitBreaker } from "../utils/circuitBreaker";
+import { CircuitOpenError, getSorobanBreaker, resetSorobanBreakerForTest, type CircuitBreaker } from "../utils/circuitBreaker";
 import type {
   BuildPayoutResult,
   CreatePayoutRequest,
@@ -391,6 +391,15 @@ export class PaymentService {
     if (amount !== transaction.amountStroops) {
       throw new Error("Signed transaction amount does not match the payout record");
     }
+  }
+
+  /**
+   * Tears down shared async resources held by this service instance.
+   * Must be called in `afterAll` / `afterEach` hooks in tests to prevent
+   * Jest from reporting open async handles (#1194).
+   */
+  destroy(): void {
+    resetSorobanBreakerForTest();
   }
 
   private async requireTransaction(transactionId: string): Promise<TransactionRecord> {
