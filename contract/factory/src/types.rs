@@ -52,4 +52,5 @@ pub enum FactoryError {
     ContractPaused = 15,
     UnsupportedToken = 16,
     EntryFeeTooLow = 17,
+    InvalidConfig = 18,
 }
