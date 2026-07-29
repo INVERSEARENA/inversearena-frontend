@@ -18,11 +18,15 @@ import {
   getOnChainActivePlayerIds,
   getOnChainWinner,
 } from './onChainReader';
+import { getStellarConfig, type StellarConfig } from '../config/stellarConfig';
 
 export class RoundService {
   private roundRepo: RoundRepository;
 
-  constructor(private prisma: PrismaClient) {
+  constructor(
+    private prisma: PrismaClient,
+    private stellarConfig: StellarConfig = getStellarConfig(),
+  ) {
     this.roundRepo = new RoundRepository(prisma);
   }
 
@@ -34,22 +38,20 @@ export class RoundService {
     contractId: string,
     roundNumber: number,
   ): Promise<number> {
-    const rpcUrl = process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
-    const passphrase = process.env.STELLAR_NETWORK_PASSPHRASE ?? "Test SDF Network ; September 2015";
     const signerSecret = process.env.ARENA_ADMIN_SECRET;
 
     if (!signerSecret) {
       throw new Error("ARENA_ADMIN_SECRET is not configured. Cannot submit on-chain resolve_round.");
     }
 
-    const server = new Server(rpcUrl, { allowHttp: false });
+    const server = new Server(this.stellarConfig.sorobanRpcUrl, { allowHttp: false });
     const signer = Keypair.fromSecret(signerSecret);
     const sourceAccount = await server.getAccount(signer.publicKey());
     const contract = new Contract(contractId);
 
     const tx = new TransactionBuilder(sourceAccount, {
       fee: "100",
-      networkPassphrase: passphrase,
+      networkPassphrase: this.stellarConfig.networkPassphrase,
     })
       .addOperation(contract.call("resolve_round", xdr.ScVal.scvU32(roundNumber)))
       .setTimeout(60)

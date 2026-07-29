@@ -149,7 +149,7 @@ export class ArenaStatsService {
   ): string {
     if (rounds.length === 0) return "pending";
 
-    const latestRound = rounds[rounds.length - 1];
+    const latestRound = rounds[rounds.length - 1]!;
     const roundState = latestRound.state;
 
     // If any round is SETTLED, the arena is settled

@@ -5,6 +5,7 @@ interface ChoiceCardProps {
   estimatedYield: number;
   isSelected?: boolean;
   onSelect?: () => void;
+  disabled?: boolean;
 }
 
 function HeadsIcon() {
@@ -45,6 +46,7 @@ export function ChoiceCard({
   estimatedYield,
   isSelected = false,
   onSelect,
+  disabled = false,
 }: ChoiceCardProps) {
   const isHeads = type === "heads";
   const accentColor = isHeads ? "bg-neon-green" : "bg-neon-pink";
@@ -57,12 +59,14 @@ export function ChoiceCard({
   return (
     <button
       onClick={onSelect}
+      disabled={disabled}
       className={`
         group relative bg-white w-full py-12 px-8 border-2 ${selectedBorder}
         transition-all duration-300 hover:scale-[1.02] active:scale-[0.98]
         flex flex-col items-center h-full
         ${isSelected ? "ring-2 ring-offset-2 ring-offset-dark-bg" : ""}
         ${isSelected ? (isHeads ? "ring-neon-green" : "ring-neon-pink") : ""}
+        ${disabled ? "opacity-40 cursor-not-allowed hover:scale-100 active:scale-100" : ""}
       `}
     >
       {/* Dashed circle container */}

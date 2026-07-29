@@ -13,6 +13,7 @@
 import { Contract, Keypair, nativeToScVal, scValToNative, xdr } from "@stellar/stellar-sdk";
 // @ts-ignore
 import { rpc } from "@stellar/stellar-sdk";
+import { getStellarConfig } from "../config/stellarConfig";
 const { Server } = rpc;
 
 /** On-chain game states — matches the contract's GameState enum. */
@@ -23,8 +24,7 @@ let sourcePublicKey: string | null = null;
 
 function getRpcServer(): rpc.Server {
   if (!rpcServer) {
-    const url = process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
-    rpcServer = new Server(url, { allowHttp: false });
+    rpcServer = new Server(getStellarConfig().sorobanRpcUrl, { allowHttp: false });
   }
   return rpcServer;
 }
@@ -62,7 +62,7 @@ async function simulateViewCall(
   const contract = new Contract(contractId);
   const tx = new (await import("@stellar/stellar-sdk")).TransactionBuilder(sourceAccount, {
     fee: "100",
-    networkPassphrase: process.env.STELLAR_NETWORK_PASSPHRASE ?? "Test SDF Network ; September 2015",
+    networkPassphrase: getStellarConfig().networkPassphrase,
   })
     .addOperation(contract.call(functionName, ...args))
     .setTimeout(60)

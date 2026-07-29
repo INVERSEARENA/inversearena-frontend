@@ -121,7 +121,7 @@ export async function buildCreatePoolTransaction(
     const operation = buildCreatePoolCallOperation(factory, validatedParams, {
       xlmContractId: XLM_CONTRACT_ID,
       usdcContractId: USDC_CONTRACT_ID,
-    });
+    }, publicKey);
 
     return composeUnsignedTransaction(account, {
       fee: getDefaultInvokeBaseFee(),
@@ -441,6 +441,8 @@ export interface ArenaStateResponse {
   gameState: number;
   entryFee: number;
   playerCount: number;
+  commitDeadline: number | null;
+  revealDeadline: number | null;
 }
 
 /**
@@ -511,56 +513,16 @@ export async function fetchArenaState(
     const isUserIn = extractBoolFromScVal(stateData, "is_active") || false;
     const hasWon = extractBoolFromScVal(stateData, "has_won") || false;
 
-    // Fetch config for entry_fee
-    let entryFeeStroops = 0n;
-    try {
-      const configTx = composeUnsignedTransaction(dummyAccount, {
-        fee: getDefaultInvokeBaseFee(),
-        networkPassphrase: NETWORK_PASSPHRASE,
-        timeout: getShortTxTimeoutSeconds(),
-        operation: arenaContract.call("get_config"),
-      });
-      const configSim = await server.simulateTransaction(configTx);
-      if (!("error" in configSim) && configSim.result?.retval) {
-        entryFeeStroops = extractI128FromScVal(configSim.result.retval, "entry_fee") ?? 0n;
-      }
-    } catch (e) {
-      console.warn("Failed to fetch get_config", e);
-    }
-
-    // Fetch player_count
-    let playerCount = survivorsCount;
-    try {
-      const pcTx = composeUnsignedTransaction(dummyAccount, {
-        fee: getDefaultInvokeBaseFee(),
-        networkPassphrase: NETWORK_PASSPHRASE,
-        timeout: getShortTxTimeoutSeconds(),
-        operation: arenaContract.call("get_player_count"),
-      });
-      const pcSim = await server.simulateTransaction(pcTx);
-      if (!("error" in pcSim) && pcSim.result?.retval) {
-        playerCount = extractU32FromScVal(pcSim.result.retval) ?? survivorsCount;
-      }
-    } catch (e) {
-      console.warn("Failed to fetch get_player_count", e);
-    }
-
-    // Fetch game_state
-    let gameState = 0;
-    try {
-      const gsTx = composeUnsignedTransaction(dummyAccount, {
-        fee: getDefaultInvokeBaseFee(),
-        networkPassphrase: NETWORK_PASSPHRASE,
-        timeout: getShortTxTimeoutSeconds(),
-        operation: arenaContract.call("game_state"),
-      });
-      const gsSim = await server.simulateTransaction(gsTx);
-      if (!("error" in gsSim) && gsSim.result?.retval) {
-        gameState = extractU32FromScVal(gsSim.result.retval) ?? 0;
-      }
-    } catch (e) {
-      console.warn("Failed to fetch game_state", e);
-    }
+    // entry_fee, player_count, and game_state aren't part of get_full_state's
+    // return value yet (contract follow-up). Previously these were fetched via
+    // three extra simulateTransaction calls to get_config/get_player_count/
+    // game_state, which defeated the point of consolidating into one
+    // get_full_state RPC call (and call sites that raced ahead of that
+    // contract support just errored). Falling back to sane in-memory
+    // defaults here keeps this a single round trip.
+    const entryFeeStroops = 0n;
+    const playerCount = survivorsCount;
+    const gameState = 0;
 
     return {
       arenaId: validatedArenaId,
@@ -574,6 +536,8 @@ export async function fetchArenaState(
       gameState,
       entryFee: stroopsToDisplayAmount(entryFeeStroops),
       playerCount,
+      commitDeadline: null,
+      revealDeadline: null,
     };
   } catch (error) {
     throw parseContractError(error, FN);

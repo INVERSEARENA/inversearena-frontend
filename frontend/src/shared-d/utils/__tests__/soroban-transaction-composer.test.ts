@@ -81,6 +81,7 @@ describe("soroban-transaction-composer", () => {
         xlmContractId: VALID_CONTRACT,
         usdcContractId: VALID_CONTRACT,
       },
+      VALID_PUBLIC_KEY,
     );
 
     expect(op).toBeDefined();
