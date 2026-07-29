@@ -188,6 +188,15 @@ function ArenaGameView() {
 
   return (
     <>
+      {!ARENA_ID && (
+        <div className="w-full bg-yellow-900/80 border-b border-yellow-500/60 px-4 py-2 flex items-center gap-3 text-yellow-300 font-pixel text-[10px] tracking-wider">
+          <span className="text-yellow-400 font-bold">⚠ DEMO MODE</span>
+          <span>
+            NEXT_PUBLIC_DEMO_ARENA_ID is not set — showing static placeholder data.
+            Set it to a Stellar contract address (C…) in your .env file to connect to a live arena.
+          </span>
+        </div>
+      )}
       <div className="min-h-screen p-4 md:p-6">
         <div className="max-w-7xl mx-auto">
           {/* Header */}
