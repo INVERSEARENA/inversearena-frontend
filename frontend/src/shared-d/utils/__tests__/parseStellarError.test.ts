@@ -22,6 +22,6 @@ describe("parseStellarError", () => {
       error: "HostError: Error(Contract, #200)",
     });
     expect(msg).toContain("on-chain code 200");
-    expect(msg).toContain("join this arena");
+    expect(msg).toContain("ERRORS.md");
   });
 });
