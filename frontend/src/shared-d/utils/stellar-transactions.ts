@@ -40,6 +40,7 @@ import {
 import {
   buildClaimCallOperation,
   buildCreatePoolCallOperation,
+  buildGetArenaStateCallOperation,
   buildGetFullStateCallOperation,
   buildJoinCallOperation,
   buildRevealChoiceOperation,
@@ -468,14 +469,13 @@ export async function fetchArenaState(
       "0",
     );
 
-    const stateReaderAddress =
-      validatedUserAddress ||
-      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+    // Public arena state requires no wallet address — always succeeds.
+    // User-specific fields (isUserIn, hasWon, currentStake, potentialPayout)
+    // are only available when a valid user address is provided.
+    const getStateOperation = validatedUserAddress
+      ? buildGetFullStateCallOperation(arenaContract, validatedUserAddress)
+      : buildGetArenaStateCallOperation(arenaContract);
 
-    const getStateOperation = buildGetFullStateCallOperation(
-      arenaContract,
-      stateReaderAddress,
-    );
     const stateTx = composeUnsignedTransaction(dummyAccount, {
       fee: getDefaultInvokeBaseFee(),
       networkPassphrase: NETWORK_PASSPHRASE,
@@ -506,12 +506,18 @@ export async function fetchArenaState(
       extractU32FromScVal(stateData, "survivors_count") || 0;
     const maxCapacity = extractU32FromScVal(stateData, "max_capacity") || 0;
     const roundNumber = extractU32FromScVal(stateData, "round_number") || 0;
-    const currentStakeStroops =
-      extractI128FromScVal(stateData, "current_stake") ?? 0n;
-    const potentialPayout =
-      extractI128FromScVal(stateData, "potential_payout") ?? 0n;
-    const isUserIn = extractBoolFromScVal(stateData, "is_active") || false;
-    const hasWon = extractBoolFromScVal(stateData, "has_won") || false;
+    const isUserIn = validatedUserAddress
+      ? (extractBoolFromScVal(stateData, "is_active") || false)
+      : false;
+    const hasWon = validatedUserAddress
+      ? (extractBoolFromScVal(stateData, "has_won") || false)
+      : false;
+    const currentStakeStroops = validatedUserAddress
+      ? (extractI128FromScVal(stateData, "current_stake") ?? 0n)
+      : 0n;
+    const potentialPayout = validatedUserAddress
+      ? (extractI128FromScVal(stateData, "potential_payout") ?? 0n)
+      : 0n;
 
     // entry_fee, player_count, and game_state aren't part of get_full_state's
     // return value yet (contract follow-up). Previously these were fetched via

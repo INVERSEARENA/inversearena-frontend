@@ -33,6 +33,8 @@ function baseResponse(overrides: Partial<ArenaStateResponse> = {}): ArenaStateRe
     gameState: 0,
     entryFee: 100,
     playerCount: 0,
+    commitDeadline: null,
+    revealDeadline: null,
     ...overrides,
   };
 }

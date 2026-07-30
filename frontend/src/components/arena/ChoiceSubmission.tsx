@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { buildSubmitChoiceTransaction, submitSignedTransaction } from "@/shared-d/utils/stellar-transactions";
+import { buildSubmitCommitmentTransaction, submitSignedTransaction } from "@/shared-d/utils/stellar-transactions";
 import type { WalletHook } from "@/features/wallet/useStellarWallet";
 
 type Choice = "Heads" | "Tails";
@@ -92,7 +92,7 @@ export function ChoiceSubmission({
         throw new Error("Connect a wallet before submitting your choice.");
       }
 
-      const unsignedTx = await buildSubmitChoiceTransaction(
+      const unsignedTx = await buildSubmitCommitmentTransaction(
         address,
         arenaId,
         choice,
