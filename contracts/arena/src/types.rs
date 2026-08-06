@@ -59,6 +59,10 @@ pub struct ArenaConfig {
     /// Applied to `creator_stake` when the creator withdraws while active pools exist.
     /// E.g. 5000 bps = 50% slash. Maximum allowed value is 10_000 (100%).
     pub slash_rate_bps: u32,
+    /// Platform fee in basis points captured at this arena's creation time.
+    /// Max 1000 bps (10%). Only arenas created after an `update_platform_fee`
+    /// call will reflect the new rate; running arenas keep their creation-time fee.
+    pub platform_fee_bps: u32,
 }
 
 #[contracttype]

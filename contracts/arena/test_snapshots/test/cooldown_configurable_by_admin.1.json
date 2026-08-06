@@ -304,6 +304,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "platform_fee_bps"
+                              },
+                              "val": {
+                                "u32": 1000
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "player_count"
                               },
                               "val": {
@@ -856,6 +864,14 @@
                 },
                 {
                   "key": {
+                    "symbol": "platform_fee_bps"
+                  },
+                  "val": {
+                    "u32": 1000
+                  }
+                },
+                {
+                  "key": {
                     "symbol": "player_count"
                   },
                   "val": {
@@ -1088,6 +1104,14 @@
                 },
                 {
                   "key": {
+                    "symbol": "platform_fee_bps"
+                  },
+                  "val": {
+                    "u32": 1000
+                  }
+                },
+                {
+                  "key": {
                     "symbol": "player_count"
                   },
                   "val": {
@@ -1316,6 +1340,14 @@
                   },
                   "val": {
                     "bool": false
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "platform_fee_bps"
+                  },
+                  "val": {
+                    "u32": 1000
                   }
                 },
                 {

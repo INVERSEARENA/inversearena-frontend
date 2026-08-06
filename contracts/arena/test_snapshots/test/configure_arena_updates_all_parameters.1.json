@@ -259,6 +259,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "platform_fee_bps"
+                              },
+                              "val": {
+                                "u32": 1000
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "player_count"
                               },
                               "val": {

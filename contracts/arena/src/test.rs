@@ -884,7 +884,7 @@ fn test_claim_transfers_prize() {
     client.resolve_round();
 
     let total_pot: i128 = entry_fee * 2;
-    let platform_fee = total_pot * PLATFORM_FEE_BP / 10000;
+    let platform_fee = total_pot * 1000i128 / 10000;
     let prize = total_pot - platform_fee;
 
     let token_client = TokenClient::new(&env, &token);
@@ -1056,7 +1056,7 @@ fn test_platform_fee_calculation_accuracy() {
     let winner = players.get(0).unwrap();
 
     let total_pot: i128 = entry_fee * 10;
-    let platform_fee = total_pot * PLATFORM_FEE_BP / 10000;
+    let platform_fee = total_pot * 1000i128 / 10000;
     let expected_prize = total_pot - platform_fee;
 
     let token_client = TokenClient::new(&env, &token);
@@ -1104,7 +1104,7 @@ fn test_platform_fee_with_different_amounts() {
     client.resolve_round();
 
     let total_pot: i128 = entry_fee * 3;
-    let platform_fee = total_pot * PLATFORM_FEE_BP / 10000;
+    let platform_fee = total_pot * 1000i128 / 10000;
     let expected_prize = total_pot - platform_fee;
 
     let token_client = TokenClient::new(&env, &token);
@@ -2217,7 +2217,8 @@ fn capacity_large_arena_tie_round_no_eliminations() {
     client.start_game();
 
     // Tie: half heads, half tails — for >2 players this is a tie round.
-    for (i, p) in players.iter().enumerate() {
+    for i in 0..players.len() {
+        let p = players.get(i).unwrap();
         let choice = if i % 2 == 0 { Choice::Heads } else { Choice::Tails };
         client.submit_choice(&p, &choice);
     }
