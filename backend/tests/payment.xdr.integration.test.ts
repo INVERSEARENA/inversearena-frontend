@@ -91,7 +91,7 @@ describe("buildPreparedTransaction XDR matches distribute_winnings ABI (#1149)",
       rpcServer: rpcServer as never,
     });
 
-    await service.createPayoutTransaction({
+    const { transaction } = await service.createPayoutTransaction({
       payoutId: "42",
       destinationAccount: DEST,
       amount: "100",
@@ -124,10 +124,13 @@ describe("buildPreparedTransaction XDR matches distribute_winnings ABI (#1149)",
     const args = invokeArgs.args();
     expect(args).toHaveLength(3);
 
-    // arg[0]: payout_id — must be a u64 BigInt
+    // arg[0]: payout_id — must be a u64 BigInt. The payout token and nonce
+    // are fixed at contract init time, so buildPreparedTransaction sends the
+    // reserved nonce here (not the caller-supplied payoutId) — it doubles as
+    // the on-chain payout_id for idempotency (see paymentService.ts).
     const payoutId = scValToNative(args[0]!);
     expect(typeof payoutId).toBe("bigint");
-    expect(payoutId).toBe(42n);
+    expect(payoutId).toBe(BigInt(transaction.nonce));
 
     // arg[1]: winner address — must decode to the destination account
     const winner = Address.fromScVal(args[1]!).toString();

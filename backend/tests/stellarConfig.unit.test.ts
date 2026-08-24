@@ -15,6 +15,8 @@ describe("getStellarConfig", () => {
     ).toEqual({
       sorobanRpcUrl: "https://rpc.example.com",
       networkPassphrase: "Production network passphrase",
+      roundConfirmPollMs: 2500,
+      roundConfirmMaxPolls: 20,
     });
   });
 
@@ -22,6 +24,8 @@ describe("getStellarConfig", () => {
     expect(getStellarConfig({ NODE_ENV: "test" })).toEqual({
       sorobanRpcUrl: "https://soroban-testnet.stellar.org",
       networkPassphrase: "Test SDF Network ; September 2015",
+      roundConfirmPollMs: 2500,
+      roundConfirmMaxPolls: 20,
     });
   });
 });

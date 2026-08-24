@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from "crypto";
 import { PrismaClient, Prisma } from "@prisma/client";
+import { Address, scValToNative } from "@stellar/stellar-sdk";
+// @ts-ignore
+import { rpc } from "@stellar/stellar-sdk";
+const { Server } = rpc;
 import type {
   ArenaCreationResult,
   ArenaStreamEvent,
