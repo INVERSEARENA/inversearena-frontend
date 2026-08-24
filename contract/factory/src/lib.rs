@@ -10,8 +10,34 @@ mod integration_tests;
 use storage::{CreatorStakeRecord, FactoryStorage};
 use types::{ArenaMetadata, ArenaStatus, FactoryError, PoolConfig};
 
-use arena::ArenaContractClient;
-use soroban_sdk::{Address, BytesN, Env, Vec, contract, contractimpl, symbol_short, token};
+use soroban_sdk::{
+    Address, BytesN, Env, Vec, contract, contractclient, contractimpl, symbol_short, token,
+};
+
+/// Local stub for the one arena entry point factory calls in production
+/// (`initialize`, right after deploying a new arena instance). Deliberately
+/// not `use arena::ArenaContractClient` — depending on the full `arena`
+/// crate here would statically link its `#[contractimpl]` block into
+/// factory's own wasm binary, and both contracts export an `unpause`
+/// symbol, which collides at link time. `arena` stays a dev-dependency for
+/// integration tests, which need the real contract.
+#[contractclient(name = "ArenaClient")]
+pub trait ArenaInterface {
+    #[allow(clippy::too_many_arguments)]
+    fn initialize(
+        env: Env,
+        admin: Address,
+        stake_token: Address,
+        yield_vault: Address,
+        entry_fee: i128,
+        oracle_contract: Address,
+        factory: Address,
+        pool_id: u32,
+        min_players: u32,
+        max_players: u32,
+        round_duration: u64,
+    );
+}
 
 const MAX_PAGE_SIZE: u32 = 50;
 const MIN_ROUND_DURATION: u64 = 60;
@@ -232,7 +258,7 @@ impl FactoryContract {
             .with_current_contract(Self::salt_for_pool(&env, pool_id))
             .deploy_v2(wasm_hash, ());
 
-        ArenaContractClient::new(&env, &arena).initialize(
+        ArenaClient::new(&env, &arena).initialize(
             &host,
             &config.stake_token,
             &config.yield_vault,
