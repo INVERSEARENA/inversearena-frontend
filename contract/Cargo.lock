@@ -42,7 +42,9 @@ dependencies = [
 name = "arena"
 version = "0.1.0"
 dependencies = [
+ "factory",
  "oracle",
+ "payout",
  "proptest",
  "rwa-adapter",
  "soroban-sdk",

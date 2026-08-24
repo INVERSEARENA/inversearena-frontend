@@ -26,6 +26,9 @@ import {
 } from "@/shared-d/utils/stellar-transactions";
 import { useArenaStream } from "@/features/arena/useArenaStream";
 
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
+
 // Commit-reveal phase windows (#1137). These are local, client-side timers —
 // the contract's real commit_deadline isn't yet exposed to the frontend via
 // any view call or indexer field, so this mirrors the mock-timer pattern
@@ -104,7 +107,7 @@ function ArenaGameView() {
   useEffect(() => {
     async function fetchYield() {
       try {
-        const response = await fetch("/api/oracle/yield");
+        const response = await fetch(`${API_BASE}/api/oracle/yield`);
         const data = await response.json();
         setOracleYield(data.currentAPY);
       } catch (err) {

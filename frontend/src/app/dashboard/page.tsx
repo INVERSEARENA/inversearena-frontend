@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { ErrorBoundary } from "@/components/error-boundary/ErrorBoundary";
 import { ErrorFallback } from "@/components/error-boundary/ErrorFallback";
 import { FeaturedArenaCard } from "@/features/dashboard-home/components/FeaturedArenaCard";
@@ -16,7 +17,7 @@ import { Announcements } from "@/features/dashboard-home/components/Announcement
 import { MetricsPanel } from "@/features/dashboard-home/components/MetricsPanel";
 import { PoolCreationModal } from "@/components/modals/PoolCreationModal";
 import StakeModal from "@/components/modals/StakeModal";
-import TelemetryPage from "@/app/dashboard/telemetry-bar/page";
+import { GlobalTelemetryBar } from "@/app/dashboard/telemetry-bar/page";
 
 import {
   featuredArena,
@@ -37,6 +38,7 @@ export default function DashboardHomePage() {
 }
 
 function DashboardHomeView() {
+  const router = useRouter();
   const [isStakeModalOpen, setIsStakeModalOpen] = useState(false);
   const [isPoolModalOpen, setIsPoolModalOpen] = useState(false);
   const [hasStaked, setHasStaked] = useState(false);
@@ -65,9 +67,10 @@ function DashboardHomeView() {
 
   return (
     <div className="space-y-6">
-      <TelemetryPage/>
+      <div className="-mx-6 -mt-6">
+        <GlobalTelemetryBar />
+      </div>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        {/* <TelemetryPage/> */}
         <div className="lg:col-span-2">
           <FeaturedArenaCard arena={featuredArena} />
         </div>
@@ -81,7 +84,11 @@ function DashboardHomeView() {
               label="CREATE NEW ARENA"
               onClick={handleCreateArenaClick}
             />
-            <QuickActionTile icon={<GridIcon />} label="BROWSE POOLS" />
+            <QuickActionTile
+              icon={<GridIcon />}
+              label="BROWSE POOLS"
+              onClick={() => router.push("/dashboard/games")}
+            />
           </div>
         </div>
       </div>

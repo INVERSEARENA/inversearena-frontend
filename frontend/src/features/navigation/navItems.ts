@@ -8,7 +8,6 @@ export const dashboardNavItems: NavItem[] = [
   { label: "Games", href: "/dashboard/games" },
   { label: "My Profile", href: "/dashboard/profile" },
   { label: "Leaderboard", href: "/dashboard/leaderboard" },
-  { label: "Settings", href: "/arena-v2/settings" },
-  { label: "Admin", href: "/dashboard/admin" },
+  { label: "Settings", href: "/dashboard/settings" },
 ];
 

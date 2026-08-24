@@ -1,7 +1,7 @@
 import { ArenaLobbyClient } from "@/features/arena-lobby/ArenaLobbyClient";
 
 interface PageProps {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 const API_BASE =
@@ -51,7 +51,7 @@ async function loadArenaLobbyData(arenaId: string) {
 }
 
 export default async function ArenaLobbyPage({ params }: PageProps) {
-  const { id: arenaId } = params;
+  const { id: arenaId } = await params;
 
   try {
     const { notFound, stats, participants, nextCursor } =

@@ -45,12 +45,14 @@ export default function GamesPage() {
 
   return (
     <div className="flex flex-col min-h-full">
-      <div className="flex justify-between items-start mb-4">
-        <GamesHeader />
-        <GamesStats />
-      </div>
+      <div className="sticky top-0 z-20 -mx-6 -mt-6 border-b border-white/5 bg-dark-bg/95 px-6 pt-6 pb-4 backdrop-blur">
+        <div className="flex justify-between items-start mb-4">
+          <GamesHeader />
+          <GamesStats />
+        </div>
 
-      <GamesFilters />
+        <GamesFilters />
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 grow mt-4">
         {isLoading ? (
