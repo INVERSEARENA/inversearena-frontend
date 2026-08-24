@@ -276,24 +276,24 @@ fn factory_arena_payout_full_lifecycle() {
     // ── 4. Deploy and initialise Payout contract ───────────────────────
     let payout_id = env.register(PayoutContract, ());
     let payout_client = PayoutContractClient::new(&env, &payout_id);
-    payout_client.initialize(&admin, &token_id).unwrap();
+    payout_client.initialize(&admin, &token_id);
 
     // ── 5. Deploy and initialise Factory ──────────────────────────────
     let factory_id = env.register(FactoryContract, ());
     let factory_client = FactoryContractClient::new(&env, &factory_id);
-    factory_client.initialize(&admin, &100).unwrap();  // min_stake = 100
+    factory_client.initialize(&admin, &100);  // min_stake = 100
 
     // Whitelist host and register approved token/vault/oracle so
     // create_pool does not reject the request.
-    factory_client.add_to_whitelist(&host).unwrap();
-    factory_client.add_supported_token(&token_id).unwrap();
-    factory_client.add_approved_vault(&rwa_id).unwrap();
-    factory_client.add_approved_oracle(&oracle_id).unwrap();
+    factory_client.add_to_whitelist(&host);
+    factory_client.add_supported_token(&token_id);
+    factory_client.add_approved_vault(&rwa_id);
+    factory_client.add_approved_oracle(&oracle_id);
 
     // Upload arena wasm hash — in the test environment we use the registered
-    // wasm hash from ArenaContract directly.
-    let arena_wasm = env.deployer().upload_contract_wasm(arena::WASM);
-    factory_client.set_arena_wasm_hash(&arena_wasm).unwrap();
+    // wasm hash from ArenaContract directly (crate::WASM within this crate).
+    let arena_wasm = env.deployer().upload_contract_wasm(crate::WASM);
+    factory_client.set_arena_wasm_hash(&arena_wasm);
 
     // ── 6. Factory creates pool → returns deployed arena address ───────
     let pool_cfg = PoolConfig {
@@ -305,7 +305,7 @@ fn factory_arena_payout_full_lifecycle() {
         max_players:      10,
         round_duration:   3600,
     };
-    let arena_addr = factory_client.create_pool(&host, &pool_cfg).unwrap();
+    let arena_addr = factory_client.create_pool(&host, &pool_cfg);
     let arena_client = ArenaContractClient::new(&env, &arena_addr);
 
     // Factory should have recorded the pool metadata.

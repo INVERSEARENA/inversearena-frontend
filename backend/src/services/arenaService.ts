@@ -112,35 +112,33 @@ export class ArenaService {
   }
 
   async getSnapshot(arenaId: string): Promise<ArenaSnapshot> {
-    const [arena, stats] = await this.prisma.$transaction(
-      [
-        this.prisma.arena.findUnique({
-          where: { id: arenaId },
-          include: {
-            rounds: {
-              orderBy: { roundNumber: "asc" },
-              include: {
-                eliminationLogs: {
-                  orderBy: { eliminatedAt: "asc" },
-                },
+    const arena = await this.prisma.$transaction(
+      (tx) => tx.arena.findUnique({
+        where: { id: arenaId },
+        include: {
+          rounds: {
+            orderBy: { roundNumber: "asc" },
+            include: {
+              eliminationLogs: {
+                orderBy: { eliminatedAt: "asc" },
               },
             },
           },
-        }),
-        this.statsService.getArenaStats(arenaId),
-      ],
-      {
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      },
+        },
+      }),
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );
+    const stats = await this.statsService.getArenaStats(arenaId);
 
     if (!arena) {
       throw new Error(`Arena with ID ${arenaId} not found`);
     }
 
     const lastRound = arena.rounds.at(-1) ?? null;
-    const recentEliminations = arena.rounds.flatMap((round) =>
-      round.eliminationLogs.map((log) => ({
+    type RoundWithLogs = (typeof arena.rounds)[number];
+    type EliminationLog = RoundWithLogs["eliminationLogs"][number];
+    const recentEliminations = arena.rounds.flatMap((round: RoundWithLogs) =>
+      round.eliminationLogs.map((log: EliminationLog) => ({
         id: log.id,
         userId: log.userId,
         roundNumber: round.roundNumber,

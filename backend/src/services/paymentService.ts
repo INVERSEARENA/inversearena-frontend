@@ -380,10 +380,10 @@ export class PaymentService {
     }
 
     // distribute_winnings(payout_id: u64, winner: Address, amount: i128)
-    // args[0] = payout_id (skipped in validation)
+    // args[0] = payout_id / nonce (skipped in validation)
     // args[1] = winner (destination address)
     // args[2] = amount
-    const destination = Address.fromScAddress(scValToNative(args[1]!)).toString();
+    const destination = Address.fromScVal(args[1]!).toString();
     if (destination !== transaction.destinationAccount) {
       throw new Error("Signed transaction destination does not match the payout record");
     }
@@ -417,11 +417,14 @@ export class PaymentService {
     const contract = new Contract(this.config.payoutContractId);
     const amountStroops = toStroops(request.amount);
 
+    // distribute_winnings(payout_id: u64, winner: Address, amount: i128)
+    // The payout token and nonce are fixed at contract init time — the nonce
+    // here doubles as the on-chain payout_id for idempotency.
     const operation = contract.call(
       this.config.payoutMethodName,
-      nativeToScVal(BigInt(request.payoutId), { type: "u64" }),
+      nativeToScVal(BigInt(nonce), { type: "u64" }),
       new Address(request.destinationAccount).toScVal(),
-      nativeToScVal(BigInt(amountStroops), { type: "i128" })
+      nativeToScVal(BigInt(amountStroops), { type: "i128" }),
     );
 
     const built = new TransactionBuilder(sourceAccount, {

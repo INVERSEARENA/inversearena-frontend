@@ -2,7 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { Contract, Keypair, TransactionBuilder, xdr } from "@stellar/stellar-sdk";
 // @ts-ignore
 import { rpc } from "@stellar/stellar-sdk";
-const { Server, Api } = rpc;
+const { Server, Api, assembleTransaction } = rpc;
 import { RoundRepository } from '../repositories/roundRepository';
 import type { RoundInput, RoundMetadata, RoundResolution, Payout } from '../types/round';
 import { RoundState } from '../types/round';
@@ -65,7 +65,7 @@ export class RoundService {
       throw new Error("resolve_round simulation returned no result");
     }
 
-    const prepared = Api.assembleTransaction(tx, simulated);
+    const prepared = assembleTransaction(tx, simulated).build();
     prepared.sign(signer);
 
     const sendResult = await server.sendTransaction(prepared);
@@ -95,17 +95,14 @@ export class RoundService {
           return roundNumber;
         }
         if (status.status === "FAILED") {
-          throw new Error(
-            `resolve_round transaction failed: hash=${hash} ` +
-            `errorResultXdr=${status.errorResultXdr ?? "unknown"}`,
-          );
+          throw new Error(`resolve_round transaction failed: hash=${hash}`);
         }
       }
       throw new Error(
         `resolve_round transaction timed out after ${maxPolls} polls: hash=${hash}`,
       );
     }
-    throw new Error(`resolve_round send failed: ${sendResult.errorResultXdr ?? sendResult.status}`);
+    throw new Error(`resolve_round send failed: ${sendResult.status}`);
   }
 
   async resolveRound(input: RoundInput): Promise<RoundResolution> {

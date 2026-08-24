@@ -2,7 +2,7 @@
 
 mod snapshot_tests;
 mod storage;
-mod types;
+pub mod types;
 
 #[cfg(test)]
 mod integration_tests;
