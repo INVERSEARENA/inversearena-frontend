@@ -162,7 +162,7 @@ export class ArenaStatsService {
       case "CLOSED":
         return "active";
       case "RESOLVED":
-        return "active";
+        return "resolved";
       case "SETTLED":
         return "settled";
       default:
