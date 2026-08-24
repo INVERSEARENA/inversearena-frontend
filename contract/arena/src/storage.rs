@@ -30,6 +30,7 @@ enum DataKey {
     RefundClaimed(Address),
     Leaderboard,
     LeaderboardLimit,
+    PlatformFeeBps,
 }
 
 pub struct ArenaStorage;
@@ -446,6 +447,24 @@ impl ArenaStorage {
             .set(&DataKey::LeaderboardLimit, &limit);
     }
 
+    /// Global platform fee in basis points. Defaults to 1000 (10%) until the
+    /// admin calls `update_platform_fee`. New arenas snapshot this value into
+    /// their `ArenaConfig.platform_fee_bps` at `initialize` time.
+    pub fn load_platform_fee_bps(env: &Env) -> u32 {
+        Self::extend_persistent_ttl(env, &DataKey::PlatformFeeBps);
+        env.storage()
+            .persistent()
+            .get(&DataKey::PlatformFeeBps)
+            .unwrap_or(1000)
+    }
+
+    pub fn save_platform_fee_bps(env: &Env, fee_bps: u32) {
+        Self::extend_persistent_ttl(env, &DataKey::PlatformFeeBps);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PlatformFeeBps, &fee_bps);
+    }
+
     pub fn save_pending_upgrade(env: &Env, upgrade: &PendingUpgrade) {
         Self::extend_persistent_ttl(env, &symbol_short!("UPGRADE"));
         env.storage()
@@ -500,6 +519,7 @@ mod tests {
             factory: Address::generate(env),
             pool_id: 0,
             round_duration: 0,
+            platform_fee_bps: 1000,
         }
     }
 

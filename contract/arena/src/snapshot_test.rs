@@ -84,6 +84,7 @@ mod snapshot_tests {
             factory: Address::generate(&env),
             pool_id: 0,
             round_duration: 0,
+            platform_fee_bps: 1000,
         };
         let config_b = ArenaConfig {
             admin: Address::generate(&env),
@@ -100,6 +101,7 @@ mod snapshot_tests {
             factory: Address::generate(&env),
             pool_id: 0,
             round_duration: 0,
+            platform_fee_bps: 1000,
         };
 
         let xdr_a = to_xdr(&env, config_a);

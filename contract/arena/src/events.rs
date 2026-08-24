@@ -29,6 +29,11 @@ impl ArenaEvents {
             .publish((symbol_short!("limits"),), (min_players, max_players));
     }
 
+    pub fn platform_fee_updated(env: &Env, admin: &Address, new_fee_bps: u32) {
+        env.events()
+            .publish((symbol_short!("fee_upd"), admin.clone()), new_fee_bps);
+    }
+
     pub fn upgrade_proposed(env: &Env, new_wasm_hash: &BytesN<32>, proposed_at: u64) {
         env.events().publish(
             (symbol_short!("up_prop"),),

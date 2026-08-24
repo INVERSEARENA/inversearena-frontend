@@ -35,6 +35,8 @@ pub(crate) const MIN_PLAYERS_TO_START: u32 = 2;
 const MAX_PLAYERS_ALLOWED: u32 = 100;
 const CONTRACT_VERSION: u32 = 1;
 const UPGRADE_TIMELOCK_SECONDS: u64 = 86_400; // 1 day
+/// Maximum allowed platform fee: 1000 bps (10%). Enforced by `update_platform_fee`.
+const MAX_PLATFORM_FEE_BPS: u32 = 1000;
 
 // ── Round duration bounds ─────────────────────────────────────────────────────
 
@@ -134,6 +136,7 @@ impl ArenaContract {
             factory,
             pool_id,
             round_duration,
+            platform_fee_bps: ArenaStorage::load_platform_fee_bps(&env),
         };
         ArenaStorage::save_config(&env, &config);
         ArenaStorage::increment_creator_active_pools(&env, &admin);
@@ -932,6 +935,36 @@ impl ArenaContract {
         Ok(())
     }
 
+    /// Update this arena instance's stored platform fee (0-1000 bps, max 10%). Admin only.
+    ///
+    /// Each arena is deployed as its own contract instance (one per pool, via
+    /// the factory), so this only affects `get_platform_fee_bps` reads on
+    /// *this* instance going forward — it does not retroactively change this
+    /// arena's own `config.platform_fee_bps` (already snapshotted at
+    /// `initialize`), and has no effect on other arena instances, which each
+    /// have independent storage. A fee that should apply uniformly to every
+    /// newly-deployed arena would need to be threaded through the `factory`
+    /// contract's deploy call instead. This value is also not currently
+    /// deducted anywhere in `claim`'s payout calculation; it is stored and
+    /// exposed for a future payout integration.
+    pub fn update_platform_fee(env: Env, new_fee_bps: u32) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+
+        if new_fee_bps > MAX_PLATFORM_FEE_BPS {
+            return Err(ArenaError::InvalidPlatformFee);
+        }
+
+        ArenaStorage::save_platform_fee_bps(&env, new_fee_bps);
+        ArenaEvents::platform_fee_updated(&env, &config.admin, new_fee_bps);
+        Ok(())
+    }
+
+    /// Return the current global platform fee in basis points.
+    pub fn get_platform_fee_bps(env: Env) -> u32 {
+        ArenaStorage::load_platform_fee_bps(&env)
+    }
+
     /// Return the cumulative yield earned across all resolved rounds.
     ///
     /// Summed from vault balance deltas recorded during each `resolve_round`
@@ -1156,6 +1189,7 @@ mod test {
                 factory: Address::generate(&env),
                 pool_id: 0,
                 round_duration: 0,
+                platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
             for _ in 0..n {
@@ -1239,6 +1273,7 @@ mod test {
                 factory: Address::generate(&env),
                 pool_id: 0,
                 round_duration: 0,
+                platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
@@ -1280,6 +1315,7 @@ mod test {
                 factory: Address::generate(&env),
                 pool_id: 0,
                 round_duration: 0,
+                platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::save_commitment(&env, &player, 1, &commitment);
@@ -1316,6 +1352,7 @@ mod test {
                 factory: Address::generate(&env),
                 pool_id: 0,
                 round_duration: 0,
+                platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
@@ -1360,6 +1397,7 @@ mod test {
                 factory: Address::generate(&env),
                 pool_id: 0,
                 round_duration: 0,
+                platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
@@ -1396,6 +1434,7 @@ mod test {
                 factory: Address::generate(&env),
                 pool_id: 0,
                 round_duration: 0,
+                platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
@@ -1433,6 +1472,7 @@ mod test {
                 factory: Address::generate(&env),
                 pool_id: 0,
                 round_duration: 0,
+                platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
@@ -1469,6 +1509,7 @@ mod test {
                 factory: Address::generate(&env),
                 pool_id: 0,
                 round_duration: 0,
+                platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
         });
@@ -1507,6 +1548,7 @@ mod test {
                 factory: Address::generate(&env),
                 pool_id: 0,
                 round_duration: 0,
+                platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
             // Register 2 active players so active_count check in start_round passes.
@@ -1567,6 +1609,7 @@ mod test {
                     factory: Address::generate(&env),
                     pool_id: 0,
                     round_duration: 0,
+                    platform_fee_bps: 1000,
                 },
             );
             ArenaStorage::save_player(
@@ -1702,6 +1745,7 @@ mod test {
                 factory: Address::generate(&env),
                 pool_id: 0,
                 round_duration: 0,
+                platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
         });
@@ -1781,6 +1825,7 @@ mod test {
                     factory: Address::generate(&env),
                     pool_id: 0,
                     round_duration: 0,
+                    platform_fee_bps: 1000,
                 },
             );
             ArenaStorage::add_player(&env, &p1);
@@ -1994,6 +2039,7 @@ mod test {
                     factory: Address::generate(&env),
                     pool_id: 0,
                     round_duration: 0,
+                    platform_fee_bps: 1000,
                 },
             );
             ArenaStorage::save_player(
@@ -2046,6 +2092,7 @@ mod test {
                     factory: Address::generate(&env),
                     pool_id: 0,
                     round_duration: 0,
+                    platform_fee_bps: 1000,
                 },
             );
             ArenaStorage::save_player(
@@ -2091,6 +2138,7 @@ mod test {
                 factory: Address::generate(&env),
                 pool_id: 0,
                 round_duration: 0,
+                platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
         });
@@ -2128,6 +2176,7 @@ mod test {
                 factory: Address::generate(&env),
                 pool_id: 0,
                 round_duration: 0,
+                platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
         });
@@ -2165,6 +2214,7 @@ mod test {
                 factory: Address::generate(&env),
                 pool_id: 0,
                 round_duration: 0,
+                platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
         });
@@ -2205,6 +2255,7 @@ mod test {
                 factory: Address::generate(&env),
                 pool_id: 0,
                 round_duration: 0,
+                platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
         });
@@ -2258,6 +2309,7 @@ mod test {
                     factory: Address::generate(&env),
                     pool_id: 0,
                     round_duration: 0,
+                    platform_fee_bps: 1000,
                 },
             );
         });
@@ -2290,6 +2342,7 @@ mod test {
                     factory: Address::generate(&env),
                     pool_id: 0,
                     round_duration: 0,
+                    platform_fee_bps: 1000,
                 },
             );
         });
@@ -2323,6 +2376,7 @@ mod test {
                     factory: Address::generate(&env),
                     pool_id: 0,
                     round_duration: 0,
+                    platform_fee_bps: 1000,
                 },
             );
             let p1 = Address::generate(&env);
@@ -2779,6 +2833,7 @@ mod test {
                     factory: Address::generate(&env),
                     pool_id: 0,
                     round_duration: 0,
+                    platform_fee_bps: 1000,
                 },
             );
             ArenaStorage::save_player_limits(&env, 2, 2);
@@ -3043,6 +3098,7 @@ mod test {
                 factory: Address::generate(&env),
                 pool_id: 0,
                 round_duration: 0,
+                platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
 
@@ -3127,6 +3183,7 @@ mod test {
                 factory: Address::generate(&env),
                 pool_id: 0,
                 round_duration: 0,
+                platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
 
@@ -3162,6 +3219,55 @@ mod test {
                 assert_eq!(entry.rounds_survived, 19 - i);
             }
         });
+    }
+
+    #[test]
+    fn get_platform_fee_bps_defaults_to_1000() {
+        let env = Env::default();
+        let contract_id = env.register(ArenaContract, ());
+        let client = ArenaContractClient::new(&env, &contract_id);
+        assert_eq!(client.get_platform_fee_bps(), 1000);
+    }
+
+    #[test]
+    fn update_platform_fee_rejects_over_max() {
+        let (_env, client) = setup(0);
+        let result = client.try_update_platform_fee(&1001);
+        assert_eq!(result, Err(Ok(ArenaError::InvalidPlatformFee)));
+    }
+
+    #[test]
+    fn update_platform_fee_updates_stored_value_and_emits_event() {
+        let (env, client) = setup(0);
+        let admin = env.as_contract(&client.address, || {
+            ArenaStorage::load_config(&env).unwrap().admin
+        });
+
+        // Check the event from this specific call — env.events().all() only
+        // reflects the most recent top-level contract invocation, so nothing
+        // else should be called on `client` between this and the assertion.
+        client.update_platform_fee(&250);
+
+        let events = env.events().all();
+        let expected_topic: soroban_sdk::Vec<Val> =
+            (symbol_short!("fee_upd"), admin).into_val(&env);
+        let has_fee_event = events
+            .iter()
+            .any(|(contract, topics, _data)| contract == client.address && topics == expected_topic);
+        assert!(has_fee_event, "must emit fee_upd event");
+
+        // Verify the stored value directly (bypassing the client so we don't
+        // disturb the event recording above with another top-level call).
+        env.as_contract(&client.address, || {
+            assert_eq!(ArenaStorage::load_platform_fee_bps(&env), 250);
+        });
+    }
+
+    #[test]
+    fn update_platform_fee_at_max_boundary_succeeds() {
+        let (_env, client) = setup(0);
+        client.update_platform_fee(&1000);
+        assert_eq!(client.get_platform_fee_bps(), 1000);
     }
 
     // --- Issue 1: initialize rejects invalid entry fees ---
@@ -3701,6 +3807,7 @@ mod test {
                         factory: Address::generate(&env),
                         pool_id: 0,
                         round_duration: 0,
+                        platform_fee_bps: 1000,
                     },
                 );
                 ArenaStorage::save_leaderboard_limit(&env, LIMIT);
