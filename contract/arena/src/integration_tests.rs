@@ -390,7 +390,7 @@ fn factory_arena_payout_full_lifecycle() {
     token_admin_client.mint(&payout_id, &prize);
 
     // distribute_winnings is idempotent on payout_id; payout_id = 1.
-    payout_client.distribute_winnings(&1, &p1, &prize).unwrap();
+    payout_client.distribute_winnings(&1, &p1, &prize);
 
     // p1's payout contract balance reflects the distributed amount.
     // (Token balance increases by prize; p2/p3 unchanged.)

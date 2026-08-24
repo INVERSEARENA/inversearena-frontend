@@ -37,7 +37,7 @@ impl MockVault {
 
 /// Build an arena contract whose on-chain config is set to `state`.
 /// Returns (Env, ArenaContractClient, token_address).
-fn setup_arena(state: GameState) -> (Env, ArenaContractClient<'_>, Address) {
+fn setup_arena(state: GameState) -> (Env, ArenaContractClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -283,7 +283,7 @@ mod failing_vault {
 
 /// Build an Open arena whose yield vault always rejects deposits.
 /// Returns (Env, ArenaContractClient, token_address).
-fn setup_arena_failing_vault() -> (Env, ArenaContractClient<'_>, Address) {
+fn setup_arena_failing_vault() -> (Env, ArenaContractClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
 

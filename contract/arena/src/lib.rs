@@ -38,6 +38,22 @@ const UPGRADE_TIMELOCK_SECONDS: u64 = 86_400; // 1 day
 /// Maximum allowed platform fee: 1000 bps (10%). Enforced by `update_platform_fee`.
 const MAX_PLATFORM_FEE_BPS: u32 = 1000;
 
+/// This crate's own compiled WASM, used by `integration_tests.rs` so the
+/// in-process factory contract can dynamically deploy a real arena instance
+/// (mirroring on-chain deployment) instead of reusing the natively-registered
+/// test contract. Requires `cargo build -p arena --target wasm32v1-none
+/// --release` to have produced the wasm first — CI runs that before
+/// `cargo test`; for local runs, build the wasm once before running the
+/// integration test.
+///
+/// Built for `wasm32v1-none`, not `wasm32-unknown-unknown`: newer rustc
+/// versions emit reference-types instructions for `wasm32-unknown-unknown`
+/// that soroban-env-host (pinned to an older wasm feature profile) rejects
+/// at runtime with "reference-types not enabled". `wasm32v1-none` is the
+/// Soroban-recommended target that avoids this.
+#[cfg(test)]
+pub(crate) const WASM: &[u8] = include_bytes!("../../target/wasm32v1-none/release/arena.wasm");
+
 // ── Round duration bounds ─────────────────────────────────────────────────────
 
 /// Minimum `duration_seconds` accepted by `start_round` (30 seconds).

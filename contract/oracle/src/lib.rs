@@ -141,7 +141,7 @@ mod tests {
     use super::*;
     use soroban_sdk::{Env, testutils::Address as _};
 
-    fn setup(initial_rate: u32) -> (Env, OracleContractClient<'_>) {
+    fn setup(initial_rate: u32) -> (Env, OracleContractClient<'static>) {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(OracleContract, ());
