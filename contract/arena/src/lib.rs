@@ -910,11 +910,11 @@ impl ArenaContract {
         player.require_auth();
 
         let config = ArenaStorage::load_config(&env)?;
-        // Allow refund claims when Cancelled even if paused — a paused+cancelled
-        // arena must not permanently lock player funds.
-        if config.state != GameState::Cancelled {
-            Self::require_not_paused(&config)?;
-        }
+        // Pause is the admin's stop-the-world switch and gates token movement
+        // too, so it's checked before any other guard here — including the
+        // cancellation-state check below. This masks ArenaNotCancelled and
+        // RefundAlreadyClaimed while paused, by design.
+        Self::require_not_paused(&config)?;
 
         if config.state != GameState::Cancelled {
             return Err(ArenaError::ArenaNotCancelled);
