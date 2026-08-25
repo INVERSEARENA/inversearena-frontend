@@ -33,7 +33,7 @@ export function createApiRouter(
   router.use(createDocsRouter());
   router.use("/auth", createAuthRouter(authController, requireAuth));
   router.use("/users", createUsersRouter(usersController, requireAuth));
-  router.use("/payouts", createPayoutsRouter(payoutsController, authService));
+  router.use("/payouts", createPayoutsRouter(payoutsController, authService, adminAuthMiddleware));
   router.use("/worker", createWorkerRouter(workerController, adminAuthMiddleware));
   router.use(
     "/transactions",

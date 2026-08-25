@@ -1,4 +1,5 @@
 import { TransactionModel } from "../db/models/transaction.model";
+import { PayoutNonceCounterModel } from "../db/models/payoutNonceCounter.model";
 import type { PaymentStatus, TransactionRecord } from "../types/payment";
 import type { TransactionRepository } from "./transactionRepository";
 
@@ -22,6 +23,7 @@ function docToRecord(doc: { toObject(): Record<string, unknown> } & { _id: strin
     createdAt: obj.createdAt as Date,
     updatedAt: obj.updatedAt as Date,
     confirmedAt: (obj.confirmedAt as Date | null) ?? null,
+    ownerId: (obj.ownerId as string | null) ?? null,
   };
 }
 
@@ -37,12 +39,14 @@ export class MongoTransactionRepository implements TransactionRepository {
   }
 
   async reserveNextNonce(sourceAccount: string): Promise<number> {
-    const doc = await TransactionModel
-      .findOne({ sourceAccount })
-      .sort({ nonce: -1 })
-      .select("nonce")
-      .lean();
-    return (doc?.nonce ?? 0) + 1;
+    // Atomic $inc upsert on a dedicated counter document. The old
+    // MAX(nonce)+1 read let two concurrent creates reserve the same nonce.
+    const counter = await PayoutNonceCounterModel.findOneAndUpdate(
+      { _id: sourceAccount },
+      { $inc: { lastNonce: 1 } },
+      { upsert: true, new: true }
+    );
+    return counter.lastNonce;
   }
 
   async insert(record: TransactionRecord): Promise<void> {
@@ -62,6 +66,7 @@ export class MongoTransactionRepository implements TransactionRepository {
       errorMessage: record.errorMessage ?? null,
       attempts: record.attempts,
       confirmedAt: record.confirmedAt ?? null,
+      ownerId: record.ownerId ?? null,
     });
   }
 
