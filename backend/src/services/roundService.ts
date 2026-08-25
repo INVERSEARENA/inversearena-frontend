@@ -1,4 +1,8 @@
 import { PrismaClient } from '@prisma/client';
+import { Contract, Keypair, TransactionBuilder, xdr } from "@stellar/stellar-sdk";
+// @ts-ignore
+import { rpc } from "@stellar/stellar-sdk";
+const { Server, Api, assembleTransaction } = rpc;
 import { RoundRepository } from '../repositories/roundRepository';
 import type { RoundInput, RoundMetadata, RoundResolution, Payout } from '../types/round';
 import { RoundState } from '../types/round';
@@ -10,12 +14,95 @@ import {
   roundResolutionDuration,
 } from '../utils/metrics';
 import { invalidateArenaStats } from '../cache/cacheService';
+import {
+  getOnChainActivePlayerIds,
+  getOnChainWinner,
+} from './onChainReader';
+import { getStellarConfig, type StellarConfig } from '../config/stellarConfig';
 
 export class RoundService {
   private roundRepo: RoundRepository;
 
-  constructor(private prisma: PrismaClient) {
+  constructor(
+    private prisma: PrismaClient,
+    private stellarConfig: StellarConfig = getStellarConfig(),
+  ) {
     this.roundRepo = new RoundRepository(prisma);
+  }
+
+  /**
+   * Build, sign, submit, and confirm a resolve_round call on the arena contract.
+   * Returns the on-chain round number on success.
+   */
+  private async submitOnChainResolve(
+    contractId: string,
+    roundNumber: number,
+  ): Promise<number> {
+    const signerSecret = process.env.ARENA_ADMIN_SECRET;
+
+    if (!signerSecret) {
+      throw new Error("ARENA_ADMIN_SECRET is not configured. Cannot submit on-chain resolve_round.");
+    }
+
+    const server = new Server(this.stellarConfig.sorobanRpcUrl, { allowHttp: false });
+    const signer = Keypair.fromSecret(signerSecret);
+    const sourceAccount = await server.getAccount(signer.publicKey());
+    const contract = new Contract(contractId);
+
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: "100",
+      networkPassphrase: this.stellarConfig.networkPassphrase,
+    })
+      .addOperation(contract.call("resolve_round", xdr.ScVal.scvU32(roundNumber)))
+      .setTimeout(60)
+      .build();
+
+    const simulated = await server.simulateTransaction(tx);
+    if (Api.isSimulationError(simulated)) {
+      throw new Error(`resolve_round simulation failed: ${simulated.error}`);
+    }
+    if (!Api.isSimulationSuccess(simulated)) {
+      throw new Error("resolve_round simulation returned no result");
+    }
+
+    const prepared = assembleTransaction(tx, simulated).build();
+    prepared.sign(signer);
+
+    const sendResult = await server.sendTransaction(prepared);
+    if (sendResult.status === "PENDING" || sendResult.status === "DUPLICATE") {
+      const hash = sendResult.hash;
+      const maxPolls = this.stellarConfig.roundConfirmMaxPolls;
+      const basePollMs = this.stellarConfig.roundConfirmPollMs;
+      const start = Date.now();
+
+      for (let attempt = 0; attempt < maxPolls; attempt++) {
+        // Exponential backoff with ±10 % jitter, capped at 30 s.
+        const delay = Math.min(
+          basePollMs * Math.pow(1.5, attempt) * (0.9 + Math.random() * 0.2),
+          30_000,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+
+        const elapsed = Date.now() - start;
+        const status = await server.getTransaction(hash);
+
+        console.info(
+          `[roundService] resolve_round poll attempt=${attempt + 1}/${maxPolls} ` +
+          `status=${status.status} elapsed=${elapsed}ms hash=${hash}`,
+        );
+
+        if (status.status === "SUCCESS") {
+          return roundNumber;
+        }
+        if (status.status === "FAILED") {
+          throw new Error(`resolve_round transaction failed: hash=${hash}`);
+        }
+      }
+      throw new Error(
+        `resolve_round transaction timed out after ${maxPolls} polls: hash=${hash}`,
+      );
+    }
+    throw new Error(`resolve_round send failed: ${sendResult.status}`);
   }
 
   async resolveRound(input: RoundInput): Promise<RoundResolution> {
@@ -28,14 +115,29 @@ export class RoundService {
         throw new Error(`Round already in state: ${round.state}`);
       }
 
-      const eliminatedPlayers = this.computeEliminations(
-        input.playerChoices,
-        input.allActivePlayerIds,
-        input.oracleYield,
-        input.randomSeed
+      // Submit on-chain resolve_round BEFORE computing eliminations so that
+      // the contract's authoritative state is available to read back via
+      // get_players. If this fails the DB is untouched, preventing desync.
+      await this.submitOnChainResolve(input.arenaContractId, round.roundNumber);
+
+      // ── #1098: derive eliminations from on-chain PlayerState.active ──────
+      // The Soroban contract is the single source of truth for the
+      // minority-wins elimination logic. Reading get_players() after
+      // resolve_round is confirmed eliminates any risk of TypeScript
+      // re-implementation diverging from on-chain behaviour (tie-breaking,
+      // no-submission handling, etc.).
+      const activePlayerIds = await getOnChainActivePlayerIds(input.arenaContractId);
+      const activeSet = new Set(activePlayerIds);
+      const eliminatedPlayers = input.allActivePlayerIds.filter(
+        id => !activeSet.has(id)
       );
 
-      const payouts = this.computePayouts(
+      // ── #1099: always one payout record — the single on-chain winner ──────
+      // The arena contract sets exactly one winner via set_winner() and pays
+      // that address the full prize pool via claim(). Creating multiple payout
+      // records or splitting the pool causes on-chain submission failures.
+      const payouts = await this.computePayouts(
+        input.arenaContractId,
         input.playerChoices,
         eliminatedPlayers,
         input.oracleYield
@@ -76,7 +178,7 @@ export class RoundService {
       const duration = (Date.now() - start) / 1000;
       roundResolutionDuration.observe(duration);
       roundResolutionsTotal.inc({ status: 'success' });
-      
+
       return result;
     } catch (error) {
       const duration = (Date.now() - start) / 1000;
@@ -86,54 +188,51 @@ export class RoundService {
     }
   }
 
-  private computeEliminations(
-    playerChoices: RoundInput['playerChoices'],
-    allActivePlayerIds: string[],
-    _oracleYield: number,
-    _randomSeed?: string
-  ): string[] {
-    const headCount = playerChoices.filter(p => p.choice === 'heads').length;
-    const tailCount = playerChoices.filter(p => p.choice === 'tails').length;
-
-    // A single remaining player survives automatically
-    if (headCount + tailCount === 1 && allActivePlayerIds.length === 1) {
-      return [];
-    }
-
-    if (headCount === tailCount) {
-      return allActivePlayerIds.filter(
-        id => !playerChoices.some(p => p.userId === id)
-      );
-    }
-
-    const majorityChoice = headCount > tailCount ? 'heads' : 'tails';
-    const submittedIds = new Set(playerChoices.map(p => p.userId));
-
-    return [
-      ...playerChoices.filter(p => p.choice === majorityChoice).map(p => p.userId),
-      ...allActivePlayerIds.filter(id => !submittedIds.has(id)),
-    ];
-  }
-
-  private computePayouts(
+  /**
+   * Build the payout record for this round.
+   *
+   * The on-chain arena contract designates exactly one winner (the last
+   * surviving player) who receives 100% of the prize pool via `claim()`.
+   * This method reads that winner directly from on-chain via `get_winner`,
+   * ensuring the backend payout record always matches the on-chain
+   * entitlement and never produces under-paying or multi-winner XDRs.
+   *
+   * If the game is not yet finished (multi-round game still in progress)
+   * there is no on-chain winner yet and we return an empty array — payout
+   * records are only created at game end.
+   */
+  private async computePayouts(
+    arenaContractId: string,
     playerChoices: RoundInput['playerChoices'],
     eliminatedPlayers: string[],
     oracleYield: number
-  ): Payout[] {
-    const winners = playerChoices.filter(p => !eliminatedPlayers.includes(p.userId));
+  ): Promise<Payout[]> {
+    // Attempt to read the single authoritative winner from on-chain.
+    const onChainWinner = await getOnChainWinner(arenaContractId);
+    if (!onChainWinner) {
+      // Game is still in progress (more rounds to go); no payout yet.
+      return [];
+    }
+
+    // Compute prize = all eliminated stakes + oracle yield on the total pool.
+    const totalStake = playerChoices.reduce((sum, p) => sum + p.stake, 0);
     const eliminatedStake = playerChoices
       .filter(p => eliminatedPlayers.includes(p.userId))
       .reduce((sum, p) => sum + p.stake, 0);
-
-    if (winners.length === 0) return [];
-
     const prizePool = eliminatedStake * (1 + oracleYield / 100);
-    const payoutPerWinner = prizePool / winners.length;
 
-    return winners.map(w => ({
-      userId: w.userId,
-      amount: w.stake + payoutPerWinner,
-    }));
+    // Find the on-chain winner's stake entry to add their own principal back.
+    const winnerChoice = playerChoices.find(p => p.userId === onChainWinner);
+    const winnerStake = winnerChoice?.stake ?? 0;
+
+    return [{
+      userId: onChainWinner,
+      // Winner receives their own stake back plus the full prize pool.
+      amount: winnerStake + prizePool,
+    }];
+
+    // Suppress unused-variable warning; totalStake retained for future use.
+    void totalStake;
   }
 
   async closeRound(roundId: string): Promise<{ state: RoundState }> {

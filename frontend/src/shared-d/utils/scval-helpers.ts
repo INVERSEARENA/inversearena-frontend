@@ -69,3 +69,14 @@ export function encodeChoice(choice: RoundChoice): xdr.ScVal {
   return xdr.ScVal.scvSymbol(choice);
 }
 
+/**
+ * Encode a fixed 32-byte buffer as `scvBytes` — used for the commit-reveal
+ * protocol's `BytesN<32>` commitment hash and salt arguments (#1137).
+ */
+export function encodeBytes32(bytes: Uint8Array): xdr.ScVal {
+  if (bytes.length !== 32) {
+    throw new Error(`expected exactly 32 bytes, got ${bytes.length}`);
+  }
+  return xdr.ScVal.scvBytes(Buffer.from(bytes));
+}
+

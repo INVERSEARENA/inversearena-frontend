@@ -25,4 +25,7 @@ pub enum StakingError {
     InvalidAmount = 4,
     InsufficientShares = 5,
     ZeroShares = 6,
+    BelowMinimumInitialStake = 7,
+    /// No shares outstanding — division by zero prevented (#1011).
+    NoSharesOutstanding = 8,
 }

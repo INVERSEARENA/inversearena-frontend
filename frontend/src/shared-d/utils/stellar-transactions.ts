@@ -16,6 +16,9 @@ import {
 import {
 } from "@/components/hook-d/arenaConstants";
 import { STELLAR_PLACEHOLDERS, stellarConfig } from "@/lib/stellarConfig";
+
+// Re-export for use in components
+export { STELLAR_PLACEHOLDERS };
 import {
   ContractError,
   ContractErrorCode,
@@ -37,11 +40,13 @@ import {
 import {
   buildClaimCallOperation,
   buildCreatePoolCallOperation,
+  buildGetArenaStateCallOperation,
   buildGetFullStateCallOperation,
   buildJoinCallOperation,
+  buildRevealChoiceOperation,
   buildStakeCallOperation,
+  buildSubmitCommitmentOperation,
   buildUnstakeCallOperation,
-  buildSubmitChoiceCallOperation,
   composeUnsignedTransaction,
 } from "@/shared-d/utils/soroban-transaction-composer";
 import { CreatePoolParamsSchema } from "@/shared-d/utils/stellar-transaction-schemas";
@@ -51,6 +56,13 @@ import {
   extractU32FromScVal,
   stroopsToDisplayAmount,
 } from "@/shared-d/utils/stellar-scval-extract";
+import {
+  clearCommitment,
+  computeCommitment,
+  generateSalt,
+  loadCommitment,
+  saveCommitment,
+} from "@/shared-d/utils/commit-reveal";
 
 // Re-export so consumers can import from one place
 export { ContractError, ContractErrorCode, parseContractError } from "@/shared-d/utils/contract-error";
@@ -110,7 +122,7 @@ export async function buildCreatePoolTransaction(
     const operation = buildCreatePoolCallOperation(factory, validatedParams, {
       xlmContractId: XLM_CONTRACT_ID,
       usdcContractId: USDC_CONTRACT_ID,
-    });
+    }, publicKey);
 
     return composeUnsignedTransaction(account, {
       fee: getDefaultInvokeBaseFee(),
@@ -243,7 +255,7 @@ export async function buildJoinArenaTransaction(
 
     const account = await getAccount(validatedPublicKey, FN);
     const poolContract = defaultSorobanClients.createContract(validatedPoolId);
-    const operation = buildJoinCallOperation(poolContract);
+    const operation = buildJoinCallOperation(poolContract, validatedPublicKey);
 
     return composeUnsignedTransaction(account, {
       fee: getJoinArenaFee(),
@@ -257,27 +269,38 @@ export async function buildJoinArenaTransaction(
 }
 
 /**
- * Submit choice (Heads/Tails).
+ * Commit phase (#1137): generate a random salt, compute
+ * `SHA256([choice_byte] ++ salt)` client-side (WebCrypto), persist
+ * `{ choice, salt }` in localStorage keyed by arena + round (needed again at
+ * reveal time — the salt is never sent on-chain here), and build the
+ * `submit_commitment` transaction carrying only the hash.
  */
-export async function buildSubmitChoiceTransaction(
+export async function buildSubmitCommitmentTransaction(
   publicKey: string,
   poolId: string,
   choice: "Heads" | "Tails",
   roundNumber: number,
 ) {
-  const FN = "buildSubmitChoiceTransaction";
+  const FN = "buildSubmitCommitmentTransaction";
   try {
     const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
     const validatedPoolId = StellarContractIdSchema.parse(poolId);
     const validatedChoice = RoundChoiceSchema.parse(choice);
     const validatedRoundNumber = RoundNumberSchema.parse(roundNumber);
 
+    const salt = generateSalt();
+    const commitment = await computeCommitment(validatedChoice, salt);
+    saveCommitment(validatedPoolId, validatedRoundNumber, {
+      choice: validatedChoice,
+      salt,
+    });
+
     const account = await getAccount(validatedPublicKey, FN);
     const poolContract = defaultSorobanClients.createContract(validatedPoolId);
-    const operation = buildSubmitChoiceCallOperation(
+    const operation = buildSubmitCommitmentOperation(
       poolContract,
-      validatedRoundNumber,
-      validatedChoice,
+      validatedPublicKey,
+      commitment,
     );
 
     return composeUnsignedTransaction(account, {
@@ -292,6 +315,68 @@ export async function buildSubmitChoiceTransaction(
 }
 
 /**
+ * Reveal phase (#1137): retrieve the `{ choice, salt }` saved during the
+ * commit phase for this arena + round and build the `reveal_choice`
+ * transaction. Throws VALIDATION_FAILED if nothing was committed on this
+ * device for this round — there is no other source for the salt.
+ *
+ * Callers should only call {@link clearCommitmentForRound} once the reveal
+ * transaction has actually been confirmed (see submitSignedTransaction) —
+ * clearing it earlier would strand the only copy of the salt if signing is
+ * cancelled or submission fails.
+ */
+export async function buildRevealChoiceTransaction(
+  publicKey: string,
+  poolId: string,
+  roundNumber: number,
+) {
+  const FN = "buildRevealChoiceTransaction";
+  try {
+    const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
+    const validatedPoolId = StellarContractIdSchema.parse(poolId);
+    const validatedRoundNumber = RoundNumberSchema.parse(roundNumber);
+
+    const stored = loadCommitment(validatedPoolId, validatedRoundNumber);
+    if (!stored) {
+      throw new ContractError({
+        code: ContractErrorCode.VALIDATION_FAILED,
+        message:
+          "No commitment found for this round on this device — cannot reveal a choice that was never committed here.",
+        fn: FN,
+      });
+    }
+
+    const account = await getAccount(validatedPublicKey, FN);
+    const poolContract = defaultSorobanClients.createContract(validatedPoolId);
+    const operation = buildRevealChoiceOperation(
+      poolContract,
+      validatedPublicKey,
+      stored.choice,
+      stored.salt,
+    );
+
+    return composeUnsignedTransaction(account, {
+      fee: getDefaultInvokeBaseFee(),
+      networkPassphrase: NETWORK_PASSPHRASE,
+      timeout: getStandardTxTimeoutSeconds(),
+      operation,
+    });
+  } catch (error) {
+    throw parseContractError(error, FN);
+  }
+}
+
+/** Re-exported so callers can clear a round's stored commitment after a confirmed reveal (#1137). */
+export function clearCommitmentForRound(poolId: string, roundNumber: number): void {
+  clearCommitment(poolId, roundNumber);
+}
+
+/** True if this device has a stored commitment for the round — i.e. reveal is possible (#1137). */
+export function hasStoredCommitmentForRound(poolId: string, roundNumber: number): boolean {
+  return loadCommitment(poolId, roundNumber) !== null;
+}
+
+/**
  * Claim winnings.
  */
 export async function buildClaimWinningsTransaction(
@@ -303,9 +388,19 @@ export async function buildClaimWinningsTransaction(
     const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
     const validatedPoolId = StellarContractIdSchema.parse(poolId);
 
+    const arenaState = await fetchArenaState(validatedPoolId, validatedPublicKey);
+    if (!arenaState.hasWon) {
+      throw new ContractError({
+        code: ContractErrorCode.VALIDATION_FAILED,
+        message:
+          "Only the arena winner can claim winnings. This account is not the winner.",
+        fn: FN,
+      });
+    }
+
     const account = await getAccount(validatedPublicKey, FN);
     const poolContract = defaultSorobanClients.createContract(validatedPoolId);
-    const operation = buildClaimCallOperation(poolContract);
+    const operation = buildClaimCallOperation(poolContract, validatedPublicKey);
 
     return composeUnsignedTransaction(account, {
       fee: getDefaultInvokeBaseFee(),
@@ -344,6 +439,11 @@ export interface ArenaStateResponse {
   currentStake: number;
   potentialPayout: number;
   roundNumber: number;
+  gameState: number;
+  entryFee: number;
+  playerCount: number;
+  commitDeadline: number | null;
+  revealDeadline: number | null;
 }
 
 /**
@@ -369,14 +469,13 @@ export async function fetchArenaState(
       "0",
     );
 
-    const stateReaderAddress =
-      validatedUserAddress ||
-      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+    // Public arena state requires no wallet address — always succeeds.
+    // User-specific fields (isUserIn, hasWon, currentStake, potentialPayout)
+    // are only available when a valid user address is provided.
+    const getStateOperation = validatedUserAddress
+      ? buildGetFullStateCallOperation(arenaContract, validatedUserAddress)
+      : buildGetArenaStateCallOperation(arenaContract);
 
-    const getStateOperation = buildGetFullStateCallOperation(
-      arenaContract,
-      stateReaderAddress,
-    );
     const stateTx = composeUnsignedTransaction(dummyAccount, {
       fee: getDefaultInvokeBaseFee(),
       networkPassphrase: NETWORK_PASSPHRASE,
@@ -407,12 +506,29 @@ export async function fetchArenaState(
       extractU32FromScVal(stateData, "survivors_count") || 0;
     const maxCapacity = extractU32FromScVal(stateData, "max_capacity") || 0;
     const roundNumber = extractU32FromScVal(stateData, "round_number") || 0;
-    const currentStakeStroops =
-      extractI128FromScVal(stateData, "current_stake") ?? 0n;
-    const potentialPayout =
-      extractI128FromScVal(stateData, "potential_payout") ?? 0n;
-    const isUserIn = extractBoolFromScVal(stateData, "is_active") || false;
-    const hasWon = extractBoolFromScVal(stateData, "has_won") || false;
+    const isUserIn = validatedUserAddress
+      ? (extractBoolFromScVal(stateData, "is_active") || false)
+      : false;
+    const hasWon = validatedUserAddress
+      ? (extractBoolFromScVal(stateData, "has_won") || false)
+      : false;
+    const currentStakeStroops = validatedUserAddress
+      ? (extractI128FromScVal(stateData, "current_stake") ?? 0n)
+      : 0n;
+    const potentialPayout = validatedUserAddress
+      ? (extractI128FromScVal(stateData, "potential_payout") ?? 0n)
+      : 0n;
+
+    // entry_fee, player_count, and game_state aren't part of get_full_state's
+    // return value yet (contract follow-up). Previously these were fetched via
+    // three extra simulateTransaction calls to get_config/get_player_count/
+    // game_state, which defeated the point of consolidating into one
+    // get_full_state RPC call (and call sites that raced ahead of that
+    // contract support just errored). Falling back to sane in-memory
+    // defaults here keeps this a single round trip.
+    const entryFeeStroops = 0n;
+    const playerCount = survivorsCount;
+    const gameState = 0;
 
     return {
       arenaId: validatedArenaId,
@@ -423,6 +539,11 @@ export async function fetchArenaState(
       currentStake: stroopsToDisplayAmount(currentStakeStroops),
       potentialPayout: stroopsToDisplayAmount(potentialPayout),
       roundNumber,
+      gameState,
+      entryFee: stroopsToDisplayAmount(entryFeeStroops),
+      playerCount,
+      commitDeadline: null,
+      revealDeadline: null,
     };
   } catch (error) {
     throw parseContractError(error, FN);
@@ -475,10 +596,19 @@ export async function submitSignedTransaction(signedXdr: string) {
       retries++;
     }
 
-    if (!getTxResponse) {
+    // Soroban RPC's getTransaction() polling window is short, and a
+    // transaction can still land on-chain after this loop gives up. NOT_FOUND
+    // (still pending after every retry) and a total polling failure (every
+    // attempt threw) both mean "unknown," never a hard failure — #1135:
+    // showing TRANSACTION_FAILED here previously told users a transaction had
+    // failed when it may well have succeeded a moment later. Any other
+    // terminal status (e.g. an on-chain FAILED) is a genuine failure.
+    if (!getTxResponse || getTxResponse.status === "NOT_FOUND") {
       throw new ContractError({
         code: ContractErrorCode.TRANSACTION_TIMEOUT,
+        message: `Transaction status could not be confirmed before timing out. It may still succeed — check status manually with hash: ${hash}`,
         fn: FN,
+        hash,
       });
     }
 
@@ -487,6 +617,7 @@ export async function submitSignedTransaction(signedXdr: string) {
         code: ContractErrorCode.TRANSACTION_FAILED,
         message: `Transaction confirmation failed: ${getTxResponse.status}`,
         fn: FN,
+        hash,
       });
     }
 
@@ -494,4 +625,89 @@ export async function submitSignedTransaction(signedXdr: string) {
   } catch (error) {
     throw parseContractError(error, FN);
   }
+}
+
+// ── Horizon reconciliation (#1135) ───────────────────────────────────
+//
+// Soroban RPC's getTransaction() only retains recent history, so a
+// transaction whose confirmation polling timed out isn't necessarily lost —
+// it may simply need more time, or may only be checkable via Horizon (which
+// retains transaction history far longer) by the time anyone looks again.
+
+export type HorizonTransactionStatus = "SUCCESS" | "FAILED" | "NOT_FOUND";
+
+export interface HorizonTransactionResult {
+  hash: string;
+  status: HorizonTransactionStatus;
+}
+
+/**
+ * Look up a transaction's final status directly on Horizon. Used to
+ * reconcile a transaction whose Soroban RPC polling timed out.
+ */
+export async function checkTransactionOnHorizon(
+  hash: string,
+  horizonBaseUrl: string = HORIZON_URL,
+  fetchFn: typeof fetch = fetch,
+): Promise<HorizonTransactionResult> {
+  const base = horizonBaseUrl.replace(/\/+$/, "");
+  const res = await fetchFn(`${base}/transactions/${hash}`);
+
+  if (res.status === 404) {
+    return { hash, status: "NOT_FOUND" };
+  }
+  if (!res.ok) {
+    throw new ContractError({
+      code: ContractErrorCode.UNKNOWN,
+      message: `Horizon transaction lookup failed: ${res.status}`,
+      fn: "checkTransactionOnHorizon",
+      hash,
+    });
+  }
+
+  const data = (await res.json()) as { successful?: boolean };
+  return { hash, status: data.successful ? "SUCCESS" : "FAILED" };
+}
+
+/**
+ * Background reconciler for a transaction left in a pending/unknown state
+ * after submitSignedTransaction times out (TRANSACTION_TIMEOUT). Polls
+ * Horizon at a fixed interval until the transaction resolves to a terminal
+ * status or `maxAttempts` is exhausted (in which case it stays NOT_FOUND —
+ * callers should treat that as "still unknown," not "failed").
+ *
+ * Intended to be driven from a hook/effect after a timeout, e.g.:
+ *   reconcilePendingTransaction(err.hash).then((r) => setStatus(r.status))
+ */
+export async function reconcilePendingTransaction(
+  hash: string,
+  options: {
+    horizonBaseUrl?: string;
+    intervalMs?: number;
+    maxAttempts?: number;
+    fetchFn?: typeof fetch;
+  } = {},
+): Promise<HorizonTransactionResult> {
+  const {
+    horizonBaseUrl = HORIZON_URL,
+    intervalMs = 5_000,
+    maxAttempts = 12,
+    fetchFn = fetch,
+  } = options;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+
+    const result = await checkTransactionOnHorizon(hash, horizonBaseUrl, fetchFn).catch(
+      (): HorizonTransactionResult => ({ hash, status: "NOT_FOUND" }),
+    );
+
+    if (result.status !== "NOT_FOUND") {
+      return result;
+    }
+  }
+
+  return { hash, status: "NOT_FOUND" };
 }

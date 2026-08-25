@@ -64,7 +64,7 @@ export function createPoolsRouter(authMiddleware: RequestHandler): Router {
     poolsRateLimiter,
     asyncHandler(async (req, res) => {
       const PoolCreateSchema = z.object({
-        arenaId: z.string().uuid(),
+        arenaId: z.string().length(56).regex(/^C[A-Z2-7]{55}$/),
         stakeAmount: z.number().positive(),
       });
       const { arenaId, stakeAmount } = PoolCreateSchema.parse(req.body);

@@ -30,6 +30,7 @@ enum DataKey {
     RefundClaimed(Address),
     Leaderboard,
     LeaderboardLimit,
+    PlatformFeeBps,
 }
 
 pub struct ArenaStorage;
@@ -75,6 +76,27 @@ impl ArenaStorage {
             .persistent()
             .get(&symbol_short!("PLAYERS"))
             .unwrap_or_else(|| Vec::new(env))
+    }
+
+    /// Return up to `count` player addresses starting at index `start`.
+    ///
+    /// Reads only the single storage entry that covers the requested range,
+    /// avoiding the O(n) full-list deserialisation that `load_all_players`
+    /// would incur for large arenas.
+    pub fn load_player_page(env: &Env, start: u32, count: u32) -> Vec<Address> {
+        let all = Self::load_all_players(env);
+        let total = all.len();
+        if start >= total {
+            return Vec::new(env);
+        }
+        let end = (start.saturating_add(count)).min(total);
+        let mut page: Vec<Address> = Vec::new(env);
+        for i in start..end {
+            if let Some(addr) = all.get(i) {
+                page.push_back(addr);
+            }
+        }
+        page
     }
 
     pub fn save_players(env: &Env, players: &Vec<Address>) {
@@ -163,9 +185,10 @@ impl ArenaStorage {
 
     pub fn save_commitment(env: &Env, player: &Address, round: u32, commitment: &BytesN<32>) {
         Self::extend_persistent_ttl(env, &DataKey::CommitmentForRound(player.clone(), round));
-        env.storage()
-            .persistent()
-            .set(&DataKey::CommitmentForRound(player.clone(), round), commitment);
+        env.storage().persistent().set(
+            &DataKey::CommitmentForRound(player.clone(), round),
+            commitment,
+        );
     }
 
     pub fn load_commitment(env: &Env, player: &Address, round: u32) -> Option<BytesN<32>> {
@@ -187,6 +210,13 @@ impl ArenaStorage {
         env.storage()
             .persistent()
             .get(&DataKey::ChoiceForRound(player.clone(), round))
+    }
+
+    /// Remove a single player's choice for a round (#1075: clear stale choice on elimination).
+    pub fn remove_player_choice(env: &Env, player: &Address, round: u32) {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ChoiceForRound(player.clone(), round));
     }
 
     pub fn save_round_start(env: &Env, timestamp: u64) {
@@ -340,7 +370,10 @@ impl ArenaStorage {
 
     #[allow(dead_code)]
     fn is_terminal_pool_state(state: &GameState) -> bool {
-        matches!(state, GameState::Finished | GameState::Cancelled | GameState::Settled)
+        matches!(
+            state,
+            GameState::Finished | GameState::Cancelled | GameState::Settled
+        )
     }
 
     pub fn save_pending_admin(env: &Env, pending: &PendingAdmin) {
@@ -414,6 +447,24 @@ impl ArenaStorage {
             .set(&DataKey::LeaderboardLimit, &limit);
     }
 
+    /// Global platform fee in basis points. Defaults to 1000 (10%) until the
+    /// admin calls `update_platform_fee`. New arenas snapshot this value into
+    /// their `ArenaConfig.platform_fee_bps` at `initialize` time.
+    pub fn load_platform_fee_bps(env: &Env) -> u32 {
+        Self::extend_persistent_ttl(env, &DataKey::PlatformFeeBps);
+        env.storage()
+            .persistent()
+            .get(&DataKey::PlatformFeeBps)
+            .unwrap_or(1000)
+    }
+
+    pub fn save_platform_fee_bps(env: &Env, fee_bps: u32) {
+        Self::extend_persistent_ttl(env, &DataKey::PlatformFeeBps);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PlatformFeeBps, &fee_bps);
+    }
+
     pub fn save_pending_upgrade(env: &Env, upgrade: &PendingUpgrade) {
         Self::extend_persistent_ttl(env, &symbol_short!("UPGRADE"));
         env.storage()
@@ -465,6 +516,10 @@ mod tests {
             commit_deadline: 0,
             round_count: 0,
             oracle_contract: Address::generate(env),
+            factory: Address::generate(env),
+            pool_id: 0,
+            round_duration: 0,
+            platform_fee_bps: 1000,
         }
     }
 

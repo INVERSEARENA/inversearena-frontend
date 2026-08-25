@@ -16,12 +16,27 @@ import { TransactionModal } from "@/components/modals/TransactionModal";
 import { ArenaStatsSkeleton } from "@/components/arena/ArenaStatsSkeleton";
 import {
   buildJoinArenaTransaction,
-  buildSubmitChoiceTransaction,
+  buildSubmitCommitmentTransaction,
+  buildRevealChoiceTransaction,
   buildClaimWinningsTransaction,
   submitSignedTransaction,
-  fetchArenaState
+  fetchArenaState,
+  clearCommitmentForRound,
+  hasStoredCommitmentForRound,
 } from "@/shared-d/utils/stellar-transactions";
 import { useArenaStream } from "@/features/arena/useArenaStream";
+
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
+
+// Commit-reveal phase windows (#1137). These are local, client-side timers —
+// the contract's real commit_deadline isn't yet exposed to the frontend via
+// any view call or indexer field, so this mirrors the mock-timer pattern
+// already used elsewhere on this page rather than inventing a new
+// architecture. Syncing against the real on-chain deadline is a disclosed
+// follow-up, not part of this fix.
+const COMMIT_WINDOW_SECONDS = 60;
+const REVEAL_WINDOW_SECONDS = 30;
 
 const DEMO_ELIMINATION_FEED = [
   { id: "demo-1", label: "S-6782-5", roundNumber: 1, status: "OUT" as const, createdAt: "2026-05-29T00:00:00.000Z" },
@@ -58,26 +73,54 @@ function ArenaGameView() {
   const [currentStake, setCurrentStake] = useState(1200);
   const [potentialPayout, setPotentialPayout] = useState(24420);
   const [isLoadingArena, setIsLoadingArena] = useState(false);
+  const [entryFee, setEntryFee] = useState<number | null>(null);
+  const [playerCount, setPlayerCount] = useState<number | null>(null);
+  const [oracleYield, setOracleYield] = useState<number | null>(null);
+  const [isLoadingYield, setIsLoadingYield] = useState(true);
 
   // Round Resolution State
   const [isRoundResolved, setIsRoundResolved] = useState(false);
-  const [roundStatus, setRoundStatus] = useState<"survived" | "eliminated">("survived");
+  // Was live state driven by the old mock single-phase timer's onTimeUp;
+  // that call site is gone now that the timer tracks commit/reveal phase
+  // instead (#1137), so this is a fixed placeholder pending real round-outcome
+  // wiring (a separate, disclosed follow-up — not part of commit-reveal).
+  const roundStatus: "survived" | "eliminated" = "survived";
   const [currentRound, setCurrentRound] = useState(1);
+
+  // Commit-reveal phase state (#1137)
+  const [roundPhase, setRoundPhase] = useState<"commit" | "reveal">("commit");
+  const [hasCommittedForRound, setHasCommittedForRound] = useState(false);
+  const [commitTimeExpired, setCommitTimeExpired] = useState(false);
 
   // Transaction Modal State
   const [showTxModal, setShowTxModal] = useState(false);
-  const [txType, setTxType] = useState<"JOIN" | "SUBMIT" | "CLAIM" | null>(null);
+  const [txType, setTxType] = useState<"JOIN" | "COMMIT" | "REVEAL" | "CLAIM" | null>(null);
   const [txDetails, setTxDetails] = useState<{ label: string; value: string | number }[]>([]);
 
   // Demo arena identifier; when unset the page falls back to the static mock view.
   const ARENA_ID = process.env.NEXT_PUBLIC_DEMO_ARENA_ID ?? "";
   const { status: streamStatus, snapshot, feed: streamFeed } = useArenaStream(ARENA_ID);
 
-  // Mock data - would come from API/contract
-  const headsYield = 42;
-  const tailsYield = 58;
   const headsPercentage = 42;
   const tailsPercentage = 58;
+
+  useEffect(() => {
+    async function fetchYield() {
+      try {
+        const response = await fetch(`${API_BASE}/api/oracle/yield`);
+        const data = await response.json();
+        setOracleYield(data.currentAPY);
+      } catch (err) {
+        console.error("Failed to fetch oracle yield", err);
+      } finally {
+        setIsLoadingYield(false);
+      }
+    }
+    fetchYield();
+  }, []);
+
+  const headsYield = oracleYield !== null ? oracleYield : 42;
+  const tailsYield = oracleYield !== null ? oracleYield : 58;
 
   useEffect(() => {
     if (!snapshot) return;
@@ -95,6 +138,17 @@ function ArenaGameView() {
       setShowEliminationSummary(true);
     }
   }, [snapshot]);
+
+  // A new round always opens in the commit phase. Also recompute whether
+  // this device already has a commitment stored for it — relevant on
+  // remount/reload, since the commitment lives in localStorage, not state.
+  useEffect(() => {
+    if (!ARENA_ID) return;
+    setRoundPhase("commit");
+    setSelectedChoice(null);
+    setCommitTimeExpired(false);
+    setHasCommittedForRound(hasStoredCommitmentForRound(ARENA_ID, currentRound));
+  }, [ARENA_ID, currentRound]);
 
   useEffect(() => {
     if (!ARENA_ID || !snapshot) return;
@@ -119,6 +173,9 @@ function ArenaGameView() {
       setUserStatus(state.hasWon ? "WINNER!" : "STILL IN");
       setCurrentStake(state.currentStake);
       setPotentialPayout(state.potentialPayout);
+      setEntryFee(state.entryFee);
+      setPlayerCount(state.playerCount);
+      setCurrentRound(state.roundNumber);
     } catch (error) {
       console.error("Failed to fetch arena state:", error);
     } finally {
@@ -134,6 +191,15 @@ function ArenaGameView() {
 
   return (
     <>
+      {!ARENA_ID && (
+        <div className="w-full bg-yellow-900/80 border-b border-yellow-500/60 px-4 py-2 flex items-center gap-3 text-yellow-300 font-pixel text-[10px] tracking-wider">
+          <span className="text-yellow-400 font-bold">⚠ DEMO MODE</span>
+          <span>
+            NEXT_PUBLIC_DEMO_ARENA_ID is not set — showing static placeholder data.
+            Set it to a Stellar contract address (C…) in your .env file to connect to a live arena.
+          </span>
+        </div>
+      )}
       <div className="min-h-screen p-4 md:p-6">
         <div className="max-w-7xl mx-auto">
           {/* Header */}
@@ -195,12 +261,27 @@ function ArenaGameView() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <ChooseYourFate />
                 <Timer
-                  initialSeconds={15}
+                  key={roundPhase}
+                  initialSeconds={
+                    roundPhase === "commit" ? COMMIT_WINDOW_SECONDS : REVEAL_WINDOW_SECONDS
+                  }
+                  label={
+                    roundPhase === "commit"
+                      ? "Commit Window Closes In"
+                      : "Reveal Window Closes In"
+                  }
                   onTimeUp={() => {
-                    // Simulate round resolution
-                    const userSurvived = selectedChoice === "tails"; // Mock: tails wins
-                    setRoundStatus(userSurvived ? "survived" : "eliminated");
-                    setIsRoundResolved(true);
+                    if (roundPhase === "commit") {
+                      // Do not auto-submit — the player had the full window
+                      // to commit. Just lock the choice UI and, if they
+                      // never committed, surface a "time expired" state.
+                      if (!hasCommittedForRound) {
+                        setCommitTimeExpired(true);
+                      }
+                      setRoundPhase("reveal");
+                    }
+                    // Reveal window elapsing has no local action — the next
+                    // round arriving via the stream resets phase to "commit".
                   }}
                 />
               </div>
@@ -211,33 +292,53 @@ function ArenaGameView() {
                 tailsPercentage={tailsPercentage}
               />
 
-              {/* Choice Cards */}
+              {/* Choice Cards — selectable only during the commit window; the
+                  choice is locked in (blinded) once committed. */}
+              {commitTimeExpired && (
+                <div className="bg-red-900/20 border border-red-500/50 p-3 text-center rounded">
+                  <span className="text-red-300 text-xs font-pixel">
+                    TIME EXPIRED — YOU DID NOT SUBMIT A CHOICE THIS ROUND
+                  </span>
+                </div>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-grow">
                 <ChoiceCard
                   type="heads"
                   estimatedYield={headsYield}
                   isSelected={selectedChoice === "heads"}
-                  onSelect={() => setSelectedChoice("heads")}
+                  disabled={roundPhase !== "commit"}
+                  onSelect={() => roundPhase === "commit" && setSelectedChoice("heads")}
                 />
-                <ChoiceCard
-                  type="tails"
-                  estimatedYield={tailsYield}
-                  isSelected={selectedChoice === "tails"}
-                  onSelect={() => setSelectedChoice("tails")}
-                />
+
+                {isLoadingYield ? (
+                  <>
+                    <div className="h-48 bg-zinc-800/50 animate-pulse border-2 border-zinc-700" />
+                    <div className="h-48 bg-zinc-800/50 animate-pulse border-2 border-zinc-700" />
+                  </>
+                ) : (
+                  <>
+                    <ChoiceCard
+                      type="tails"
+                      estimatedYield={tailsYield}
+                      isSelected={selectedChoice === "tails"}
+                      disabled={roundPhase !== "commit"}
+                      onSelect={() => roundPhase === "commit" && setSelectedChoice("tails")}
+                    />
+                  </>
+                )}
               </div>
 
-              {/* Lock In Button */}
-              {selectedChoice && isJoined && (
+              {/* Commit Button */}
+              {selectedChoice && isJoined && roundPhase === "commit" && (
                 <div className="mt-4 flex justify-center">
                   <button
                     onClick={() => {
                       if (!ARENA_ID) return;
-                      setTxType("SUBMIT");
+                      setTxType("COMMIT");
                       setTxDetails([
                         { label: "Action", value: "Submit Choice" },
                         { label: "Choice", value: selectedChoice.toUpperCase() },
-                        { label: "Round", value: "#12" }, // Mock
+                        { label: "Round", value: `#${currentRound}` },
                       ]);
                       setShowTxModal(true);
                     }}
@@ -247,16 +348,44 @@ function ArenaGameView() {
                   </button>
                 </div>
               )}
+
+              {/* Reveal Button */}
+              {isJoined && roundPhase === "reveal" && hasCommittedForRound && (
+                <div className="mt-4 flex justify-center">
+                  <button
+                    onClick={() => {
+                      if (!ARENA_ID) return;
+                      setTxType("REVEAL");
+                      setTxDetails([
+                        { label: "Action", value: "Reveal Choice" },
+                        { label: "Round", value: `#${currentRound}` },
+                      ]);
+                      setShowTxModal(true);
+                    }}
+                    className="w-full md:w-auto bg-neon-green text-black font-pixel text-lg px-12 py-4 border-4 border-black shadow-[4px_4px_0px_0px_#fff] hover:translate-y-1 hover:shadow-none transition-all uppercase"
+                  >
+                    REVEAL CHOICE
+                  </button>
+                </div>
+              )}
+
+              {isJoined && roundPhase === "reveal" && !hasCommittedForRound && (
+                <div className="mt-4 flex justify-center">
+                  <p className="font-pixel text-[10px] text-white/40 uppercase tracking-wider">
+                    No commitment made this round — nothing to reveal.
+                  </p>
+                </div>
+              )}
             </div>
           </div>
 
           {/* Right column - Stats */}
           <div className="space-y-4">
-            {isLoadingArena ? (
+            {isLoadingArena || isLoadingYield || entryFee === null || playerCount === null ? (
               <ArenaStatsSkeleton />
             ) : (
             <>
-            <TotalYieldPot amount={42850.12} apr={12.4} />
+            <TotalYieldPot amount={entryFee * playerCount} apr={oracleYield ?? 12.4} />
 
             {/* Survivors placeholder */}
             <div className="bg-card-bg border border-neon-green p-4">
@@ -266,7 +395,10 @@ function ArenaGameView() {
               <p className="font-pixel text-3xl text-neon-green">{survivors.current}</p>
               <p className="font-pixel text-sm text-white/40">/{survivors.max}</p>
               <div className="mt-3 h-2 bg-dark-bg">
-                <div className="h-full bg-neon-green w-[12.5%]" />
+                <div
+                  className="h-full bg-neon-green"
+                  style={{ width: `${survivors.max > 0 ? (survivors.current / survivors.max) * 100 : 0}%` }}
+                />
               </div>
             </div>
 
@@ -370,10 +502,34 @@ function ArenaGameView() {
       <TransactionModal
         isOpen={showTxModal}
         onClose={() => setShowTxModal(false)}
-        title={txType === "JOIN" ? "Join Arena" : txType === "SUBMIT" ? "Submit Choice" : "Claim Winnings"}
-        description={txType === "CLAIM" ? "Withdraw your earnings" : (txType === "JOIN" ? "Confirm entry to arena" : "Lock in your prediction")}
+        title={
+          txType === "JOIN"
+            ? "Join Arena"
+            : txType === "COMMIT"
+              ? "Commit Choice"
+              : txType === "REVEAL"
+                ? "Reveal Choice"
+                : "Claim Winnings"
+        }
+        description={
+          txType === "CLAIM"
+            ? "Withdraw your earnings"
+            : txType === "JOIN"
+              ? "Confirm entry to arena"
+              : txType === "COMMIT"
+                ? "Lock in your prediction — the choice stays hidden until reveal"
+                : "Reveal the choice you committed to earlier this round"
+        }
         details={txDetails}
-        confirmLabel={txType === "JOIN" ? "Sign & Join" : (txType === "SUBMIT" ? "Sign & Submit" : "Sign & Claim")}
+        confirmLabel={
+          txType === "JOIN"
+            ? "Sign & Join"
+            : txType === "COMMIT"
+              ? "Sign & Commit"
+              : txType === "REVEAL"
+                ? "Sign & Reveal"
+                : "Sign & Claim"
+        }
         onConfirm={async () => {
           if (!address || !txType) return;
 
@@ -381,8 +537,10 @@ function ArenaGameView() {
             let tx;
             if (txType === "JOIN") {
               tx = await buildJoinArenaTransaction(address, ARENA_ID, 100);
-            } else if (txType === "SUBMIT" && selectedChoice) {
-              tx = await buildSubmitChoiceTransaction(address, ARENA_ID, selectedChoice === "heads" ? "Heads" : "Tails", 12);
+            } else if (txType === "COMMIT" && selectedChoice) {
+              tx = await buildSubmitCommitmentTransaction(address, ARENA_ID, selectedChoice === "heads" ? "Heads" : "Tails", currentRound);
+            } else if (txType === "REVEAL") {
+              tx = await buildRevealChoiceTransaction(address, ARENA_ID, currentRound);
             } else if (txType === "CLAIM") {
               tx = await buildClaimWinningsTransaction(address, ARENA_ID);
             } else {
@@ -391,6 +549,16 @@ function ArenaGameView() {
 
             const signedXdr = await signTransaction(tx.toXDR());
             await submitSignedTransaction(signedXdr);
+
+            if (txType === "COMMIT") {
+              setHasCommittedForRound(true);
+            } else if (txType === "REVEAL") {
+              // Only clear now that the reveal has actually confirmed —
+              // clearing earlier would strand the salt if signing was
+              // cancelled or submission failed.
+              clearCommitmentForRound(ARENA_ID, currentRound);
+              setHasCommittedForRound(false);
+            }
 
             // Trigger real-time updates
             await refreshBalance();

@@ -2,7 +2,7 @@
 
 mod snapshot_tests;
 mod storage;
-mod types;
+pub mod types;
 
 #[cfg(test)]
 mod integration_tests;
@@ -11,10 +11,39 @@ use storage::{CreatorStakeRecord, FactoryStorage};
 use types::{ArenaMetadata, ArenaStatus, FactoryError, PoolConfig};
 
 use soroban_sdk::{
-    Address, BytesN, Env, IntoVal, Symbol, Vec, contract, contractimpl, symbol_short, token, vec,
+    Address, BytesN, Env, Vec, contract, contractclient, contractimpl, symbol_short, token,
 };
 
+/// Local stub for the one arena entry point factory calls in production
+/// (`initialize`, right after deploying a new arena instance). Deliberately
+/// not `use arena::ArenaContractClient` — depending on the full `arena`
+/// crate here would statically link its `#[contractimpl]` block into
+/// factory's own wasm binary, and both contracts export an `unpause`
+/// symbol, which collides at link time. `arena` stays a dev-dependency for
+/// integration tests, which need the real contract.
+#[contractclient(name = "ArenaClient")]
+pub trait ArenaInterface {
+    #[allow(clippy::too_many_arguments)]
+    fn initialize(
+        env: Env,
+        admin: Address,
+        stake_token: Address,
+        yield_vault: Address,
+        entry_fee: i128,
+        oracle_contract: Address,
+        factory: Address,
+        pool_id: u32,
+        min_players: u32,
+        max_players: u32,
+        round_duration: u64,
+    );
+}
+
 const MAX_PAGE_SIZE: u32 = 50;
+const MIN_ROUND_DURATION: u64 = 60;
+const MAX_ROUND_DURATION: u64 = 604_800;
+const MIN_PLAYERS: u32 = 2;
+const MAX_PLAYERS: u32 = 1_000;
 
 /// Factory contract — deploys arena instances and enforces protocol-level rules.
 ///
@@ -47,8 +76,7 @@ impl FactoryContract {
     /// features can ship without redeploying and losing that state.
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), FactoryError> {
         Self::require_admin(&env)?;
-        env.deployer()
-            .update_current_contract_wasm(new_wasm_hash);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
         env.events().publish((symbol_short!("UPGRADE"),), ());
         Ok(())
     }
@@ -188,6 +216,14 @@ impl FactoryContract {
         host.require_auth();
         FactoryStorage::load_admin(&env)?;
 
+        if config.round_duration < MIN_ROUND_DURATION
+            || config.round_duration > MAX_ROUND_DURATION
+            || config.min_players < MIN_PLAYERS
+            || config.min_players > config.max_players
+            || config.max_players > MAX_PLAYERS
+        {
+            return Err(FactoryError::InvalidConfig);
+        }
         if !FactoryStorage::is_whitelisted(&env, &host) {
             return Err(FactoryError::HostNotWhitelisted);
         }
@@ -222,22 +258,17 @@ impl FactoryContract {
             .with_current_contract(Self::salt_for_pool(&env, pool_id))
             .deploy_v2(wasm_hash, ());
 
-        let _: () = env.invoke_contract(
-            &arena,
-            &Symbol::new(&env, "initialize"),
-            vec![
-                &env,
-                host.clone().into_val(&env),
-                config.stake_token.clone().into_val(&env),
-                config.yield_vault.into_val(&env),
-                config.entry_fee.into_val(&env),
-                config.oracle_contract.into_val(&env),
-                env.current_contract_address().into_val(&env),
-                pool_id.into_val(&env),
-                config.min_players.into_val(&env),
-                config.max_players.into_val(&env),
-                config.round_duration.into_val(&env),
-            ],
+        ArenaClient::new(&env, &arena).initialize(
+            &host,
+            &config.stake_token,
+            &config.yield_vault,
+            &config.entry_fee,
+            &config.oracle_contract,
+            &env.current_contract_address(),
+            &pool_id,
+            &config.min_players,
+            &config.max_players,
+            &config.round_duration,
         );
 
         FactoryStorage::save_creator_stake(
@@ -429,6 +460,49 @@ mod test {
         assert_eq!(err, FactoryError::HostNotWhitelisted);
     }
 
+    fn assert_invalid_config(update: impl FnOnce(&mut PoolConfig)) {
+        let (env, client, _admin, host) = setup();
+        let mut config = pool_config(&env, 100);
+        update(&mut config);
+        let error = client
+            .try_create_pool(&host, &config)
+            .err()
+            .expect("invalid config must be rejected")
+            .expect("error must be a contract error");
+        assert_eq!(error, FactoryError::InvalidConfig);
+    }
+
+    #[test]
+    fn create_pool_rejects_round_duration_below_minimum() {
+        assert_invalid_config(|config| config.round_duration = 59);
+    }
+
+    #[test]
+    fn create_pool_rejects_round_duration_above_maximum() {
+        assert_invalid_config(|config| {
+            config.round_duration = 604_801
+        });
+    }
+
+    #[test]
+    fn create_pool_rejects_fewer_than_two_players() {
+        assert_invalid_config(|config| config.min_players = 1);
+    }
+
+    #[test]
+    fn create_pool_rejects_min_players_above_max_players() {
+        assert_invalid_config(|config| {
+            config.min_players = 11
+        });
+    }
+
+    #[test]
+    fn create_pool_rejects_more_than_one_thousand_players() {
+        assert_invalid_config(|config| {
+            config.max_players = 1_001
+        });
+    }
+
     #[test]
     fn paused_factory_rejects_pool_creation() {
         let (env, client, _admin, host) = setup();
@@ -527,7 +601,9 @@ mod test {
         let factory_id = env.register(FactoryContract, ());
 
         let token_admin = Address::generate(&env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
         let host = Address::generate(&env);
         soroban_sdk::token::StellarAssetClient::new(&env, &token_id).mint(&host, &1_000);
 
@@ -559,7 +635,9 @@ mod test {
         let client = FactoryContractClient::new(&env, &factory_id);
 
         let token_admin = Address::generate(&env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
         let host = Address::generate(&env);
         let arena = Address::generate(&env);
 

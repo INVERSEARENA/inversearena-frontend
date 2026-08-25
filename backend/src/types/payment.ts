@@ -25,6 +25,8 @@ export interface TransactionRecord {
   createdAt: Date;
   updatedAt: Date;
   confirmedAt?: Date | null;
+  /** Admin API key id or user id that created this payout (null for legacy rows). */
+  ownerId?: string | null;
 }
 
 export interface CreatePayoutRequest {

@@ -2,9 +2,9 @@
 
 extern crate std;
 
-use crate::{FactoryContract, FactoryContractClient};
 use crate::storage::CreatorStakeRecord;
 use crate::types::{ArenaMetadata, ArenaStatus};
+use crate::{FactoryContract, FactoryContractClient};
 use soroban_sdk::{
     Address, BytesN, Env,
     testutils::{Address as _, Ledger},
@@ -75,7 +75,18 @@ fn factory_deploys_arena_and_full_game_plays() {
 
     // The factory's create_pool calls initialize internally. We'll simulate
     // what create_pool would do after deploy_v2.
-    arena_client.initialize(&host, &token_id, &vault_id, &100, &oracle_id, &factory_id, &1, &2, &10, &60);
+    arena_client.initialize(
+        &host,
+        &token_id,
+        &vault_id,
+        &100,
+        &oracle_id,
+        &factory_id,
+        &1,
+        &2,
+        &10,
+        &60,
+    );
 
     // Manually register the stake record and pool in factory storage
     // (this is what create_pool would do after a successful deployment)

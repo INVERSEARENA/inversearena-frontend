@@ -1,4 +1,4 @@
-import { test, mock, afterEach, describe } from "node:test";
+import { test, mock, beforeEach, afterEach, describe } from "node:test";
 import assert from "node:assert";
 import { Request } from "express";
 import { ApiKeyAuthProvider } from "../src/middleware/auth";
@@ -12,6 +12,13 @@ function fakeRequest(authHeader?: string): Request {
 }
 
 describe("ApiKeyAuthProvider", () => {
+  // CI (and any shell with ADMIN_API_KEY exported) sets this at the process
+  // level before this file even runs, so afterEach alone isn't enough to
+  // isolate the very first test — clear it going in too.
+  beforeEach(() => {
+    delete process.env.ADMIN_API_KEY;
+  });
+
   afterEach(() => {
     delete process.env.ADMIN_API_KEY;
     mock.reset();

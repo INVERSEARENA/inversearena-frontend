@@ -13,6 +13,7 @@ module.exports = {
     "<rootDir>/tests/auth\\.unit\\.test\\.ts",
     "<rootDir>/tests/auth-middleware\\.unit\\.test\\.ts",
     "<rootDir>/tests/arenas\\.route\\.unit\\.test\\.ts",
+    "<rootDir>/tests/worker\\.route\\.unit\\.test\\.ts",
     // Legacy script-style runners (no Jest `describe`/`it`)
     "<rootDir>/tests/leaderboard\\.test\\.ts",
     "<rootDir>/tests/security-headers\\.test\\.ts",
@@ -29,4 +30,7 @@ module.exports = {
   moduleNameMapper: {
     "^@/(.*)$": "<rootDir>/src/$1",
   },
+  // Surface open async handle sources so tests cannot silently leave timers or
+  // connections running after the suite finishes (#1194).
+  detectOpenHandles: true,
 };

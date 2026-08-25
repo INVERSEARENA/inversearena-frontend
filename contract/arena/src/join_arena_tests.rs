@@ -64,13 +64,16 @@ fn setup_arena(state: GameState) -> (Env, ArenaContractClient<'static>, Address)
             commit_deadline: u64::MAX,
             round_count: 0,
             oracle_contract: oracle,
+            factory: Address::generate(&env),
+            pool_id: 0,
+            round_duration: 0,
+            platform_fee_bps: 1000,
         };
         ArenaStorage::save_config(&env, &config);
         ArenaStorage::save_last_vault_balance(&env, 0);
     });
 
-    let env_static: &'static Env = unsafe { &*(&env as *const Env) };
-    let client = ArenaContractClient::new(env_static, &contract_id);
+    let client = ArenaContractClient::new(&env, &contract_id);
     (env, client, token_id)
 }
 
@@ -307,61 +310,66 @@ fn setup_arena_failing_vault() -> (Env, ArenaContractClient<'static>, Address) {
             commit_deadline: u64::MAX,
             round_count: 0,
             oracle_contract: oracle,
+            factory: Address::generate(&env),
+            pool_id: 0,
+            round_duration: 0,
+            platform_fee_bps: 1000,
         };
         ArenaStorage::save_config(&env, &config);
         ArenaStorage::save_last_vault_balance(&env, 0);
     });
 
-    let env_static: &'static Env = unsafe { &*(&env as *const Env) };
-    let client = ArenaContractClient::new(env_static, &contract_id);
+    let client = ArenaContractClient::new(&env, &contract_id);
     (env, client, token_id)
 }
 
-/// (a) join still succeeds when the vault deposit fails, (b) the yield
-/// baseline is left untouched by `join_arena` (it is only captured in
-/// `start_round`, from the vault's real balance — see #1072), and (c) a join
-/// event is emitted.
+/// A failed vault deposit rejects the join outright rather than leaving the
+/// entry fee stranded in the arena: (a) the call returns `VaultDepositFailed`,
+/// (b) the entry-fee transfer is rolled back with the rest of the invocation,
+/// (c) no player is recorded and no join event is emitted, and (d) the yield
+/// baseline is left untouched.
 #[test]
-fn join_succeeds_when_vault_deposit_fails() {
+fn join_rejected_when_vault_deposit_fails() {
     let (env, client, token_id) = setup_arena_failing_vault();
     let player = Address::generate(&env);
     StellarAssetClient::new(&env, &token_id).mint(&player, &100);
 
-    // (a) The failing vault deposit is swallowed; the join still succeeds.
-    assert!(
-        client.try_join_arena(&player).is_ok(),
-        "join must succeed even when the vault rejects the deposit"
+    // (a) The join fails loudly instead of swallowing the vault error.
+    assert_eq!(
+        client.try_join_arena(&player),
+        Err(Ok(ArenaError::VaultDepositFailed)),
+        "a rejected vault deposit must fail the join"
     );
 
-    // (c) The player_joined event is still emitted on this path. Capture events
-    // immediately after the join — `events().all()` reflects the most recent
-    // invocation, so the read-only calls below would otherwise clear it.
-    let expected_topic: soroban_sdk::Vec<Val> =
-        (symbol_short!("join"), player.clone()).into_val(&env);
-    let join_event_emitted =
-        env.events().all().iter().any(|(contract, topics, _data)| {
-            contract == client.address && topics == expected_topic
-        });
+    // (c) No player_joined event on this path. Capture events immediately after
+    // the join — `events().all()` reflects the most recent invocation, so the
+    // read-only calls below would otherwise clear it.
+    let join_topic: soroban_sdk::Vec<Val> = (symbol_short!("join"), player.clone()).into_val(&env);
+    let join_event_emitted = env
+        .events()
+        .all()
+        .iter()
+        .any(|(contract, topics, _data)| contract == client.address && topics == join_topic);
     assert!(
-        join_event_emitted,
-        "a player_joined event must be emitted even when the vault deposit fails"
+        !join_event_emitted,
+        "no player_joined event may be emitted when the join is rejected"
     );
 
-    assert_eq!(client.player_count(), 1);
+    assert_eq!(client.player_count(), 0);
 
-    // The entry fee moved from the player into the arena (it stays there since
-    // the vault deposit failed) — the player is not double-charged or refunded.
+    // (b) Returning an error rolls the invocation back, so the entry fee never
+    // leaves the player and no funds are stranded in the arena.
     let token = TokenClient::new(&env, &token_id);
-    assert_eq!(token.balance(&player), 0);
-    assert_eq!(token.balance(&client.address), 100);
+    assert_eq!(token.balance(&player), 100);
+    assert_eq!(token.balance(&client.address), 0);
 
-    // (b) join_arena no longer touches the yield baseline — it is captured
-    // fresh from the real vault balance when `start_round` is called.
+    // (d) The yield baseline is captured fresh from the real vault balance when
+    // `start_round` is called (#1072); a rejected join must not move it.
     let tracked = env.as_contract(&client.address, || {
         ArenaStorage::load_last_vault_balance(&env)
     });
     assert_eq!(
         tracked, 0,
-        "join_arena must not advance the yield baseline; start_round captures it"
+        "a rejected join must not advance the yield baseline"
     );
 }

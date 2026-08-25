@@ -152,7 +152,7 @@ describe('parseContractError', () => {
     const result = parseContractError(simError, 'fetchArenaState');
     expect(result.code).toBe(ContractErrorCode.SIMULATION_FAILED);
     expect(result.message).toContain('on-chain code 4');
-    expect(result.message).toContain('current game');
+    expect(result.message).toContain('current round state');
   });
 
   it('should detect HostError in message', () => {
@@ -173,7 +173,7 @@ describe('parseContractError', () => {
     const result = parseContractError(err, 'test');
     expect(result.code).toBe(ContractErrorCode.SIMULATION_FAILED);
     expect(result.message).toContain('on-chain code 12');
-    expect(result.message).toContain('ERRORS.md');
+    expect(result.message).toContain('claimed your prize');
   });
 
   it('should prefer error field from simulation response objects', () => {
@@ -181,7 +181,7 @@ describe('parseContractError', () => {
     const result = parseContractError(err, 'test');
     expect(result.code).toBe(ContractErrorCode.SIMULATION_FAILED);
     expect(result.message).toContain('on-chain code 7');
-    expect(result.message).toContain('time window');
+    expect(result.message).toContain('do not match your commitment');
   });
 
   // ── Transaction failures ─────────────────────────────────────────

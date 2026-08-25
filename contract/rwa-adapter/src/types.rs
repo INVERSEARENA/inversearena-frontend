@@ -1,5 +1,12 @@
 use soroban_sdk::{Address, contracterror, contracttype};
 
+/// Wrapper for a pending admin transfer proposal.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingAdmin {
+    pub new_admin: Address,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub struct RwaConfig {
@@ -26,4 +33,8 @@ pub enum RwaError {
     InsufficientBalance = 6,
     ArithmeticOverflow = 7,
     InvalidAmount = 8,
+    /// Returned when no admin transfer proposal is pending.
+    NoPendingAdmin = 9,
+    /// Returned when a non-admin caller attempts to propose a new admin.
+    NotAdmin = 10,
 }

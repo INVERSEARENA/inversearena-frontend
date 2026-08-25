@@ -1,13 +1,9 @@
 'use client'
 import React from 'react';
-import { useState } from "react";
+import { useRouter } from 'next/navigation';
 
 const Hero = () => {
-    const [isModalOpen, setIsModalOpen] = useState(false);
-
-    const handleConfirm = async () => {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-    }
+    const router = useRouter();
 
     return (
         <section className="relative pt-40 pb-20 px-6 max-w-7xl mx-auto w-full flex flex-col items-center text-center">
@@ -26,6 +22,7 @@ const Hero = () => {
 
                 <button
                     type="button"
+                    onClick={() => router.push('/dashboard')}
                     className="group relative"
                 >
                     <div className="px-16 py-6 bg-neon-green text-black font-bold text-3xl uppercase transform transition-transform group-hover:scale-105 active:scale-95 shadow-lg">

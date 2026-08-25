@@ -5,8 +5,6 @@ import {
 } from "@/shared-d/utils/security-validation";
 import { stellarConfig } from "@/lib/stellarConfig";
 
-const HORIZON_URL = stellarConfig.horizonUrl;
-
 /**
  * Balance information for a currency
  */
@@ -26,7 +24,7 @@ export async function fetchAssetBalance(
   const validatedAssetCode = AssetCodeSchema.parse(assetCode);
 
   try {
-    const res = await fetch(`${HORIZON_URL}/accounts/${validatedPublicKey}`);
+    const res = await fetch(`${stellarConfig.horizonUrl}/accounts/${validatedPublicKey}`);
     if (!res.ok) {
       return 0;
     }

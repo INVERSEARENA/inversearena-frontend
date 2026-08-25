@@ -9,10 +9,8 @@ import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import type { ReactNode } from "react";
 
 export function Sidebar() {
-  const { status, publicKey } = useWallet();
+  const { status } = useWallet();
 
-  const shortenAddress = (addr: string) =>
-    addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : "";
   const icons: Record<string, ReactNode> = {
     "/dashboard": (
       <svg
@@ -82,7 +80,7 @@ export function Sidebar() {
         <line x1="18" y1="13" x2="18.01" y2="13" />
       </svg>
     ),
-    "/arena-v2/settings": (
+    "/dashboard/settings": (
       <svg
         xmlns="http://www.w3.org/2000/svg"
         width="20"
@@ -126,13 +124,8 @@ export function Sidebar() {
               WALLET CONNECTED
             </div>
 
-            <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-white/10 bg-white/5 px-3 py-2">
-              <div className="truncate text-sm font-semibold text-zinc-200">
-                {shortenAddress(publicKey!)}
-              </div>
-            </div>
-            <div className="mt-3">
-              <ConnectWalletButton />
+            <div className="mt-3 rounded-md border border-white/10 bg-white/5 px-3 py-2">
+              <ConnectWalletButton className="!h-8 rounded-md border border-white/10 bg-transparent px-3 text-xs font-semibold text-zinc-300 hover:bg-white/10 hover:text-white" />
             </div>
           </>
         ) : (

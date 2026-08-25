@@ -1,6 +1,17 @@
-import React from "react";
+/**
+ * Tests for WalletProvider: the StellarWalletsKit-backed context that
+ * replaced the separate Freighter-direct wallet hook (#1230), and the
+ * Stellar-not-configured fallback (#1134).
+ *
+ * WalletProvider wraps the entire app (via ClientProviders in the root
+ * layout), so it renders on every page — including ones with no Stellar
+ * dependency at all. It must never throw when Stellar isn't configured;
+ * it should fall back to a plain Networks constant instead of reading
+ * stellarConfig.network (which throws lazily when misconfigured).
+ */
+import React, { useContext } from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { WalletProvider } from "../WalletProvider";
+import { WalletProvider, WalletContext } from "../WalletProvider";
 import { useWallet } from "../useWallet";
 
 jest.mock("@creit-tech/stellar-wallets-kit", () => ({
@@ -11,7 +22,10 @@ jest.mock("@creit-tech/stellar-wallets-kit", () => ({
     getAddress: jest.fn(),
     signTransaction: jest.fn(),
   },
-  Networks: { TESTNET: "Test SDF Network ; September 2015" },
+  Networks: {
+    TESTNET: "Test SDF Network ; September 2015",
+    PUBLIC: "Public Global Stellar Network ; September 2015",
+  },
 }));
 
 jest.mock("@creit-tech/stellar-wallets-kit/modules/freighter", () => ({
@@ -24,10 +38,32 @@ jest.mock("@creit-tech/stellar-wallets-kit/modules/albedo", () => ({
   AlbedoModule: jest.fn().mockImplementation(() => ({})),
 }));
 
+const mockStellarConfigState: {
+  isStellarConfigured: boolean;
+  stellarConfig: { network: string; horizonUrl: string };
+} = {
+  isStellarConfigured: true,
+  stellarConfig: { network: "configured-network", horizonUrl: "https://horizon.example" },
+};
+
+jest.mock("@/lib/stellarConfig", () => ({
+  get isStellarConfigured() {
+    return mockStellarConfigState.isStellarConfigured;
+  },
+  get stellarConfig() {
+    return mockStellarConfigState.stellarConfig;
+  },
+}));
+
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { StellarWalletsKit } = require("@creit-tech/stellar-wallets-kit");
 
 const VALID_KEY = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
+
+function NetworkProbe() {
+  const ctx = useContext(WalletContext);
+  return <div data-testid="network">{ctx?.network}</div>;
+}
 
 // Stand-ins for two previously-separate consumer families: one that used to
 // read from the StellarWalletsKit context (e.g. ConnectWalletButton), and
@@ -58,6 +94,11 @@ describe("WalletProvider consolidation", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     window.localStorage.clear();
+    mockStellarConfigState.isStellarConfigured = true;
+    mockStellarConfigState.stellarConfig = {
+      network: "configured-network",
+      horizonUrl: "https://horizon.example",
+    };
     global.fetch = jest.fn().mockResolvedValue({ ok: false });
   });
 
@@ -86,5 +127,53 @@ describe("WalletProvider consolidation", () => {
     expect(screen.getByTestId("navbar-address").textContent).toBe(VALID_KEY);
     expect(screen.getByTestId("stake-connected").textContent).toBe("true");
     expect(screen.getByTestId("stake-address").textContent).toBe(VALID_KEY);
+  });
+});
+
+describe("WalletProvider Stellar-not-configured fallback", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    window.localStorage.clear();
+    mockStellarConfigState.isStellarConfigured = true;
+    mockStellarConfigState.stellarConfig = {
+      network: "configured-network",
+      horizonUrl: "https://horizon.example",
+    };
+  });
+
+  it("uses stellarConfig.network when Stellar is configured", () => {
+    render(
+      <WalletProvider>
+        <NetworkProbe />
+      </WalletProvider>,
+    );
+
+    expect(screen.getByTestId("network").textContent).toBe("configured-network");
+  });
+
+  it("does not throw and falls back to Networks.TESTNET when Stellar is not configured", () => {
+    mockStellarConfigState.isStellarConfigured = false;
+
+    expect(() =>
+      render(
+        <WalletProvider>
+          <NetworkProbe />
+        </WalletProvider>,
+      ),
+    ).not.toThrow();
+
+    expect(screen.getByTestId("network").textContent).toBe("Test SDF Network ; September 2015");
+  });
+
+  it("still renders children when Stellar is not configured", () => {
+    mockStellarConfigState.isStellarConfigured = false;
+
+    render(
+      <WalletProvider>
+        <div data-testid="child">unrelated page content</div>
+      </WalletProvider>,
+    );
+
+    expect(screen.getByTestId("child")).toBeInTheDocument();
   });
 });

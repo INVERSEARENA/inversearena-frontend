@@ -3,6 +3,7 @@ import { ThemeProvider } from "next-themes";
 import { ClientProviders } from "./ClientProviders";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { ServiceWorkerRegister } from "@/components/pwa/ServiceWorkerRegister";
+import { StellarSetupBanner } from "@/components/dev/StellarSetupBanner";
 
 import { Geist, Geist_Mono, Press_Start_2P, Space_Grotesk } from "next/font/google";
 import "./globals.css";
@@ -57,6 +58,7 @@ export default function RootLayout({
       >
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
           <ServiceWorkerRegister />
+          <StellarSetupBanner />
           <ErrorBoundary>
             <ClientProviders>
               {children}
