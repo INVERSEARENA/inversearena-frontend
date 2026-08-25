@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { Networks } from "@creit-tech/stellar-wallets-kit";
-import { isValidStellarPublicKey } from "../useStellarWallet";
+import { isValidStellarPublicKey, WALLET_DISCONNECTED_KEY } from "../useStellarWallet";
 
 describe("isValidStellarPublicKey", () => {
   it("accepts a well-formed Stellar public key", () => {
@@ -91,6 +91,7 @@ const SHORT_KEY = "GSHORT";
 describe("useStellarWallet", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    window.localStorage.clear();
   });
 
   it("starts in disconnected state", () => {
@@ -253,6 +254,64 @@ describe("useStellarWallet", () => {
     expect(StellarWalletsKit.init).toHaveBeenLastCalledWith({
       network: "Public Global Stellar Network ; September 2015",
       modules: expect.any(Array),
+    });
+  });
+
+  describe("intentional disconnect suppresses auto-reconnect", () => {
+    it("skips StellarWalletsKit.init on mount when the disconnect flag is set", () => {
+      window.localStorage.setItem(WALLET_DISCONNECTED_KEY, "true");
+
+      renderHook(() => useStellarWallet(Networks.TESTNET));
+
+      expect(StellarWalletsKit.init).not.toHaveBeenCalled();
+    });
+
+    it("does not call disconnect on unmount if init was skipped", () => {
+      window.localStorage.setItem(WALLET_DISCONNECTED_KEY, "true");
+
+      const { unmount } = renderHook(() => useStellarWallet(Networks.TESTNET));
+      unmount();
+
+      expect(StellarWalletsKit.disconnect).not.toHaveBeenCalled();
+    });
+
+    it("still initializes StellarWalletsKit.init once when the flag is absent", () => {
+      renderHook(() => useStellarWallet(Networks.TESTNET));
+
+      expect(StellarWalletsKit.init).toHaveBeenCalledTimes(1);
+    });
+
+    it("initializes the kit lazily inside connectWallet after a suppressed auto-reconnect", async () => {
+      window.localStorage.setItem(WALLET_DISCONNECTED_KEY, "true");
+      StellarWalletsKit.authModal.mockResolvedValue({ address: VALID_KEY });
+
+      const { result } = renderHook(() => useStellarWallet(Networks.TESTNET));
+      expect(StellarWalletsKit.init).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await result.current.connectWallet();
+      });
+
+      expect(StellarWalletsKit.init).toHaveBeenCalledTimes(1);
+      expect(StellarWalletsKit.init).toHaveBeenCalledWith({
+        network: Networks.TESTNET,
+        modules: expect.any(Array),
+      });
+      expect(result.current.status).toBe("connected");
+      expect(result.current.publicKey).toBe(VALID_KEY);
+    });
+
+    it("clears the disconnect flag on connect so a later remount auto-reconnects normally", async () => {
+      window.localStorage.setItem(WALLET_DISCONNECTED_KEY, "true");
+      StellarWalletsKit.authModal.mockResolvedValue({ address: VALID_KEY });
+
+      const { result } = renderHook(() => useStellarWallet(Networks.TESTNET));
+
+      await act(async () => {
+        await result.current.connectWallet();
+      });
+
+      expect(window.localStorage.getItem(WALLET_DISCONNECTED_KEY)).toBeNull();
     });
   });
 });

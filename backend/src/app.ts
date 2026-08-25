@@ -3,6 +3,7 @@ import cors from "cors";
 import helmet from "helmet";
 import { createApiRouter } from "./routes";
 import { createAdminRouter } from "./routes/admin";
+import { createWalletRoleRouter } from "./routes/walletRole";
 import { errorHandler } from "./middleware/errorHandler";
 import { requestLogger } from "./middleware/logger";
 import { requestContextMiddleware } from "./middleware/requestContext";
@@ -149,6 +150,7 @@ export function createApp(deps: AppDependencies): express.Application {
       userAuthMiddleware,
     ),
   );
+  app.use("/api/admin", createWalletRoleRouter());
   app.use(
     "/api/admin",
     createAdminRouter(adminController, roundController, adminAuthMiddleware),

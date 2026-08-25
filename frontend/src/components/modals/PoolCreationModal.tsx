@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Modal } from "@/components/ui/Modal";
-import { useWallet } from "@/shared-d/hooks/useWallet";
+import { useWallet } from "@/features/wallet/useWallet";
 import { TransactionModal } from "@/components/modals/TransactionModal";
 import { buildCreatePoolTransaction, submitSignedTransaction } from "@/shared-d/utils/stellar-transactions";
 import {
