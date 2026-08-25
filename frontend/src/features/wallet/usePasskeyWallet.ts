@@ -21,10 +21,18 @@ function loadStored(): { address: string; keyId: string } | null {
   }
 }
 
+const DEMO_MODE = process.env.NEXT_PUBLIC_PASSKEY_DEMO_MODE === "true";
+
 function deriveAddress(credentialId: string): string {
-  // Derive a deterministic Stellar-format address (G...) from the credential ID.
-  // In production this would be the smart wallet contract address returned by
-  // the passkey-kit after deploying a secp256r1 smart wallet on Soroban.
+  if (!DEMO_MODE) {
+    throw new Error(
+      "deriveAddress is a placeholder for demo/preview only. " +
+      "In production, the passkey-kit deploys a secp256r1 smart wallet on Soroban " +
+      "and returns the real contract address.",
+    );
+  }
+  // Deterministic Stellar-format address (G...) derived from the credential ID.
+  // WARNING: This is NOT cryptographically derived and must NOT be used on mainnet.
   const base32Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
   let hash = 0;
   for (let i = 0; i < credentialId.length; i++) {
