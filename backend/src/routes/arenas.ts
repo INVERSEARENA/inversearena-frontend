@@ -357,17 +357,19 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
       // Fetch on-chain player list
       const onChainPlayers = await getOnChainPlayers(contractAddress);
 
-      // Upsert players: create User records if they don't exist
-      let syncedCount = 0;
-      for (const walletAddress of onChainPlayers) {
-        // Find or create user by wallet address
-        await prisma.user.upsert({
-          where: { walletAddress },
-          update: {},
-          create: { walletAddress },
-        });
-        syncedCount++;
-      }
+      // Batch-create User records for any wallet addresses that don't exist
+      // yet. `skipDuplicates` makes this a single round trip instead of one
+      // upsert per player (existing users are left untouched, matching the
+      // no-op `update: {}` the previous per-player upsert used).
+      await prisma.user.createMany({
+        data: onChainPlayers.map((walletAddress) => ({ walletAddress })),
+        skipDuplicates: true,
+      });
+
+      // `syncedPlayers` mirrors `totalPlayers`, matching the previous
+      // per-player upsert loop, which always processed every on-chain
+      // player regardless of whether the User record was newly created.
+      const syncedCount = onChainPlayers.length;
 
       res.json({
         arenaId: id,
