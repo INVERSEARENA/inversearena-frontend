@@ -11,7 +11,7 @@ import {
   ChooseYourFate,
   TotalYieldPot,
 } from "@/components/arena/core";
-import { useWallet } from "@/shared-d/hooks/useWallet";
+import { useWallet } from "@/features/wallet/useWallet";
 import { TransactionModal } from "@/components/modals/TransactionModal";
 import { ArenaStatsSkeleton } from "@/components/arena/ArenaStatsSkeleton";
 import {

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { TrendingUp, CheckSquare, Zap, Info, Loader2, TerminalSquare, ShieldCheck, AlertTriangle } from "lucide-react";
-import { useWallet } from "@/shared-d/hooks/useWallet";
+import { useWallet } from "@/features/wallet/useWallet";
 import {
   buildStakeProtocolTransaction,
   submitSignedTransaction,

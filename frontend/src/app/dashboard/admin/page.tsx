@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useWallet } from "@/features/wallet/useWallet";
+import { useAdminRole } from "@/features/wallet/useAdminRole";
 import { PoolCreationModal } from "@/components/modals/PoolCreationModal";
 
 // ---------------------------------------------------------------------------
@@ -104,6 +105,8 @@ function PayoutBadge({ status }: { status: PayoutRow["status"] }) {
 export default function AdminDashboardPage() {
   const router = useRouter();
   const { status, publicKey } = useWallet();
+  const adminRole = useAdminRole(publicKey);
+  const isAuthorized = adminRole === "authorized";
 
   const [arenas, setArenas] = useState<ArenaEntry[]>([]);
   const [payouts, setPayouts] = useState<PayoutRow[]>([]);
@@ -117,15 +120,20 @@ export default function AdminDashboardPage() {
   const [isPoolModalOpen, setIsPoolModalOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  // Redirect unauthenticated users
+  // Redirect unauthenticated or unauthorized wallets. Being connected is not
+  // enough — the server-verified allowlist check must also come back positive.
   useEffect(() => {
     if (status === "disconnected") {
       router.replace("/");
+      return;
     }
-  }, [status, router]);
+    if (status === "connected" && (adminRole === "unauthorized" || adminRole === "error")) {
+      router.replace("/");
+    }
+  }, [status, adminRole, router]);
 
   const loadArenas = useCallback(async () => {
-    if (!publicKey) return;
+    if (!publicKey || !isAuthorized) return;
     setLoadingArenas(true);
     try {
       const data = await fetchAdminArenas(publicKey);
@@ -133,9 +141,10 @@ export default function AdminDashboardPage() {
     } finally {
       setLoadingArenas(false);
     }
-  }, [publicKey]);
+  }, [publicKey, isAuthorized]);
 
   const loadPayouts = useCallback(async () => {
+    if (!isAuthorized) return;
     setLoadingPayouts(true);
     try {
       const data = await fetchPayoutStatus();
@@ -143,7 +152,7 @@ export default function AdminDashboardPage() {
     } finally {
       setLoadingPayouts(false);
     }
-  }, []);
+  }, [isAuthorized]);
 
   useEffect(() => {
     loadArenas();
@@ -164,6 +173,15 @@ export default function AdminDashboardPage() {
     const { arenaId, action } = confirmDialog;
     setConfirmDialog(null);
     setActionError(null);
+
+    // Defense in depth: never perform an admin action for a wallet the
+    // server-verified allowlist check has not confirmed, even if the UI
+    // gate above was somehow bypassed.
+    if (!isAuthorized) {
+      setActionError("This wallet is not authorized to perform admin actions.");
+      return;
+    }
+
     setArenaAction(arenaId, true);
     try {
       if (action === "resolve") await resolveRound(arenaId);
@@ -182,6 +200,29 @@ export default function AdminDashboardPage() {
       <div className="flex items-center justify-center min-h-[60vh]">
         <p className="font-pixel text-neon-green text-sm animate-pulse tracking-widest">
           {status === "connecting" ? "CONNECTING..." : "REDIRECTING..."}
+        </p>
+      </div>
+    );
+  }
+
+  // A connected wallet is not authorization — wait for the server-verified
+  // allowlist check, and never render admin controls for a wallet that
+  // fails it (the redirect effect above will navigate away).
+  if (adminRole === "idle" || adminRole === "checking") {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <p className="font-pixel text-neon-green text-sm animate-pulse tracking-widest">
+          VERIFYING ACCESS...
+        </p>
+      </div>
+    );
+  }
+
+  if (!isAuthorized) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <p className="font-pixel text-neon-green text-sm animate-pulse tracking-widest">
+          REDIRECTING...
         </p>
       </div>
     );

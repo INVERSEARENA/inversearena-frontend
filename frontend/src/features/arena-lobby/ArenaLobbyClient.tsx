@@ -4,8 +4,13 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArenaStatsSkeleton } from "@/components/arena/ArenaStatsSkeleton";
 import { ChoiceSubmission } from "@/components/arena/ChoiceSubmission";
+import { TransactionModal } from "@/components/modals/TransactionModal";
 import { useStellarWallet } from "@/features/wallet/useStellarWallet";
 import { stellarConfig } from "@/lib/stellarConfig";
+import {
+  buildJoinArenaTransaction,
+  submitSignedTransaction,
+} from "@/shared-d/utils/stellar-transactions";
 
 interface ArenaStats {
   arenaId: string;
@@ -98,6 +103,7 @@ export function ArenaLobbyClient({
   const [loadingStats, setLoadingStats] = useState(false);
   const [loadingParticipants, setLoadingParticipants] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showJoinModal, setShowJoinModal] = useState(false);
 
   const isOpen = stats?.status === "open";
   const walletConnected = wallet.isConnected && !!wallet.publicKey;
@@ -261,6 +267,28 @@ export function ArenaLobbyClient({
       ? "Join Unavailable"
       : "Join Arena";
 
+  const handleConfirmJoin = async () => {
+    if (!wallet.publicKey) {
+      throw new Error("Connect a wallet before joining this arena.");
+    }
+
+    const unsignedTx = await buildJoinArenaTransaction(
+      wallet.publicKey,
+      arenaId,
+      stats.entryFee,
+    );
+    const signedXdr = await wallet.signTransaction(unsignedTx.toXDR());
+    await submitSignedTransaction(signedXdr);
+
+    await Promise.all([fetchStats(), fetchParticipants(0, true)]);
+
+    setShowJoinModal(false);
+    document.getElementById("choice-submission")?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  };
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(60,255,26,0.14),_transparent_36%),linear-gradient(180deg,_#050816_0%,_#07111d_42%,_#050816_100%)] px-4 py-6 text-white sm:px-6 lg:px-8">
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-6">
@@ -337,12 +365,7 @@ export function ArenaLobbyClient({
             <button
               type="button"
               disabled={joinDisabled}
-              onClick={() => {
-                document.getElementById("choice-submission")?.scrollIntoView({
-                  behavior: "smooth",
-                  block: "start",
-                });
-              }}
+              onClick={() => setShowJoinModal(true)}
               className="rounded-full border border-[#3CFF1A]/40 bg-[#3CFF1A] px-6 py-3 text-sm font-black uppercase tracking-[0.2em] text-black transition hover:brightness-95 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/10 disabled:text-white/40"
             >
               {joinLabel}
@@ -480,6 +503,19 @@ export function ArenaLobbyClient({
           </div>
         </section>
       </main>
+
+      <TransactionModal
+        isOpen={showJoinModal}
+        onClose={() => setShowJoinModal(false)}
+        title="Join Arena"
+        description="Confirm your entry to this arena"
+        details={[
+          { label: "Arena", value: stats.arenaName },
+          { label: "Entry Fee", value: formatCurrency(stats.entryFee, stats.stakeToken) },
+        ]}
+        confirmLabel="Sign & Join"
+        onConfirm={handleConfirmJoin}
+      />
     </div>
   );
 }
