@@ -31,7 +31,7 @@ export default function ProfilePage() {
     error,
     refetch
   } = useProfile({
-    address,
+    address: address ?? undefined,
     myArenasFilter: arenaFilter
   });
 
