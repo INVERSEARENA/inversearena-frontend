@@ -45,176 +45,113 @@ export class UsersController {
   // Private helpers
   // ──────────────────────────────────────────────────────────────────
 
+  /**
+   * Aggregates gamesPlayed, gamesWon, totalYieldEarned, and currentRank in a
+   * single indexed SQL query, reusing the CTE pattern from
+   * `LeaderboardController.buildRankedPlayers` (leaderboard.controller.ts)
+   * instead of four independent unbounded `findMany({ state: "RESOLVED" })`
+   * scans that pulled every resolved round's metadata into Node.js per call.
+   *
+   * Preserves the original per-field semantics exactly:
+   *  - gamesPlayed — distinct arenas from playerChoices metadata UNION
+   *                  distinct arenas from elimination_logs (a user eliminated
+   *                  without a matching metadata entry still counts).
+   *  - gamesWon    — arenas from playerChoices metadata that the user was
+   *                  never eliminated in (elimination-only arenas, with no
+   *                  metadata participation, are not eligible to be "won").
+   *  - totalYieldEarned / currentRank — summed/ranked purely from resolution
+   *                  payouts in playerChoices metadata, platform-wide.
+   *
+   * The CTE pipeline:
+   *  1. round_choices  – unnests playerChoices JSONB arrays from RESOLVED
+   *                      rounds platform-wide, joined to that round's payout
+   *  2. participation  – per user: distinct arenas participated in (metadata), total yield
+   *  3. elimination    – per user: distinct arenas where they were eliminated
+   *  4. ranked         – every user with any yield, ranked by total yield DESC
+   *                      via a window function, matching the original
+   *                      platform-wide rank comparison
+   *
+   * Only the target user's row is returned — the rest of the platform's data
+   * never leaves Postgres.
+   */
   private async aggregateStats(userId: string) {
-    // Gather all data in parallel for speed
-    const [gamesPlayed, gamesWon, totalYieldEarned, currentRank] =
-      await Promise.all([
-        this.countGamesPlayed(userId),
-        this.countGamesWon(userId),
-        this.sumYieldEarned(userId),
-        this.computeRank(userId),
-      ]);
+    type RawRow = {
+      gamesPlayed: string; // bigint → string
+      gamesWon: string; // bigint → string
+      totalYield: string; // numeric → string
+      rank: string | null; // bigint → string, null when unranked
+    };
+
+    const rows = await this.prisma.$queryRaw<RawRow[]>`
+      WITH round_choices AS (
+        SELECT
+          r.arena_id,
+          (choice->>'userId')                         AS user_id,
+          COALESCE((
+            SELECT SUM((p->>'amount')::numeric)
+            FROM jsonb_array_elements(r.metadata->'resolution'->'payouts') AS p
+            WHERE p->>'userId' = choice->>'userId'
+          ), 0)                                        AS payout
+        FROM rounds r
+        CROSS JOIN LATERAL jsonb_array_elements(r.metadata->'playerChoices') AS c(choice)
+        WHERE r.state = 'RESOLVED'
+      ),
+      participation AS (
+        SELECT
+          user_id,
+          COUNT(DISTINCT arena_id) AS arenas_participated,
+          SUM(payout)              AS total_yield
+        FROM round_choices
+        GROUP BY user_id
+      ),
+      elimination AS (
+        SELECT
+          el.user_id,
+          COUNT(DISTINCT r.arena_id) AS arenas_eliminated
+        FROM elimination_logs el
+        JOIN rounds r ON r.id = el.round_id
+        GROUP BY el.user_id
+      ),
+      played AS (
+        -- Union of metadata-participation arenas and elimination-only arenas,
+        -- matching the original countGamesPlayed's two independent checks.
+        SELECT user_id, COUNT(DISTINCT arena_id) AS arenas_played
+        FROM (
+          SELECT user_id, arena_id FROM round_choices
+          UNION
+          SELECT el.user_id, r.arena_id FROM elimination_logs el JOIN rounds r ON r.id = el.round_id
+        ) all_arenas
+        GROUP BY user_id
+      ),
+      ranked AS (
+        SELECT
+          user_id,
+          total_yield,
+          RANK() OVER (ORDER BY total_yield DESC) AS rank
+        FROM participation
+        WHERE total_yield > 0
+      )
+      SELECT
+        COALESCE(pl.arenas_played, 0)::bigint                                          AS "gamesPlayed",
+        GREATEST(0, COALESCE(p.arenas_participated, 0)::bigint - COALESCE(e.arenas_eliminated, 0)::bigint)
+                                                                                        AS "gamesWon",
+        COALESCE(p.total_yield, 0)::numeric                                            AS "totalYield",
+        r.rank::bigint                                                                 AS "rank"
+      FROM (SELECT ${userId}::text AS user_id) target
+      LEFT JOIN played pl ON pl.user_id = target.user_id
+      LEFT JOIN participation p ON p.user_id = target.user_id
+      LEFT JOIN elimination e ON e.user_id = target.user_id
+      LEFT JOIN ranked r ON r.user_id = target.user_id
+    `;
+
+    const row = rows[0];
+    const totalYield = row ? Number(row.totalYield) : 0;
 
     return {
-      gamesPlayed,
-      gamesWon,
-      totalYieldEarned: totalYieldEarned.toFixed(2),
-      currentRank,
+      gamesPlayed: row ? Number(row.gamesPlayed) : 0,
+      gamesWon: row ? Number(row.gamesWon) : 0,
+      totalYieldEarned: totalYield.toFixed(2),
+      currentRank: row?.rank !== null && row?.rank !== undefined ? Number(row.rank) : null,
     };
-  }
-
-  /**
-   * Count of distinct arenas the user participated in.
-   * A "participation" is evidenced by appearing in any round's metadata
-   * (playerChoices) or in the elimination_logs table.
-   */
-  private async countGamesPlayed(userId: string): Promise<number> {
-    // Elimination logs directly link userId → roundId → arenaId.
-    // This gives us arenas where the user was eliminated at least once,
-    // plus we check resolved rounds' metadata for non-eliminated participation.
-    const eliminationArenas = await this.prisma.eliminationLog.findMany({
-      where: { userId },
-      select: {
-        round: { select: { arenaId: true } },
-      },
-    });
-
-    const arenaIds = new Set(
-      eliminationArenas.map(
-        (e: { round: { arenaId: string } }) => e.round.arenaId,
-      ),
-    );
-
-    // Also check rounds where userId appears in metadata (playerChoices)
-    const resolvedRounds = await this.prisma.round.findMany({
-      where: { state: "RESOLVED" },
-      select: { arenaId: true, metadata: true },
-    });
-
-    for (const round of resolvedRounds) {
-      const meta = round.metadata as Record<string, unknown> | null;
-      if (!meta) continue;
-      const choices = meta.playerChoices as
-        | Array<{ userId: string }>
-        | undefined;
-      if (choices?.some((c) => c.userId === userId)) {
-        arenaIds.add(round.arenaId);
-      }
-    }
-
-    return arenaIds.size;
-  }
-
-  /**
-   * Arenas where the user participated but was *never* eliminated.
-   */
-  private async countGamesWon(userId: string): Promise<number> {
-    // All arenas user participated in (from resolved round metadata)
-    const resolvedRounds = await this.prisma.round.findMany({
-      where: { state: "RESOLVED" },
-      select: { arenaId: true, metadata: true },
-    });
-
-    const participatedArenaIds = new Set<string>();
-    for (const round of resolvedRounds) {
-      const meta = round.metadata as Record<string, unknown> | null;
-      if (!meta) continue;
-      const choices = meta.playerChoices as
-        | Array<{ userId: string }>
-        | undefined;
-      if (choices?.some((c) => c.userId === userId)) {
-        participatedArenaIds.add(round.arenaId);
-      }
-    }
-
-    if (participatedArenaIds.size === 0) return 0;
-
-    // Arenas where the user was eliminated at least once
-    const eliminations = await this.prisma.eliminationLog.findMany({
-      where: { userId },
-      select: { round: { select: { arenaId: true } } },
-    });
-
-    const eliminatedArenaIds = new Set(
-      eliminations.map((e: { round: { arenaId: string } }) => e.round.arenaId),
-    );
-
-    // Won = participated but never eliminated
-    let won = 0;
-    for (const arenaId of participatedArenaIds) {
-      if (!eliminatedArenaIds.has(arenaId)) {
-        won++;
-      }
-    }
-
-    return won;
-  }
-
-  /**
-   * Sum of payouts the user received across all resolved rounds.
-   */
-  private async sumYieldEarned(userId: string): Promise<number> {
-    const resolvedRounds = await this.prisma.round.findMany({
-      where: { state: "RESOLVED" },
-      select: { metadata: true },
-    });
-
-    let totalYield = 0;
-
-    for (const round of resolvedRounds) {
-      const meta = round.metadata as Record<string, unknown> | null;
-      if (!meta) continue;
-
-      const resolution = meta.resolution as
-        | { payouts?: Array<{ userId: string; amount: number }> }
-        | undefined;
-      if (!resolution?.payouts) continue;
-
-      const payout = resolution.payouts.find((p) => p.userId === userId);
-      if (payout) {
-        totalYield += payout.amount;
-      }
-    }
-
-    return totalYield;
-  }
-
-  /**
-   * 1-based leaderboard position based on total yield earned.
-   * Returns null when the user has zero yield (unranked).
-   */
-  private async computeRank(userId: string): Promise<number | null> {
-    const resolvedRounds = await this.prisma.round.findMany({
-      where: { state: "RESOLVED" },
-      select: { metadata: true },
-    });
-
-    // Accumulate per-user yield
-    const yieldByUser = new Map<string, number>();
-
-    for (const round of resolvedRounds) {
-      const meta = round.metadata as Record<string, unknown> | null;
-      if (!meta) continue;
-
-      const resolution = meta.resolution as
-        | { payouts?: Array<{ userId: string; amount: number }> }
-        | undefined;
-      if (!resolution?.payouts) continue;
-
-      for (const p of resolution.payouts) {
-        yieldByUser.set(p.userId, (yieldByUser.get(p.userId) ?? 0) + p.amount);
-      }
-    }
-
-    const userYield = yieldByUser.get(userId) ?? 0;
-    if (userYield === 0) return null;
-
-    // Rank = 1 + number of users with strictly higher yield
-    let rank = 1;
-    for (const [, total] of yieldByUser) {
-      if (total > userYield) rank++;
-    }
-
-    return rank;
   }
 }
