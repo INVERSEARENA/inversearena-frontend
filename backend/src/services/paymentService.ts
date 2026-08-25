@@ -100,7 +100,7 @@ export class PaymentService {
     return this.breaker.getStats();
   }
 
-  async createPayoutTransaction(input: unknown): Promise<BuildPayoutResult> {
+  async createPayoutTransaction(input: unknown, ownerId?: string | null): Promise<BuildPayoutResult> {
     const request = CreatePayoutRequestSchema.parse(input) as CreatePayoutRequest;
 
     const existing = await this.transactions.findByIdempotencyKey(request.idempotencyKey);
@@ -152,6 +152,7 @@ export class PaymentService {
       createdAt: now,
       updatedAt: now,
       confirmedAt: null,
+      ownerId: ownerId ?? null,
     };
 
     await this.transactions.insert(transaction);
@@ -380,9 +381,6 @@ export class PaymentService {
     }
 
     // distribute_winnings(payout_id: u64, winner: Address, amount: i128)
-    // args[0] = payout_id / nonce (skipped in validation)
-    // args[1] = winner (destination address)
-    // args[2] = amount
     const destination = Address.fromScVal(args[1]!).toString();
     if (destination !== transaction.destinationAccount) {
       throw new Error("Signed transaction destination does not match the payout record");
@@ -390,6 +388,14 @@ export class PaymentService {
     const amount = String(scValToNative(args[2]!));
     if (amount !== transaction.amountStroops) {
       throw new Error("Signed transaction amount does not match the payout record");
+    }
+    // args[0] must equal the nonce reserved for this payout record — otherwise a
+    // compromised signer could redirect the on-chain payout_id.
+    const payoutIdArg = scValToNative(args[0]!);
+    if (typeof payoutIdArg !== "bigint" || payoutIdArg !== BigInt(transaction.nonce)) {
+      throw new Error(
+        "Signed transaction payout_id argument does not match the reserved nonce"
+      );
     }
   }
 

@@ -4,7 +4,7 @@
  *    never a MAX(nonce)+1 read that two concurrent creates can win together.
  *  - ownerId must round-trip through the Mongo repository.
  */
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { beforeEach, describe, expect, it } from "@jest/globals";
 
 jest.mock("../src/db/models/transaction.model", () => {
   const create = jest.fn();

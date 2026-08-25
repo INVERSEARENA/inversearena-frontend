@@ -184,7 +184,8 @@ function registerPublicApiPaths(registry: OpenAPIRegistry): void {
   registry.registerPath({
     method: "post",
     path: "/api/payouts",
-    summary: "Create a payout transaction",
+    summary: "Create a payout transaction (admin)",
+    security: [{ adminApiKey: [] }],
     request: {
       body: {
         content: { "application/json": { schema: CreatePayoutBodySchema } },
@@ -195,6 +196,10 @@ function registerPublicApiPaths(registry: OpenAPIRegistry): void {
         description: "Payout created or queued",
         content: { "application/json": { schema: TransactionRecordSchema } },
       },
+      401: {
+        description: "Unauthorized — admin API key required",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
     },
   });
 
@@ -202,6 +207,7 @@ function registerPublicApiPaths(registry: OpenAPIRegistry): void {
     method: "get",
     path: "/api/payouts/{id}",
     summary: "Get payout transaction by id",
+    security: [{ bearerAuth: [] }],
     request: { params: TransactionIdParamSchema },
     responses: {
       200: {
@@ -270,7 +276,8 @@ function registerAdminPaths(registry: OpenAPIRegistry): void {
   registry.registerPath({
     method: "post",
     path: "/api/payouts/{id}/sign",
-    summary: "Queue a signed payout XDR",
+    summary: "Queue a signed payout XDR (admin)",
+    security: [{ adminApiKey: [] }],
     request: {
       params: TransactionIdParamSchema,
       body: {
@@ -281,6 +288,14 @@ function registerAdminPaths(registry: OpenAPIRegistry): void {
       200: {
         description: "Signed transaction queued",
         content: { "application/json": { schema: TransactionRecordSchema } },
+      },
+      401: {
+        description: "Unauthorized — admin API key required",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+      404: {
+        description: "Transaction not found or not owned by requester",
+        content: { "application/json": { schema: ApiErrorSchema } },
       },
     },
   });

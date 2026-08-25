@@ -27,7 +27,7 @@ import { InMemoryTransactionRepository } from "../src/repositories/inMemoryTrans
 import type { AuthService } from "../src/services/authService";
 import type { PaymentService } from "../src/services/paymentService";
 import type { TransactionRecord } from "../src/types/payment";
-import { apiError, HttpError } from "../src/utils/apiError";
+import { HttpError } from "../src/utils/apiError";
 import { resetSorobanBreakerForTest } from "../src/utils/circuitBreaker";
 
 // Test-only fixture value (never a real credential); assembled from parts so
@@ -329,7 +329,9 @@ describe("payout ownership (IDOR) enforcement", () => {
     const missing = makeReq({ record: makeRecord(), userId: "user-1" });
     missing.params.id = "does-not-exist";
     const missingResult = await runHandler(controller.getById, missing);
-    expect(missingResult.next).toHaveBeenCalledWith(apiError(404, "TRANSACTION_NOT_FOUND", ""));
+    expect(missingResult.next).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 404, code: "TRANSACTION_NOT_FOUND" }),
+    );
     expect((missingResult.next.mock.calls[0]![0] as HttpError).status).toBe(404);
   });
 });
