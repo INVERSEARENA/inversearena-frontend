@@ -474,7 +474,7 @@ export function PoolCreationModal({
         description="Review transaction details"
         details={txDetails}
         onConfirm={async () => {
-          if (!address) return;
+          if (!address) throw new Error("Wallet disconnected. Please reconnect and try again.");
           const tx = await buildCreatePoolTransaction(address, {
             stakeAmount,
             currency,

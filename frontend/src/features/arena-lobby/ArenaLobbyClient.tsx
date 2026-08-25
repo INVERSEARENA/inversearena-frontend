@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { z } from "zod";
 import { useRouter } from "next/navigation";
 import { ArenaStatsSkeleton } from "@/components/arena/ArenaStatsSkeleton";
 import { ChoiceSubmission } from "@/components/arena/ChoiceSubmission";
@@ -12,39 +13,43 @@ import {
   submitSignedTransaction,
 } from "@/shared-d/utils/stellar-transactions";
 
-interface ArenaStats {
-  arenaId: string;
-  arenaName: string;
-  currentPot: number;
-  playerCount: number;
-  maxPlayers: number;
-  survivorCount: number;
-  currentRound: number;
-  entryFee: number;
-  stakeToken: string;
-  joinDeadline: string | null;
-  yieldAccrued: number;
-  status: string;
-  lastUpdated: string;
-}
+const arenaParticipantSchema = z.object({
+  id: z.string(),
+  walletAddress: z.string(),
+  choice: z.enum(["heads", "tails"]),
+  stake: z.number(),
+  status: z.enum(["READY", "ACTIVE", "ELIMINATED"]),
+  roundNumber: z.number(),
+  joinedAt: z.string(),
+});
 
-interface ArenaParticipant {
-  id: string;
-  walletAddress: string;
-  choice: "heads" | "tails";
-  stake: number;
-  status: "READY" | "ACTIVE" | "ELIMINATED";
-  roundNumber: number;
-  joinedAt: string;
-}
+const arenaStatsSchema = z.object({
+  arenaId: z.string(),
+  arenaName: z.string(),
+  currentPot: z.number(),
+  playerCount: z.number(),
+  maxPlayers: z.number(),
+  survivorCount: z.number(),
+  currentRound: z.number(),
+  entryFee: z.number(),
+  stakeToken: z.string(),
+  joinDeadline: z.string().nullable(),
+  yieldAccrued: z.number(),
+  status: z.string(),
+  lastUpdated: z.string(),
+});
 
-interface ArenaParticipantsResponse {
-  arenaId: string;
-  total: number;
-  nextCursor: number | null;
-  hasMore: boolean;
-  items: ArenaParticipant[];
-}
+const arenaParticipantsResponseSchema = z.object({
+  arenaId: z.string(),
+  total: z.number(),
+  nextCursor: z.number().nullable(),
+  hasMore: z.boolean(),
+  items: z.array(arenaParticipantSchema),
+});
+
+type ArenaStats = z.infer<typeof arenaStatsSchema>;
+type ArenaParticipant = z.infer<typeof arenaParticipantSchema>;
+type ArenaParticipantsResponse = z.infer<typeof arenaParticipantsResponseSchema>;
 
 interface ArenaLobbyClientProps {
   arenaId: string;
@@ -142,8 +147,12 @@ export function ArenaLobbyClient({
         throw new Error(`Stats request failed (${response.status})`);
       }
 
-      const data = (await response.json()) as ArenaStats;
-      setStats(data);
+      const json = await response.json();
+      const parsed = arenaStatsSchema.safeParse(json);
+      if (!parsed.success) {
+        throw new Error(`Invalid stats response: ${parsed.error.message}`);
+      }
+      setStats(parsed.data);
       setError(null);
     } catch (fetchError) {
       setError(
@@ -170,7 +179,12 @@ export function ArenaLobbyClient({
         throw new Error(`Participants request failed (${response.status})`);
       }
 
-      const data = (await response.json()) as ArenaParticipantsResponse;
+      const json = await response.json();
+      const parsed = arenaParticipantsResponseSchema.safeParse(json);
+      if (!parsed.success) {
+        throw new Error(`Invalid participants response: ${parsed.error.message}`);
+      }
+      const data = parsed.data;
       if (replace || cursor === 0) {
         mergeParticipants(data.items);
       } else {

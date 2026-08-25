@@ -10,14 +10,12 @@ import { LayoutGrid, History } from "lucide-react";
 import { useProfile } from "@/shared-d/features/profile/hooks/useProfile";
 import { MyArenasFilter } from "@/shared-d/features/profile/types";
 
-// Mock helpers - in a real app these would come from a utils file
+import { useWallet } from "@/features/wallet/useWallet";
+
 const truncateAddress = (address: string) => {
   if (!address) return "";
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 };
-
-// Dummy useWallet for now if not available
-const useWallet = () => ({ address: "GD...X4Y2" });
 
 export default function ProfilePage() {
   const { settings, updateSetting } = useArenaSettings();
@@ -33,7 +31,7 @@ export default function ProfilePage() {
     error,
     refetch
   } = useProfile({
-    address,
+    address: address ?? undefined,
     myArenasFilter: arenaFilter
   });
 
