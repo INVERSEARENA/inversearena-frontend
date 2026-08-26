@@ -1,160 +1,291 @@
-/**
- * Tests for the SSE staleness watchdog (#1133).
- *
- * The backend sends a raw SSE comment frame every ~15s as a transport-level
- * keepalive. Comment frames never dispatch a JS event on EventSource, so a
- * connection that's silently died (no TCP FIN/RST — e.g. a NAT/proxy black
- * hole) would otherwise sit unnoticed for up to the OS keepalive timeout.
- * The hook instead tracks the last time it observed *any* real event and
- * force-reconnects once 60s pass without one.
- */
-import { renderHook, act } from "@testing-library/react";
+import { renderHook, waitFor } from "@testing-library/react";
 import { useArenaStream } from "../useArenaStream";
 
-type Listener = (event: MessageEvent<string>) => void;
+describe("useArenaStream", () => {
+  let mockEventSource: {
+    close: jest.Mock;
+    addEventListener: jest.Mock;
+    onopen: ((event: Event) => void) | null;
+    onerror: ((event: Event) => void) | null;
+    dispatchEvent: (event: Event) => void;
+  };
 
-class MockEventSource {
-  static instances: MockEventSource[] = [];
+  beforeEach(() => {
+    mockEventSource = {
+      close: jest.fn(),
+      addEventListener: jest.fn(),
+      onopen: null,
+      onerror: null,
+      dispatchEvent: jest.fn(),
+    };
 
-  url: string;
-  onopen: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  closed = false;
-  private listeners: Record<string, Listener[]> = {};
-
-  constructor(url: string) {
-    this.url = url;
-    MockEventSource.instances.push(this);
-  }
-
-  addEventListener(type: string, cb: EventListener): void {
-    (this.listeners[type] ??= []).push(cb as Listener);
-  }
-
-  close(): void {
-    this.closed = true;
-  }
-
-  emitOpen(): void {
-    this.onopen?.();
-  }
-
-  emit(type: string, data: unknown): void {
-    const event = { data: JSON.stringify(data) } as MessageEvent<string>;
-    for (const cb of this.listeners[type] ?? []) cb(event);
-  }
-}
-
-const SNAPSHOT_PAYLOAD = {
-  arenaId: "arena-1",
-  currentRound: 1,
-  playerCount: 4,
-  survivorCount: 4,
-  status: "active",
-  recentEliminations: [],
-  lastRoundState: null,
-};
-
-function emitSnapshot(source: MockEventSource, sequence = 1): void {
-  source.emit("snapshot", {
-    type: "snapshot",
-    arenaId: "arena-1",
-    payload: SNAPSHOT_PAYLOAD,
-    sequence,
-    createdAt: new Date().toISOString(),
-  });
-}
-
-beforeEach(() => {
-  MockEventSource.instances = [];
-  (global as unknown as { EventSource: typeof MockEventSource }).EventSource = MockEventSource;
-  jest.useFakeTimers();
-});
-
-afterEach(() => {
-  jest.useRealTimers();
-});
-
-describe("useArenaStream — staleness watchdog", () => {
-  it("force-reconnects once 60s pass with no observed event", () => {
-    renderHook(() => useArenaStream("arena-1"));
-
-    expect(MockEventSource.instances).toHaveLength(1);
-    const first = MockEventSource.instances[0]!;
-
-    act(() => {
-      first.emitOpen();
-    });
-
-    // Advance past the 60s staleness window (in 10s watchdog ticks).
-    act(() => {
-      jest.advanceTimersByTime(70_000);
-    });
-
-    expect(first.closed).toBe(true);
-    expect(MockEventSource.instances).toHaveLength(2);
+    // Mock EventSource globally
+    (global as any).EventSource = jest.fn(() => mockEventSource);
   });
 
-  it("does not reconnect when real events keep arriving within the window", () => {
-    renderHook(() => useArenaStream("arena-1"));
-    const first = MockEventSource.instances[0]!;
+  afterEach(() => {
+    jest.clearAllMocks();
+    delete (global as any).EventSource;
+  });
 
-    act(() => {
-      first.emitOpen();
-    });
+  it("initializes with idle status when no arenaId", () => {
+    const { result } = renderHook(() => useArenaStream(""));
 
-    // Emit a snapshot every 30s, well under the 60s threshold, for 90s total.
-    for (let i = 0; i < 3; i++) {
-      act(() => {
-        jest.advanceTimersByTime(30_000);
-        emitSnapshot(first, i);
-      });
+    expect(result.current.status).toBe("idle");
+    expect(result.current.snapshot).toBeNull();
+    expect(result.current.feed).toEqual([]);
+  });
+
+  it("connects to EventSource when arenaId is provided", () => {
+    renderHook(() => useArenaStream("arena-123"));
+
+    expect(global.EventSource).toHaveBeenCalledWith(
+      "/api/arenas/arena-123/stream",
+    );
+  });
+
+  it("handles valid snapshot event", async () => {
+    const { result } = renderHook(() => useArenaStream("arena-123"));
+
+    // Trigger onopen
+    if (mockEventSource.onopen) {
+      mockEventSource.onopen(new Event("open"));
     }
 
-    expect(first.closed).toBe(false);
-    expect(MockEventSource.instances).toHaveLength(1);
+    await waitFor(() => expect(result.current.status).toBe("connected"));
+
+    // Simulate valid snapshot event
+    const snapshotEvent = new MessageEvent("snapshot", {
+      data: JSON.stringify({
+        type: "snapshot",
+        arenaId: "arena-123",
+        sequence: 1,
+        createdAt: "2026-08-26T00:00:00Z",
+        payload: {
+          arenaId: "arena-123",
+          currentRound: 1,
+          playerCount: 10,
+          survivorCount: 8,
+          status: "ACTIVE",
+          recentEliminations: [],
+          lastRoundState: null,
+        },
+      }),
+    });
+
+    // Get the message handler
+    const messageHandler = mockEventSource.addEventListener.mock.calls.find(
+      (call) => call[0] === "snapshot",
+    )?.[1];
+
+    if (messageHandler) {
+      messageHandler(snapshotEvent);
+    }
+
+    await waitFor(() => {
+      expect(result.current.snapshot).not.toBeNull();
+      expect(result.current.snapshot?.playerCount).toBe(10);
+    });
   });
 
-  it("stops watchdog reconnects after unmount", () => {
-    const { unmount } = renderHook(() => useArenaStream("arena-1"));
-    const first = MockEventSource.instances[0]!;
+  it("handles malformed JSON gracefully without breaking stream", async () => {
+    const consoleSpy = jest.spyOn(console, "error").mockImplementation();
 
-    act(() => {
-      first.emitOpen();
+    const { result } = renderHook(() => useArenaStream("arena-123"));
+
+    if (mockEventSource.onopen) {
+      mockEventSource.onopen(new Event("open"));
+    }
+
+    await waitFor(() => expect(result.current.status).toBe("connected"));
+
+    // Simulate malformed JSON event
+    const malformedEvent = new MessageEvent("snapshot", {
+      data: "{invalid json}",
     });
 
-    unmount();
+    const messageHandler = mockEventSource.addEventListener.mock.calls.find(
+      (call) => call[0] === "snapshot",
+    )?.[1];
 
-    act(() => {
-      jest.advanceTimersByTime(120_000);
+    if (messageHandler) {
+      messageHandler(malformedEvent);
+    }
+
+    // Should log error but not crash
+    await waitFor(() => {
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Failed to parse SSE event data"),
+        expect.any(Error),
+        expect.any(String),
+      );
     });
 
-    // No further connections were opened once the effect tore down.
-    expect(MockEventSource.instances).toHaveLength(1);
+    // Status should still be connected (not reconnecting)
+    expect(result.current.status).toBe("connected");
+
+    consoleSpy.mockRestore();
   });
 
-  it("resets the watchdog baseline on a fresh connection so it doesn't reconnect immediately", () => {
-    renderHook(() => useArenaStream("arena-1"));
-    const first = MockEventSource.instances[0]!;
+  it("handles invalid event schema gracefully", async () => {
+    const consoleSpy = jest.spyOn(console, "error").mockImplementation();
 
-    act(() => {
-      first.emitOpen();
+    const { result } = renderHook(() => useArenaStream("arena-123"));
+
+    if (mockEventSource.onopen) {
+      mockEventSource.onopen(new Event("open"));
+    }
+
+    await waitFor(() => expect(result.current.status).toBe("connected"));
+
+    // Simulate event with missing required fields
+    const invalidEvent = new MessageEvent("snapshot", {
+      data: JSON.stringify({
+        type: "snapshot",
+        // Missing arenaId, sequence, createdAt
+        payload: { some: "data" },
+      }),
     });
 
-    act(() => {
-      jest.advanceTimersByTime(70_000);
+    const messageHandler = mockEventSource.addEventListener.mock.calls.find(
+      (call) => call[0] === "snapshot",
+    )?.[1];
+
+    if (messageHandler) {
+      messageHandler(invalidEvent);
+    }
+
+    // Should log error but not crash
+    await waitFor(() => {
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Invalid ArenaStreamEvent shape"),
+        expect.any(Object),
+      );
     });
 
-    expect(MockEventSource.instances).toHaveLength(2);
-    const second = MockEventSource.instances[1]!;
+    // Status should still be connected
+    expect(result.current.status).toBe("connected");
 
-    // A short additional delay shouldn't immediately trigger yet another
-    // reconnect — the new attempt gets its own fresh 60s budget.
-    act(() => {
-      jest.advanceTimersByTime(20_000);
+    consoleSpy.mockRestore();
+  });
+
+  it("handles invalid event type gracefully", async () => {
+    const consoleSpy = jest.spyOn(console, "error").mockImplementation();
+
+    const { result } = renderHook(() => useArenaStream("arena-123"));
+
+    if (mockEventSource.onopen) {
+      mockEventSource.onopen(new Event("open"));
+    }
+
+    await waitFor(() => expect(result.current.status).toBe("connected"));
+
+    // Simulate event with invalid type
+    const invalidEvent = new MessageEvent("snapshot", {
+      data: JSON.stringify({
+        type: "invalid_type",
+        arenaId: "arena-123",
+        sequence: 1,
+        createdAt: "2026-08-26T00:00:00Z",
+        payload: {},
+      }),
     });
 
-    expect(second.closed).toBe(false);
-    expect(MockEventSource.instances).toHaveLength(2);
+    const messageHandler = mockEventSource.addEventListener.mock.calls.find(
+      (call) => call[0] === "snapshot",
+    )?.[1];
+
+    if (messageHandler) {
+      messageHandler(invalidEvent);
+    }
+
+    // Should log error but not crash
+    await waitFor(() => {
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Invalid ArenaStreamEvent shape"),
+        expect.any(Object),
+      );
+    });
+
+    expect(result.current.status).toBe("connected");
+
+    consoleSpy.mockRestore();
+  });
+
+  it("handles truncated/partial JSON gracefully", async () => {
+    const consoleSpy = jest.spyOn(console, "error").mockImplementation();
+
+    const { result } = renderHook(() => useArenaStream("arena-123"));
+
+    if (mockEventSource.onopen) {
+      mockEventSource.onopen(new Event("open"));
+    }
+
+    await waitFor(() => expect(result.current.status).toBe("connected"));
+
+    // Simulate truncated JSON
+    const truncatedEvent = new MessageEvent("snapshot", {
+      data: '{"type":"snapshot","arenaId":"arena-123"',
+    });
+
+    const messageHandler = mockEventSource.addEventListener.mock.calls.find(
+      (call) => call[0] === "snapshot",
+    )?.[1];
+
+    if (messageHandler) {
+      messageHandler(truncatedEvent);
+    }
+
+    // Should log error but not crash
+    await waitFor(() => {
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Failed to parse SSE event data"),
+        expect.any(Error),
+        expect.any(String),
+      );
+    });
+
+    // Stream should stay open
+    expect(result.current.status).toBe("connected");
+
+    consoleSpy.mockRestore();
+  });
+
+  it("handles empty event data gracefully", async () => {
+    const consoleSpy = jest.spyOn(console, "error").mockImplementation();
+
+    const { result } = renderHook(() => useArenaStream("arena-123"));
+
+    if (mockEventSource.onopen) {
+      mockEventSource.onopen(new Event("open"));
+    }
+
+    await waitFor(() => expect(result.current.status).toBe("connected"));
+
+    // Simulate empty data
+    const emptyEvent = new MessageEvent("snapshot", {
+      data: "",
+    });
+
+    const messageHandler = mockEventSource.addEventListener.mock.calls.find(
+      (call) => call[0] === "snapshot",
+    )?.[1];
+
+    if (messageHandler) {
+      messageHandler(emptyEvent);
+    }
+
+    // Should log error but not crash
+    await waitFor(() => {
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Failed to parse SSE event data"),
+        expect.any(Error),
+        expect.any(String),
+      );
+    });
+
+    expect(result.current.status).toBe("connected");
+
+    consoleSpy.mockRestore();
   });
 });

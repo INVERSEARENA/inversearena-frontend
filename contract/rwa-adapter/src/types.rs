@@ -20,6 +20,7 @@ pub struct RwaConfig {
 pub struct YieldAccrual {
     pub principal: i128,
     pub withdrawn: bool,
+    pub deposited_at: u64,
 }
 
 #[contracterror]
