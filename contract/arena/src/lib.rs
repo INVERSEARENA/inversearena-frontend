@@ -1784,10 +1784,16 @@ mod test {
 
     #[test]
     fn resolve_round_after_grace_elapsed_succeeds() {
+        // setup_started's two players never submit a choice, so both are
+        // eliminated as non-revealers and survivors == 0. Since the
+        // zero-survivors fix, that correctly resolves to Cancelled (unlocking
+        // claim_refund) rather than Finished (which would need a winner that
+        // doesn't exist here) — this test only exercises that resolve_round
+        // succeeds once the grace period has elapsed, not a specific outcome.
         let (env, client) = setup_started(60, 1_000);
         env.ledger().with_mut(|li| li.timestamp = 1_061);
         client.resolve_round();
-        assert_eq!(state_of(&env, &client), GameState::Finished);
+        assert_eq!(state_of(&env, &client), GameState::Cancelled);
     }
 
     #[test]
@@ -1923,8 +1929,8 @@ mod test {
                 ArenaStorage::save_player(&env, &p1, &active);
                 ArenaStorage::save_player(&env, &p2, &active);
             });
-            env.ledger()
-                .with_mut(|li| li.timestamp = 1_000 + idx as u64);
+            let round_start_ts = 1_000 + (idx as u64) * 1_000;
+            env.ledger().with_mut(|li| li.timestamp = round_start_ts);
             // Reset to Open before each round because resolve_round transitions
             // to Finished when there are no survivors (no real players exist).
             env.as_contract(&contract_id, || {
@@ -1934,9 +1940,13 @@ mod test {
             });
             // Baseline is captured here, from the balance the previous round
             // left behind: 100, then 110, then 125.
-            client.start_round(&0);
+            client.start_round(&MIN_ROUND_DURATION_SECONDS);
             // The vault earns during the round: +10, +15, +25.
             set_vault_balance(*balance);
+            // Advance past the grace period (round_start + duration) so
+            // resolve_round's deadline check passes.
+            env.ledger()
+                .with_mut(|li| li.timestamp = round_start_ts + MIN_ROUND_DURATION_SECONDS);
             client.resolve_round();
         }
 
@@ -3989,9 +3999,7 @@ mod test {
         // Whitelist and set up arena
         env.mock_all_auths();
         let admin = Address::generate(&env);
-        let players: Vec<Address> = (0..2)
-            .map(|_| Address::generate(&env))
-            .collect();
+        let players: [Address; 2] = [Address::generate(&env), Address::generate(&env)];
         
         let oracle_id = env.register(MockOracle, ());
         let vault_id = env.register(MockVault, ());
@@ -4019,34 +4027,17 @@ mod test {
             ArenaStorage::save_player_limits(&env, 2, 2);
             
             for player in players.iter() {
-                ArenaStorage::add_player(&env, player);
+                ArenaStorage::add_player(&env, &player);
             }
         });
         
         // Start a round
-        env.ledger().set(soroban_sdk::testutils::LedgerInfo {
-            timestamp: 1000,
-            protocol_version: 21,
-            sequence_number: 1,
-            network_id: Default::default(),
-            base_reserve: 0,
-            min_temp_entry_expiration: 0,
-            min_persistent_entry_expiration: 0,
-            max_entry_expiration: 0,
-        });
+        env.ledger().with_mut(|li| li.timestamp = 1000);
         client.start_round(&MIN_ROUND_DURATION_SECONDS);
-        
+
         // Advance time past the commit deadline WITHOUT any player revealing
-        env.ledger().set(soroban_sdk::testutils::LedgerInfo {
-            timestamp: 1000 + MIN_ROUND_DURATION_SECONDS + 1,
-            protocol_version: 21,
-            sequence_number: 1,
-            network_id: Default::default(),
-            base_reserve: 0,
-            min_temp_entry_expiration: 0,
-            min_persistent_entry_expiration: 0,
-            max_entry_expiration: 0,
-        });
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
         
         // Resolve the round
         client.resolve_round();

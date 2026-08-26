@@ -9,11 +9,21 @@ mod integration_tests;
 
 use storage::{CreatorStakeRecord, FactoryStorage};
 use types::{ArenaMetadata, ArenaStatus, FactoryError, PoolConfig};
-use arena::MAX_PLAYERS_ALLOWED;
 
 use soroban_sdk::{
     Address, BytesN, Env, Vec, contract, contractclient, contractimpl, symbol_short, token,
 };
+
+/// Must match `arena::MAX_PLAYERS_ALLOWED` (contract/arena/src/lib.rs) exactly
+/// — kept as a duplicated local constant, not `use arena::MAX_PLAYERS_ALLOWED`,
+/// because depending on the `arena` crate as a real (non-dev) dependency here
+/// statically links its `#[contractimpl]` block into factory's own wasm
+/// binary, and both contracts export an `unpause` symbol, which collides at
+/// link time (see the "Optimize contract WASM" Contract CI step). `arena`
+/// stays a dev-dependency for integration tests, which need the real
+/// contract. If this drifts from arena's constant, `create_pool` will accept
+/// configs arena's own `initialize` then rejects, reverting the transaction.
+const MAX_PLAYERS_ALLOWED: u32 = 100;
 
 /// Local stub for the one arena entry point factory calls in production
 /// (`initialize`, right after deploying a new arena instance). Deliberately
