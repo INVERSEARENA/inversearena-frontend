@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { usePageVisibility } from './usePageVisibility';
 
 // Types for the hook
 export interface UseArenaTimerOptions {
@@ -153,29 +154,20 @@ export function useArenaTimer({
       }
     }
   }, [rawSeconds, isRunning]);
+  const isVisible = usePageVisibility();
+
   // Page visibility handling for resilience during tab switching
   useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.hidden) {
-        // Tab is hidden - pause updates but keep timing reference
-        if (intervalRef.current) {
-          clearInterval(intervalRef.current);
-          intervalRef.current = null;
-        }
-      } else {
-        // Tab is visible again - resume updates if timer was running
-        if (isRunning && rawSeconds > 0) {
-          updateTimer(); // Immediate update to catch up
-          intervalRef.current = setInterval(updateTimer, 100);
-        }
+    if (!isVisible) {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
       }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [isRunning, rawSeconds, updateTimer]);
+    } else if (isRunning && rawSeconds > 0) {
+      updateTimer();
+      intervalRef.current = setInterval(updateTimer, 100);
+    }
+  }, [isVisible, isRunning, rawSeconds, updateTimer]);
   // Return the hook API with stable references and computed values
   return {
     // State values

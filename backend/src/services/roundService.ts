@@ -20,14 +20,33 @@ import {
 } from './onChainReader';
 import { getStellarConfig, type StellarConfig } from '../config/stellarConfig';
 
+export interface OnChainRoundState {
+  roundId: string;
+  oracleYield: number;
+  isFinalized: boolean;
+}
+
+export interface OnChainReader {
+  getRoundState(roundId: string): Promise<OnChainRoundState>;
+}
+
+export class NoOpOnChainReader implements OnChainReader {
+  async getRoundState(roundId: string): Promise<OnChainRoundState> {
+    return { roundId, oracleYield: 0, isFinalized: false };
+  }
+}
+
 export class RoundService {
   private roundRepo: RoundRepository;
+  private onChainReader: OnChainReader;
 
   constructor(
     private prisma: PrismaClient,
     private stellarConfig: StellarConfig = getStellarConfig(),
+    onChainReader?: OnChainReader,
   ) {
     this.roundRepo = new RoundRepository(prisma);
+    this.onChainReader = onChainReader ?? new NoOpOnChainReader();
   }
 
   /**
