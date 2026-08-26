@@ -43,6 +43,10 @@ impl RwaAdapter {
 
         let mut pos = RwaStorage::load_position(&env, &from);
         pos.principal += amount;
+        // Set deposit timestamp only if this is the first deposit (principal was 0)
+        if pos.principal == amount {
+            pos.deposited_at = env.ledger().timestamp();
+        }
         RwaStorage::save_position(&env, &from, &pos);
 
         let mut cfg = config;
@@ -73,7 +77,7 @@ impl RwaAdapter {
             .checked_mul(YIELD_BPS_PER_YEAR)
             .and_then(|v| v.checked_div(10000))
             .ok_or(RwaError::ArithmeticOverflow)?;
-        let elapsed = env.ledger().timestamp().saturating_sub(0u64);
+        let elapsed = env.ledger().timestamp().saturating_sub(pos.deposited_at);
         let yield_amount = base_yield
             .checked_mul(elapsed as i128)
             .and_then(|y| y.checked_div(SECONDS_PER_YEAR as i128))
@@ -131,7 +135,7 @@ impl RwaAdapter {
                         .checked_mul(YIELD_BPS_PER_YEAR)
                         .and_then(|y| y.checked_div(10000))
                         .unwrap_or(0);
-                    let elapsed = env.ledger().timestamp().saturating_sub(0u64);
+                    let elapsed = env.ledger().timestamp().saturating_sub(pos.deposited_at);
                     let accrued = base_yield
                         .checked_mul(elapsed as i128)
                         .and_then(|y| y.checked_div(SECONDS_PER_YEAR as i128))
@@ -287,6 +291,7 @@ mod test {
                 &types::YieldAccrual {
                     principal: 100,
                     withdrawn: false,
+                    deposited_at: 0,
                 },
             );
         });
@@ -481,5 +486,81 @@ mod test {
         // The fact that the function completes without error and returns the
         // capped amount confirms the shortfall path was taken. The `short`
         // event is published inline in `withdraw_all`.
+    }
+
+    // ── Regression test: vault drain vulnerability ────────────────────────
+
+    /// REGRESSION TEST: Verify that yield is computed from deposit time, not epoch.
+    ///
+    /// The original bug: elapsed = env.ledger().timestamp().saturating_sub(0u64)
+    /// This caused elapsed to always be the full Unix-epoch timestamp (~1.7B seconds),
+    /// allowing the first withdrawer to drain the vault with inflated yields.
+    ///
+    /// Fix: elapsed = env.ledger().timestamp().saturating_sub(pos.deposited_at)
+    /// Now only time actually held is counted.
+    #[test]
+    fn vault_drain_regression_elapsed_time_is_relative_to_deposit() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, token_id, contract_id) = setup(&env);
+
+        // Simulate a realistic ledger state: set timestamp to a large value
+        // (e.g., August 2026 is ~1.725 billion seconds since Unix epoch).
+        let mut ledger = env.ledger().get();
+        ledger.timestamp = 1_725_000_000; // ~Aug 2026
+        env.ledger().set(ledger);
+
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        // Alice deposits 1000 tokens.
+        client.deposit(&alice, &1_000);
+
+        // Advance time by only 365 seconds (not 365 days, just 365 seconds ~ 6 minutes).
+        let mut ledger = env.ledger().get();
+        ledger.timestamp += 365;
+        env.ledger().set(ledger);
+
+        // Bob deposits 2000 tokens (after alice, at a later timestamp).
+        client.deposit(&bob, &2_000);
+
+        // With the BUG: elapsed would be 1_725_000_365 seconds for both (~54+ years).
+        // Yield would be: principal × 500 bps × 1_725_000_365 / 31_536_000
+        // For alice: 1_000 × 500 × 1_725_000_365 / (10_000 × 31_536_000) ≈ 27_351 tokens
+        // For bob:   2_000 × 500 × 1_725_000_365 / (10_000 × 31_536_000) ≈ 54_702 tokens
+        // Total owed: ~82k tokens to two users who deposited 3k total.
+        //
+        // With the FIX: elapsed is relative to each user's deposit time.
+        // For alice: only 365 seconds have passed → minimal yield.
+        // For bob:   0 seconds have passed (just deposited) → no yield.
+        // Both should only withdraw their principal + minimal/no yield.
+
+        let _alice_balance = client.balance_of(&alice);
+        let _bob_balance = client.balance_of(&bob);
+
+        // Fund the contract with the expected legitimate payouts.
+        // Alice's yield over 365 seconds:
+        //   (1_000 × 500 / 10_000) × (365 / 31_536_000) ≈ 0.0005784 tokens (rounds down to 0)
+        // So alice should get back ~1000.
+        // Bob's yield is 0 (just deposited), so bob should get back exactly 2000.
+        let legitimate_payout = 1_000 + 2_000; // principal only, negligible yield
+        StellarAssetClient::new(&env, &token_id).mint(&contract_id, &(legitimate_payout + 100));
+
+        // Withdrawals should succeed and return approximately principal-only amounts.
+        let alice_withdrawn = client.withdraw_all(&alice);
+        let bob_withdrawn = client.withdraw_all(&bob);
+
+        // With the bug, this would attempt to drain ~82k tokens (contract shortfall).
+        // With the fix, this should be ~1000 and ~2000 respectively.
+        assert!(
+            alice_withdrawn <= 1_000 + 10,
+            "alice's yield must be tiny; got {}",
+            alice_withdrawn
+        );
+        assert_eq!(bob_withdrawn, 2_000, "bob's yield must be zero; got {}", bob_withdrawn);
+        assert!(
+            alice_withdrawn + bob_withdrawn <= 3_100,
+            "total payout must not exceed ~3000 + minimal yield"
+        );
     }
 }

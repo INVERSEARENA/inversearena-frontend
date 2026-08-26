@@ -48,7 +48,49 @@ export interface UseArenaStreamReturn {
 }
 
 function formatFeedLabel(userId: string): string {
-  return userId.length > 10 ? `${userId.slice(0, 5)}...${userId.slice(-4)}` : userId;
+  return userId.length > 10
+    ? `${userId.slice(0, 5)}...${userId.slice(-4)}`
+    : userId;
+}
+
+/**
+ * Validates the basic shape of an ArenaStreamEvent.
+ * Returns true if the data has the required type and structure.
+ */
+function isValidArenaStreamEvent(data: unknown): data is ArenaStreamEvent {
+  if (!data || typeof data !== "object") {
+    return false;
+  }
+
+  const obj = data as Record<string, unknown>;
+
+  // Check required fields
+  if (
+    typeof obj.type !== "string" ||
+    typeof obj.arenaId !== "string" ||
+    typeof obj.sequence !== "number" ||
+    typeof obj.createdAt !== "string"
+  ) {
+    return false;
+  }
+
+  // Check that type is one of the valid types
+  const validTypes: ArenaStreamEventType[] = [
+    "snapshot",
+    "round_resolved",
+    "player_eliminated",
+    "game_finished",
+  ];
+  if (!validTypes.includes(obj.type as ArenaStreamEventType)) {
+    return false;
+  }
+
+  // Check payload exists and is an object
+  if (!obj.payload || typeof obj.payload !== "object") {
+    return false;
+  }
+
+  return true;
 }
 
 function appendUniqueFeedItem(
@@ -117,7 +159,10 @@ export function useArenaStream(arenaId: string): UseArenaStreamReturn {
       }
 
       const delay = reconnectDelayRef.current;
-      reconnectDelayRef.current = Math.min(reconnectDelayRef.current * 2, 30_000);
+      reconnectDelayRef.current = Math.min(
+        reconnectDelayRef.current * 2,
+        30_000,
+      );
 
       retryRef.current = setTimeout(() => {
         connect();
@@ -127,80 +172,110 @@ export function useArenaStream(arenaId: string): UseArenaStreamReturn {
     const handleEvent = (event: MessageEvent<string>): void => {
       lastMessageAtRef.current = Date.now();
 
-      const parsed = JSON.parse(event.data) as ArenaStreamEvent;
-      setLatestEvent(parsed);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(event.data);
+      } catch (err) {
+        console.error(
+          "Failed to parse SSE event data:",
+          err,
+          "Raw data:",
+          event.data,
+        );
+        // Do not reconnect; JSON parse errors are usually one-off network glitches.
+        // The stream stays open and will retry with the next valid frame.
+        return;
+      }
 
-      if (parsed.type === "snapshot") {
-        const nextSnapshot = parsed.payload as unknown as ArenaStreamSnapshot;
-        setSnapshot(nextSnapshot);
-        setFeed(
-          nextSnapshot.recentEliminations
-            .slice()
-            .reverse()
-            .map((entry) => ({
-              id: entry.id,
-              label: formatFeedLabel(entry.userId),
-              roundNumber: entry.roundNumber,
+      if (!isValidArenaStreamEvent(parsed)) {
+        console.error("Invalid ArenaStreamEvent shape:", parsed);
+        // Schema validation failure; similar to JSON parse error, stay connected.
+        return;
+      }
+
+      try {
+        setLatestEvent(parsed);
+
+        if (parsed.type === "snapshot") {
+          const nextSnapshot = parsed.payload as unknown as ArenaStreamSnapshot;
+          setSnapshot(nextSnapshot);
+          setFeed(
+            nextSnapshot.recentEliminations
+              .slice()
+              .reverse()
+              .map((entry) => ({
+                id: entry.id,
+                label: formatFeedLabel(entry.userId),
+                roundNumber: entry.roundNumber,
+                status: "OUT",
+                createdAt: entry.eliminatedAt,
+              })),
+          );
+          return;
+        }
+
+        if (parsed.type === "player_eliminated") {
+          const payload = parsed.payload as {
+            id: string;
+            userId: string;
+            roundNumber: number;
+            eliminatedAt: string;
+          };
+          setFeed((current) =>
+            appendUniqueFeedItem(current, {
+              id: payload.id,
+              label: formatFeedLabel(payload.userId),
+              roundNumber: payload.roundNumber,
               status: "OUT",
-              createdAt: entry.eliminatedAt,
-            })),
-        );
-        return;
-      }
+              createdAt: payload.eliminatedAt,
+            }),
+          );
+          setSnapshot((current) =>
+            current
+              ? {
+                  ...current,
+                  survivorCount: Math.max(0, current.survivorCount - 1),
+                }
+              : current,
+          );
+          return;
+        }
 
-      if (parsed.type === "player_eliminated") {
-        const payload = parsed.payload as {
-          id: string;
-          userId: string;
-          roundNumber: number;
-          eliminatedAt: string;
-        };
-        setFeed((current) =>
-          appendUniqueFeedItem(current, {
-            id: payload.id,
-            label: formatFeedLabel(payload.userId),
-            roundNumber: payload.roundNumber,
-            status: "OUT",
-            createdAt: payload.eliminatedAt,
-          }),
-        );
-        setSnapshot((current) =>
-          current
-            ? {
-                ...current,
-                survivorCount: Math.max(0, current.survivorCount - 1),
-              }
-            : current,
-        );
-        return;
-      }
+        if (parsed.type === "round_resolved") {
+          const payload = parsed.payload as {
+            roundNumber: number;
+            playerCount: number;
+            survivorCount: number;
+            status: string;
+          };
+          setSnapshot((current) =>
+            current
+              ? {
+                  ...current,
+                  currentRound: payload.roundNumber,
+                  playerCount: payload.playerCount,
+                  survivorCount: payload.survivorCount,
+                  status: payload.status,
+                  lastRoundState: "RESOLVED",
+                }
+              : current,
+          );
+          return;
+        }
 
-      if (parsed.type === "round_resolved") {
-        const payload = parsed.payload as {
-          roundNumber: number;
-          playerCount: number;
-          survivorCount: number;
-          status: string;
-        };
-        setSnapshot((current) =>
-          current
-            ? {
-                ...current,
-                currentRound: payload.roundNumber,
-                playerCount: payload.playerCount,
-                survivorCount: payload.survivorCount,
-                status: payload.status,
-                lastRoundState: "RESOLVED",
-              }
-            : current,
+        if (parsed.type === "game_finished") {
+          setSnapshot((current) =>
+            current ? { ...current, status: "settled" } : current,
+          );
+        }
+      } catch (err) {
+        console.error(
+          "Error processing ArenaStreamEvent:",
+          err,
+          "Event:",
+          parsed,
         );
-        return;
-      }
-
-      if (parsed.type === "game_finished") {
-        setSnapshot((current) =>
-          current ? { ...current, status: "settled" } : current,
-        );
+        // Error in state update or payload casting; stay connected.
       }
     };
 
@@ -225,7 +300,10 @@ export function useArenaStream(arenaId: string): UseArenaStreamReturn {
         };
 
         source.addEventListener("snapshot", handleEvent as EventListener);
-        source.addEventListener("player_eliminated", handleEvent as EventListener);
+        source.addEventListener(
+          "player_eliminated",
+          handleEvent as EventListener,
+        );
         source.addEventListener("round_resolved", handleEvent as EventListener);
         source.addEventListener("game_finished", handleEvent as EventListener);
 
