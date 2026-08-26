@@ -9,6 +9,7 @@ mod integration_tests;
 
 use storage::{CreatorStakeRecord, FactoryStorage};
 use types::{ArenaMetadata, ArenaStatus, FactoryError, PoolConfig};
+use arena::MAX_PLAYERS_ALLOWED;
 
 use soroban_sdk::{
     Address, BytesN, Env, Vec, contract, contractclient, contractimpl, symbol_short, token,
@@ -43,7 +44,6 @@ const MAX_PAGE_SIZE: u32 = 50;
 const MIN_ROUND_DURATION: u64 = 60;
 const MAX_ROUND_DURATION: u64 = 604_800;
 const MIN_PLAYERS: u32 = 2;
-const MAX_PLAYERS: u32 = 1_000;
 
 /// Factory contract — deploys arena instances and enforces protocol-level rules.
 ///
@@ -220,7 +220,7 @@ impl FactoryContract {
             || config.round_duration > MAX_ROUND_DURATION
             || config.min_players < MIN_PLAYERS
             || config.min_players > config.max_players
-            || config.max_players > MAX_PLAYERS
+            || config.max_players > MAX_PLAYERS_ALLOWED
         {
             return Err(FactoryError::InvalidConfig);
         }
@@ -497,10 +497,35 @@ mod test {
     }
 
     #[test]
-    fn create_pool_rejects_more_than_one_thousand_players() {
+    fn create_pool_rejects_more_than_one_hundred_players() {
         assert_invalid_config(|config| {
-            config.max_players = 1_001
+            config.max_players = MAX_PLAYERS_ALLOWED + 1
         });
+    }
+
+    #[test]
+    fn create_pool_rejects_max_players_in_101_to_1000_range() {
+        // Regression test: factory once accepted values 101..=1000 which arena
+        // would reject, causing transaction reversion. Now both use the same
+        // constant, and factory validates early before any deployment attempt.
+        let (env, client, _admin, host) = setup();
+        client.add_to_whitelist(&host);
+
+        let test_values = [101u32, 200, 500, 999, 1000];
+        for max_players in test_values.iter() {
+            let mut config = pool_config(&env, 100);
+            config.max_players = *max_players;
+            let err = client
+                .try_create_pool(&host, &config)
+                .err()
+                .expect("max_players > 100 must be rejected")
+                .expect("error must be a contract error");
+            assert_eq!(
+                err,
+                FactoryError::InvalidConfig,
+                "max_players > 100 must return InvalidConfig, not trap with uninitialized contract"
+            );
+        }
     }
 
     #[test]
