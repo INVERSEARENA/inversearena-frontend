@@ -9,8 +9,8 @@
 //! Open     → Active      (start_round — the first round starts)
 //! Open     → Cancelled   (cancel_arena / force_cancel_arena before play)
 //! Active   → Open        (resolve_round — more than one survivor remains)
-//! Active   → Finished    (resolve_round last survivor / expire_arena)
-//! Active   → Cancelled   (force_cancel_arena mid-game)
+//! Active   → Finished    (resolve_round — exactly one survivor remains)
+//! Active   → Cancelled   (resolve_round — zero survivors, OR force_cancel_arena mid-game)
 //! Finished → Settled     (claim — prize distributed to the winner)
 //! ```
 //!
