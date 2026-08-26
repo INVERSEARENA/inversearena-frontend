@@ -51,11 +51,11 @@ import {
 } from "@/shared-d/utils/soroban-transaction-composer";
 import { CreatePoolParamsSchema } from "@/shared-d/utils/stellar-transaction-schemas";
 import {
-  extractBoolFromScVal,
-  extractI128FromScVal,
-  extractU32FromScVal,
-  stroopsToDisplayAmount,
-} from "@/shared-d/utils/stellar-scval-extract";
+  parseArenaStateFromScVal,
+  parseUserStateFromScVal,
+  buildArenaDisplayState,
+} from "@/shared-d/utils/contract-state-parsers";
+import { stroopsToDisplayAmount } from "@/shared-d/utils/stellar-scval-extract";
 import {
   clearCommitment,
   computeCommitment,
@@ -502,46 +502,25 @@ export async function fetchArenaState(
 
     const stateData = stateSimulation.result.retval;
 
-    const survivorsCount =
-      extractU32FromScVal(stateData, "survivors_count") || 0;
-    const maxCapacity = extractU32FromScVal(stateData, "max_capacity") || 0;
-    const roundNumber = extractU32FromScVal(stateData, "round_number") || 0;
-    const isUserIn = validatedUserAddress
-      ? (extractBoolFromScVal(stateData, "is_active") || false)
-      : false;
-    const hasWon = validatedUserAddress
-      ? (extractBoolFromScVal(stateData, "has_won") || false)
-      : false;
-    const currentStakeStroops = validatedUserAddress
-      ? (extractI128FromScVal(stateData, "current_stake") ?? 0n)
-      : 0n;
-    const potentialPayout = validatedUserAddress
-      ? (extractI128FromScVal(stateData, "potential_payout") ?? 0n)
-      : 0n;
+    const arenaState = parseArenaStateFromScVal(stateData);
+    const userState = validatedUserAddress ? parseUserStateFromScVal(stateData) : { active: false, won: false };
+    const display = buildArenaDisplayState(arenaState);
 
     // entry_fee, player_count, and game_state aren't part of get_full_state's
-    // return value yet (contract follow-up). Previously these were fetched via
-    // three extra simulateTransaction calls to get_config/get_player_count/
-    // game_state, which defeated the point of consolidating into one
-    // get_full_state RPC call (and call sites that raced ahead of that
-    // contract support just errored). Falling back to sane in-memory
-    // defaults here keeps this a single round trip.
-    const entryFeeStroops = 0n;
-    const playerCount = survivorsCount;
-    const gameState = 0;
-
+    // return value yet (contract follow-up). Falling back to sane defaults keeps
+    // this a single round trip.
     return {
       arenaId: validatedArenaId,
-      survivorsCount,
-      maxCapacity,
-      isUserIn,
-      hasWon,
-      currentStake: stroopsToDisplayAmount(currentStakeStroops),
-      potentialPayout: stroopsToDisplayAmount(potentialPayout),
-      roundNumber,
-      gameState,
-      entryFee: stroopsToDisplayAmount(entryFeeStroops),
-      playerCount,
+      survivorsCount: display.survivorsCount,
+      maxCapacity: display.maxCapacity,
+      isUserIn: userState.active,
+      hasWon: userState.won,
+      currentStake: display.currentStake,
+      potentialPayout: display.potentialPayout,
+      roundNumber: display.roundNumber,
+      gameState: 0,
+      entryFee: stroopsToDisplayAmount(0n),
+      playerCount: display.survivorsCount,
       commitDeadline: null,
       revealDeadline: null,
     };

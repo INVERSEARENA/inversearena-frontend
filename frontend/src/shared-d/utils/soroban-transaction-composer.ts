@@ -167,15 +167,6 @@ export function buildGetArenaStateCallOperation(
   return arenaContract.call("get_arena_state");
 }
 
-export function buildGetUserStateCallOperation(
-  arenaContract: Contract,
-  userPublicKey: string,
-): SorobanOperation {
-  return arenaContract.call(
-    "get_user_state",
-    encodeAddress(userPublicKey),
-  );
-}
 
 export function buildGetFullStateCallOperation(
   arenaContract: Contract,

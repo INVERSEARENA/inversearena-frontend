@@ -1,19 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-
-function usePageVisibility() {
-  const [isVisible, setIsVisible] = useState(!document.hidden);
-
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      setIsVisible(!document.hidden);
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, []);
-
-  return isVisible;
-}
+import { usePageVisibility } from './usePageVisibility';
 
 export type PollingStatus = 'idle' | 'loading' | 'success' | 'error';
 

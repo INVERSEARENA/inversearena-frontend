@@ -1,22 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-
-// Hook for page visibility to pause updates when tab is hidden
-function usePageVisibility() {
-  const [isVisible, setIsVisible] = useState(!document.hidden);
-
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      setIsVisible(!document.hidden);
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, []);
-
-  return isVisible;
-}
+import { usePageVisibility } from './usePageVisibility';
 
 // Types for the hooks
 interface UseLiveTickerNumberOptions {
