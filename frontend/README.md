@@ -198,6 +198,28 @@ Optional API override used by telemetry module:
 NEXT_PUBLIC_COINGECKO_SIMPLE_PRICE_URL=https://api.coingecko.com/api/v3/simple/price?ids=cardano&vs_currencies=usd
 ```
 
+### Security headers & Content-Security-Policy
+
+`src/proxy.ts` sets the response security headers on every non-asset route:
+
+- **Content-Security-Policy** — `script-src` is `'self' 'nonce-<random>'
+  'strict-dynamic'` (plus `'unsafe-eval'` in dev for the Next dev runtime).
+  There is **no `'unsafe-inline'`**, so an injected inline `<script>` (e.g. via
+  a future `dangerouslySetInnerHTML` or a compromised dependency) will not
+  execute. A fresh nonce is generated per request and forwarded to the app as
+  the `x-nonce` header; `src/app/layout.tsx` reads it and passes it to
+  `next-themes` so its inline anti-flash script is allowed. `style-src` keeps
+  `'unsafe-inline'` — React inline `style` props depend on it and it is not a
+  script-execution vector.
+- **Strict-Transport-Security** — `max-age=63072000; includeSubDomains;
+  preload`. Instructs browsers to only ever connect over HTTPS, so a
+  downgrade/MITM cannot intercept wallet transaction data.
+
+`next.config.ts` applies the same non-CSP headers (including HSTS) statically
+to every route, covering the static-asset responses `proxy.ts` does not run
+on. The nonce'd CSP makes every route server-rendered on demand (a nonce
+cannot be baked into static HTML).
+
 ---
 
 ## 🚨 Frontend Error Reporting (Sentry)
