@@ -28,11 +28,34 @@ export interface OnChainRoundState {
 
 export interface OnChainReader {
   getRoundState(roundId: string): Promise<OnChainRoundState>;
+  /** Returns wallet addresses of players still active after the latest resolve_round. */
+  getActivePlayers(contractId: string): Promise<string[]>;
+  /** Returns the single on-chain winner address once the game is finished, or null. */
+  getWinner(contractId: string): Promise<string | null>;
 }
 
 export class NoOpOnChainReader implements OnChainReader {
   async getRoundState(roundId: string): Promise<OnChainRoundState> {
     return { roundId, oracleYield: 0, isFinalized: false };
+  }
+  async getActivePlayers(_contractId: string): Promise<string[]> {
+    return [];
+  }
+  async getWinner(_contractId: string): Promise<string | null> {
+    return null;
+  }
+}
+
+/** Production implementation backed by the Soroban simulation helpers. */
+export class SorobanOnChainReader implements OnChainReader {
+  async getRoundState(roundId: string): Promise<OnChainRoundState> {
+    return { roundId, oracleYield: 0, isFinalized: false };
+  }
+  async getActivePlayers(contractId: string): Promise<string[]> {
+    return getOnChainActivePlayerIds(contractId);
+  }
+  async getWinner(contractId: string): Promise<string | null> {
+    return getOnChainWinner(contractId);
   }
 }
 
@@ -46,7 +69,7 @@ export class RoundService {
     onChainReader?: OnChainReader,
   ) {
     this.roundRepo = new RoundRepository(prisma);
-    this.onChainReader = onChainReader ?? new NoOpOnChainReader();
+    this.onChainReader = onChainReader ?? new SorobanOnChainReader();
   }
 
   /**
@@ -145,7 +168,7 @@ export class RoundService {
       // resolve_round is confirmed eliminates any risk of TypeScript
       // re-implementation diverging from on-chain behaviour (tie-breaking,
       // no-submission handling, etc.).
-      const activePlayerIds = await getOnChainActivePlayerIds(input.arenaContractId);
+      const activePlayerIds = await this.onChainReader.getActivePlayers(input.arenaContractId);
       const activeSet = new Set(activePlayerIds);
       const eliminatedPlayers = input.allActivePlayerIds.filter(
         id => !activeSet.has(id)
@@ -227,7 +250,7 @@ export class RoundService {
     oracleYield: number
   ): Promise<Payout[]> {
     // Attempt to read the single authoritative winner from on-chain.
-    const onChainWinner = await getOnChainWinner(arenaContractId);
+    const onChainWinner = await this.onChainReader.getWinner(arenaContractId);
     if (!onChainWinner) {
       // Game is still in progress (more rounds to go); no payout yet.
       return [];

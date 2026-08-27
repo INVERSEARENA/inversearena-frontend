@@ -47,6 +47,14 @@ export function getVerifyRateLimitConfig(): RateLimitConfig {
   };
 }
 
+export function getWalletRoleRateLimitConfig(): RateLimitConfig {
+  return {
+    keyPrefix: process.env.RATE_LIMIT_WALLET_ROLE_PREFIX ?? "rl:admin:wallet-role",
+    points: readPositiveInt("RATE_LIMIT_WALLET_ROLE_POINTS", 20),
+    durationSeconds: readPositiveInt("RATE_LIMIT_WALLET_ROLE_WINDOW_SECONDS", 60),
+  };
+}
+
 export function getRefreshRateLimitConfig(): RateLimitConfig {
   return {
     keyPrefix: process.env.RATE_LIMIT_REFRESH_PREFIX ?? "rl:auth:refresh",

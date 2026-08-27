@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { RequestHandler } from "express";
 import { asyncHandler, validateBody, validateParams } from "../middleware/validate";
 import { requireAuth } from "../middleware/auth";
+import { auditLogMiddleware } from "../middleware/auditLog";
 import type { PayoutsController } from "../controllers/payouts.controller";
 import type { AuthService } from "../services/authService";
 import { SignPayoutBodySchema, TransactionIdParamSchema } from "../validation/requestValidation";
@@ -12,6 +13,8 @@ export function createPayoutsRouter(
   adminAuthMiddleware: RequestHandler
 ): Router {
   const router = Router();
+
+  router.use(auditLogMiddleware());
 
   // Payout lifecycle is admin-only: creation, signing and submission move funds.
   router.post("/", adminAuthMiddleware, asyncHandler(controller.createPayout));
