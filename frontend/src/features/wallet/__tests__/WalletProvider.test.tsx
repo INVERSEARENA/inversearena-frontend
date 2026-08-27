@@ -99,7 +99,11 @@ describe("WalletProvider consolidation", () => {
       network: "configured-network",
       horizonUrl: "https://horizon.example",
     };
-    global.fetch = jest.fn().mockResolvedValue({ ok: false });
+    // These tests don't assert on balance; give the balance lookup a valid
+    // empty Horizon response so it neither throws nor logs (#1295).
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => ({ sequence: "1", balances: [] }) });
   });
 
   it("propagates a connection made by one consumer to every other consumer under the same provider", async () => {
@@ -175,5 +179,79 @@ describe("WalletProvider Stellar-not-configured fallback", () => {
     );
 
     expect(screen.getByTestId("child")).toBeInTheDocument();
+  });
+});
+
+/**
+ * #1295 — a failed balance lookup must surface as `balanceError` and leave
+ * the last known `balance` intact, instead of silently resetting the wallet
+ * to a zero balance (which downstream reads as "Insufficient balance").
+ */
+function BalanceProbe() {
+  const { balance, balanceError, refreshBalance } = useWallet();
+  return (
+    <div>
+      <span data-testid="xlm">{balance.xlm}</span>
+      <span data-testid="balance-error">{balanceError ?? "none"}</span>
+      <button onClick={() => void refreshBalance()}>refresh</button>
+    </div>
+  );
+}
+
+function horizonOk(balances: Array<Record<string, unknown>>) {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({ sequence: "1", balances }),
+  };
+}
+
+describe("WalletProvider balance-fetch failure surfacing (#1295)", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    window.localStorage.clear();
+    mockStellarConfigState.isStellarConfigured = true;
+    mockStellarConfigState.stellarConfig = {
+      network: "configured-network",
+      horizonUrl: "https://horizon.example",
+    };
+    StellarWalletsKit.authModal.mockResolvedValue({ address: VALID_KEY });
+    jest.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("keeps the last known balance and exposes balanceError when a refresh fails", async () => {
+    // First connect: both asset lookups succeed → xlm 42.
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(horizonOk([{ asset_type: "native", balance: "42.0" }]))
+      .mockResolvedValueOnce(horizonOk([]));
+
+    render(
+      <WalletProvider>
+        <StakeModalLikeConsumer />
+        <BalanceProbe />
+      </WalletProvider>,
+    );
+
+    fireEvent.click(screen.getByText("Connect from StakeModal"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("xlm").textContent).toBe("42");
+    });
+    expect(screen.getByTestId("balance-error").textContent).toBe("none");
+
+    // Next refresh: Horizon is down.
+    (global.fetch as jest.Mock).mockRejectedValue(new TypeError("Failed to fetch"));
+    fireEvent.click(screen.getByText("refresh"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("balance-error").textContent).not.toBe("none");
+    });
+    // Balance is NOT reset to 0 — that would misread as an empty wallet.
+    expect(screen.getByTestId("xlm").textContent).toBe("42");
   });
 });

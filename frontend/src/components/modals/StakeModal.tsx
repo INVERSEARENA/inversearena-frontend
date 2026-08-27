@@ -28,8 +28,16 @@ export default function StakeModal({
   apy = 12.5,
   connectionLabel = "SOROBAN_MAINNET_NODE_04",
 }: StakeModalProps) {
-  const { address, isConnected, connect, signTransaction, balance, isLoadingBalance } =
-    useWallet();
+  const {
+    address,
+    isConnected,
+    connect,
+    signTransaction,
+    balance,
+    isLoadingBalance,
+    balanceError,
+    refreshBalance,
+  } = useWallet();
 
   const [amount, setAmount] = useState<string>("5000.00");
   const [txState, setTxState] = useState<TransactionState>("idle");
@@ -38,17 +46,21 @@ export default function StakeModal({
   const isProcessing = txState === "signing" || txState === "submitting";
   const displayBalance = balance.xlm;
   const numAmount = parseFloat(amount) || 0;
+  // #1295 — when the balance couldn't be loaded we don't actually know
+  // whether the amount is affordable, so we can't call it "valid" (and must
+  // never report "Insufficient balance" off a zero fallback).
   const isValidAmount = numAmount > 0 && numAmount <= displayBalance;
-  
+
   // Block staking if contract is not configured (#1112)
   const isStakingContractConfigured =
     STAKING_CONTRACT_ID &&
     STAKING_CONTRACT_ID !== STELLAR_PLACEHOLDERS.stakingContractId &&
     !STAKING_CONTRACT_ID.includes("...");
-  
+
   const isButtonDisabled =
     isProcessing ||
     txState === "success" ||
+    (isConnected && !!balanceError) ||
     (isConnected && !isValidAmount) ||
     !isStakingContractConfigured;
 
@@ -73,6 +85,13 @@ export default function StakeModal({
 
     if (isNaN(numAmount) || numAmount <= 0) {
       setErrorMessage("Please enter a valid amount");
+      setTxState("error");
+      return;
+    }
+    // #1295 — don't fall through to the "Insufficient balance" check when the
+    // balance simply failed to load; that would be a misleading error.
+    if (balanceError) {
+      setErrorMessage("Couldn't load your balance. Retry before staking.");
       setTxState("error");
       return;
     }
@@ -147,6 +166,8 @@ export default function StakeModal({
               <span className="border border-zinc-800 bg-lime-400 px-2.5 py-1 font-mono text-xs font-bold text-black">
                 {isLoadingBalance ? (
                   "LOADING..."
+                ) : balanceError ? (
+                  "BALANCE: UNAVAILABLE"
                 ) : (
                   <>BALANCE: {displayBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })}</>
                 )}
@@ -215,6 +236,26 @@ export default function StakeModal({
                 STAKING CONTRACT NOT CONFIGURED: THE STAKING FEATURE IS CURRENTLY
                 UNAVAILABLE. PLEASE CONTACT THE ADMINISTRATOR OR CHECK BACK LATER.
               </p>
+            </div>
+          )}
+
+          {/* Balance Load Failure — retry, don't misreport as insufficient (#1295) */}
+          {isConnected && balanceError && !isLoadingBalance && (
+            <div className="flex items-center justify-between gap-3 rounded-sm border-l-4 border-yellow-500 bg-yellow-200/50 p-4">
+              <div className="flex gap-3">
+                <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-yellow-600" />
+                <p className="font-mono text-xs uppercase leading-relaxed tracking-wide text-zinc-800">
+                  COULDN&apos;T LOAD YOUR WALLET BALANCE. THIS IS USUALLY A TEMPORARY
+                  NETWORK ISSUE — RETRY BEFORE STAKING.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void refreshBalance()}
+                className="shrink-0 border-2 border-zinc-800 bg-white px-3 py-1.5 font-mono text-xs font-bold uppercase tracking-wider text-zinc-800 transition-colors hover:bg-zinc-100"
+              >
+                RETRY
+              </button>
             </div>
           )}
 

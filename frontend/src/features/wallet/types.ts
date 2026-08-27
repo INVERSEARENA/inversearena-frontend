@@ -17,6 +17,12 @@ export interface WalletContextType extends WalletState {
   isConnected: boolean;
   balance: Balance;
   isLoadingBalance: boolean;
+  /**
+   * Non-null when the most recent balance lookup failed (e.g. Horizon outage
+   * or rate-limit). `balance` then holds the last known value, not a zero
+   * fallback — consumers should show a retry affordance. See #1295.
+   */
+  balanceError: string | null;
   signTransaction: (xdr: string) => Promise<string>;
   refreshBalance: () => Promise<void>;
 }

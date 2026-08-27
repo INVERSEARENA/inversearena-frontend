@@ -32,14 +32,28 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
 
   const [balance, setBalance] = useState<Balance>({ xlm: 0, usdc: 0 });
   const [isLoadingBalance, setIsLoadingBalance] = useState(false);
+  // #1295 — when a balance lookup fails (Horizon outage / rate-limit) we must
+  // NOT silently fall back to a zero balance: that makes every wallet look
+  // empty and blocks legitimate stakes behind a misleading "Insufficient
+  // balance" error. Surface the failure so the UI can offer a retry instead.
+  const [balanceError, setBalanceError] = useState<string | null>(null);
 
   const refreshBalance = useCallback(async () => {
     if (!publicKey) return;
     setIsLoadingBalance(true);
+    setBalanceError(null);
     try {
       setBalance(await fetchWalletBalance(publicKey));
     } catch (err) {
       console.error('Failed to fetch balances:', err);
+      setBalanceError(
+        err instanceof Error
+          ? err.message
+          : 'Unable to load wallet balance. Please retry.',
+      );
+      // Deliberately leave `balance` at its last-known value rather than
+      // zeroing it — a transient fetch failure shouldn't look like a drained
+      // wallet.
     } finally {
       setIsLoadingBalance(false);
     }
@@ -50,6 +64,7 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
       void refreshBalance();
     } else {
       setBalance({ xlm: 0, usdc: 0 });
+      setBalanceError(null);
     }
   }, [publicKey, status, refreshBalance]);
 
@@ -63,6 +78,7 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
       isConnected,
       balance,
       isLoadingBalance,
+      balanceError,
       connect: () => connectWallet().then(() => {}),
       disconnect: disconnectWallet,
       signTransaction,
@@ -76,6 +92,7 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
       isConnected,
       balance,
       isLoadingBalance,
+      balanceError,
       connectWallet,
       disconnectWallet,
       signTransaction,
