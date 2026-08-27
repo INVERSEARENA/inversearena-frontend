@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   idempotency_key TEXT NOT NULL UNIQUE,
   source_account TEXT NOT NULL,
   destination_account TEXT NOT NULL,
+  owner_id TEXT,
   asset TEXT NOT NULL,
   amount_stroops TEXT NOT NULL,
   nonce BIGINT NOT NULL,
@@ -17,7 +18,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   confirmed_at TIMESTAMPTZ,
   CONSTRAINT chk_transactions_status CHECK (
-    status IN ('built', 'queued', 'awaiting_signature', 'submitted', 'confirmed', 'failed')
+    status IN ('built', 'queued', 'awaiting_signature', 'submitted', 'confirmed', 'failed', 'dead')
   ),
   CONSTRAINT chk_transactions_attempts_non_negative CHECK (attempts >= 0),
   CONSTRAINT uq_transactions_source_nonce UNIQUE (source_account, nonce)
