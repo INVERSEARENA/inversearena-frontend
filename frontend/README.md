@@ -276,11 +276,35 @@ APIs return:
 - HTTP `429`
 - `Retry-After` response header (seconds)
 
+### Client IP resolution & trusted proxies
+
+Rate-limit buckets are keyed by client IP (plus optional wallet address). The
+client IP is taken from `X-Forwarded-For` **only** when `TRUSTED_PROXY_COUNT`
+says how many trusted proxies sit in front of the app:
+
+- `TRUSTED_PROXY_COUNT=0` (default) — the app is assumed to be exposed
+  directly, so `X-Forwarded-For` / `X-Real-IP` are attacker-controlled and are
+  ignored. Every caller shares a single bucket (fail closed). A direct caller
+  therefore cannot spoof the header to mint a fresh bucket per request.
+- `TRUSTED_PROXY_COUNT=N` (`N ≥ 1`) — the right-most `N` entries of
+  `X-Forwarded-For` are treated as appended by our own infrastructure; the real
+  client is the entry immediately to their left. Values a client prepends are
+  ignored.
+
+Set `TRUSTED_PROXY_COUNT` to match the deployment (`1` behind a single
+CDN/proxy, `2` behind `CDN → load balancer`, …).
+
+When `REDIS_URL` is unset the limiter logs a startup warning and falls back to
+per-process in-memory counting; the effective global limit then becomes
+`points × instance_count`. A startup warning is also logged whenever
+`TRUSTED_PROXY_COUNT` is `0`.
+
 ### Configuration
 
 Environment variables:
 
 - `REDIS_URL` (required for multi-instance shared limits)
+- `TRUSTED_PROXY_COUNT` (default: `0`)
 - `RATE_LIMIT_NONCE_PREFIX` (default: `rl:auth:nonce`)
 - `RATE_LIMIT_NONCE_POINTS` (default: `5`)
 - `RATE_LIMIT_NONCE_WINDOW_SECONDS` (default: `60`)
