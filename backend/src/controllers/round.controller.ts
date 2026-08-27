@@ -19,7 +19,13 @@ export class RoundController {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to resolve round';
-      next(apiError(500, 'ROUND_RESOLVE_FAILED', message));
+      const status = message.includes('not found') ? 404 : message.includes('already in state') ? 409 : 500;
+      const code = status === 404
+        ? 'ROUND_NOT_FOUND'
+        : status === 409
+          ? 'ROUND_INVALID_STATE'
+          : 'ROUND_RESOLVE_FAILED';
+      next(apiError(status, code, message));
     }
   };
 
