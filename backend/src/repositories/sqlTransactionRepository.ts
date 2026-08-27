@@ -129,13 +129,13 @@ export class SqlTransactionRepository implements TransactionRepository {
       throw new Error(`Transaction ${id} not found`);
     }
 
-    const updated: TransactionRecord = {
+    const merged: TransactionRecord = {
       ...current,
       ...patch,
       updatedAt: new Date(),
     };
 
-    await this.db.query(
+    const result = await this.db.query<TransactionRow>(
       `UPDATE transactions SET
         payout_id = $2,
         idempotency_key = $3,
@@ -153,29 +153,34 @@ export class SqlTransactionRepository implements TransactionRepository {
         updated_at = $15,
         confirmed_at = $16,
         owner_id = $17
-      WHERE id = $1`,
+      WHERE id = $1
+      RETURNING *`,
       [
-        updated.id,
-        updated.payoutId,
-        updated.idempotencyKey,
-        updated.sourceAccount,
-        updated.destinationAccount,
-        updated.asset,
-        updated.amountStroops,
-        updated.nonce,
-        updated.status,
-        updated.unsignedXdr,
-        updated.signedXdr ?? null,
-        updated.txHash ?? null,
-        updated.errorMessage ?? null,
-        updated.attempts,
-        updated.updatedAt,
-        updated.confirmedAt ?? null,
-        updated.ownerId ?? null,
+        merged.id,
+        merged.payoutId,
+        merged.idempotencyKey,
+        merged.sourceAccount,
+        merged.destinationAccount,
+        merged.asset,
+        merged.amountStroops,
+        merged.nonce,
+        merged.status,
+        merged.unsignedXdr,
+        merged.signedXdr ?? null,
+        merged.txHash ?? null,
+        merged.errorMessage ?? null,
+        merged.attempts,
+        merged.updatedAt,
+        merged.confirmedAt ?? null,
+        (merged as any).ownerId ?? null,
       ]
     );
 
-    return updated;
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error(`Transaction ${id} not found after update`);
+    }
+    return mapRow(row);
   }
 
   async listByStatus(statuses: PaymentStatus[], limit: number): Promise<TransactionRecord[]> {

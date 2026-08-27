@@ -2608,6 +2608,77 @@ mod test {
         });
     }
 
+    /// When every remaining active player fails to reveal, the round resolves
+    /// with zero survivors and the game transitions to Finished with no winner.
+    /// The prize pool remains locked in the contract.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Both players commit but neither reveals.
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let comm1 = compute_commitment(&env, Choice::Heads, &salt1);
+        let comm2 = compute_commitment(&env, Choice::Heads, &salt2);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+
+        // Advance past grace period.
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+
+        // Neither player reveals — both are AFK.
+
+        client.resolve_round();
+
+        // Both players eliminated, zero survivors.
+        env.as_contract(&client.address, || {
+            let s1 = ArenaStorage::load_player(&env, &p1).unwrap();
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            assert!(!s1.active, "p1 should be eliminated");
+            assert!(!s2.active, "p2 should be eliminated");
+        });
+
+        // Game ends Finished with no winner.
+        env.as_contract(&client.address, || {
+            let config = ArenaStorage::load_config(&env).unwrap();
+            assert_eq!(config.state, GameState::Finished);
+        });
+
+        // Prize pool stays locked — no tokens moved to any player.
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+        assert_eq!(token_client.balance(&p1), 900);
+        assert_eq!(token_client.balance(&p2), 900);
+    }
+
     /// Verify that a player who reveals the minority choice survives the round.
     #[test]
     fn minority_revealer_survives() {

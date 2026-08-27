@@ -42,7 +42,10 @@ impl RwaAdapter {
         let config = RwaStorage::load_config(&env)?;
 
         let mut pos = RwaStorage::load_position(&env, &from);
-        pos.principal += amount;
+        pos.principal = pos
+            .principal
+            .checked_add(amount)
+            .ok_or(RwaError::ArithmeticOverflow)?;
         // Set deposit timestamp only if this is the first deposit (principal was 0)
         if pos.principal == amount {
             pos.deposited_at = env.ledger().timestamp();
@@ -50,7 +53,10 @@ impl RwaAdapter {
         RwaStorage::save_position(&env, &from, &pos);
 
         let mut cfg = config;
-        cfg.total_deposited += amount;
+        cfg.total_deposited = cfg
+            .total_deposited
+            .checked_add(amount)
+            .ok_or(RwaError::ArithmeticOverflow)?;
         RwaStorage::save_config(&env, &cfg);
 
         env.events().publish(
