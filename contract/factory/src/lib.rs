@@ -408,6 +408,27 @@ impl FactoryContract {
         Ok(admin)
     }
 
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), FactoryError> {
+        let admin = FactoryStorage::load_admin(&env)?;
+        admin.require_auth();
+        FactoryStorage::save_pending_admin(&env, &new_admin);
+        env.events()
+            .publish((symbol_short!("ADM_PROP"),), (new_admin,));
+        Ok(())
+    }
+
+    pub fn accept_admin(env: Env) -> Result<(), FactoryError> {
+        let pending_admin =
+            FactoryStorage::load_pending_admin(&env).ok_or(FactoryError::NoPendingAdmin)?;
+        pending_admin.require_auth();
+        let old_admin = FactoryStorage::load_admin(&env)?;
+        FactoryStorage::save_admin(&env, &pending_admin);
+        FactoryStorage::delete_pending_admin(&env);
+        env.events()
+            .publish((symbol_short!("ADM_CHG"),), (old_admin, pending_admin));
+        Ok(())
+    }
+
     fn salt_for_pool(env: &Env, pool_id: u32) -> BytesN<32> {
         let mut salt = [0u8; 32];
         let bytes = pool_id.to_be_bytes();
@@ -734,5 +755,55 @@ mod test {
         assert!(client.is_token_supported(&token));
         client.remove_supported_token(&token);
         assert!(!client.is_token_supported(&token));
+    }
+
+    #[test]
+    fn propose_and_accept_admin_rotates_admin() {
+        let (env, client, _admin, _host) = setup();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin(&new_admin);
+        client.accept_admin();
+
+        assert_eq!(client.admin(), new_admin);
+    }
+
+    #[test]
+    fn accept_admin_without_proposal_fails() {
+        let (env, client, _admin, _host) = setup();
+
+        env.set_auths(&[]);
+        let err = client
+            .try_accept_admin()
+            .err()
+            .expect("accept without propose must error")
+            .expect("error must be a contract error");
+        assert_eq!(err, FactoryError::NoPendingAdmin);
+    }
+
+    #[test]
+    fn propose_admin_requires_current_admin_auth() {
+        let (env, client, _admin, _host) = setup();
+        let new_admin = Address::generate(&env);
+
+        env.set_auths(&[]);
+        let err = client
+            .try_propose_admin(&new_admin)
+            .err()
+            .expect("propose without auth must error");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn second_propose_overwrites_first() {
+        let (env, client, _admin, _host) = setup();
+        let addr_a = Address::generate(&env);
+        let addr_b = Address::generate(&env);
+
+        client.propose_admin(&addr_a);
+        client.propose_admin(&addr_b);
+        client.accept_admin();
+
+        assert_eq!(client.admin(), addr_b);
     }
 }

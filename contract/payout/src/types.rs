@@ -22,4 +22,6 @@ pub enum PayoutError {
     DuplicateRecipient = 9,
     /// Batch recipient count exceeds the configured maximum.
     BatchTooLarge = 10,
+    /// No pending admin transfer has been proposed.
+    NoPendingAdmin = 11,
 }
