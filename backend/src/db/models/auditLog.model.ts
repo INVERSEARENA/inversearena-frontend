@@ -30,5 +30,6 @@ const AuditLogSchema = new Schema<AuditLogDocument>(
 
 AuditLogSchema.index({ adminId: 1, createdAt: -1 });
 AuditLogSchema.index({ resourceType: 1, resourceId: 1 });
+AuditLogSchema.index({ action: 1, createdAt: -1 });
 
 export const AuditLogModel = model<AuditLogDocument>("AuditLog", AuditLogSchema);
