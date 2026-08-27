@@ -15,11 +15,20 @@ export const cache = {
     await redis.del(key);
   },
 
+  /**
+   * Deletes keys matching `pattern` using non-blocking SCAN cursor
+   * iteration instead of KEYS, which is O(N) over the whole keyspace and
+   * blocks Redis's single event-loop thread.
+   */
   async delByPattern(pattern: string): Promise<void> {
-    const keys = await redis.keys(pattern);
-    if (keys.length > 0) {
-      await redis.del(...keys);
-    }
+    let cursor = "0";
+    do {
+      const [nextCursor, keys] = await redis.scan(cursor, "MATCH", pattern, "COUNT", 100);
+      cursor = nextCursor;
+      if (keys.length > 0) {
+        await redis.del(...keys);
+      }
+    } while (cursor !== "0");
   },
 };
 
