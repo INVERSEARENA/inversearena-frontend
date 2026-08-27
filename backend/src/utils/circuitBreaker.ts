@@ -42,12 +42,13 @@ export class CircuitBreaker {
       }
     }
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(
         () => reject(new Error(`Soroban RPC call timed out after ${this.options.timeout}ms`)),
         this.options.timeout,
-      ),
-    );
+      );
+    });
 
     try {
       const result = await Promise.race([action(), timeoutPromise]);
@@ -56,6 +57,8 @@ export class CircuitBreaker {
     } catch (err) {
       this.onFailure();
       throw err;
+    } finally {
+      clearTimeout(timeoutHandle);
     }
   }
 
