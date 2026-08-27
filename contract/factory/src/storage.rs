@@ -9,6 +9,7 @@ const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
 pub enum DataKey {
     CreatorStake(Address),
     Admin,
+    PendingAdmin,
     MinStake,
     ArenaWasmHash,
     PoolSequence,
@@ -64,6 +65,24 @@ impl FactoryStorage {
             .persistent()
             .get(&DataKey::Admin)
             .ok_or(FactoryError::NotInitialized)
+    }
+
+    pub fn save_pending_admin(env: &Env, admin: &Address) {
+        Self::extend_persistent_ttl(env, &DataKey::PendingAdmin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingAdmin, admin);
+    }
+
+    pub fn load_pending_admin(env: &Env) -> Option<Address> {
+        Self::extend_persistent_ttl(env, &DataKey::PendingAdmin);
+        env.storage().persistent().get(&DataKey::PendingAdmin)
+    }
+
+    pub fn delete_pending_admin(env: &Env) {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PendingAdmin);
     }
 
     pub fn save_min_stake(env: &Env, min_stake: i128) {
