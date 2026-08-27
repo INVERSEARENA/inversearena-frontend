@@ -19,6 +19,7 @@ const KEY_MAX_RATE: soroban_sdk::Symbol = symbol_short!("MAX_RATE");
 const KEY_PENDING_ADMIN: soroban_sdk::Symbol = symbol_short!("P_ADMIN");
 
 pub const DEFAULT_MAX_YIELD_BPS: u32 = 5_000;
+pub const MAX_MAX_RATE_BPS: u32 = 10_000;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -74,6 +75,9 @@ impl OracleContract {
             .persistent()
             .get(&KEY_ADMIN)
             .ok_or(OracleError::NotInitialized)?;
+        if max_rate_bps > MAX_MAX_RATE_BPS {
+            return Err(OracleError::RateTooHigh);
+        }
         admin.require_auth();
         env.storage().persistent().set(&KEY_MAX_RATE, &max_rate_bps);
         env.events()
@@ -273,6 +277,23 @@ mod tests {
             client.try_accept_admin(),
             Err(Ok(OracleError::NoPendingAdmin))
         );
+    }
+
+    #[test]
+    fn set_max_rate_above_hard_ceiling_returns_rate_too_high() {
+        let (_env, client) = setup(500);
+        assert_eq!(
+            client.try_set_max_rate(&(MAX_MAX_RATE_BPS + 1)),
+            Err(Ok(OracleError::RateTooHigh))
+        );
+        assert_eq!(client.get_max_yield_bps(), DEFAULT_MAX_YIELD_BPS);
+    }
+
+    #[test]
+    fn set_max_rate_at_hard_ceiling_is_accepted() {
+        let (_env, client) = setup(500);
+        client.set_max_rate(&MAX_MAX_RATE_BPS);
+        assert_eq!(client.get_max_yield_bps(), MAX_MAX_RATE_BPS);
     }
 
     // ── Coverage added for issue #1144 ────────────────────────────────────

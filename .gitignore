@@ -54,3 +54,8 @@ contract/**/compile_err.txt
 
 # AI assistant artifacts
 .claude/
+.mimocode/
+.mimo/
+.mimoconfig
+issue.md
+pr.md

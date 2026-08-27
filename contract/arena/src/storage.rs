@@ -25,7 +25,6 @@ enum DataKey {
     MinPlayers,
     MaxPlayers,
     ReentrancyGuard,
-    CreatorActivePools(Address),
     Winner,
     RefundClaimed(Address),
     Leaderboard,
@@ -341,33 +340,6 @@ impl ArenaStorage {
         env.storage().temporary().remove(&DataKey::ReentrancyGuard);
     }
 
-    pub fn load_creator_active_pools(env: &Env, creator: &Address) -> u32 {
-        Self::extend_persistent_ttl(env, &DataKey::CreatorActivePools(creator.clone()));
-        env.storage()
-            .persistent()
-            .get(&DataKey::CreatorActivePools(creator.clone()))
-            .unwrap_or(0)
-    }
-
-    pub fn save_creator_active_pools(env: &Env, creator: &Address, active_pools: u32) {
-        Self::extend_persistent_ttl(env, &DataKey::CreatorActivePools(creator.clone()));
-        env.storage()
-            .persistent()
-            .set(&DataKey::CreatorActivePools(creator.clone()), &active_pools);
-    }
-
-    pub fn increment_creator_active_pools(env: &Env, creator: &Address) {
-        let active_pools = Self::load_creator_active_pools(env, creator).saturating_add(1);
-        Self::save_creator_active_pools(env, creator, active_pools);
-    }
-
-    pub fn decrement_creator_active_pools(env: &Env, creator: &Address) {
-        let active_pools = Self::load_creator_active_pools(env, creator);
-        if active_pools > 0 {
-            Self::save_creator_active_pools(env, creator, active_pools - 1);
-        }
-    }
-
     #[allow(dead_code)]
     fn is_terminal_pool_state(state: &GameState) -> bool {
         matches!(
@@ -518,42 +490,7 @@ mod tests {
             oracle_contract: Address::generate(env),
             factory: Address::generate(env),
             pool_id: 0,
-            round_duration: 0,
             platform_fee_bps: 1000,
         }
-    }
-
-    #[test]
-    fn increment_and_decrement_creator_active_pools() {
-        let env = Env::default();
-        let contract_id = env.register(ArenaContract, ());
-        let creator = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Open));
-            ArenaStorage::increment_creator_active_pools(&env, &creator);
-            assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 1);
-
-            ArenaStorage::save_config(&env, &config(&env, &creator, GameState::Finished));
-            ArenaStorage::decrement_creator_active_pools(&env, &creator);
-            assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 0);
-
-            // Repeated decrement is a no-op (saturating at 0).
-            ArenaStorage::decrement_creator_active_pools(&env, &creator);
-            assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 0);
-        });
-    }
-
-    #[test]
-    fn decrement_creator_active_pools_never_underflows() {
-        let env = Env::default();
-        let contract_id = env.register(ArenaContract, ());
-        let creator = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            ArenaStorage::decrement_creator_active_pools(&env, &creator);
-            ArenaStorage::decrement_creator_active_pools(&env, &creator);
-            assert_eq!(ArenaStorage::load_creator_active_pools(&env, &creator), 0);
-        });
     }
 }

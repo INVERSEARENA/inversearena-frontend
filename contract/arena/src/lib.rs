@@ -111,7 +111,7 @@ impl ArenaContract {
         pool_id: u32,
         min_players: u32,
         max_players: u32,
-        round_duration: u64,
+        _round_duration: u64,
     ) -> Result<(), ArenaError> {
         admin.require_auth();
         if ArenaStorage::has_config(&env) {
@@ -151,11 +151,9 @@ impl ArenaContract {
             oracle_contract,
             factory,
             pool_id,
-            round_duration,
             platform_fee_bps: ArenaStorage::load_platform_fee_bps(&env),
         };
         ArenaStorage::save_config(&env, &config);
-        ArenaStorage::increment_creator_active_pools(&env, &admin);
         ArenaStorage::save_player_limits(&env, min_players, max_players);
         ArenaStorage::save_last_vault_balance(&env, 0);
         ArenaEvents::initialized(&env, &admin);
@@ -440,7 +438,6 @@ impl ArenaContract {
 
         config.state = GameState::Cancelled;
         ArenaStorage::save_config(&env, &config);
-        ArenaStorage::decrement_creator_active_pools(&env, &config.admin);
 
         let arena_addr = env.current_contract_address();
         if config.player_count > 0 {
@@ -485,7 +482,6 @@ impl ArenaContract {
 
         config.state = GameState::Finished;
         ArenaStorage::save_config(&env, &config);
-        ArenaStorage::decrement_creator_active_pools(&env, &config.admin);
 
         let arena_addr = env.current_contract_address();
         if config.player_count > 0 {
@@ -706,9 +702,6 @@ impl ArenaContract {
             GameState::Open
         };
         ArenaStorage::save_config(&env, &config);
-        if config.state == GameState::Finished || config.state == GameState::Cancelled {
-            ArenaStorage::decrement_creator_active_pools(&env, &config.admin);
-        }
 
         ArenaEvents::round_resolved(&env, round, resolution.eliminated, resolution.survivors);
         if resolution.tied {
@@ -936,7 +929,6 @@ impl ArenaContract {
 
         config.state = GameState::Cancelled;
         ArenaStorage::save_config(&env, &config);
-        ArenaStorage::decrement_creator_active_pools(&env, &config.admin);
 
         // Attempt to withdraw all funds from the yield vault
         let arena_addr = env.current_contract_address();
@@ -1254,7 +1246,6 @@ mod test {
                 oracle_contract: oracle_id,
                 factory: Address::generate(&env),
                 pool_id: 0,
-                round_duration: 0,
                 platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
@@ -1338,7 +1329,6 @@ mod test {
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
-                round_duration: 0,
                 platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
@@ -1380,7 +1370,6 @@ mod test {
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
-                round_duration: 0,
                 platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
@@ -1417,7 +1406,6 @@ mod test {
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
-                round_duration: 0,
                 platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
@@ -1462,7 +1450,6 @@ mod test {
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
-                round_duration: 0,
                 platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
@@ -1499,7 +1486,6 @@ mod test {
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
-                round_duration: 0,
                 platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
@@ -1537,7 +1523,6 @@ mod test {
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
-                round_duration: 0,
                 platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
@@ -1574,7 +1559,6 @@ mod test {
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
-                round_duration: 0,
                 platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
@@ -1613,7 +1597,6 @@ mod test {
                 oracle_contract: oracle_id,
                 factory: Address::generate(&env),
                 pool_id: 0,
-                round_duration: 0,
                 platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
@@ -1674,7 +1657,6 @@ mod test {
                     oracle_contract: Address::generate(&env),
                     factory: Address::generate(&env),
                     pool_id: 0,
-                    round_duration: 0,
                     platform_fee_bps: 1000,
                 },
             );
@@ -1816,7 +1798,6 @@ mod test {
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
-                round_duration: 0,
                 platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
@@ -1896,7 +1877,6 @@ mod test {
                     oracle_contract: oracle_id,
                     factory: Address::generate(&env),
                     pool_id: 0,
-                    round_duration: 0,
                     platform_fee_bps: 1000,
                 },
             );
@@ -2114,7 +2094,6 @@ mod test {
                     oracle_contract: Address::generate(&env),
                     factory: Address::generate(&env),
                     pool_id: 0,
-                    round_duration: 0,
                     platform_fee_bps: 1000,
                 },
             );
@@ -2167,7 +2146,6 @@ mod test {
                     oracle_contract: Address::generate(&env),
                     factory: Address::generate(&env),
                     pool_id: 0,
-                    round_duration: 0,
                     platform_fee_bps: 1000,
                 },
             );
@@ -2213,7 +2191,6 @@ mod test {
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
-                round_duration: 0,
                 platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
@@ -2251,7 +2228,6 @@ mod test {
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
-                round_duration: 0,
                 platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
@@ -2289,7 +2265,6 @@ mod test {
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
-                round_duration: 0,
                 platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
@@ -2330,7 +2305,6 @@ mod test {
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
-                round_duration: 0,
                 platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
@@ -2384,7 +2358,6 @@ mod test {
                     oracle_contract: oracle_id,
                     factory: Address::generate(&env),
                     pool_id: 0,
-                    round_duration: 0,
                     platform_fee_bps: 1000,
                 },
             );
@@ -2417,7 +2390,6 @@ mod test {
                     oracle_contract: oracle_id,
                     factory: Address::generate(&env),
                     pool_id: 0,
-                    round_duration: 0,
                     platform_fee_bps: 1000,
                 },
             );
@@ -2451,7 +2423,6 @@ mod test {
                     oracle_contract: oracle_id,
                     factory: Address::generate(&env),
                     pool_id: 0,
-                    round_duration: 0,
                     platform_fee_bps: 1000,
                 },
             );
@@ -2979,7 +2950,6 @@ mod test {
                     oracle_contract: oracle_id,
                     factory: Address::generate(&env),
                     pool_id: 0,
-                    round_duration: 0,
                     platform_fee_bps: 1000,
                 },
             );
@@ -3244,7 +3214,6 @@ mod test {
                 oracle_contract: oracle_id,
                 factory: Address::generate(&env),
                 pool_id: 0,
-                round_duration: 0,
                 platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
@@ -3329,7 +3298,6 @@ mod test {
                 oracle_contract: oracle_id,
                 factory: Address::generate(&env),
                 pool_id: 0,
-                round_duration: 0,
                 platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);
@@ -3953,7 +3921,6 @@ mod test {
                         oracle_contract: oracle_id,
                         factory: Address::generate(&env),
                         pool_id: 0,
-                        round_duration: 0,
                         platform_fee_bps: 1000,
                     },
                 );
@@ -4091,7 +4058,6 @@ mod test {
                 oracle_contract: oracle_id.clone(),
                 factory: Address::generate(&env),
                 pool_id: 0,
-                round_duration: 0,
                 platform_fee_bps: 1000,
             };
             ArenaStorage::save_config(&env, &config);

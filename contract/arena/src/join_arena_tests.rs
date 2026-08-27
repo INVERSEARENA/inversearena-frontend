@@ -66,7 +66,6 @@ fn setup_arena(state: GameState) -> (Env, ArenaContractClient<'static>, Address)
             oracle_contract: oracle,
             factory: Address::generate(&env),
             pool_id: 0,
-            round_duration: 0,
             platform_fee_bps: 1000,
         };
         ArenaStorage::save_config(&env, &config);
@@ -312,7 +311,6 @@ fn setup_arena_failing_vault() -> (Env, ArenaContractClient<'static>, Address) {
             oracle_contract: oracle,
             factory: Address::generate(&env),
             pool_id: 0,
-            round_duration: 0,
             platform_fee_bps: 1000,
         };
         ArenaStorage::save_config(&env, &config);

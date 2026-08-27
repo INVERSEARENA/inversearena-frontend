@@ -63,7 +63,6 @@ pub struct ArenaConfig {
     pub oracle_contract: Address,
     pub factory: Address,
     pub pool_id: u32,
-    pub round_duration: u64,
     /// Platform fee in basis points, snapshotted from the global admin-configured
     /// value at `initialize` time (see `ArenaContract::update_platform_fee`).
     /// Max 1000 bps (10%). Not currently deducted anywhere in the payout path —
