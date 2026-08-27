@@ -17,7 +17,7 @@ const TransactionSchema = new Schema<TransactionDocument>(
     nonce: { type: Number, required: true },
     status: {
       type: String,
-      enum: ["built", "queued", "awaiting_signature", "submitted", "confirmed", "failed"] satisfies PaymentStatus[],
+      enum: ["built", "queued", "awaiting_signature", "submitted", "confirmed", "failed", "dead"] satisfies PaymentStatus[],
       required: true,
     },
     unsignedXdr: { type: String, required: true },
