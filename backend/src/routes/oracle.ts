@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { asyncHandler } from "../middleware/validate";
+import { z } from "zod";
+import { asyncHandler, validateBody } from "../middleware/validate";
 import { cacheMiddleware } from "../middleware/cache";
 import { cache, cacheKeys, cacheTTL } from "../cache/cacheService";
 import { redis } from "../cache/redisClient";
@@ -14,6 +15,14 @@ interface YieldData {
   asset: string;
   network: string;
 }
+
+const YieldUpdateSchema = z.object({
+  protocol: z.string().trim().min(1).max(64).optional(),
+  currentAPY: z.number().finite().min(0).max(100).optional(),
+  baseRate: z.number().finite().min(0).max(100).optional(),
+  surgeMultiplier: z.number().finite().min(0).max(10).optional(),
+  asset: z.string().trim().min(1).max(16).optional(),
+});
 
 const DEFAULT_YIELD: YieldData = {
   protocol: "Ondo USDY",
@@ -47,9 +56,10 @@ export function createOracleRouter(): Router {
       }
       verifyWebhookSignature(ORACLE_WEBHOOK_SECRET)(req, res, next);
     }),
+    validateBody(YieldUpdateSchema),
     asyncHandler(async (req, res) => {
       const { currentAPY, baseRate, surgeMultiplier, protocol, asset } =
-        req.body;
+        req.body as z.infer<typeof YieldUpdateSchema>;
 
       const updatedYield: YieldData = {
         protocol: protocol ?? DEFAULT_YIELD.protocol,
