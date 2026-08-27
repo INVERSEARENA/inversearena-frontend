@@ -5,7 +5,7 @@ export interface AuditLogDocument extends Document {
   action: string;
   resourceType: string;
   resourceId: string;
-  status: "success" | "failed";
+  status: "success" | "failed" | "auth_failed";
   metadata?: Record<string, unknown>;
   errorMessage?: string;
   ipAddress?: string;
@@ -19,7 +19,7 @@ const AuditLogSchema = new Schema<AuditLogDocument>(
     action: { type: String, required: true },
     resourceType: { type: String, required: true },
     resourceId: { type: String, required: true },
-    status: { type: String, enum: ["success", "failed"], required: true },
+    status: { type: String, enum: ["success", "failed", "auth_failed"], required: true },
     metadata: { type: Schema.Types.Mixed, default: undefined },
     errorMessage: { type: String, default: undefined },
     ipAddress: { type: String, default: undefined },

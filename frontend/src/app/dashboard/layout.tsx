@@ -13,7 +13,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
         </div>
 
       
-        <div className="min-h-screen pl-[320px]">
+        <div className="h-screen overflow-y-auto pl-[320px]">
           <main className="p-6">{children}</main>
         </div>
       </div>

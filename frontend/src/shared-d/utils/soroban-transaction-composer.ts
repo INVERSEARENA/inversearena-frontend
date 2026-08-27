@@ -2,7 +2,7 @@
  * Soroban invoke operations and unsigned transaction assembly (#245).
  * Named “composer” here to avoid clashing with the SDK’s `TransactionBuilder` class.
  */
-import { Account, Contract, Transaction, TransactionBuilder } from "@stellar/stellar-sdk";
+import { Account, Contract, Transaction, TransactionBuilder, nativeToScVal } from "@stellar/stellar-sdk";
 import {
   encodeAddress,
   encodeAmount,
@@ -11,6 +11,7 @@ import {
   encodeRound,
 } from "@/shared-d/utils/scval-helpers";
 import type { CreatePoolParamsValidated } from "@/shared-d/utils/stellar-transaction-schemas";
+import { stellarConfig } from "@/lib/stellarConfig";
 
 type SorobanOperation = ReturnType<Contract["call"]>;
 
@@ -48,6 +49,7 @@ export function buildCreatePoolCallOperation(
   factory: Contract,
   params: CreatePoolParamsValidated,
   tokenContractIds: { xlmContractId: string; usdcContractId: string },
+  creatorPublicKey: string,
 ): SorobanOperation {
   const amountBigInt = BigInt(Math.floor(params.stakeAmount * 10_000_000));
   const currencyContractId =
@@ -56,14 +58,33 @@ export function buildCreatePoolCallOperation(
       : tokenContractIds.xlmContractId;
   const roundSpeedSeconds = roundSpeedToSeconds(params.roundSpeed);
 
-  const args = [
-    encodeAmount(amountBigInt),
-    encodeAddress(currencyContractId),
-    encodeRound(roundSpeedSeconds),
-    encodeRound(params.arenaCapacity),
-  ];
+  const yieldVaultContractId = stellarConfig.rwaVaultContractId;
+  const oracleContractId = stellarConfig.oracleContractId;
 
-  return factory.call("create_pool", ...args);
+  if (!yieldVaultContractId) {
+    throw new Error("NEXT_PUBLIC_RWA_VAULT_CONTRACT_ID is not configured");
+  }
+  if (!oracleContractId) {
+    throw new Error("NEXT_PUBLIC_ORACLE_CONTRACT_ID is not configured");
+  }
+
+  // Encode PoolConfig struct as required by factory contract (#1105)
+  // PoolConfig { stake_token, yield_vault, entry_fee, oracle_contract, min_players, max_players, round_duration }
+  const poolConfig = nativeToScVal({
+    stake_token: currencyContractId,
+    yield_vault: yieldVaultContractId,
+    entry_fee: amountBigInt,
+    oracle_contract: oracleContractId,
+    min_players: 2,
+    max_players: params.arenaCapacity,
+    round_duration: BigInt(roundSpeedSeconds),
+  }, { type: "PoolConfig" });
+
+  // Factory.create_pool(host: Address, config: PoolConfig)
+  // host is the pool creator's wallet address
+  const hostAddress = encodeAddress(creatorPublicKey);
+
+  return factory.call("create_pool", hostAddress, poolConfig);
 }
 
 export function buildStakeCallOperation(
@@ -90,20 +111,11 @@ export function buildUnstakeCallOperation(
   );
 }
 
-export function buildJoinCallOperation(poolContract: Contract): SorobanOperation {
-  return poolContract.call("join");
-}
-
-export function buildSubmitChoiceCallOperation(
+export function buildJoinCallOperation(
   poolContract: Contract,
-  roundNumber: number,
-  choice: "Heads" | "Tails",
+  playerPublicKey: string,
 ): SorobanOperation {
-  return poolContract.call(
-    "submit_choice",
-    encodeRound(roundNumber),
-    encodeChoice(choice),
-  );
+  return poolContract.call("join_arena", encodeAddress(playerPublicKey));
 }
 
 /**
@@ -142,8 +154,11 @@ export function buildRevealChoiceOperation(
   );
 }
 
-export function buildClaimCallOperation(poolContract: Contract): SorobanOperation {
-  return poolContract.call("claim");
+export function buildClaimCallOperation(
+  poolContract: Contract,
+  winnerPublicKey: string,
+): SorobanOperation {
+  return poolContract.call("claim", encodeAddress(winnerPublicKey));
 }
 
 export function buildGetArenaStateCallOperation(
@@ -152,15 +167,6 @@ export function buildGetArenaStateCallOperation(
   return arenaContract.call("get_arena_state");
 }
 
-export function buildGetUserStateCallOperation(
-  arenaContract: Contract,
-  userPublicKey: string,
-): SorobanOperation {
-  return arenaContract.call(
-    "get_user_state",
-    encodeAddress(userPublicKey),
-  );
-}
 
 export function buildGetFullStateCallOperation(
   arenaContract: Contract,

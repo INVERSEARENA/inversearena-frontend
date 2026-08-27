@@ -1,6 +1,7 @@
 import { describe, it, expect } from "@jest/globals";
 import { Account, Contract, type Operation, type xdr } from "@stellar/stellar-sdk";
 import {
+  buildClaimCallOperation,
   buildJoinCallOperation,
   buildRevealChoiceOperation,
   buildSubmitCommitmentOperation,
@@ -36,7 +37,7 @@ describe("soroban-transaction-composer", () => {
       "1",
     );
     const pool = new Contract(VALID_CONTRACT);
-    const op = buildJoinCallOperation(pool);
+    const op = buildJoinCallOperation(pool, VALID_PUBLIC_KEY);
 
     const tx = composeUnsignedTransaction(account, {
       fee: "100",
@@ -46,6 +47,24 @@ describe("soroban-transaction-composer", () => {
     });
 
     expect(tx.operations.length).toBe(1);
+  });
+
+  it("buildJoinCallOperation invokes join_arena with the player address", () => {
+    const pool = new Contract(VALID_CONTRACT);
+    const op = buildJoinCallOperation(pool, VALID_PUBLIC_KEY);
+
+    const invoked = invokedFunction(op);
+    expect(invoked.functionName().toString()).toBe("join_arena");
+    expect(invoked.args()).toHaveLength(1);
+  });
+
+  it("buildClaimCallOperation invokes claim with the winner address", () => {
+    const pool = new Contract(VALID_CONTRACT);
+    const op = buildClaimCallOperation(pool, VALID_PUBLIC_KEY);
+
+    const invoked = invokedFunction(op);
+    expect(invoked.functionName().toString()).toBe("claim");
+    expect(invoked.args()).toHaveLength(1);
   });
 
   it("buildCreatePoolCallOperation returns an invoke operation", () => {
@@ -62,6 +81,7 @@ describe("soroban-transaction-composer", () => {
         xlmContractId: VALID_CONTRACT,
         usdcContractId: VALID_CONTRACT,
       },
+      VALID_PUBLIC_KEY,
     );
 
     expect(op).toBeDefined();

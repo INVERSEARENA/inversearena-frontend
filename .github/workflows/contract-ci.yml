@@ -20,8 +20,10 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Add wasm32 target
-        run: rustup target add wasm32-unknown-unknown
+      - name: Add wasm32 targets
+        run: |
+          rustup target add wasm32-unknown-unknown
+          rustup target add wasm32v1-none
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -38,6 +40,20 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libdbus-1-dev libudev-dev libusb-1.0-0-dev
+
+      - name: Build arena WASM
+        working-directory: ./contract
+        run: cargo build -p arena --target wasm32v1-none --release
+        # arena/src/integration_tests.rs embeds this crate's own compiled WASM
+        # (via crate::WASM) to test the factory's real dynamic-deployment path,
+        # so it must exist before `cargo test` compiles that test module.
+        # - Scoped to -p arena: a whole-workspace wasm build currently fails
+        #   separately (factory statically links arena and both export an
+        #   `unpause` symbol, colliding when factory's wasm links arena's code
+        #   in) — a pre-existing, unrelated issue not fixed here.
+        # - wasm32v1-none, not wasm32-unknown-unknown: the latter can emit
+        #   reference-types instructions that soroban-env-host rejects at
+        #   runtime ("reference-types not enabled").
 
       - name: Run contract tests
         working-directory: ./contract

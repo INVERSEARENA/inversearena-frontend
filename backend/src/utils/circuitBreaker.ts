@@ -122,6 +122,9 @@ export class CircuitBreaker {
 
 export class CircuitOpenError extends Error {
   readonly isCircuitOpen = true;
+  // Picked up by the API error handler so request-path callers get an
+  // immediate 503 while the circuit is open, instead of a generic 500 (#1126).
+  readonly status = 503;
 
   constructor(message: string) {
     super(message);

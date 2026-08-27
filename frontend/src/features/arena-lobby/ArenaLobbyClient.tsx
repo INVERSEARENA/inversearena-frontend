@@ -1,45 +1,55 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { z } from "zod";
 import { useRouter } from "next/navigation";
 import { ArenaStatsSkeleton } from "@/components/arena/ArenaStatsSkeleton";
 import { ChoiceSubmission } from "@/components/arena/ChoiceSubmission";
+import { TransactionModal } from "@/components/modals/TransactionModal";
 import { useStellarWallet } from "@/features/wallet/useStellarWallet";
 import { stellarConfig } from "@/lib/stellarConfig";
+import {
+  buildJoinArenaTransaction,
+  submitSignedTransaction,
+} from "@/shared-d/utils/stellar-transactions";
 
-interface ArenaStats {
-  arenaId: string;
-  arenaName: string;
-  currentPot: number;
-  playerCount: number;
-  maxPlayers: number;
-  survivorCount: number;
-  currentRound: number;
-  entryFee: number;
-  stakeToken: string;
-  joinDeadline: string | null;
-  yieldAccrued: number;
-  status: string;
-  lastUpdated: string;
-}
+const arenaParticipantSchema = z.object({
+  id: z.string(),
+  walletAddress: z.string(),
+  choice: z.enum(["heads", "tails"]),
+  stake: z.number(),
+  status: z.enum(["READY", "ACTIVE", "ELIMINATED"]),
+  roundNumber: z.number(),
+  joinedAt: z.string(),
+});
 
-interface ArenaParticipant {
-  id: string;
-  walletAddress: string;
-  choice: "heads" | "tails";
-  stake: number;
-  status: "READY" | "ACTIVE" | "ELIMINATED";
-  roundNumber: number;
-  joinedAt: string;
-}
+const arenaStatsSchema = z.object({
+  arenaId: z.string(),
+  arenaName: z.string(),
+  currentPot: z.number(),
+  playerCount: z.number(),
+  maxPlayers: z.number(),
+  survivorCount: z.number(),
+  currentRound: z.number(),
+  entryFee: z.number(),
+  stakeToken: z.string(),
+  joinDeadline: z.string().nullable(),
+  yieldAccrued: z.number(),
+  status: z.string(),
+  lastUpdated: z.string(),
+});
 
-interface ArenaParticipantsResponse {
-  arenaId: string;
-  total: number;
-  nextCursor: number | null;
-  hasMore: boolean;
-  items: ArenaParticipant[];
-}
+const arenaParticipantsResponseSchema = z.object({
+  arenaId: z.string(),
+  total: z.number(),
+  nextCursor: z.number().nullable(),
+  hasMore: z.boolean(),
+  items: z.array(arenaParticipantSchema),
+});
+
+type ArenaStats = z.infer<typeof arenaStatsSchema>;
+type ArenaParticipant = z.infer<typeof arenaParticipantSchema>;
+type ArenaParticipantsResponse = z.infer<typeof arenaParticipantsResponseSchema>;
 
 interface ArenaLobbyClientProps {
   arenaId: string;
@@ -98,6 +108,7 @@ export function ArenaLobbyClient({
   const [loadingStats, setLoadingStats] = useState(false);
   const [loadingParticipants, setLoadingParticipants] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showJoinModal, setShowJoinModal] = useState(false);
 
   const isOpen = stats?.status === "open";
   const walletConnected = wallet.isConnected && !!wallet.publicKey;
@@ -136,8 +147,12 @@ export function ArenaLobbyClient({
         throw new Error(`Stats request failed (${response.status})`);
       }
 
-      const data = (await response.json()) as ArenaStats;
-      setStats(data);
+      const json = await response.json();
+      const parsed = arenaStatsSchema.safeParse(json);
+      if (!parsed.success) {
+        throw new Error(`Invalid stats response: ${parsed.error.message}`);
+      }
+      setStats(parsed.data);
       setError(null);
     } catch (fetchError) {
       setError(
@@ -164,7 +179,12 @@ export function ArenaLobbyClient({
         throw new Error(`Participants request failed (${response.status})`);
       }
 
-      const data = (await response.json()) as ArenaParticipantsResponse;
+      const json = await response.json();
+      const parsed = arenaParticipantsResponseSchema.safeParse(json);
+      if (!parsed.success) {
+        throw new Error(`Invalid participants response: ${parsed.error.message}`);
+      }
+      const data = parsed.data;
       if (replace || cursor === 0) {
         mergeParticipants(data.items);
       } else {
@@ -261,6 +281,28 @@ export function ArenaLobbyClient({
       ? "Join Unavailable"
       : "Join Arena";
 
+  const handleConfirmJoin = async () => {
+    if (!wallet.publicKey) {
+      throw new Error("Connect a wallet before joining this arena.");
+    }
+
+    const unsignedTx = await buildJoinArenaTransaction(
+      wallet.publicKey,
+      arenaId,
+      stats.entryFee,
+    );
+    const signedXdr = await wallet.signTransaction(unsignedTx.toXDR());
+    await submitSignedTransaction(signedXdr);
+
+    await Promise.all([fetchStats(), fetchParticipants(0, true)]);
+
+    setShowJoinModal(false);
+    document.getElementById("choice-submission")?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  };
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(60,255,26,0.14),_transparent_36%),linear-gradient(180deg,_#050816_0%,_#07111d_42%,_#050816_100%)] px-4 py-6 text-white sm:px-6 lg:px-8">
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-6">
@@ -337,12 +379,7 @@ export function ArenaLobbyClient({
             <button
               type="button"
               disabled={joinDisabled}
-              onClick={() => {
-                document.getElementById("choice-submission")?.scrollIntoView({
-                  behavior: "smooth",
-                  block: "start",
-                });
-              }}
+              onClick={() => setShowJoinModal(true)}
               className="rounded-full border border-[#3CFF1A]/40 bg-[#3CFF1A] px-6 py-3 text-sm font-black uppercase tracking-[0.2em] text-black transition hover:brightness-95 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/10 disabled:text-white/40"
             >
               {joinLabel}
@@ -480,6 +517,19 @@ export function ArenaLobbyClient({
           </div>
         </section>
       </main>
+
+      <TransactionModal
+        isOpen={showJoinModal}
+        onClose={() => setShowJoinModal(false)}
+        title="Join Arena"
+        description="Confirm your entry to this arena"
+        details={[
+          { label: "Arena", value: stats.arenaName },
+          { label: "Entry Fee", value: formatCurrency(stats.entryFee, stats.stakeToken) },
+        ]}
+        confirmLabel="Sign & Join"
+        onConfirm={handleConfirmJoin}
+      />
     </div>
   );
 }

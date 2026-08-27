@@ -14,3 +14,5 @@ soroban-sdk = { workspace = true, features = ["testutils"] }
 proptest = "1"
 oracle = { path = "../oracle" }
 rwa-adapter = { path = "../rwa-adapter" }
+payout = { path = "../payout" }
+factory = { path = "../factory" }

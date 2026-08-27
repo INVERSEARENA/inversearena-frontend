@@ -2,7 +2,7 @@ import { StellarWalletsKit, Networks } from "@creit-tech/stellar-wallets-kit";
 import { FreighterModule } from "@creit-tech/stellar-wallets-kit/modules/freighter";
 import { xBullModule } from "@creit-tech/stellar-wallets-kit/modules/xbull";
 import { AlbedoModule } from "@creit-tech/stellar-wallets-kit/modules/albedo";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { WalletStatus } from "./types";
 import { SignedXdrSchema } from "@/shared-d/utils/security-validation";
 import { stellarConfig } from "@/lib/stellarConfig";
@@ -22,7 +22,9 @@ export interface WalletHook {
 const STELLAR_PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
 
 // Key used to persist intentional disconnect so wallet extensions can't phantom-reconnect.
-const WALLET_DISCONNECTED_KEY = 'inversearena:wallet:disconnected';
+export const WALLET_DISCONNECTED_KEY = 'inversearena:wallet:disconnected';
+
+const KIT_MODULES = () => [new xBullModule(), new FreighterModule(), new AlbedoModule()];
 
 export function isValidStellarPublicKey(address: string): boolean {
   return STELLAR_PUBLIC_KEY_REGEX.test(address);
@@ -38,21 +40,25 @@ export const useStellarWallet = (network: Networks): WalletHook => {
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [status, setStatus] = useState<WalletStatus>('disconnected');
   const [error, setError] = useState<string | null>(null);
+  const kitInitializedRef = useRef(false);
 
   useEffect(() => {
+    // Suppress auto-reconnect if the user previously disconnected intentionally:
+    // skip initializing the kit entirely so it never attempts to restore the
+    // last session. connectWallet() will initialize it lazily on demand.
+    const suppressAutoReconnect =
+      typeof window !== 'undefined' && localStorage.getItem(WALLET_DISCONNECTED_KEY) === 'true';
+
+    if (suppressAutoReconnect) {
+      kitInitializedRef.current = false;
+      return;
+    }
+
     StellarWalletsKit.init({
       network: network,
-      modules: [
-        new xBullModule(),
-        new FreighterModule(),
-        new AlbedoModule()
-      ],
+      modules: KIT_MODULES(),
     });
-
-    // Suppress auto-reconnect if the user previously disconnected intentionally
-    if (typeof window !== 'undefined' && localStorage.getItem(WALLET_DISCONNECTED_KEY) === 'true') {
-      return () => { StellarWalletsKit.disconnect(); };
-    }
+    kitInitializedRef.current = true;
 
     return () => { StellarWalletsKit.disconnect(); };
   }, [network]);
@@ -64,6 +70,12 @@ export const useStellarWallet = (network: Networks): WalletHook => {
       // Clear intentional-disconnect flag so the session is treated as fresh
       if (typeof window !== 'undefined') {
         localStorage.removeItem(WALLET_DISCONNECTED_KEY);
+      }
+      // The mount effect skips StellarWalletsKit.init() when auto-reconnect
+      // was suppressed; initialize it now that the user explicitly connected.
+      if (!kitInitializedRef.current) {
+        StellarWalletsKit.init({ network, modules: KIT_MODULES() });
+        kitInitializedRef.current = true;
       }
       const { address } = await StellarWalletsKit.authModal();
 
@@ -87,7 +99,7 @@ export const useStellarWallet = (network: Networks): WalletHook => {
       setError(err instanceof Error ? err.message : "Failed to connect wallet");
       return null;
     }
-  }, []);
+  }, [network]);
 
   const signTransaction = useCallback(async (xdr: string) => {
     const walletAddress = publicKey ?? (await StellarWalletsKit.getAddress()).address;

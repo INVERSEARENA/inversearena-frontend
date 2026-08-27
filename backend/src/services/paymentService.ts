@@ -18,7 +18,7 @@ import { z } from "zod";
 import { getPaymentConfig, type PaymentConfig } from "../config/paymentConfig";
 import type { TransactionRepository } from "../repositories/transactionRepository";
 import { payoutsSuccessTotal } from "../utils/metrics";
-import { CircuitOpenError, getSorobanBreaker, type CircuitBreaker } from "../utils/circuitBreaker";
+import { CircuitOpenError, getSorobanBreaker, resetSorobanBreakerForTest, type CircuitBreaker } from "../utils/circuitBreaker";
 import type {
   BuildPayoutResult,
   CreatePayoutRequest,
@@ -100,7 +100,7 @@ export class PaymentService {
     return this.breaker.getStats();
   }
 
-  async createPayoutTransaction(input: unknown): Promise<BuildPayoutResult> {
+  async createPayoutTransaction(input: unknown, ownerId?: string | null): Promise<BuildPayoutResult> {
     const request = CreatePayoutRequestSchema.parse(input) as CreatePayoutRequest;
 
     const existing = await this.transactions.findByIdempotencyKey(request.idempotencyKey);
@@ -152,6 +152,7 @@ export class PaymentService {
       createdAt: now,
       updatedAt: now,
       confirmedAt: null,
+      ownerId: ownerId ?? null,
     };
 
     await this.transactions.insert(transaction);
@@ -375,17 +376,12 @@ export class PaymentService {
     }
 
     const args = invoke.args();
-    if (args.length !== 5) {
-      throw new Error("Signed transaction must have exactly 5 contract arguments");
+    if (args.length !== 3) {
+      throw new Error("Signed transaction must have exactly 3 contract arguments");
     }
 
-    // distribute_winnings(payout_id: u64, winner: Address, amount: i128, asset: Symbol, nonce: u64)
-    // args[0] = payout_id (skipped in validation)
-    // args[1] = winner (destination address)
-    // args[2] = amount
-    // args[3] = asset (skipped in validation)
-    // args[4] = nonce (skipped in validation)
-    const destination = Address.fromScAddress(scValToNative(args[1]!)).toString();
+    // distribute_winnings(payout_id: u64, winner: Address, amount: i128)
+    const destination = Address.fromScVal(args[1]!).toString();
     if (destination !== transaction.destinationAccount) {
       throw new Error("Signed transaction destination does not match the payout record");
     }
@@ -393,6 +389,23 @@ export class PaymentService {
     if (amount !== transaction.amountStroops) {
       throw new Error("Signed transaction amount does not match the payout record");
     }
+    // args[0] must equal the nonce reserved for this payout record — otherwise a
+    // compromised signer could redirect the on-chain payout_id.
+    const payoutIdArg = scValToNative(args[0]!);
+    if (typeof payoutIdArg !== "bigint" || payoutIdArg !== BigInt(transaction.nonce)) {
+      throw new Error(
+        "Signed transaction payout_id argument does not match the reserved nonce"
+      );
+    }
+  }
+
+  /**
+   * Tears down shared async resources held by this service instance.
+   * Must be called in `afterAll` / `afterEach` hooks in tests to prevent
+   * Jest from reporting open async handles (#1194).
+   */
+  destroy(): void {
+    resetSorobanBreakerForTest();
   }
 
   private async requireTransaction(transactionId: string): Promise<TransactionRecord> {
@@ -410,14 +423,14 @@ export class PaymentService {
     const contract = new Contract(this.config.payoutContractId);
     const amountStroops = toStroops(request.amount);
 
-    // The payout token is fixed by the contract at initialize time — there is
-    // no per-call asset argument, so `request.asset` is not forwarded here.
+    // distribute_winnings(payout_id: u64, winner: Address, amount: i128)
+    // The payout token and nonce are fixed at contract init time — the nonce
+    // here doubles as the on-chain payout_id for idempotency.
     const operation = contract.call(
       this.config.payoutMethodName,
+      nativeToScVal(BigInt(nonce), { type: "u64" }),
       new Address(request.destinationAccount).toScVal(),
       nativeToScVal(BigInt(amountStroops), { type: "i128" }),
-      nativeToScVal(BigInt(nonce), { type: "u64" }),
-      nativeToScVal(request.payoutId)
     );
 
     const built = new TransactionBuilder(sourceAccount, {

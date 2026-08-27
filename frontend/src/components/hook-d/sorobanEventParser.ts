@@ -37,18 +37,24 @@ export function parseArenaEvent(raw: RawContractEvent): ArenaDomainEvent | null 
         const eventName = scValToNative(eventNameScVal);
 
         switch (eventName) {
-            case 'arena_created':
+            case 'init':
                 return parseArenaCreatedEvent(raw);
-            case 'player_joined':
+            case 'join':
                 return parsePlayerJoinedEvent(raw);
-            case 'round_started':
+            case 'started':
                 return parseRoundStartedEvent(raw);
-            case 'choice_submitted':
+            case 'commit':
                 return parseChoiceSubmittedEvent(raw);
-            case 'round_resolved':
+            case 'reveal':
+                return parseChoiceRevealedEvent(raw);
+            case 'resolved':
                 return parseRoundResolvedEvent(raw);
-            case 'winners_declared':
+            case 'finished':
                 return parseWinnersDeclaredEvent(raw);
+            case 'claimed':
+                return parsePrizeClaimedEvent(raw);
+            case 'elim':
+                return parsePlayerEliminatedEvent(raw);
             default:
                 console.warn(`[SorobanEventParser] Unknown event type detected: ${eventName}`, raw);
                 return null;
@@ -60,27 +66,34 @@ export function parseArenaEvent(raw: RawContractEvent): ArenaDomainEvent | null 
 }
 
 function parseArenaCreatedEvent(raw: RawContractEvent): ArenaCreatedEvent | null {
+    // Admin address is in value (#1106)
     const value = decodeValue(raw.value.xdr);
     if (!value) return null;
 
     return {
         type: 'ArenaCreated',
         arenaId: raw.contractId,
-        creator: value.creator,
-        maxPlayers: Number(value.max_players),
-        entryFee: value.entry_fee.toString(),
+        creator: value,
+        maxPlayers: 0, // Not available in init event
+        entryFee: "0", // Not available in init event
         timestamp: getTimestamp(raw),
     };
 }
 
 function parsePlayerJoinedEvent(raw: RawContractEvent): PlayerJoinedEvent | null {
+    // Player address is in topic[1], player_count is in value (#1106)
+    if (!raw.topic || raw.topic.length < 2) return null;
+    
+    const playerScVal = xdr.ScVal.fromXDR(raw.topic[1]!, 'base64');
+    const player = scValToNative(playerScVal);
+    
     const value = decodeValue(raw.value.xdr);
     if (!value) return null;
 
     return {
         type: 'PlayerJoined',
         arenaId: raw.contractId,
-        playerWallet: value.player,
+        playerWallet: player,
         timestamp: getTimestamp(raw),
     };
 }
@@ -132,6 +145,62 @@ function parseWinnersDeclaredEvent(raw: RawContractEvent): WinnersDeclaredEvent 
         type: 'WinnersDeclared',
         arenaId: raw.contractId,
         winners: Array.isArray(value.winners) ? value.winners : [],
+        timestamp: getTimestamp(raw),
+    };
+}
+
+function parseChoiceRevealedEvent(raw: RawContractEvent): ChoiceSubmittedEvent | null {
+    // Player address is in topic[1], choice and round are in value (#1106)
+    if (!raw.topic || raw.topic.length < 2) return null;
+    
+    const playerScVal = xdr.ScVal.fromXDR(raw.topic[1]!, 'base64');
+    const player = scValToNative(playerScVal);
+    
+    const value = decodeValue(raw.value.xdr);
+    if (!value) return null;
+
+    return {
+        type: 'ChoiceSubmitted',
+        arenaId: raw.contractId,
+        playerWallet: player,
+        choice: value.choice === 'Heads' ? 0 : 1,
+        roundNumber: Number(value.round),
+        timestamp: getTimestamp(raw),
+    };
+}
+
+function parsePrizeClaimedEvent(raw: RawContractEvent): WinnersDeclaredEvent | null {
+    // Winner address is in topic[1], amount and yield_amount are in value (#1106)
+    if (!raw.topic || raw.topic.length < 2) return null;
+    
+    const winnerScVal = xdr.ScVal.fromXDR(raw.topic[1]!, 'base64');
+    const winner = scValToNative(winnerScVal);
+    
+    const value = decodeValue(raw.value.xdr);
+    if (!value) return null;
+
+    return {
+        type: 'WinnersDeclared',
+        arenaId: raw.contractId,
+        winners: [winner],
+        timestamp: getTimestamp(raw),
+    };
+}
+
+function parsePlayerEliminatedEvent(raw: RawContractEvent): PlayerJoinedEvent | null {
+    // Player address is in topic[1], round is in value (#1106)
+    if (!raw.topic || raw.topic.length < 2) return null;
+    
+    const playerScVal = xdr.ScVal.fromXDR(raw.topic[1]!, 'base64');
+    const player = scValToNative(playerScVal);
+    
+    const value = decodeValue(raw.value.xdr);
+    if (!value) return null;
+
+    return {
+        type: 'PlayerJoined',
+        arenaId: raw.contractId,
+        playerWallet: player,
         timestamp: getTimestamp(raw),
     };
 }

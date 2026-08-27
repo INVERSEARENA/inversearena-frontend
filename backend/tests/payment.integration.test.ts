@@ -24,7 +24,7 @@ async function testBuildOnlyFlow() {
   const paymentService = new PaymentService(transactions, { config: mockConfig });
 
   const result = await paymentService.createPayoutTransaction({
-    payoutId: 'test-payout-1',
+    payoutId: '1',
     destinationAccount: 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H',
     amount: '100.5000000',
     asset: 'XLM',
@@ -52,7 +52,7 @@ async function testIdempotency() {
   const idempotencyKey = 'test:idempotency:unique-key-123';
 
   const result1 = await paymentService.createPayoutTransaction({
-    payoutId: 'test-payout-2',
+    payoutId: '2',
     destinationAccount: 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H',
     amount: '50.0000000',
     asset: 'XLM',
@@ -60,7 +60,7 @@ async function testIdempotency() {
   });
 
   const result2 = await paymentService.createPayoutTransaction({
-    payoutId: 'test-payout-3', // Different payout ID
+    payoutId: '3', // Different payout ID
     destinationAccount: 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H',
     amount: '75.0000000', // Different amount
     asset: 'XLM',
@@ -83,21 +83,21 @@ async function testNonceTracking() {
 
   const results = await Promise.all([
     paymentService.createPayoutTransaction({
-      payoutId: 'nonce-test-1',
+      payoutId: '10',
       destinationAccount: 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H',
       amount: '10.0000000',
       asset: 'XLM',
       idempotencyKey: 'nonce:1',
     }),
     paymentService.createPayoutTransaction({
-      payoutId: 'nonce-test-2',
+      payoutId: '20',
       destinationAccount: 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H',
       amount: '20.0000000',
       asset: 'XLM',
       idempotencyKey: 'nonce:2',
     }),
     paymentService.createPayoutTransaction({
-      payoutId: 'nonce-test-3',
+      payoutId: '30',
       destinationAccount: 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H',
       amount: '30.0000000',
       asset: 'XLM',
@@ -198,7 +198,7 @@ async function testAmountConversion() {
   let passed = 0;
   for (const test of testCases) {
     const result = await paymentService.createPayoutTransaction({
-      payoutId: `amount-test-${test.amount}`,
+      payoutId: `100`,
       destinationAccount: 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H',
       amount: test.amount,
       asset: 'XLM',

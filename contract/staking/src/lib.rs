@@ -65,14 +65,13 @@ pub struct StakingContract;
 
 /// Extend the TTL of a persistent key if it exists.
 /// Matches the pattern used by the arena contract.
-fn extend_persistent_ttl<K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>>(
-    env: &Env,
-    key: &K,
-) {
+fn extend_persistent_ttl<K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>>(env: &Env, key: &K) {
     if env.storage().persistent().has(key) {
-        env.storage()
-            .persistent()
-            .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+        env.storage().persistent().extend_ttl(
+            key,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
     }
 }
 
@@ -330,7 +329,6 @@ impl StakingContract {
         Ok(())
     }
 
-
     /// Upgrade the staking contract's code to `new_wasm_hash`.
     ///
     /// Admin-gated. Upgrading in place preserves all state — admin, token,
@@ -341,7 +339,8 @@ impl StakingContract {
         Self::require_admin(&env)?;
         env.deployer()
             .update_current_contract_wasm(new_wasm_hash.clone());
-        env.events().publish((symbol_short!("UPGRADE"),), new_wasm_hash);
+        env.events()
+            .publish((symbol_short!("UPGRADE"),), new_wasm_hash);
         Ok(())
     }
 

@@ -2,6 +2,10 @@ import React from 'react';
 import { render, screen } from '@testing-library/react';
 import Hero from '../Hero';
 
+jest.mock('next/navigation', () => ({
+  useRouter: () => ({ push: jest.fn() }),
+}));
+
 describe('Hero', () => {
   it('renders the headline', () => {
     render(<Hero />);

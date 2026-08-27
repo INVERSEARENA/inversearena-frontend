@@ -3,6 +3,7 @@ import cors from "cors";
 import helmet from "helmet";
 import { createApiRouter } from "./routes";
 import { createAdminRouter } from "./routes/admin";
+import { createWalletRoleRouter } from "./routes/walletRole";
 import { errorHandler } from "./middleware/errorHandler";
 import { requestLogger } from "./middleware/logger";
 import { requestContextMiddleware } from "./middleware/requestContext";
@@ -76,6 +77,11 @@ export function createApp(deps: AppDependencies): express.Application {
     origin: allowedOrigins.length > 0 ? allowedOrigins : undefined,
     credentials: true,
   }));
+  // Oracle webhook (#1127): enforce a strict body size cap before the default
+  // JSON parser buffers the payload. Mounted ahead of the global parser so
+  // oversized webhook bodies are rejected with 413 at the network layer
+  // instead of being accumulated in memory.
+  app.use("/api/oracle", express.json({ limit: "4kb" }));
   app.use(express.json());
   app.use(requestLogger);
   app.use(requestContextMiddleware);
@@ -151,6 +157,7 @@ export function createApp(deps: AppDependencies): express.Application {
       deps.authService,
     ),
   );
+  app.use("/api/admin", createWalletRoleRouter());
   app.use(
     "/api/admin",
     createAdminRouter(adminController, roundController, adminAuthMiddleware),

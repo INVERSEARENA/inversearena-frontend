@@ -29,4 +29,36 @@ describe("contract-error-registry", () => {
       "Custom. (on-chain code 42)",
     );
   });
+
+  // #1116 — verify all ArenaError codes 1–35 have registry entries
+  describe("ArenaError code coverage", () => {
+    // Codes that exist in the Rust ArenaError enum (1–35)
+    const ARENA_ERROR_CODES = [
+      14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+      31, 32, 33, 34, 35,
+    ];
+
+    for (const code of ARENA_ERROR_CODES) {
+      it(`ArenaError code ${code} has a user-facing message`, () => {
+        const msg = userMessageForContractPanicCode(code);
+        expect(msg).not.toContain("ERRORS.md");
+        expect(msg).toContain(`on-chain code ${code}`);
+      });
+    }
+
+    it("NoPendingAdmin (14) mentions admin transfer", () => {
+      const msg = userMessageForContractPanicCode(14).toLowerCase();
+      expect(msg).toContain("admin");
+    });
+
+    it("ContractPaused (16) mentions paused", () => {
+      const msg = userMessageForContractPanicCode(16).toLowerCase();
+      expect(msg).toContain("paused");
+    });
+
+    it("NotEnoughPlayers (19) mentions 2 players", () => {
+      const msg = userMessageForContractPanicCode(19).toLowerCase();
+      expect(msg).toContain("2");
+    });
+  });
 });

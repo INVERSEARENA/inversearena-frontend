@@ -197,7 +197,7 @@ impl FactoryStorage {
 
     pub fn increment_active_pool_count(env: &Env, creator: &Address) -> u32 {
         let current = Self::load_active_pool_count(env, creator);
-        let new = current + 1;
+        let new = current.checked_add(1).unwrap_or(u32::MAX);
         Self::save_active_pool_count(env, creator, new);
         new
     }

@@ -16,6 +16,9 @@ import {
 import {
 } from "@/components/hook-d/arenaConstants";
 import { STELLAR_PLACEHOLDERS, stellarConfig } from "@/lib/stellarConfig";
+
+// Re-export for use in components
+export { STELLAR_PLACEHOLDERS };
 import {
   ContractError,
   ContractErrorCode,
@@ -37,22 +40,22 @@ import {
 import {
   buildClaimCallOperation,
   buildCreatePoolCallOperation,
+  buildGetArenaStateCallOperation,
   buildGetFullStateCallOperation,
   buildJoinCallOperation,
   buildRevealChoiceOperation,
   buildStakeCallOperation,
   buildSubmitCommitmentOperation,
   buildUnstakeCallOperation,
-  buildSubmitChoiceCallOperation,
   composeUnsignedTransaction,
 } from "@/shared-d/utils/soroban-transaction-composer";
 import { CreatePoolParamsSchema } from "@/shared-d/utils/stellar-transaction-schemas";
 import {
-  extractBoolFromScVal,
-  extractI128FromScVal,
-  extractU32FromScVal,
-  stroopsToDisplayAmount,
-} from "@/shared-d/utils/stellar-scval-extract";
+  parseArenaStateFromScVal,
+  parseUserStateFromScVal,
+  buildArenaDisplayState,
+} from "@/shared-d/utils/contract-state-parsers";
+import { stroopsToDisplayAmount } from "@/shared-d/utils/stellar-scval-extract";
 import {
   clearCommitment,
   computeCommitment,
@@ -119,7 +122,7 @@ export async function buildCreatePoolTransaction(
     const operation = buildCreatePoolCallOperation(factory, validatedParams, {
       xlmContractId: XLM_CONTRACT_ID,
       usdcContractId: USDC_CONTRACT_ID,
-    });
+    }, publicKey);
 
     return composeUnsignedTransaction(account, {
       fee: getDefaultInvokeBaseFee(),
@@ -252,54 +255,10 @@ export async function buildJoinArenaTransaction(
 
     const account = await getAccount(validatedPublicKey, FN);
     const poolContract = defaultSorobanClients.createContract(validatedPoolId);
-    const operation = buildJoinCallOperation(poolContract);
+    const operation = buildJoinCallOperation(poolContract, validatedPublicKey);
 
     return composeUnsignedTransaction(account, {
       fee: getJoinArenaFee(),
-      networkPassphrase: NETWORK_PASSPHRASE,
-      timeout: getStandardTxTimeoutSeconds(),
-      operation,
-    });
-  } catch (error) {
-    throw parseContractError(error, FN);
-  }
-}
-
-/**
- * Submit choice (Heads/Tails).
- *
- * NOTE (#1137): the arena contract has no `submit_choice` function — it only
- * exposes the two-phase `submit_commitment` / `reveal_choice` commit-reveal
- * flow (see below). This function's call would fail on-chain against the
- * current contract; it's left in place only because `ChoiceSubmission.tsx`
- * still calls it, which is a known, disclosed gap outside this fix's scope
- * (`src/app/arena/page.tsx`, `soroban-transaction-composer.ts`) — migrate
- * that component to `buildSubmitCommitmentTransaction`/
- * `buildRevealChoiceTransaction` as a follow-up.
- */
-export async function buildSubmitChoiceTransaction(
-  publicKey: string,
-  poolId: string,
-  choice: "Heads" | "Tails",
-  roundNumber: number,
-) {
-  const FN = "buildSubmitChoiceTransaction";
-  try {
-    const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
-    const validatedPoolId = StellarContractIdSchema.parse(poolId);
-    const validatedChoice = RoundChoiceSchema.parse(choice);
-    const validatedRoundNumber = RoundNumberSchema.parse(roundNumber);
-
-    const account = await getAccount(validatedPublicKey, FN);
-    const poolContract = defaultSorobanClients.createContract(validatedPoolId);
-    const operation = buildSubmitChoiceCallOperation(
-      poolContract,
-      validatedRoundNumber,
-      validatedChoice,
-    );
-
-    return composeUnsignedTransaction(account, {
-      fee: getDefaultInvokeBaseFee(),
       networkPassphrase: NETWORK_PASSPHRASE,
       timeout: getStandardTxTimeoutSeconds(),
       operation,
@@ -429,9 +388,19 @@ export async function buildClaimWinningsTransaction(
     const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
     const validatedPoolId = StellarContractIdSchema.parse(poolId);
 
+    const arenaState = await fetchArenaState(validatedPoolId, validatedPublicKey);
+    if (!arenaState.hasWon) {
+      throw new ContractError({
+        code: ContractErrorCode.VALIDATION_FAILED,
+        message:
+          "Only the arena winner can claim winnings. This account is not the winner.",
+        fn: FN,
+      });
+    }
+
     const account = await getAccount(validatedPublicKey, FN);
     const poolContract = defaultSorobanClients.createContract(validatedPoolId);
-    const operation = buildClaimCallOperation(poolContract);
+    const operation = buildClaimCallOperation(poolContract, validatedPublicKey);
 
     return composeUnsignedTransaction(account, {
       fee: getDefaultInvokeBaseFee(),
@@ -473,6 +442,8 @@ export interface ArenaStateResponse {
   gameState: number;
   entryFee: number;
   playerCount: number;
+  commitDeadline: number | null;
+  revealDeadline: number | null;
 }
 
 /**
@@ -498,14 +469,13 @@ export async function fetchArenaState(
       "0",
     );
 
-    const stateReaderAddress =
-      validatedUserAddress ||
-      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+    // Public arena state requires no wallet address — always succeeds.
+    // User-specific fields (isUserIn, hasWon, currentStake, potentialPayout)
+    // are only available when a valid user address is provided.
+    const getStateOperation = validatedUserAddress
+      ? buildGetFullStateCallOperation(arenaContract, validatedUserAddress)
+      : buildGetArenaStateCallOperation(arenaContract);
 
-    const getStateOperation = buildGetFullStateCallOperation(
-      arenaContract,
-      stateReaderAddress,
-    );
     const stateTx = composeUnsignedTransaction(dummyAccount, {
       fee: getDefaultInvokeBaseFee(),
       networkPassphrase: NETWORK_PASSPHRASE,
@@ -532,80 +502,27 @@ export async function fetchArenaState(
 
     const stateData = stateSimulation.result.retval;
 
-    const survivorsCount =
-      extractU32FromScVal(stateData, "survivors_count") || 0;
-    const maxCapacity = extractU32FromScVal(stateData, "max_capacity") || 0;
-    const roundNumber = extractU32FromScVal(stateData, "round_number") || 0;
-    const currentStakeStroops =
-      extractI128FromScVal(stateData, "current_stake") ?? 0n;
-    const potentialPayout =
-      extractI128FromScVal(stateData, "potential_payout") ?? 0n;
-    const isUserIn = extractBoolFromScVal(stateData, "is_active") || false;
-    const hasWon = extractBoolFromScVal(stateData, "has_won") || false;
+    const arenaState = parseArenaStateFromScVal(stateData);
+    const userState = validatedUserAddress ? parseUserStateFromScVal(stateData) : { active: false, won: false };
+    const display = buildArenaDisplayState(arenaState);
 
-    // Fetch config for entry_fee
-    let entryFeeStroops = 0n;
-    try {
-      const configTx = composeUnsignedTransaction(dummyAccount, {
-        fee: getDefaultInvokeBaseFee(),
-        networkPassphrase: NETWORK_PASSPHRASE,
-        timeout: getShortTxTimeoutSeconds(),
-        operation: arenaContract.call("get_config"),
-      });
-      const configSim = await server.simulateTransaction(configTx);
-      if (!("error" in configSim) && configSim.result?.retval) {
-        entryFeeStroops = extractI128FromScVal(configSim.result.retval, "entry_fee") ?? 0n;
-      }
-    } catch (e) {
-      console.warn("Failed to fetch get_config", e);
-    }
-
-    // Fetch player_count
-    let playerCount = survivorsCount;
-    try {
-      const pcTx = composeUnsignedTransaction(dummyAccount, {
-        fee: getDefaultInvokeBaseFee(),
-        networkPassphrase: NETWORK_PASSPHRASE,
-        timeout: getShortTxTimeoutSeconds(),
-        operation: arenaContract.call("get_player_count"),
-      });
-      const pcSim = await server.simulateTransaction(pcTx);
-      if (!("error" in pcSim) && pcSim.result?.retval) {
-        playerCount = extractU32FromScVal(pcSim.result.retval) ?? survivorsCount;
-      }
-    } catch (e) {
-      console.warn("Failed to fetch get_player_count", e);
-    }
-
-    // Fetch game_state
-    let gameState = 0;
-    try {
-      const gsTx = composeUnsignedTransaction(dummyAccount, {
-        fee: getDefaultInvokeBaseFee(),
-        networkPassphrase: NETWORK_PASSPHRASE,
-        timeout: getShortTxTimeoutSeconds(),
-        operation: arenaContract.call("game_state"),
-      });
-      const gsSim = await server.simulateTransaction(gsTx);
-      if (!("error" in gsSim) && gsSim.result?.retval) {
-        gameState = extractU32FromScVal(gsSim.result.retval) ?? 0;
-      }
-    } catch (e) {
-      console.warn("Failed to fetch game_state", e);
-    }
-
+    // entry_fee, player_count, and game_state aren't part of get_full_state's
+    // return value yet (contract follow-up). Falling back to sane defaults keeps
+    // this a single round trip.
     return {
       arenaId: validatedArenaId,
-      survivorsCount,
-      maxCapacity,
-      isUserIn,
-      hasWon,
-      currentStake: stroopsToDisplayAmount(currentStakeStroops),
-      potentialPayout: stroopsToDisplayAmount(potentialPayout),
-      roundNumber,
-      gameState,
-      entryFee: stroopsToDisplayAmount(entryFeeStroops),
-      playerCount,
+      survivorsCount: display.survivorsCount,
+      maxCapacity: display.maxCapacity,
+      isUserIn: userState.active,
+      hasWon: userState.won,
+      currentStake: display.currentStake,
+      potentialPayout: display.potentialPayout,
+      roundNumber: display.roundNumber,
+      gameState: 0,
+      entryFee: stroopsToDisplayAmount(0n),
+      playerCount: display.survivorsCount,
+      commitDeadline: null,
+      revealDeadline: null,
     };
   } catch (error) {
     throw parseContractError(error, FN);

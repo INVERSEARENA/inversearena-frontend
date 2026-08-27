@@ -101,6 +101,15 @@ export function validateStakeAmount(params: StakeValidationParams): ValidationRe
         };
     }
 
+    // Reject multiple decimal points before numeric parsing (parseFloat would
+    // otherwise silently truncate e.g. "1.2.3" to 1.2)
+    if (amount.split(".").length > 2) {
+        return {
+            isValid: false,
+            error: "Please enter a valid amount",
+        };
+    }
+
     const numericValue = parseFloat(amount);
 
     // Check if it's a valid number

@@ -2,7 +2,7 @@
 
 mod snapshot_tests;
 mod storage;
-mod types;
+pub mod types;
 
 #[cfg(test)]
 mod integration_tests;
@@ -11,11 +11,49 @@ use storage::{CreatorStakeRecord, FactoryStorage};
 use types::{ArenaMetadata, ArenaStatus, FactoryError, PoolConfig};
 
 use soroban_sdk::{
-    Address, BytesN, Env, Vec, contract, contractimpl, symbol_short, token,
+    Address, BytesN, Env, Vec, contract, contractclient, contractimpl, symbol_short, token,
 };
-use arena::ArenaContractClient;
+
+/// Must match `arena::MAX_PLAYERS_ALLOWED` (contract/arena/src/lib.rs) exactly
+/// — kept as a duplicated local constant, not `use arena::MAX_PLAYERS_ALLOWED`,
+/// because depending on the `arena` crate as a real (non-dev) dependency here
+/// statically links its `#[contractimpl]` block into factory's own wasm
+/// binary, and both contracts export an `unpause` symbol, which collides at
+/// link time (see the "Optimize contract WASM" Contract CI step). `arena`
+/// stays a dev-dependency for integration tests, which need the real
+/// contract. If this drifts from arena's constant, `create_pool` will accept
+/// configs arena's own `initialize` then rejects, reverting the transaction.
+const MAX_PLAYERS_ALLOWED: u32 = 100;
+
+/// Local stub for the one arena entry point factory calls in production
+/// (`initialize`, right after deploying a new arena instance). Deliberately
+/// not `use arena::ArenaContractClient` — depending on the full `arena`
+/// crate here would statically link its `#[contractimpl]` block into
+/// factory's own wasm binary, and both contracts export an `unpause`
+/// symbol, which collides at link time. `arena` stays a dev-dependency for
+/// integration tests, which need the real contract.
+#[contractclient(name = "ArenaClient")]
+pub trait ArenaInterface {
+    #[allow(clippy::too_many_arguments)]
+    fn initialize(
+        env: Env,
+        admin: Address,
+        stake_token: Address,
+        yield_vault: Address,
+        entry_fee: i128,
+        oracle_contract: Address,
+        factory: Address,
+        pool_id: u32,
+        min_players: u32,
+        max_players: u32,
+        round_duration: u64,
+    );
+}
 
 const MAX_PAGE_SIZE: u32 = 50;
+const MIN_ROUND_DURATION: u64 = 60;
+const MAX_ROUND_DURATION: u64 = 604_800;
+const MIN_PLAYERS: u32 = 2;
 
 /// Factory contract — deploys arena instances and enforces protocol-level rules.
 ///
@@ -48,8 +86,7 @@ impl FactoryContract {
     /// features can ship without redeploying and losing that state.
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), FactoryError> {
         Self::require_admin(&env)?;
-        env.deployer()
-            .update_current_contract_wasm(new_wasm_hash);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
         env.events().publish((symbol_short!("UPGRADE"),), ());
         Ok(())
     }
@@ -189,6 +226,14 @@ impl FactoryContract {
         host.require_auth();
         FactoryStorage::load_admin(&env)?;
 
+        if config.round_duration < MIN_ROUND_DURATION
+            || config.round_duration > MAX_ROUND_DURATION
+            || config.min_players < MIN_PLAYERS
+            || config.min_players > config.max_players
+            || config.max_players > MAX_PLAYERS_ALLOWED
+        {
+            return Err(FactoryError::InvalidConfig);
+        }
         if !FactoryStorage::is_whitelisted(&env, &host) {
             return Err(FactoryError::HostNotWhitelisted);
         }
@@ -223,7 +268,7 @@ impl FactoryContract {
             .with_current_contract(Self::salt_for_pool(&env, pool_id))
             .deploy_v2(wasm_hash, ());
 
-        ArenaContractClient::new(&env, &arena).initialize(
+        ArenaClient::new(&env, &arena).initialize(
             &host,
             &config.stake_token,
             &config.yield_vault,
@@ -425,6 +470,74 @@ mod test {
         assert_eq!(err, FactoryError::HostNotWhitelisted);
     }
 
+    fn assert_invalid_config(update: impl FnOnce(&mut PoolConfig)) {
+        let (env, client, _admin, host) = setup();
+        let mut config = pool_config(&env, 100);
+        update(&mut config);
+        let error = client
+            .try_create_pool(&host, &config)
+            .err()
+            .expect("invalid config must be rejected")
+            .expect("error must be a contract error");
+        assert_eq!(error, FactoryError::InvalidConfig);
+    }
+
+    #[test]
+    fn create_pool_rejects_round_duration_below_minimum() {
+        assert_invalid_config(|config| config.round_duration = 59);
+    }
+
+    #[test]
+    fn create_pool_rejects_round_duration_above_maximum() {
+        assert_invalid_config(|config| {
+            config.round_duration = 604_801
+        });
+    }
+
+    #[test]
+    fn create_pool_rejects_fewer_than_two_players() {
+        assert_invalid_config(|config| config.min_players = 1);
+    }
+
+    #[test]
+    fn create_pool_rejects_min_players_above_max_players() {
+        assert_invalid_config(|config| {
+            config.min_players = 11
+        });
+    }
+
+    #[test]
+    fn create_pool_rejects_more_than_one_hundred_players() {
+        assert_invalid_config(|config| {
+            config.max_players = MAX_PLAYERS_ALLOWED + 1
+        });
+    }
+
+    #[test]
+    fn create_pool_rejects_max_players_in_101_to_1000_range() {
+        // Regression test: factory once accepted values 101..=1000 which arena
+        // would reject, causing transaction reversion. Now both use the same
+        // constant, and factory validates early before any deployment attempt.
+        let (env, client, _admin, host) = setup();
+        client.add_to_whitelist(&host);
+
+        let test_values = [101u32, 200, 500, 999, 1000];
+        for max_players in test_values.iter() {
+            let mut config = pool_config(&env, 100);
+            config.max_players = *max_players;
+            let err = client
+                .try_create_pool(&host, &config)
+                .err()
+                .expect("max_players > 100 must be rejected")
+                .expect("error must be a contract error");
+            assert_eq!(
+                err,
+                FactoryError::InvalidConfig,
+                "max_players > 100 must return InvalidConfig, not trap with uninitialized contract"
+            );
+        }
+    }
+
     #[test]
     fn paused_factory_rejects_pool_creation() {
         let (env, client, _admin, host) = setup();
@@ -523,7 +636,9 @@ mod test {
         let factory_id = env.register(FactoryContract, ());
 
         let token_admin = Address::generate(&env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
         let host = Address::generate(&env);
         soroban_sdk::token::StellarAssetClient::new(&env, &token_id).mint(&host, &1_000);
 
@@ -555,7 +670,9 @@ mod test {
         let client = FactoryContractClient::new(&env, &factory_id);
 
         let token_admin = Address::generate(&env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
         let host = Address::generate(&env);
         let arena = Address::generate(&env);
 

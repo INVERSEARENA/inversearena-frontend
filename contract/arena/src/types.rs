@@ -64,6 +64,12 @@ pub struct ArenaConfig {
     pub factory: Address,
     pub pool_id: u32,
     pub round_duration: u64,
+    /// Platform fee in basis points, snapshotted from the global admin-configured
+    /// value at `initialize` time (see `ArenaContract::update_platform_fee`).
+    /// Max 1000 bps (10%). Not currently deducted anywhere in the payout path —
+    /// `claim` pays out principal + yield in full; wiring an actual fee cut into
+    /// that flow is a deliberate follow-up, not implied by this field's presence.
+    pub platform_fee_bps: u32,
 }
 
 /// Wrapper for a pending admin transfer proposal.
@@ -255,6 +261,9 @@ pub enum ArenaError {
     /// The entry fee token transfer succeeded but the vault deposit did not. The contract
     /// rolls back the token transfer so no funds are left permanently locked.
     VaultDepositFailed = 35,
+
+    /// Returned when `update_platform_fee` is called with a value above `MAX_PLATFORM_FEE_BPS`.
+    InvalidPlatformFee = 36,
 }
 
 #[contracttype]

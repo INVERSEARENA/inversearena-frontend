@@ -253,6 +253,49 @@ mod test {
     }
 
     #[test]
+    fn distribute_batch_rejects_zero_amount_without_paying_anyone() {
+        let fx = setup(1_000);
+        let valid = Address::generate(&fx.env);
+        let invalid = Address::generate(&fx.env);
+        let mut recipients = Vec::new(&fx.env);
+        recipients.push_back((valid.clone(), 100));
+        recipients.push_back((invalid.clone(), 0));
+
+        assert!(fx.client.try_distribute_batch(&2, &recipients).is_err());
+        assert_eq!(fx.token.balance(&valid), 0);
+        assert_eq!(fx.token.balance(&invalid), 0);
+        assert!(!fx.client.is_paid(&2));
+    }
+
+    #[test]
+    fn distribute_batch_is_atomic_when_balance_is_insufficient() {
+        let fx = setup(100);
+        let first = Address::generate(&fx.env);
+        let second = Address::generate(&fx.env);
+        let mut recipients = Vec::new(&fx.env);
+        recipients.push_back((first.clone(), 60));
+        recipients.push_back((second.clone(), 60));
+
+        assert!(fx.client.try_distribute_batch(&3, &recipients).is_err());
+        assert_eq!(fx.token.balance(&first), 0);
+        assert_eq!(fx.token.balance(&second), 0);
+        assert!(!fx.client.is_paid(&3));
+    }
+
+    #[test]
+    fn distribute_batch_requires_admin_auth() {
+        let fx = setup(1_000);
+        let recipient = Address::generate(&fx.env);
+        let mut recipients = Vec::new(&fx.env);
+        recipients.push_back((recipient.clone(), 100));
+        fx.env.set_auths(&[]);
+
+        assert!(fx.client.try_distribute_batch(&4, &recipients).is_err());
+        assert_eq!(fx.token.balance(&recipient), 0);
+        assert!(!fx.client.is_paid(&4));
+    }
+
+    #[test]
     fn rejects_oversized_batch() {
         let fx = setup(100_000);
         let mut recipients = Vec::new(&fx.env);
@@ -287,6 +330,102 @@ mod test {
         let token = Address::generate(&env);
         // require_auth() inside initialize() must panic because admin hasn't signed.
         client.initialize(&admin, &token);
+    }
+
+    // ── Issue #1148: unauthorised-initialize security tests ──────────────────
+    //
+    // The following three tests together verify that:
+    //  (a) an attacker who calls initialize() without admin auth is rejected,
+    //  (b) a legitimate admin CAN initialize (green contrast path), and
+    //  (c) after a failed initialisation attempt the contract remains
+    //      uninitialised — so the attacker cannot then call distribute_winnings.
+
+    /// (a) Attacker calls initialize without supplying admin.require_auth().
+    ///     The call must be rejected with an auth error, not succeed silently.
+    #[test]
+    fn initialize_attacker_without_auth_is_rejected() {
+        let env = Env::default();
+        // No mock_all_auths: auth requirements are enforced.
+
+        let intended_admin = Address::generate(&env);
+        let _attacker      = Address::generate(&env);
+        let token          = Address::generate(&env);
+
+        let contract_id = env.register(PayoutContract, ());
+        let client = PayoutContractClient::new(&env, &contract_id);
+
+        // Empty auth set: admin.require_auth() inside initialize() will see no
+        // authorisation for `intended_admin` and must reject the call.
+        // This simulates an attacker who calls initialize without admin's signature.
+        env.set_auths(&[]);
+
+        let result = client.try_initialize(&intended_admin, &token);
+        assert!(
+            result.is_err(),
+            "initialize() must reject a caller who has not provided admin auth"
+        );
+    }
+
+    /// (b) The legitimate admin CAN initialize (green path / regression guard).
+    #[test]
+    fn initialize_with_correct_admin_auth_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let contract_id = env.register(PayoutContract, ());
+        let client = PayoutContractClient::new(&env, &contract_id);
+
+        // Admin signs → initialize must succeed.
+        let result = client.try_initialize(&admin, &token);
+        assert!(
+            result.is_ok(),
+            "initialize() must succeed when the admin provides auth"
+        );
+
+        // Admin view function should return the stored admin.
+        assert_eq!(client.admin(), Some(admin));
+    }
+
+    /// (c) After an attacker's failed initialize(), the contract remains
+    ///     uninitialised — the attacker cannot then call distribute_winnings.
+    ///
+    /// This is the critical security property: a failed initialisation
+    /// attempt must not leave the contract in a partially-owned state that
+    /// the attacker can exploit.
+    #[test]
+    fn attacker_cannot_distribute_winnings_after_failed_initialize() {
+        let env = Env::default();
+        // No mock_all_auths for the first (attacker) phase.
+
+        let intended_admin = Address::generate(&env);
+        let attacker       = Address::generate(&env);
+        let token          = Address::generate(&env);
+        let victim         = Address::generate(&env);
+
+        let contract_id = env.register(PayoutContract, ());
+        let client = PayoutContractClient::new(&env, &contract_id);
+
+        // Step 1: attacker tries to call initialize without admin auth — must fail.
+        // (Use an empty auth set so require_auth() panics.)
+        env.set_auths(&[]);
+        let init_result = client.try_initialize(&intended_admin, &token);
+        assert!(
+            init_result.is_err(),
+            "attacker's initialize attempt must be rejected"
+        );
+
+        // Step 2: now the attacker tries distribute_winnings on the unowned
+        // contract. Because initialize failed, no admin is set, so
+        // get_admin() returns NotInitialised and the call must fail.
+        env.mock_all_auths(); // let auth pass so the rejection comes from logic, not auth
+        let distribute_result = client.try_distribute_winnings(&1, &victim, &1_000);
+        assert!(
+            distribute_result.is_err(),
+            "attacker must not be able to distribute_winnings on an uninitialised contract"
+        );
     }
 
     /// distribute_batch must be marked paid BEFORE any transfer. Verify by

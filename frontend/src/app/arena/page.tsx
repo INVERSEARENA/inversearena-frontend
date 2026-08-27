@@ -11,7 +11,7 @@ import {
   ChooseYourFate,
   TotalYieldPot,
 } from "@/components/arena/core";
-import { useWallet } from "@/shared-d/hooks/useWallet";
+import { useWallet } from "@/features/wallet/useWallet";
 import { TransactionModal } from "@/components/modals/TransactionModal";
 import { ArenaStatsSkeleton } from "@/components/arena/ArenaStatsSkeleton";
 import {
@@ -25,6 +25,9 @@ import {
   hasStoredCommitmentForRound,
 } from "@/shared-d/utils/stellar-transactions";
 import { useArenaStream } from "@/features/arena/useArenaStream";
+
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
 
 // Commit-reveal phase windows (#1137). These are local, client-side timers —
 // the contract's real commit_deadline isn't yet exposed to the frontend via
@@ -87,6 +90,7 @@ function ArenaGameView() {
   // Commit-reveal phase state (#1137)
   const [roundPhase, setRoundPhase] = useState<"commit" | "reveal">("commit");
   const [hasCommittedForRound, setHasCommittedForRound] = useState(false);
+  const [commitTimeExpired, setCommitTimeExpired] = useState(false);
 
   // Transaction Modal State
   const [showTxModal, setShowTxModal] = useState(false);
@@ -103,7 +107,7 @@ function ArenaGameView() {
   useEffect(() => {
     async function fetchYield() {
       try {
-        const response = await fetch("/api/oracle/yield");
+        const response = await fetch(`${API_BASE}/api/oracle/yield`);
         const data = await response.json();
         setOracleYield(data.currentAPY);
       } catch (err) {
@@ -142,6 +146,7 @@ function ArenaGameView() {
     if (!ARENA_ID) return;
     setRoundPhase("commit");
     setSelectedChoice(null);
+    setCommitTimeExpired(false);
     setHasCommittedForRound(hasStoredCommitmentForRound(ARENA_ID, currentRound));
   }, [ARENA_ID, currentRound]);
 
@@ -186,6 +191,15 @@ function ArenaGameView() {
 
   return (
     <>
+      {!ARENA_ID && (
+        <div className="w-full bg-yellow-900/80 border-b border-yellow-500/60 px-4 py-2 flex items-center gap-3 text-yellow-300 font-pixel text-[10px] tracking-wider">
+          <span className="text-yellow-400 font-bold">⚠ DEMO MODE</span>
+          <span>
+            NEXT_PUBLIC_DEMO_ARENA_ID is not set — showing static placeholder data.
+            Set it to a Stellar contract address (C…) in your .env file to connect to a live arena.
+          </span>
+        </div>
+      )}
       <div className="min-h-screen p-4 md:p-6">
         <div className="max-w-7xl mx-auto">
           {/* Header */}
@@ -258,6 +272,12 @@ function ArenaGameView() {
                   }
                   onTimeUp={() => {
                     if (roundPhase === "commit") {
+                      // Do not auto-submit — the player had the full window
+                      // to commit. Just lock the choice UI and, if they
+                      // never committed, surface a "time expired" state.
+                      if (!hasCommittedForRound) {
+                        setCommitTimeExpired(true);
+                      }
                       setRoundPhase("reveal");
                     }
                     // Reveal window elapsing has no local action — the next
@@ -274,14 +294,22 @@ function ArenaGameView() {
 
               {/* Choice Cards — selectable only during the commit window; the
                   choice is locked in (blinded) once committed. */}
+              {commitTimeExpired && (
+                <div className="bg-red-900/20 border border-red-500/50 p-3 text-center rounded">
+                  <span className="text-red-300 text-xs font-pixel">
+                    TIME EXPIRED — YOU DID NOT SUBMIT A CHOICE THIS ROUND
+                  </span>
+                </div>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-grow">
                 <ChoiceCard
                   type="heads"
                   estimatedYield={headsYield}
                   isSelected={selectedChoice === "heads"}
+                  disabled={roundPhase !== "commit"}
                   onSelect={() => roundPhase === "commit" && setSelectedChoice("heads")}
                 />
-            
+
                 {isLoadingYield ? (
                   <>
                     <div className="h-48 bg-zinc-800/50 animate-pulse border-2 border-zinc-700" />
@@ -293,7 +321,8 @@ function ArenaGameView() {
                       type="tails"
                       estimatedYield={tailsYield}
                       isSelected={selectedChoice === "tails"}
-                      onSelect={() => setSelectedChoice("tails")}
+                      disabled={roundPhase !== "commit"}
+                      onSelect={() => roundPhase === "commit" && setSelectedChoice("tails")}
                     />
                   </>
                 )}
@@ -366,7 +395,10 @@ function ArenaGameView() {
               <p className="font-pixel text-3xl text-neon-green">{survivors.current}</p>
               <p className="font-pixel text-sm text-white/40">/{survivors.max}</p>
               <div className="mt-3 h-2 bg-dark-bg">
-                <div className="h-full bg-neon-green w-[12.5%]" />
+                <div
+                  className="h-full bg-neon-green"
+                  style={{ width: `${survivors.max > 0 ? (survivors.current / survivors.max) * 100 : 0}%` }}
+                />
               </div>
             </div>
 
@@ -505,8 +537,10 @@ function ArenaGameView() {
             let tx;
             if (txType === "JOIN") {
               tx = await buildJoinArenaTransaction(address, ARENA_ID, 100);
-            } else if (txType === "SUBMIT" && selectedChoice) {
-              tx = await buildSubmitChoiceTransaction(address, ARENA_ID, selectedChoice === "heads" ? "Heads" : "Tails", currentRound);
+            } else if (txType === "COMMIT" && selectedChoice) {
+              tx = await buildSubmitCommitmentTransaction(address, ARENA_ID, selectedChoice === "heads" ? "Heads" : "Tails", currentRound);
+            } else if (txType === "REVEAL") {
+              tx = await buildRevealChoiceTransaction(address, ARENA_ID, currentRound);
             } else if (txType === "CLAIM") {
               tx = await buildClaimWinningsTransaction(address, ARENA_ID);
             } else {

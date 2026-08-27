@@ -26,6 +26,7 @@ const TransactionSchema = new Schema<TransactionDocument>(
     errorMessage: { type: String, default: null },
     attempts: { type: Number, required: true, default: 0 },
     confirmedAt: { type: Date, default: null },
+    ownerId: { type: String, default: null },
   },
   {
     timestamps: true,
@@ -33,7 +34,9 @@ const TransactionSchema = new Schema<TransactionDocument>(
   }
 );
 
-TransactionSchema.index({ sourceAccount: 1, nonce: -1 });
+// Unique so two concurrent payout creations can never win the same
+// {sourceAccount, nonce} slot — the loser fails closed instead of double-spend.
+TransactionSchema.index({ sourceAccount: 1, nonce: 1 }, { unique: true });
 TransactionSchema.index({ status: 1 });
 TransactionSchema.index({ txHash: 1 });
 

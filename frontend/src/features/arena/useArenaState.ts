@@ -25,7 +25,7 @@ export interface UseArenaStateReturn {
   health: ArenaHealthStatus;
 }
 
-function toArenaState(data: ArenaStateResponse): ArenaState {
+export function toArenaState(data: ArenaStateResponse): ArenaState {
   return {
     id: data.arenaId,
     state: (function mapState() {

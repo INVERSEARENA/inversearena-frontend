@@ -67,13 +67,13 @@ fn setup_arena(state: GameState) -> (Env, ArenaContractClient<'static>, Address)
             factory: Address::generate(&env),
             pool_id: 0,
             round_duration: 0,
+            platform_fee_bps: 1000,
         };
         ArenaStorage::save_config(&env, &config);
         ArenaStorage::save_last_vault_balance(&env, 0);
     });
 
-    let env_static: &'static Env = unsafe { &*(&env as *const Env) };
-    let client = ArenaContractClient::new(env_static, &contract_id);
+    let client = ArenaContractClient::new(&env, &contract_id);
     (env, client, token_id)
 }
 
@@ -313,13 +313,13 @@ fn setup_arena_failing_vault() -> (Env, ArenaContractClient<'static>, Address) {
             factory: Address::generate(&env),
             pool_id: 0,
             round_duration: 0,
+            platform_fee_bps: 1000,
         };
         ArenaStorage::save_config(&env, &config);
         ArenaStorage::save_last_vault_balance(&env, 0);
     });
 
-    let env_static: &'static Env = unsafe { &*(&env as *const Env) };
-    let client = ArenaContractClient::new(env_static, &contract_id);
+    let client = ArenaContractClient::new(&env, &contract_id);
     (env, client, token_id)
 }
 
@@ -365,7 +365,9 @@ fn join_rejected_when_vault_deposit_fails() {
 
     // (d) The yield baseline is captured fresh from the real vault balance when
     // `start_round` is called (#1072); a rejected join must not move it.
-    let tracked = env.as_contract(&client.address, || ArenaStorage::load_last_vault_balance(&env));
+    let tracked = env.as_contract(&client.address, || {
+        ArenaStorage::load_last_vault_balance(&env)
+    });
     assert_eq!(
         tracked, 0,
         "a rejected join must not advance the yield baseline"

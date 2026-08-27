@@ -12,7 +12,6 @@ pub struct PoolConfig {
     pub round_duration: u64,
 }
 
-
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArenaStatus {
@@ -53,4 +52,5 @@ pub enum FactoryError {
     ContractPaused = 15,
     UnsupportedToken = 16,
     EntryFeeTooLow = 17,
+    InvalidConfig = 18,
 }

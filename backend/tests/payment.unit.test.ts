@@ -16,6 +16,8 @@ const mockConfig: PaymentConfig = {
   maxAttempts: 5,
   confirmPollMs: 100,
   confirmMaxPolls: 3,
+  failedRetryMax: 3,
+  failedRetryBaseMs: 5000,
   payoutMethodName: "distribute_winnings",
   payoutContractId: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
   sourceAccount: VALID_ADDRESS,
@@ -60,7 +62,7 @@ afterEach(() => {
 
 test("PaymentService.createPayoutTransaction: successful creation", async () => {
   const input = {
-    payoutId: "p-1",
+    payoutId: "1",
     destinationAccount: VALID_ADDRESS,
     amount: "10.5",
     asset: "XLM",
@@ -78,7 +80,7 @@ test("PaymentService.createPayoutTransaction: successful creation", async () => 
 
 test("PaymentService.createPayoutTransaction: idempotency", async () => {
   const input = {
-    payoutId: "p-2",
+    payoutId: "2",
     destinationAccount: VALID_ADDRESS,
     amount: "5",
     asset: "XLM",
@@ -93,7 +95,7 @@ test("PaymentService.createPayoutTransaction: idempotency", async () => {
 
 test("PaymentService.createPayoutTransaction: invalid input", async () => {
   const input = {
-    payoutId: "p-3",
+    payoutId: "3",
     destinationAccount: "INVALID",
     amount: "10",
     asset: "XLM",
