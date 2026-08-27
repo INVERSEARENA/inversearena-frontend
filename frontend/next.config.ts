@@ -3,29 +3,14 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withSentryConfig } from "@sentry/nextjs";
 
+import { STATIC_SECURITY_HEADERS } from "./src/lib/csp";
+
 const projectRoot = dirname(fileURLToPath(import.meta.url));
 
-const cspHeader = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "font-src 'self' https://fonts.gstatic.com data:",
-  "img-src 'self' data: https: blob:",
-  "connect-src 'self' https://soroban-testnet.stellar.org https://horizon-testnet.stellar.org wss://soroban-testnet.stellar.org https://soroban-mainnet.stellar.org https://horizon-mainnet.stellar.org https://*.sentry.io https://sentry.io",
-  "frame-src 'none'",
-  "frame-ancestors 'none'",
-  "object-src 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-].join("; ");
-
-const securityHeaders = [
-  { key: "Content-Security-Policy", value: cspHeader },
-  { key: "X-Frame-Options", value: "DENY" },
-  { key: "X-Content-Type-Options", value: "nosniff" },
-  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
-];
+// The Content-Security-Policy is NOT set here: it carries a per-request nonce
+// (`script-src` has no 'unsafe-inline') and is emitted by src/proxy.ts.
+// Everything else — including Strict-Transport-Security — is static. (#1296)
+const securityHeaders = STATIC_SECURITY_HEADERS.map((header) => ({ ...header }));
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
@@ -52,8 +37,9 @@ export default withSentryConfig(nextConfig, {
   widenClientFileUpload: true,
 
   webpack: {
-    // Do not wrap Next.js middleware — we have no middleware.ts and the
-    // auto-wrap causes MIDDLEWARE_INVOCATION_FAILED on Vercel Edge deployments.
+    // Do not wrap Next.js middleware/proxy. src/proxy.ts sets CORS + the
+    // security headers, including the CSP nonce (#1296); Sentry's auto-wrap
+    // previously caused MIDDLEWARE_INVOCATION_FAILED on Vercel Edge.
     autoInstrumentMiddleware: false,
 
     // Disable automatic Vercel Cron monitors — not used in this project.

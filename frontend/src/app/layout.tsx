@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { headers } from "next/headers";
 import { ThemeProvider } from "next-themes";
 import { ClientProviders } from "./ClientProviders";
 import { ErrorBoundary } from "@/components/error-boundary";
@@ -40,11 +41,16 @@ export const viewport: Viewport = {
   themeColor: "#0a0a0a",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // Nonce minted per request by src/proxy.ts (#1296). next-themes injects an
+  // inline anti-flash <script>, so it must be told the nonce now that
+  // 'unsafe-inline' is gone from script-src.
+  const nonce = (await headers()).get("x-nonce") || undefined;
+
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
@@ -56,7 +62,12 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${pressStart2P.variable} ${spaceGrotesk.variable} antialiased`}
       >
-        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="dark"
+          enableSystem
+          {...(nonce ? { nonce } : {})}
+        >
           <ServiceWorkerRegister />
           <StellarSetupBanner />
           <ErrorBoundary>
