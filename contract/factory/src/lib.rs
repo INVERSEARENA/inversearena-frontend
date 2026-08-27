@@ -390,8 +390,8 @@ impl FactoryContract {
         let total = FactoryStorage::pool_count(&env);
         let limit = core::cmp::min(limit, MAX_PAGE_SIZE);
         let mut result: Vec<ArenaMetadata> = Vec::new(&env);
-        let start = offset + 1;
-        let end = core::cmp::min(total, offset + limit);
+        let start = offset.saturating_add(1);
+        let end = core::cmp::min(total, offset.saturating_add(limit));
         if start <= end {
             for pool_id in start..=end {
                 if let Some(meta) = FactoryStorage::load_pool(&env, pool_id) {

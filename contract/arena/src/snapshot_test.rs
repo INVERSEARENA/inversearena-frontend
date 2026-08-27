@@ -83,7 +83,6 @@ mod snapshot_tests {
             oracle_contract: Address::generate(&env),
             factory: Address::generate(&env),
             pool_id: 0,
-            round_duration: 0,
             platform_fee_bps: 1000,
         };
         let config_b = ArenaConfig {
@@ -100,7 +99,6 @@ mod snapshot_tests {
             oracle_contract: Address::generate(&env),
             factory: Address::generate(&env),
             pool_id: 0,
-            round_duration: 0,
             platform_fee_bps: 1000,
         };
 
