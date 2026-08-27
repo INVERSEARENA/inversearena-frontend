@@ -120,8 +120,19 @@ export default function ProfilePage() {
             </div>
           </div>
 
-          <Button variant="secondary" className="w-full md:w-auto mt-4 md:mt-0 border-neon-green/50 text-neon-green hover:bg-neon-green/10">
+          {/* #1294 — profile editing isn't wired up yet; render as an
+              explicitly disabled control with a "soon" affordance instead of
+              a live-looking CTA that silently does nothing on click. */}
+          <Button
+            variant="secondary"
+            disabled
+            aria-disabled="true"
+            title="Profile editing isn't available yet"
+            aria-label="Edit profile — coming soon"
+            className="w-full md:w-auto mt-4 md:mt-0 border-neon-green/50 text-neon-green hover:bg-neon-green/10"
+          >
             EDIT PROFILE
+            <span className="ml-2 text-[9px] font-bold tracking-widest opacity-70">SOON</span>
           </Button>
         </div>
       </section>
@@ -175,9 +186,22 @@ export default function ProfilePage() {
             )}
             <div className="text-[10px] text-zinc-500 font-mono uppercase tracking-widest mt-1">GENERATED VIA RWA DEPLOYMENT</div>
           </div>
-          <Button className="w-full h-10 text-[10px] tracking-widest uppercase bg-neon-pink hover:bg-neon-pink/90 text-white border-none">
+          {/* #1294 — on-chain yield claiming isn't implemented yet. Keep the
+              button visible for discoverability but disabled, so clicking the
+              page's most prominent CTA never looks broken. */}
+          <Button
+            disabled
+            aria-disabled="true"
+            title="Yield claiming isn't available yet"
+            aria-label="Claim yield — coming soon"
+            className="w-full h-10 text-[10px] tracking-widest uppercase bg-neon-pink hover:bg-neon-pink/90 text-white border-none"
+          >
             CLAIM YIELD
+            <span className="ml-2 opacity-70">— SOON</span>
           </Button>
+          <p className="text-[9px] text-zinc-500 font-mono uppercase tracking-widest text-center">
+            Claiming goes live with RWA payout support
+          </p>
         </div>
 
         {/* Rank */}
