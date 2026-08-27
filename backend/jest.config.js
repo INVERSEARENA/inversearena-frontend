@@ -17,7 +17,6 @@ module.exports = {
     // Legacy script-style runners (no Jest `describe`/`it`)
     "<rootDir>/tests/leaderboard\\.test\\.ts",
     "<rootDir>/tests/security-headers\\.test\\.ts",
-    "<rootDir>/tests/arena-participants\\.test\\.ts",
     "<rootDir>/tests/arenaStats\\.test\\.ts",
     "<rootDir>/tests/metrics\\.test\\.ts",
     "<rootDir>/tests/payment\\.integration\\.test\\.ts",

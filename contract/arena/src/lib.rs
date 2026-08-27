@@ -32,7 +32,7 @@ pub trait FactoryInterface {
 
 const PAGE_SIZE: u32 = 50;
 pub(crate) const MIN_PLAYERS_TO_START: u32 = 2;
-const MAX_PLAYERS_ALLOWED: u32 = 100;
+pub const MAX_PLAYERS_ALLOWED: u32 = 100;
 const CONTRACT_VERSION: u32 = 1;
 const UPGRADE_TIMELOCK_SECONDS: u64 = 86_400; // 1 day
 /// Maximum allowed platform fee: 1000 bps (10%). Enforced by `update_platform_fee`.
@@ -449,6 +449,13 @@ impl ArenaContract {
         }
 
         ArenaEvents::arena_cancelled(&env, &config.admin);
+        
+        // Notify factory of cancellation: release active pool slot and refund creator stake
+        let factory_client = FactoryClient::new(&env, &config.factory);
+        let _ = factory_client.try_release_arena(&arena_addr);
+        let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
+        let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Cancelled);
+        
         ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
     }
@@ -498,6 +505,12 @@ impl ArenaContract {
         }
 
         ArenaEvents::arena_expired(&env);
+        
+        // Notify factory of expiration: release active pool slot and sync status
+        let factory_client = FactoryClient::new(&env, &config.factory);
+        let _ = factory_client.try_release_arena(&arena_addr);
+        let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Finished);
+        
         ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
     }
@@ -556,6 +569,10 @@ impl ArenaContract {
         config.admin.require_auth();
         Self::require_not_paused(&config)?;
 
+        if duration_seconds < MIN_ROUND_DURATION_SECONDS || duration_seconds > MAX_ROUND_DURATION_SECONDS {
+            return Err(ArenaError::InvalidDuration);
+        }
+
         // Use the state machine to enforce Open → Active; rejects Finished, Settled, Cancelled (#1073)
         state_machine::ensure_transition(
             &config.state,
@@ -603,8 +620,10 @@ impl ArenaContract {
     /// Only callable by the admin after the grace period (`round_start +
     /// duration_seconds`) has elapsed. Computes which choice was in the
     /// majority, marks those players as eliminated, snapshots the vault yield,
-    /// and transitions the arena back to `Open` (or to `Finished` if only one
-    /// survivor remains).
+    /// and transitions the arena:
+    /// - back to `Open` if more than one survivor remains
+    /// - to `Finished` if exactly one survivor remains (winner announced)
+    /// - to `Cancelled` if zero survivors remain (no winner; enables refund recovery via `claim_refund`)
     ///
     /// # Errors
     /// - `ArenaError::NotInitialized` if `initialize` has not been called.
@@ -670,7 +689,14 @@ impl ArenaContract {
         ArenaStorage::save_round_result(&env, round, &result);
 
         config.round_count = round;
-        config.state = if resolution.survivors <= 1 {
+        config.state = if resolution.survivors == 0 {
+            // Zero survivors: all active players failed to reveal (e.g., both AFKs).
+            // Transition to Cancelled to unlock claim_refund-style recovery instead of
+            // permanently locking the prize pool. The alternative (Finished) requires a
+            // winner for claim() to succeed, but there is no winner — the funds would be
+            // locked forever with no state machine exit.
+            GameState::Cancelled
+        } else if resolution.survivors == 1 {
             if let Some(ref winner_addr) = resolution.winner {
                 ArenaStorage::set_winner(&env, winner_addr);
             }
@@ -680,7 +706,7 @@ impl ArenaContract {
             GameState::Open
         };
         ArenaStorage::save_config(&env, &config);
-        if config.state == GameState::Finished {
+        if config.state == GameState::Finished || config.state == GameState::Cancelled {
             ArenaStorage::decrement_creator_active_pools(&env, &config.admin);
         }
 
@@ -695,6 +721,18 @@ impl ArenaContract {
         // Clear per-round choice and commitment data to prevent stale data
         // from persisting into a future round.
         ArenaStorage::clear_round_data(&env, round);
+        
+        // Notify factory of round resolution state changes
+        let arena_addr = env.current_contract_address();
+        let factory_client = FactoryClient::new(&env, &config.factory);
+        if config.state == GameState::Finished {
+            let _ = factory_client.try_release_arena(&arena_addr);
+            let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Active);
+        } else if config.state == GameState::Cancelled {
+            let _ = factory_client.try_release_arena(&arena_addr);
+            let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
+            let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Cancelled);
+        }
 
         ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
@@ -766,6 +804,11 @@ impl ArenaContract {
         token_client.transfer(&arena_addr, &winner, &total);
 
         ArenaEvents::prize_claimed(&env, &winner, total, total.saturating_sub(principal));
+        
+        // Notify factory that prize has been claimed and game is settled
+        let factory_client = FactoryClient::new(&env, &config.factory);
+        let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Finished);
+        
         ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
     }
@@ -901,6 +944,13 @@ impl ArenaContract {
         let _ = rwa_client.try_withdraw_all(&arena_addr);
 
         ArenaEvents::arena_cancelled(&env, &config.admin);
+        
+        // Notify factory of force cancellation: release active pool slot, refund creator stake, and sync status
+        let factory_client = FactoryClient::new(&env, &config.factory);
+        let _ = factory_client.try_release_arena(&arena_addr);
+        let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
+        let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Cancelled);
+        
         ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
     }
@@ -1734,10 +1784,16 @@ mod test {
 
     #[test]
     fn resolve_round_after_grace_elapsed_succeeds() {
+        // setup_started's two players never submit a choice, so both are
+        // eliminated as non-revealers and survivors == 0. Since the
+        // zero-survivors fix, that correctly resolves to Cancelled (unlocking
+        // claim_refund) rather than Finished (which would need a winner that
+        // doesn't exist here) — this test only exercises that resolve_round
+        // succeeds once the grace period has elapsed, not a specific outcome.
         let (env, client) = setup_started(60, 1_000);
         env.ledger().with_mut(|li| li.timestamp = 1_061);
         client.resolve_round();
-        assert_eq!(state_of(&env, &client), GameState::Finished);
+        assert_eq!(state_of(&env, &client), GameState::Cancelled);
     }
 
     #[test]
@@ -1873,8 +1929,8 @@ mod test {
                 ArenaStorage::save_player(&env, &p1, &active);
                 ArenaStorage::save_player(&env, &p2, &active);
             });
-            env.ledger()
-                .with_mut(|li| li.timestamp = 1_000 + idx as u64);
+            let round_start_ts = 1_000 + (idx as u64) * 1_000;
+            env.ledger().with_mut(|li| li.timestamp = round_start_ts);
             // Reset to Open before each round because resolve_round transitions
             // to Finished when there are no survivors (no real players exist).
             env.as_contract(&contract_id, || {
@@ -1884,9 +1940,13 @@ mod test {
             });
             // Baseline is captured here, from the balance the previous round
             // left behind: 100, then 110, then 125.
-            client.start_round(&0);
+            client.start_round(&MIN_ROUND_DURATION_SECONDS);
             // The vault earns during the round: +10, +15, +25.
             set_vault_balance(*balance);
+            // Advance past the grace period (round_start + duration) so
+            // resolve_round's deadline check passes.
+            env.ledger()
+                .with_mut(|li| li.timestamp = round_start_ts + MIN_ROUND_DURATION_SECONDS);
             client.resolve_round();
         }
 
@@ -3866,6 +3926,138 @@ mod test {
                 );
             });
         }
+    }
+
+    #[test]
+    fn start_round_rejects_duration_below_minimum() {
+        let (_env, client) = setup(2);
+        let err = client
+            .try_start_round(&(MIN_ROUND_DURATION_SECONDS - 1))
+            .err()
+            .expect("duration below minimum must be rejected")
+            .expect("error must be a contract error");
+        assert_eq!(err, ArenaError::InvalidDuration);
+    }
+
+    #[test]
+    fn start_round_rejects_duration_above_maximum() {
+        let (_env, client) = setup(2);
+        let err = client
+            .try_start_round(&(MAX_ROUND_DURATION_SECONDS + 1))
+            .err()
+            .expect("duration above maximum must be rejected")
+            .expect("error must be a contract error");
+        assert_eq!(err, ArenaError::InvalidDuration);
+    }
+
+    #[test]
+    fn start_round_rejects_u64_max_duration() {
+        // Regression test: u64::MAX duration would set commit_deadline unreachably
+        // far in the future, locking all player funds indefinitely. This is the
+        // exact fund-lock scenario the MAX_ROUND_DURATION_SECONDS constant's
+        // comment warns about.
+        let (_env, client) = setup(2);
+        let err = client
+            .try_start_round(&u64::MAX)
+            .err()
+            .expect("u64::MAX duration must be rejected")
+            .expect("error must be a contract error");
+        assert_eq!(
+            err,
+            ArenaError::InvalidDuration,
+            "u64::MAX must be rejected, not cause indefinite fund lock"
+        );
+    }
+
+    #[test]
+    fn start_round_accepts_minimum_valid_duration() {
+        let (_env, client) = setup(2);
+        let result = client.try_start_round(&MIN_ROUND_DURATION_SECONDS);
+        assert!(
+            result.is_ok(),
+            "minimum valid duration must be accepted"
+        );
+    }
+
+    #[test]
+    fn start_round_accepts_maximum_valid_duration() {
+        let (_env, client) = setup(2);
+        let result = client.try_start_round(&MAX_ROUND_DURATION_SECONDS);
+        assert!(
+            result.is_ok(),
+            "maximum valid duration must be accepted"
+        );
+    }
+
+    #[test]
+    fn resolve_round_with_zero_survivors_transitions_to_cancelled() {
+        // Regression test: when all remaining active players fail to reveal their choice
+        // (e.g., both AFKs in a 2-player round), the arena should transition to Cancelled
+        // to enable claim_refund recovery instead of becoming permanently locked.
+        let (env, client) = setup(2);
+        
+        // Whitelist and set up arena
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let players: [Address; 2] = [Address::generate(&env), Address::generate(&env)];
+        
+        let oracle_id = env.register(MockOracle, ());
+        let vault_id = env.register(MockVault, ());
+        let stake_token = Address::generate(&env);
+        
+        env.as_contract(&client.address, || {
+            let config = ArenaConfig {
+                admin: admin.clone(),
+                stake_token: stake_token.clone(),
+                entry_fee: 100,
+                state: GameState::Open,
+                paused: false,
+                player_count: 2,
+                cumulative_yield: 0,
+                commit_deadline: 0,
+                yield_vault: vault_id.clone(),
+                round_count: 0,
+                oracle_contract: oracle_id.clone(),
+                factory: Address::generate(&env),
+                pool_id: 0,
+                round_duration: 0,
+                platform_fee_bps: 1000,
+            };
+            ArenaStorage::save_config(&env, &config);
+            ArenaStorage::save_player_limits(&env, 2, 2);
+            
+            for player in players.iter() {
+                ArenaStorage::add_player(&env, &player);
+            }
+        });
+        
+        // Start a round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&MIN_ROUND_DURATION_SECONDS);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&client.address, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set in zero-survivor scenario"
+            );
+        });
     }
 } // close mod test
 #[cfg(test)]

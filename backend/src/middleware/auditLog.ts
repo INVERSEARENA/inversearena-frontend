@@ -38,13 +38,31 @@ async function writeAuditLog(
   _body: unknown
 ): Promise<void> {
   const adminId = req.adminId;
-  if (!adminId) return; // Not an authenticated admin request — skip
-
   const action = `${req.method} ${req.route?.path ?? req.path}`;
   const resourceId =
     (res.locals.auditResourceId as string | undefined) ??
     req.params.id ??
     undefined;
+
+  if (!adminId) {
+    // Authentication itself failed (bad/missing API key), so req.adminId was
+    // never set. Still record the attempt — keyed by IP rather than adminId —
+    // so repeated unauthorized hits against destructive admin routes leave a
+    // trail instead of vanishing silently.
+    if (res.statusCode !== 401) return; // Not an admin-auth failure — skip
+
+    await AuditLogModel.create({
+      adminId: `unauthenticated:${req.ip ?? "unknown"}`,
+      action,
+      resourceType: deriveResourceType(req.path),
+      resourceId: resourceId ?? "unknown",
+      status: "auth_failed",
+      metadata: res.locals.auditMetadata as Record<string, unknown> | undefined,
+      ipAddress: req.ip,
+      userAgent: req.headers["user-agent"],
+    });
+    return;
+  }
 
   const status: "success" | "failed" = res.statusCode < 400 ? "success" : "failed";
 
@@ -61,7 +79,11 @@ async function writeAuditLog(
 }
 
 function deriveResourceType(path: string): string {
-  // Extract the first meaningful path segment after /admin/
-  const segments = path.replace(/^\/admin\//, "").split("/");
+  // Extract the first meaningful path segment, skipping any leading
+  // "api"/"admin" mount-prefix segments. req.path is router-relative while
+  // handling the request (e.g. "/audit-logs") but reverts to the full
+  // mounted path once a request has unwound to the top-level error handler
+  // (e.g. "/api/admin/reconciliation/run") — this handles both.
+  const segments = path.split("/").filter((s) => s.length > 0 && s !== "api" && s !== "admin");
   return segments[0] ?? "unknown";
 }

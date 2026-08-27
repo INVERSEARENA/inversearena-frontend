@@ -66,6 +66,7 @@ impl RwaStorage {
             .unwrap_or(YieldAccrual {
                 principal: 0,
                 withdrawn: false,
+                deposited_at: 0,
             })
     }
 

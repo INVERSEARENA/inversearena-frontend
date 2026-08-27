@@ -124,25 +124,31 @@ export function useArenaTimer({
       lastUpdateRef.current = now;
     }
   }, [initialSeconds, isRunning]);
-  // Effect to manage the interval lifecycle
+  const isVisible = usePageVisibility();
+
+  // Single effect owning the interval lifecycle. Previously this was split
+  // across two effects (interval lifecycle + page-visibility) that both
+  // reacted to `rawSeconds` (which changes ~once per second while running)
+  // and both wrote to the same `intervalRef` — the visibility effect had no
+  // cleanup of its own, so on every tick it silently overwrote the ref with
+  // a second interval, orphaning the first. The orphaned interval kept
+  // calling `updateTimer` (which doesn't check `isRunning`) even after
+  // `pause()`, since `pause()` can only clear whatever interval the ref
+  // currently points to. Consolidating into one effect means there is ever
+  // only one interval, and its cleanup always runs before the next one is
+  // created.
   useEffect(() => {
-    if (isRunning && rawSeconds > 0) {
+    if (isVisible && isRunning && rawSeconds > 0) {
       intervalRef.current = setInterval(updateTimer, 100); // 100ms for high precision
-    } else {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
     }
 
-    // Cleanup on unmount or when dependencies change
     return () => {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
     };
-  }, [isRunning, rawSeconds, updateTimer]);
+  }, [isVisible, isRunning, rawSeconds, updateTimer]);
 
   // Effect to handle timer completion
   useEffect(() => {

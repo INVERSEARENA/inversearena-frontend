@@ -14,6 +14,17 @@ use soroban_sdk::{
     Address, BytesN, Env, Vec, contract, contractclient, contractimpl, symbol_short, token,
 };
 
+/// Must match `arena::MAX_PLAYERS_ALLOWED` (contract/arena/src/lib.rs) exactly
+/// — kept as a duplicated local constant, not `use arena::MAX_PLAYERS_ALLOWED`,
+/// because depending on the `arena` crate as a real (non-dev) dependency here
+/// statically links its `#[contractimpl]` block into factory's own wasm
+/// binary, and both contracts export an `unpause` symbol, which collides at
+/// link time (see the "Optimize contract WASM" Contract CI step). `arena`
+/// stays a dev-dependency for integration tests, which need the real
+/// contract. If this drifts from arena's constant, `create_pool` will accept
+/// configs arena's own `initialize` then rejects, reverting the transaction.
+const MAX_PLAYERS_ALLOWED: u32 = 100;
+
 /// Local stub for the one arena entry point factory calls in production
 /// (`initialize`, right after deploying a new arena instance). Deliberately
 /// not `use arena::ArenaContractClient` — depending on the full `arena`
@@ -43,7 +54,6 @@ const MAX_PAGE_SIZE: u32 = 50;
 const MIN_ROUND_DURATION: u64 = 60;
 const MAX_ROUND_DURATION: u64 = 604_800;
 const MIN_PLAYERS: u32 = 2;
-const MAX_PLAYERS: u32 = 1_000;
 
 /// Factory contract — deploys arena instances and enforces protocol-level rules.
 ///
@@ -220,7 +230,7 @@ impl FactoryContract {
             || config.round_duration > MAX_ROUND_DURATION
             || config.min_players < MIN_PLAYERS
             || config.min_players > config.max_players
-            || config.max_players > MAX_PLAYERS
+            || config.max_players > MAX_PLAYERS_ALLOWED
         {
             return Err(FactoryError::InvalidConfig);
         }
@@ -497,10 +507,35 @@ mod test {
     }
 
     #[test]
-    fn create_pool_rejects_more_than_one_thousand_players() {
+    fn create_pool_rejects_more_than_one_hundred_players() {
         assert_invalid_config(|config| {
-            config.max_players = 1_001
+            config.max_players = MAX_PLAYERS_ALLOWED + 1
         });
+    }
+
+    #[test]
+    fn create_pool_rejects_max_players_in_101_to_1000_range() {
+        // Regression test: factory once accepted values 101..=1000 which arena
+        // would reject, causing transaction reversion. Now both use the same
+        // constant, and factory validates early before any deployment attempt.
+        let (env, client, _admin, host) = setup();
+        client.add_to_whitelist(&host);
+
+        let test_values = [101u32, 200, 500, 999, 1000];
+        for max_players in test_values.iter() {
+            let mut config = pool_config(&env, 100);
+            config.max_players = *max_players;
+            let err = client
+                .try_create_pool(&host, &config)
+                .err()
+                .expect("max_players > 100 must be rejected")
+                .expect("error must be a contract error");
+            assert_eq!(
+                err,
+                FactoryError::InvalidConfig,
+                "max_players > 100 must return InvalidConfig, not trap with uninitialized contract"
+            );
+        }
     }
 
     #[test]
