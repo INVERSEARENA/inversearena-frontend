@@ -28,8 +28,14 @@ export function cacheMiddleware(keyGen: KeyGenerator, ttlSeconds: number): Reque
     res.json = (body: unknown) => {
       res.setHeader("X-Cache", "MISS");
 
-      // Cache in background — don't block the response
-      cache.set(key, body, ttlSeconds).catch(() => {});
+      // Only cache successful responses. res.json is also what the global
+      // error handler calls (res.status(4xx/5xx).json(...)), so without this
+      // check a single transient failure gets cached and replayed to every
+      // subsequent request for the full TTL window.
+      if (res.statusCode < 300) {
+        // Cache in background — don't block the response
+        cache.set(key, body, ttlSeconds).catch(() => {});
+      }
 
       return originalJson(body);
     };
