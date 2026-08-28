@@ -144,6 +144,14 @@ impl FactoryContract {
         Ok(())
     }
 
+    pub fn is_approved_vault(env: Env, vault: Address) -> bool {
+        FactoryStorage::is_approved_vault(&env, &vault)
+    }
+
+    pub fn is_approved_oracle(env: Env, oracle: Address) -> bool {
+        FactoryStorage::is_approved_oracle(&env, &oracle)
+    }
+
     pub fn add_supported_token(env: Env, token: Address) -> Result<(), FactoryError> {
         Self::require_admin(&env)?;
         FactoryStorage::set_supported_token(&env, &token, true);
@@ -246,6 +254,12 @@ impl FactoryContract {
         }
         if !FactoryStorage::is_supported_token(&env, &config.stake_token) {
             return Err(FactoryError::UnsupportedToken);
+        }
+        if !FactoryStorage::is_approved_vault(&env, &config.yield_vault) {
+            return Err(FactoryError::InvalidVault);
+        }
+        if !FactoryStorage::is_approved_oracle(&env, &config.oracle_contract) {
+            return Err(FactoryError::InvalidOracle);
         }
 
         // Check active pool limit for this host
@@ -758,52 +772,55 @@ mod test {
     }
 
     #[test]
-    fn propose_and_accept_admin_rotates_admin() {
+    fn approved_vault_and_oracle_add_and_remove_controls_status() {
         let (env, client, _admin, _host) = setup();
-        let new_admin = Address::generate(&env);
+        let vault = Address::generate(&env);
+        let oracle = Address::generate(&env);
 
-        client.propose_admin(&new_admin);
-        client.accept_admin();
+        assert!(!client.is_approved_vault(&vault));
+        client.add_approved_vault(&vault);
+        assert!(client.is_approved_vault(&vault));
+        client.remove_approved_vault(&vault);
+        assert!(!client.is_approved_vault(&vault));
 
-        assert_eq!(client.admin(), new_admin);
+        assert!(!client.is_approved_oracle(&oracle));
+        client.add_approved_oracle(&oracle);
+        assert!(client.is_approved_oracle(&oracle));
+        client.remove_approved_oracle(&oracle);
+        assert!(!client.is_approved_oracle(&oracle));
     }
 
     #[test]
-    fn accept_admin_without_proposal_fails() {
-        let (env, client, _admin, _host) = setup();
+    fn create_pool_rejects_unapproved_vault() {
+        let (env, client, _admin, host) = setup();
+        client.add_to_whitelist(&host);
+        
+        let cfg = pool_config(&env, 100);
+        client.add_supported_token(&cfg.stake_token);
+        client.add_approved_oracle(&cfg.oracle_contract);
 
-        env.set_auths(&[]);
         let err = client
-            .try_accept_admin()
+            .try_create_pool(&host, &cfg)
             .err()
-            .expect("accept without propose must error")
+            .expect("unapproved vault must error")
             .expect("error must be a contract error");
-        assert_eq!(err, FactoryError::NoPendingAdmin);
+        assert_eq!(err, FactoryError::InvalidVault);
     }
 
     #[test]
-    fn propose_admin_requires_current_admin_auth() {
-        let (env, client, _admin, _host) = setup();
-        let new_admin = Address::generate(&env);
+    fn create_pool_rejects_unapproved_oracle() {
+        let (env, client, _admin, host) = setup();
+        client.add_to_whitelist(&host);
+        
+        let cfg = pool_config(&env, 100);
+        client.add_supported_token(&cfg.stake_token);
+        client.add_approved_vault(&cfg.yield_vault);
 
-        env.set_auths(&[]);
         let err = client
-            .try_propose_admin(&new_admin)
+            .try_create_pool(&host, &cfg)
             .err()
-            .expect("propose without auth must error");
-        assert!(err.is_err());
-    }
-
-    #[test]
-    fn second_propose_overwrites_first() {
-        let (env, client, _admin, _host) = setup();
-        let addr_a = Address::generate(&env);
-        let addr_b = Address::generate(&env);
-
-        client.propose_admin(&addr_a);
-        client.propose_admin(&addr_b);
-        client.accept_admin();
-
-        assert_eq!(client.admin(), addr_b);
+            .expect("unapproved oracle must error")
+            .expect("error must be a contract error");
+        assert_eq!(err, FactoryError::InvalidOracle);
     }
 }
