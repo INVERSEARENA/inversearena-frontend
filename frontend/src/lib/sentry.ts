@@ -64,6 +64,13 @@ export function scrubStellarAddresses<T extends SentryEvent>(event: T): T | null
     }
   }
 
+  // Scrub the current page URL Sentry auto-populates on event.request — a
+  // page like arena-v2/withdrawal-success puts the destination address
+  // directly in its query string, so this must be redacted too.
+  if (event.request?.url) {
+    event.request.url = redactPublicKeys(event.request.url);
+  }
+
   return event;
 }
 

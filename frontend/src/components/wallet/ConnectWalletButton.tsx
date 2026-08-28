@@ -17,14 +17,19 @@ export const ConnectWalletButton = ({ className }: { className?: string }) => {
 
   const buttonVariant = className ? 'none' : 'primary';
 
-  // Passkey already registered and active
+  // Passkey already registered and active. WalletProvider merges the
+  // passkey session into the shared useWallet() context (see #1281), so
+  // `status`/`publicKey` already reflect it here — disconnecting goes
+  // through the same shared `disconnect()` rather than passkey.disconnect
+  // directly, keeping this branch consistent with the extension-connected
+  // one below.
   if (passkey.isRegistered && passkey.address) {
     return (
       <div className="flex items-center gap-4">
         <span className="text-white" title="Passkey wallet">
           🔑 {shortAddress(passkey.address)}
         </span>
-        <Button onClick={passkey.disconnect} variant={buttonVariant} className={className}>
+        <Button onClick={() => disconnect()} variant={buttonVariant} className={className}>
           Disconnect
         </Button>
       </div>

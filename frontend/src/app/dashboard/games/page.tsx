@@ -8,10 +8,10 @@ import { ArenaCardSkeleton } from "@/features/games/components/ArenaCardSkeleton
 import { EmptyState } from "@/components/ui/EmptyState";
 import { mockArenas } from "@/features/games/mockArenas";
 import { useSearchParams } from "next/navigation";
-import { useMemo, useState, useEffect } from "react";
+import { Suspense, useMemo, useState, useEffect } from "react";
 import { Search } from "lucide-react";
 
-export default function GamesPage() {
+function GamesPageContent() {
   const searchParams = useSearchParams();
   const filter = searchParams.get("filter") || "all";
   const search = searchParams.get("q") || "";
@@ -79,5 +79,13 @@ export default function GamesPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function GamesPage() {
+  return (
+    <Suspense>
+      <GamesPageContent />
+    </Suspense>
   );
 }

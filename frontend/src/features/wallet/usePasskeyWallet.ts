@@ -21,12 +21,25 @@ function loadStored(): { address: string; keyId: string } | null {
   }
 }
 
-const DEMO_MODE = process.env.NEXT_PUBLIC_PASSKEY_DEMO_MODE === "true";
+/**
+ * Hard-disabled outside non-production builds (see issue #1281): this
+ * derivation is not cryptographic and must never produce an address a user
+ * could mistake for a real wallet in a build real users can reach. Read at
+ * call time (not cached at module load) so it stays testable and reflects
+ * the environment at the moment it matters.
+ */
+export function isPasskeyDemoModeEnabled(): boolean {
+  return (
+    process.env.NODE_ENV !== "production" &&
+    process.env.NEXT_PUBLIC_PASSKEY_DEMO_MODE === "true"
+  );
+}
 
 function deriveAddress(credentialId: string): string {
-  if (!DEMO_MODE) {
+  if (!isPasskeyDemoModeEnabled()) {
     throw new Error(
-      "deriveAddress is a placeholder for demo/preview only. " +
+      "deriveAddress is a placeholder for demo/preview only, and is disabled " +
+      "in production builds regardless of NEXT_PUBLIC_PASSKEY_DEMO_MODE. " +
       "In production, the passkey-kit deploys a secp256r1 smart wallet on Soroban " +
       "and returns the real contract address.",
     );
