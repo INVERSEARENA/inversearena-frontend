@@ -53,4 +53,5 @@ pub enum FactoryError {
     UnsupportedToken = 16,
     EntryFeeTooLow = 17,
     InvalidConfig = 18,
+    NoPendingAdmin = 19,
 }

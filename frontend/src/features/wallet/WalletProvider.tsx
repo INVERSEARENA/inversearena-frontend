@@ -5,6 +5,7 @@ import { Networks } from '@creit-tech/stellar-wallets-kit';
 
 import { WalletContextType } from './types';
 import { useStellarWallet } from './useStellarWallet';
+import { usePasskeyWallet } from './usePasskeyWallet';
 import { isStellarConfigured, stellarConfig } from '@/lib/stellarConfig';
 import { Balance, fetchWalletBalance } from '@/shared-d/utils/stellar-balance';
 
@@ -21,14 +22,28 @@ export const WalletContext = createContext<WalletContextType | null>(null);
 export const WalletProvider = ({ children }: { children: ReactNode }) => {
   const network = isStellarConfigured ? stellarConfig.network : Networks.TESTNET;
   const {
-    publicKey,
-    isConnected,
-    status,
-    error,
+    publicKey: extensionPublicKey,
+    isConnected: extensionIsConnected,
+    status: extensionStatus,
+    error: extensionError,
     connectWallet,
     disconnectWallet,
-    signTransaction,
+    signTransaction: signWithExtension,
   } = useStellarWallet(network);
+  const passkey = usePasskeyWallet();
+
+  // A passkey session takes precedence when active: a user can't be
+  // connected via both an extension and a passkey at once, and passkey
+  // registration already implies intent to use it. Every other consumer of
+  // useWallet() (StakeModal, PoolCreationModal, admin gating, arena pages)
+  // reads only through this merged context, so this is the single place
+  // that decides which wallet "wins" (see #1281).
+  const passkeyActive = passkey.isRegistered && passkey.address !== null;
+  const publicKey = passkeyActive ? passkey.address : extensionPublicKey;
+  const isConnected = passkeyActive ? true : extensionIsConnected;
+  const status = passkeyActive ? 'connected' : extensionStatus;
+  const error = passkeyActive ? null : extensionError;
+  const signTransaction = passkeyActive ? passkey.sign : signWithExtension;
 
   const [balance, setBalance] = useState<Balance>({ xlm: 0, usdc: 0 });
   const [isLoadingBalance, setIsLoadingBalance] = useState(false);
@@ -68,6 +83,14 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [publicKey, status, refreshBalance]);
 
+  const disconnect = useCallback(() => {
+    if (passkeyActive) {
+      passkey.disconnect();
+    } else {
+      disconnectWallet();
+    }
+  }, [passkeyActive, passkey, disconnectWallet]);
+
   const contextValue: WalletContextType = useMemo(
     () => ({
       status,
@@ -79,7 +102,7 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
       balance,
       isLoadingBalance,
       balanceError,
-      connect: () => connectWallet().then(() => {}),
+      connect: connectWallet,
       disconnect: disconnectWallet,
       signTransaction,
       refreshBalance,
@@ -94,7 +117,7 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
       isLoadingBalance,
       balanceError,
       connectWallet,
-      disconnectWallet,
+      disconnect,
       signTransaction,
       refreshBalance,
     ]

@@ -28,4 +28,6 @@ pub enum StakingError {
     BelowMinimumInitialStake = 7,
     /// No shares outstanding — division by zero prevented (#1011).
     NoSharesOutstanding = 8,
+    /// No pending admin transfer has been proposed.
+    NoPendingAdmin = 9,
 }

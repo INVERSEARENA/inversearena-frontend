@@ -15,6 +15,7 @@ const PAUSED_KEY: soroban_sdk::Symbol = symbol_short!("PAUSED");
 const TOKEN_KEY: soroban_sdk::Symbol = symbol_short!("TOKEN");
 const TSTAKE_KEY: soroban_sdk::Symbol = symbol_short!("TSTAKE");
 const TSHARES_KEY: soroban_sdk::Symbol = symbol_short!("TSHARES");
+const PENDING_ADMIN_KEY: soroban_sdk::Symbol = symbol_short!("P_ADMIN");
 
 // TTL thresholds matching the arena contract pattern.
 const PERSISTENT_TTL_THRESHOLD: u32 = 100;
@@ -134,6 +135,37 @@ impl StakingContract {
     pub fn is_paused(env: Env) -> bool {
         extend_persistent_ttl(&env, &PAUSED_KEY);
         env.storage().persistent().get(&PAUSED_KEY).unwrap_or(false)
+    }
+
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), StakingError> {
+        let admin = Self::require_admin(&env)?;
+        extend_persistent_ttl(&env, &PENDING_ADMIN_KEY);
+        env.storage()
+            .persistent()
+            .set(&PENDING_ADMIN_KEY, &new_admin);
+        env.events()
+            .publish((symbol_short!("ADM_PROP"),), (admin, new_admin));
+        Ok(())
+    }
+
+    pub fn accept_admin(env: Env) -> Result<(), StakingError> {
+        extend_persistent_ttl(&env, &PENDING_ADMIN_KEY);
+        let pending_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&PENDING_ADMIN_KEY)
+            .ok_or(StakingError::NoPendingAdmin)?;
+        pending_admin.require_auth();
+        let old_admin = Self::require_admin(&env)?;
+        env.storage()
+            .persistent()
+            .set(&ADMIN_KEY, &pending_admin);
+        env.storage()
+            .persistent()
+            .remove(&PENDING_ADMIN_KEY);
+        env.events()
+            .publish((symbol_short!("ADM_CHG"),), (old_admin, pending_admin));
+        Ok(())
     }
 
     pub fn total_staked(env: Env) -> i128 {
@@ -562,10 +594,14 @@ mod test {
     #[test]
     fn pause_requires_admin() {
         let (env, client, _admin, _token, _staker) = setup();
-        env.mock_all_auths_allowing_non_root_auth();
-        // Non-admin should fail — we test by not calling mock_all_auths for specific addr
-        let result = client.try_pause();
-        assert!(result.is_ok()); // mock_all_auths allows everything in test
+
+        // Drop the mocked auths so pause must prove the stored admin authorized it.
+        env.set_auths(&[]);
+
+        assert!(
+            client.try_pause().is_err(),
+            "pause without the admin's authorization must be rejected"
+        );
     }
 
     #[test]
@@ -779,5 +815,46 @@ mod test {
         assert_eq!(client.unstake(&b, &1_000), 1_500);
         assert_eq!(client.total_staked(), 0);
         assert_eq!(client.total_shares(), 0);
+    }
+
+    #[test]
+    fn propose_and_accept_admin_rotates_admin() {
+        let (env, client, _admin, _token, _staker) = setup();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin(&new_admin);
+        client.accept_admin();
+
+        assert_eq!(client.admin(), new_admin);
+    }
+
+    #[test]
+    fn accept_admin_without_proposal_fails() {
+        let (env, client, _admin, _token, _staker) = setup();
+        env.set_auths(&[]);
+        let result = client.try_accept_admin();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn propose_admin_requires_current_admin_auth() {
+        let (env, client, _admin, _token, _staker) = setup();
+        let new_admin = Address::generate(&env);
+        env.set_auths(&[]);
+        let result = client.try_propose_admin(&new_admin);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn second_propose_overwrites_first() {
+        let (env, client, _admin, _token, _staker) = setup();
+        let addr_a = Address::generate(&env);
+        let addr_b = Address::generate(&env);
+
+        client.propose_admin(&addr_a);
+        client.propose_admin(&addr_b);
+        client.accept_admin();
+
+        assert_eq!(client.admin(), addr_b);
     }
 }

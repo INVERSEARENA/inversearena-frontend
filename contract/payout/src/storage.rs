@@ -17,6 +17,7 @@ const PERSISTENT_TTL_TARGET: u32 = 6_307_200;
 #[contracttype]
 pub(crate) enum DataKey {
     Admin,
+    PendingAdmin,
     Token,
     Paid(u64),
 }
@@ -64,6 +65,35 @@ impl PayoutStorage {
             PERSISTENT_TTL_TARGET,
         );
         Ok(admin)
+    }
+
+    pub fn save_pending_admin(env: &Env, admin: &Address) {
+        let key = DataKey::PendingAdmin;
+        env.storage().persistent().set(&key, admin);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_TARGET,
+        );
+    }
+
+    pub fn load_pending_admin(env: &Env) -> Option<Address> {
+        let key = DataKey::PendingAdmin;
+        let val = env.storage().persistent().get(&key);
+        if val.is_some() {
+            env.storage().persistent().extend_ttl(
+                &key,
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_TARGET,
+            );
+        }
+        val
+    }
+
+    pub fn delete_pending_admin(env: &Env) {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PendingAdmin);
     }
 
     pub fn set_token(env: &Env, token: &Address) {

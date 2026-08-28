@@ -37,19 +37,36 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Same-origin static assets: cache-first, then network (and cache the result).
+  // Same-origin static assets only: cache-first, then network (and cache the result).
   const url = new URL(request.url);
   if (url.origin === self.location.origin) {
-    event.respondWith(
-      caches.match(request).then(
-        (cached) =>
-          cached ||
-          fetch(request).then((response) => {
-            const copy = response.clone();
-            caches.open(CACHE).then((cache) => cache.put(request, copy)).catch(() => {});
-            return response;
-          })
-      )
-    );
+    const isStaticAsset =
+      url.pathname.startsWith("/_next/static/") ||
+      url.pathname.startsWith("/icons/") ||
+      url.pathname.startsWith("/images/") ||
+      url.pathname.endsWith(".js") ||
+      url.pathname.endsWith(".css") ||
+      url.pathname.endsWith(".png") ||
+      url.pathname.endsWith(".jpg") ||
+      url.pathname.endsWith(".svg") ||
+      url.pathname.endsWith(".ico") ||
+      url.pathname.endsWith(".woff") ||
+      url.pathname.endsWith(".woff2");
+
+    if (isStaticAsset) {
+      event.respondWith(
+        caches.match(request).then(
+          (cached) =>
+            cached ||
+            fetch(request).then((response) => {
+              if (response.ok) {
+                const copy = response.clone();
+                caches.open(CACHE).then((cache) => cache.put(request, copy)).catch(() => {});
+              }
+              return response;
+            })
+        )
+      );
+    }
   }
 });

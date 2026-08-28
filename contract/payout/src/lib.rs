@@ -150,6 +150,27 @@ impl PayoutContract {
     pub fn token(env: Env) -> Option<Address> {
         PayoutStorage::get_token(&env).ok()
     }
+
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), PayoutError> {
+        let admin = PayoutStorage::get_admin(&env)?;
+        admin.require_auth();
+        PayoutStorage::save_pending_admin(&env, &new_admin);
+        env.events()
+            .publish((symbol_short!("adm_prop"),), (new_admin,));
+        Ok(())
+    }
+
+    pub fn accept_admin(env: Env) -> Result<(), PayoutError> {
+        let pending_admin = PayoutStorage::load_pending_admin(&env)
+            .ok_or(PayoutError::NoPendingAdmin)?;
+        pending_admin.require_auth();
+        let old_admin = PayoutStorage::get_admin(&env)?;
+        PayoutStorage::set_admin(&env, &pending_admin);
+        PayoutStorage::delete_pending_admin(&env);
+        env.events()
+            .publish((symbol_short!("adm_chg"),), (old_admin, pending_admin));
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -606,5 +627,50 @@ mod test {
             "recipient must be paid exactly once — reentrancy must not double-pay"
         );
         assert!(payout.is_paid(&7));
+    }
+
+    #[test]
+    fn propose_and_accept_admin_rotates_admin() {
+        let fx = setup(1_000);
+        let new_admin = Address::generate(&fx.env);
+
+        fx.client.propose_admin(&new_admin);
+        fx.client.accept_admin();
+
+        assert_eq!(fx.client.admin(), Some(new_admin));
+    }
+
+    #[test]
+    fn accept_admin_without_proposal_fails() {
+        let fx = setup(1_000);
+        let err = fx
+            .client
+            .try_accept_admin()
+            .err()
+            .expect("accept without propose must error")
+            .expect("error must be a contract error");
+        assert_eq!(err, PayoutError::NoPendingAdmin);
+    }
+
+    #[test]
+    fn propose_admin_requires_current_admin_auth() {
+        let fx = setup(1_000);
+        let new_admin = Address::generate(&fx.env);
+        fx.env.set_auths(&[]);
+        let result = fx.client.try_propose_admin(&new_admin);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn second_propose_overwrites_first() {
+        let fx = setup(1_000);
+        let addr_a = Address::generate(&fx.env);
+        let addr_b = Address::generate(&fx.env);
+
+        fx.client.propose_admin(&addr_a);
+        fx.client.propose_admin(&addr_b);
+        fx.client.accept_admin();
+
+        assert_eq!(fx.client.admin(), Some(addr_b));
     }
 }

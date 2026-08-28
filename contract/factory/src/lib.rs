@@ -422,6 +422,27 @@ impl FactoryContract {
         Ok(admin)
     }
 
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), FactoryError> {
+        let admin = FactoryStorage::load_admin(&env)?;
+        admin.require_auth();
+        FactoryStorage::save_pending_admin(&env, &new_admin);
+        env.events()
+            .publish((symbol_short!("ADM_PROP"),), (new_admin,));
+        Ok(())
+    }
+
+    pub fn accept_admin(env: Env) -> Result<(), FactoryError> {
+        let pending_admin =
+            FactoryStorage::load_pending_admin(&env).ok_or(FactoryError::NoPendingAdmin)?;
+        pending_admin.require_auth();
+        let old_admin = FactoryStorage::load_admin(&env)?;
+        FactoryStorage::save_admin(&env, &pending_admin);
+        FactoryStorage::delete_pending_admin(&env);
+        env.events()
+            .publish((symbol_short!("ADM_CHG"),), (old_admin, pending_admin));
+        Ok(())
+    }
+
     fn salt_for_pool(env: &Env, pool_id: u32) -> BytesN<32> {
         let mut salt = [0u8; 32];
         let bytes = pool_id.to_be_bytes();

@@ -71,10 +71,16 @@ export function usePolling<T>(
   useEffect(() => {
     if (!enabled) return;
 
-    fetchData();
-
     if (isVisible) {
-      intervalRef.current = setInterval(fetchData, intervalMs);
+      fetchData();
+      if (!intervalRef.current) {
+        intervalRef.current = setInterval(fetchData, intervalMs);
+      }
+    } else {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
     }
 
     return () => {
@@ -88,21 +94,6 @@ export function usePolling<T>(
       }
     };
   }, [enabled, intervalMs, isVisible, fetchData]);
-
-  useEffect(() => {
-    if (!enabled) return;
-
-    if (isVisible) {
-      if (!intervalRef.current) {
-        intervalRef.current = setInterval(fetchData, intervalMs);
-      }
-    } else {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-    }
-  }, [isVisible, enabled, intervalMs, fetchData]);
 
   return { data, error, status, refresh };
 }

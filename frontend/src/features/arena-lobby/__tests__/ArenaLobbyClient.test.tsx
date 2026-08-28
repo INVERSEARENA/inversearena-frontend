@@ -14,16 +14,22 @@ const WALLET_ADDRESS = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H
 
 const walletMock = {
   publicKey: WALLET_ADDRESS,
+  address: WALLET_ADDRESS,
   isConnected: true,
   status: "connected" as const,
   error: null,
-  connectWallet: jest.fn(),
+  network: "TESTNET",
+  balance: { xlm: 0, usdc: 0 },
+  isLoadingBalance: false,
+  balanceError: null,
+  connect: jest.fn().mockResolvedValue(WALLET_ADDRESS),
+  disconnect: jest.fn(),
   signTransaction: jest.fn(),
-  disconnectWallet: jest.fn(),
+  refreshBalance: jest.fn().mockResolvedValue(undefined),
 };
 
-jest.mock("@/features/wallet/useStellarWallet", () => ({
-  useStellarWallet: () => walletMock,
+jest.mock("@/features/wallet/useWallet", () => ({
+  useWallet: () => walletMock,
 }));
 
 jest.mock("@/shared-d/utils/stellar-transactions", () => ({
@@ -102,5 +108,25 @@ describe("ArenaLobbyClient join flow", () => {
     });
     expect(walletMock.signTransaction).toHaveBeenCalledWith("unsigned-xdr");
     expect(submitSignedTransaction).toHaveBeenCalledWith("signed-xdr");
+  });
+
+  it("reflects a wallet connected via the shared context, not an independent hook instance (#1282)", async () => {
+    // Before the fix, this component called useStellarWallet(...) directly,
+    // holding its own local connection state disconnected from the
+    // context-backed ConnectWalletButton in the header — a genuinely
+    // connected user would still see "Wallet Required" here. Using the
+    // shared useWallet() context (mocked above) means this component's
+    // "connected" state comes from the same source the header uses.
+    render(
+      <ArenaLobbyClient
+        arenaId="arena-1"
+        initialStats={STATS}
+        initialParticipants={[]}
+        initialNextCursor={null}
+      />,
+    );
+
+    const joinButton = await screen.findByRole("button", { name: "Join Arena" });
+    expect(joinButton).not.toHaveTextContent("Wallet Required");
   });
 });
