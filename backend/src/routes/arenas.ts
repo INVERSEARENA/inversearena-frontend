@@ -266,7 +266,10 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
         return {
           id: `${latestRound?.id ?? id}:${choice.userId}:${index}`,
           walletAddress: user?.walletAddress ?? choice.userId,
-          choice: choice.choice,
+          // Hide the pick while the round is still open — otherwise any
+          // caller could see how others voted and choose accordingly,
+          // breaking the minority-wins fairness guarantee (#1212).
+          choice: latestRound?.state === "OPEN" ? null : choice.choice,
           stake: choice.stake,
           status,
           roundNumber: latestRound?.roundNumber ?? 0,

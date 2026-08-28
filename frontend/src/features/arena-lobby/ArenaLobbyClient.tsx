@@ -15,7 +15,9 @@ import {
 const arenaParticipantSchema = z.object({
   id: z.string(),
   walletAddress: z.string(),
-  choice: z.enum(["heads", "tails"]),
+  // null while the round is still OPEN — the backend hides other players'
+  // choices until the round closes so callers can't vote accordingly (#1212).
+  choice: z.enum(["heads", "tails"]).nullable(),
   stake: z.number(),
   status: z.enum(["READY", "ACTIVE", "ELIMINATED"]),
   roundNumber: z.number(),
@@ -431,12 +433,14 @@ export function ArenaLobbyClient({
                       </span>
                       <span
                         className={
-                          participant.choice === "heads"
-                            ? "font-semibold text-[#3CFF1A]"
-                            : "font-semibold text-[#FF0A54]"
+                          participant.choice === null
+                            ? "font-semibold text-white/40"
+                            : participant.choice === "heads"
+                              ? "font-semibold text-[#3CFF1A]"
+                              : "font-semibold text-[#FF0A54]"
                         }
                       >
-                        {participant.choice.toUpperCase()}
+                        {participant.choice === null ? "HIDDEN" : participant.choice.toUpperCase()}
                       </span>
                       <span className="font-mono text-white/80">
                         {participant.stake.toLocaleString()}

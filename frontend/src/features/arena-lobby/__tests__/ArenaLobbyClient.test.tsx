@@ -129,4 +129,42 @@ describe("ArenaLobbyClient join flow", () => {
     const joinButton = await screen.findByRole("button", { name: "Join Arena" });
     expect(joinButton).not.toHaveTextContent("Wallet Required");
   });
+
+  it("renders a hidden placeholder instead of crashing when the backend masks an open round's choice (#1212)", async () => {
+    // The backend now returns choice: null for any round still OPEN, so
+    // other players can't see how someone voted before the round closes.
+    // This asserts the frontend renders that as a placeholder rather than
+    // crashing on participant.choice.toUpperCase().
+    render(
+      <ArenaLobbyClient
+        arenaId="arena-1"
+        initialStats={STATS}
+        initialParticipants={[
+          {
+            id: "round-1:user-1:0",
+            walletAddress: "GUSER1",
+            choice: null,
+            stake: 100,
+            status: "READY",
+            roundNumber: 1,
+            joinedAt: new Date().toISOString(),
+          },
+        ]}
+        initialNextCursor={null}
+      />,
+    );
+
+    const hidden = await screen.findByText("HIDDEN");
+    expect(hidden).toBeInTheDocument();
+
+    // The participant row is the only place that should render this
+    // wallet's choice — scope to it, since "HEADS" also appears
+    // unconditionally as a static vote-button label in <ChoiceSubmission>
+    // elsewhere on the page.
+    const participantRow = hidden.closest("div.grid") as HTMLElement;
+    expect(participantRow).not.toBeNull();
+    expect(participantRow).toHaveTextContent("GUSER1");
+    expect(participantRow).not.toHaveTextContent("HEADS");
+    expect(participantRow).not.toHaveTextContent("TAILS");
+  });
 });
