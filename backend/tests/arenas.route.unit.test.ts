@@ -10,10 +10,12 @@ const authMiddleware = (_req: any, _res: any, next: any) => next();
 
 const originalArena = prisma.arena;
 const originalRound = prisma.round;
+const originalUser = prisma.user;
 
 test.afterEach(() => {
   prisma.arena = originalArena;
   prisma.round = originalRound;
+  prisma.user = originalUser;
   redis.disconnect();
 });
 
@@ -93,4 +95,64 @@ test("createArenasRouter registers GET /:id/participants only once", () => {
   );
 
   assert.strictEqual(participantRoutes.length, 1);
+});
+
+function mockArenaWithRound(state: "OPEN" | "RESOLVED" | "CLOSED") {
+  prisma.arena = {
+    findUnique: async () => ({
+      id: "arena-1",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      rounds: [
+        {
+          id: "round-1",
+          roundNumber: 1,
+          state,
+          metadata: {
+            playerChoices: [
+              { userId: "user-1", choice: "heads", stake: 100 },
+              { userId: "user-2", choice: "tails", stake: 50 },
+            ],
+          },
+          createdAt: new Date("2026-01-01T00:00:00.000Z"),
+          eliminationLogs: [],
+        },
+      ],
+    }),
+  } as any;
+
+  prisma.user = {
+    findMany: async () => [
+      { id: "user-1", walletAddress: "G-USER-1" },
+      { id: "user-2", walletAddress: "G-USER-2" },
+    ],
+  } as any;
+}
+
+test("GET /:id/participants hides choices while the round is OPEN (#1212)", async () => {
+  mockArenaWithRound("OPEN");
+
+  const app = express();
+  app.use("/api/arenas", createArenasRouter(authMiddleware));
+
+  const response = await request(app).get("/api/arenas/arena-1/participants");
+
+  assert.strictEqual(response.status, 200);
+  assert.strictEqual(response.body.items.length, 2);
+  for (const participant of response.body.items) {
+    assert.strictEqual(participant.choice, null);
+  }
+});
+
+test("GET /:id/participants reveals choices once the round is no longer OPEN (#1212)", async () => {
+  mockArenaWithRound("RESOLVED");
+
+  const app = express();
+  app.use("/api/arenas", createArenasRouter(authMiddleware));
+
+  const response = await request(app).get("/api/arenas/arena-1/participants");
+
+  assert.strictEqual(response.status, 200);
+  assert.strictEqual(response.body.items.length, 2);
+  const choices = response.body.items.map((p: any) => p.choice).sort();
+  assert.deepStrictEqual(choices, ["heads", "tails"]);
 });

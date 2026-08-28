@@ -17,7 +17,11 @@ export interface ArenaStats {
 export interface ArenaParticipant {
   id: string;
   walletAddress: string;
-  choice: "heads" | "tails";
+  // null while the round that contains this choice is still OPEN — a
+  // player's heads/tails pick must not be visible to other callers until
+  // the round closes, or a caller could pick their own choice accordingly
+  // (see #1212).
+  choice: "heads" | "tails" | null;
   stake: number;
   status: "READY" | "ACTIVE" | "ELIMINATED";
   roundNumber: number;
