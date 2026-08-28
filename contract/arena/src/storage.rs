@@ -120,10 +120,10 @@ impl ArenaStorage {
             },
         );
 
-        // Keep the cached player count in `config` in sync so `player_count`
-        // can be served without scanning the players list.
+        // Keep the cached player count and active player count in `config` in sync.
         if let Ok(mut config) = Self::load_config(env) {
             config.player_count = players.len();
+            config.active_player_count = config.active_player_count.saturating_add(1);
             Self::save_config(env, &config);
         }
     }
@@ -484,6 +484,7 @@ mod tests {
             state,
             paused: false,
             player_count: 0,
+            active_player_count: 0,
             cumulative_yield: 0,
             commit_deadline: 0,
             round_count: 0,

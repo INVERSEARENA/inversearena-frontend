@@ -148,6 +148,7 @@ impl ArenaContract {
             state: GameState::Open,
             paused: false,
             player_count: 0,
+            active_player_count: 0,
             cumulative_yield: 0,
             commit_deadline: 0,
             round_count: 0,
@@ -579,11 +580,7 @@ impl ArenaContract {
             ArenaError::InvalidGameState,
         )?;
 
-        let active_count = ArenaStorage::load_all_players(&env)
-            .iter()
-            .filter(|p| ArenaStorage::load_player(&env, &p).map_or(false, |s| s.active))
-            .count() as u32;
-        if active_count < ArenaStorage::load_min_players(&env) {
+        if config.active_player_count < ArenaStorage::load_min_players(&env) {
             return Err(ArenaError::NotEnoughPlayers);
         }
 
@@ -688,6 +685,7 @@ impl ArenaContract {
         ArenaStorage::save_round_result(&env, round, &result);
 
         config.round_count = round;
+        config.active_player_count = resolution.survivors;
         config.state = if resolution.survivors == 0 {
             // Zero survivors: all active players failed to reveal (e.g., both AFKs).
             // Transition to Cancelled to unlock claim_refund-style recovery instead of
@@ -790,11 +788,7 @@ impl ArenaContract {
             .try_withdraw_all(&arena_addr)
             .unwrap_or(Ok(payout))
             .unwrap_or(payout);
-        let total = if payout > withdrawn {
-            withdrawn
-        } else {
-            payout
-        };
+        let total = withdrawn;
 
         let token_client = token::TokenClient::new(&env, &config.stake_token);
         token_client.transfer(&arena_addr, &winner, &total);
@@ -1244,6 +1238,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: u64::MAX,
                 yield_vault: Address::generate(&env),
@@ -1327,6 +1322,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -1368,6 +1364,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -1404,6 +1401,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -1448,6 +1446,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -1484,6 +1483,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 1,
                 yield_vault: Address::generate(&env),
@@ -1521,6 +1521,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -1557,6 +1558,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -1595,6 +1597,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 2,
+                active_player_count: 2,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -1655,6 +1658,7 @@ mod test {
                     state: GameState::Active,
                     paused: false,
                     player_count: 1,
+                    active_player_count: 1,
                     cumulative_yield: 0,
                     commit_deadline: 0,
                     yield_vault: Address::generate(&env),
@@ -1796,6 +1800,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -1874,7 +1879,8 @@ mod test {
                     entry_fee: 100,
                     state: GameState::Open,
                     paused: false,
-                    player_count: 2,
+                    player_count: 0,
+                    active_player_count: 0,
                     cumulative_yield: 0,
                     commit_deadline: 0,
                     yield_vault: vault_id.clone(),
@@ -1921,6 +1927,7 @@ mod test {
             env.as_contract(&contract_id, || {
                 let mut cfg = ArenaStorage::load_config(&env).unwrap();
                 cfg.state = GameState::Open;
+                cfg.active_player_count = 2;
                 ArenaStorage::save_config(&env, &cfg);
             });
             // Baseline is captured here, from the balance the previous round
@@ -2092,6 +2099,7 @@ mod test {
                     state: GameState::Finished,
                     paused: false,
                     player_count: 1,
+                    active_player_count: 1,
                     cumulative_yield: 0,
                     commit_deadline: 0,
                     yield_vault: Address::generate(&env),
@@ -2144,6 +2152,7 @@ mod test {
                     state: GameState::Finished,
                     paused: false,
                     player_count: 1,
+                    active_player_count: 1,
                     cumulative_yield: 0,
                     commit_deadline: 0,
                     yield_vault: Address::generate(&env),
@@ -2189,6 +2198,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -2226,6 +2236,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -2263,6 +2274,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -2303,6 +2315,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -2356,6 +2369,7 @@ mod test {
                     state: GameState::Open,
                     paused: false,
                     player_count: 0,
+                    active_player_count: 0,
                     cumulative_yield: 0,
                     commit_deadline: 0,
                     yield_vault: Address::generate(&env),
@@ -2388,6 +2402,7 @@ mod test {
                     state: GameState::Open,
                     paused: false,
                     player_count: 1,
+                    active_player_count: 1,
                     cumulative_yield: 0,
                     commit_deadline: 0,
                     yield_vault: Address::generate(&env),
@@ -2421,6 +2436,7 @@ mod test {
                     state: GameState::Open,
                     paused: false,
                     player_count: 2,
+                    active_player_count: 2,
                     cumulative_yield: 0,
                     commit_deadline: 0,
                     yield_vault: Address::generate(&env),
@@ -2948,6 +2964,7 @@ mod test {
                     state: GameState::Open,
                     paused: false,
                     player_count: 0,
+                    active_player_count: 0,
                     cumulative_yield: 0,
                     commit_deadline: 0,
                     yield_vault: vault_id,
@@ -3213,6 +3230,7 @@ mod test {
                 state: GameState::Active,
                 paused: false,
                 player_count: 3,
+                active_player_count: 3,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 round_count: 0,
@@ -3297,6 +3315,7 @@ mod test {
                 state: GameState::Active,
                 paused: false,
                 player_count: 20,
+                active_player_count: 20,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 round_count: 0,
@@ -3903,8 +3922,7 @@ mod test {
         const N: u32 = 120;
         const LIMIT: u32 = 50;
 
-        fn start_round_rejected_when_only_one_active_player_remains() {
-            let env = Env::default();
+        let env = Env::default();
             env.mock_all_auths();
             let contract_id = env.register(ArenaContract, ());
             let oracle_id = env.register(MockOracle, ());
@@ -3920,6 +3938,7 @@ mod test {
                         state: GameState::Open,
                         paused: false,
                         player_count: 0,
+                        active_player_count: 0,
                         cumulative_yield: 0,
                         commit_deadline: 0,
                         round_count: 0,
@@ -3969,7 +3988,6 @@ mod test {
                 );
             });
         }
-    }
 
     #[test]
     fn start_round_rejects_duration_below_minimum() {
@@ -4056,6 +4074,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 2,
+                active_player_count: 2,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: vault_id.clone(),
