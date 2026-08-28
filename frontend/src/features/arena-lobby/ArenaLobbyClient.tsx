@@ -6,8 +6,7 @@ import { useRouter } from "next/navigation";
 import { ArenaStatsSkeleton } from "@/components/arena/ArenaStatsSkeleton";
 import { ChoiceSubmission } from "@/components/arena/ChoiceSubmission";
 import { TransactionModal } from "@/components/modals/TransactionModal";
-import { useStellarWallet } from "@/features/wallet/useStellarWallet";
-import { stellarConfig } from "@/lib/stellarConfig";
+import { useWallet } from "@/features/wallet/useWallet";
 import {
   buildJoinArenaTransaction,
   submitSignedTransaction,
@@ -98,7 +97,7 @@ export function ArenaLobbyClient({
   notFound = false,
 }: ArenaLobbyClientProps) {
   const router = useRouter();
-  const wallet = useStellarWallet(stellarConfig.network);
+  const wallet = useWallet();
   const [stats, setStats] = useState<ArenaStats | null>(initialStats);
   const [participants, setParticipants] = useState<ArenaParticipant[]>(
     initialParticipants,
@@ -482,7 +481,23 @@ export function ArenaLobbyClient({
                 roundNumber={stats.currentRound}
                 deadline={stats.joinDeadline ?? ""}
                 arenaStatus={stats.status}
-                wallet={wallet}
+                wallet={{
+                  publicKey: wallet.publicKey,
+                  isConnected: wallet.isConnected,
+                  status: wallet.status,
+                  signTransaction: wallet.signTransaction,
+                  // ChoiceSubmission expects connectWallet() to resolve with
+                  // the connected address (it falls back to the return value
+                  // when publicKey isn't set yet). The shared wallet
+                  // context's connect() resolves with that same address.
+                  connectWallet: async () => {
+                    const address = await wallet.connect();
+                    if (!address) {
+                      throw new Error("Wallet connection did not return an address.");
+                    }
+                    return address;
+                  },
+                }}
               />
             </div>
 
