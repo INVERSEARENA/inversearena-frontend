@@ -78,7 +78,7 @@ async function writeAuditLog(
   });
 }
 
-function deriveResourceType(path: string): string {
+export function deriveResourceType(path: string): string {
   // Extract the first meaningful path segment, skipping any leading
   // "api"/"admin" mount-prefix segments. req.path is router-relative while
   // handling the request (e.g. "/audit-logs") but reverts to the full
