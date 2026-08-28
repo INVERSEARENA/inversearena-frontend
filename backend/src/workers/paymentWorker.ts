@@ -28,6 +28,7 @@ const DEFAULT_FAILED_RETRY_BASE_MS = 5_000;
 export class PaymentWorker {
   private readonly failedRetryMax: number;
   private readonly failedRetryBaseMs: number;
+  private isRunning = false;
 
   constructor(
     private readonly transactions: TransactionRepository,
@@ -40,79 +41,96 @@ export class PaymentWorker {
   }
 
   async processBatch(limit = 25): Promise<PaymentWorkerResult> {
-    const statuses: PaymentStatus[] = ["queued", "submitted", "failed"];
-    const pending = await this.transactions.listByStatus(statuses, limit);
+    if (this.isRunning) {
+      logger.warn("PaymentWorker.processBatch: batch run already in progress, skipping concurrent execution");
+      return {
+        processed: 0,
+        submitted: 0,
+        confirmed: 0,
+        failed: 0,
+        retried: 0,
+        deadLettered: 0,
+      };
+    }
 
-    workerJobsPending.set({ job_type: 'payment' }, pending.length);
+    this.isRunning = true;
+    try {
+      const statuses: PaymentStatus[] = ["queued", "submitted", "failed"];
+      const pending = await this.transactions.listByStatus(statuses, limit);
 
-    let submitted = 0;
-    let confirmed = 0;
-    let failed = 0;
-    let retried = 0;
-    let deadLettered = 0;
+      workerJobsPending.set({ job_type: 'payment' }, pending.length);
 
-    for (const transaction of pending) {
-      try {
-        // "failed" status (#1122): retry with exponential backoff up to a
-        // configurable limit, then dead-letter and alert — never skip silently.
-        if (transaction.status === "failed") {
-          const outcome = await this.handleFailedTransaction(transaction);
-          if (outcome === "retried") retried += 1;
-          if (outcome === "dead") deadLettered += 1;
-          continue;
-        }
+      let submitted = 0;
+      let confirmed = 0;
+      let failed = 0;
+      let retried = 0;
+      let deadLettered = 0;
 
-        if (transaction.status === "queued") {
-          const result = await this.paymentService.submitQueuedTransaction(transaction.id);
-          if (result.submitted) {
-            submitted += 1;
-            // Hand off confirmation polling to BullMQ for persistent retry with backoff
-            if (this.txQueue) {
-              await this.txQueue.add("confirm", { transactionId: transaction.id });
-            }
+      for (const transaction of pending) {
+        try {
+          // "failed" status (#1122): retry with exponential backoff up to a
+          // configurable limit, then dead-letter and alert — never skip silently.
+          if (transaction.status === "failed") {
+            const outcome = await this.handleFailedTransaction(transaction);
+            if (outcome === "retried") retried += 1;
+            if (outcome === "dead") deadLettered += 1;
+            continue;
           }
-          if (result.transaction.status === "failed") {
+
+          if (transaction.status === "queued") {
+            const result = await this.paymentService.submitQueuedTransaction(transaction.id);
+            if (result.submitted) {
+              submitted += 1;
+              // Hand off confirmation polling to BullMQ for persistent retry with backoff
+              if (this.txQueue) {
+                await this.txQueue.add("confirm", { transactionId: transaction.id });
+              }
+            }
+            if (result.transaction.status === "failed") {
+              failed += 1;
+              txsConfirmedTotal.inc({ status: "failed" });
+            }
+            continue;
+          }
+
+          // "submitted" status: only do inline confirmation if no BullMQ queue is configured
+          // (fallback for test / no-Redis environments)
+          if (this.txQueue) {
+            continue;
+          }
+
+          const refreshed = await this.paymentService.confirmSubmittedTransaction(transaction.id);
+          if (refreshed.status === "confirmed") {
+            confirmed += 1;
+            txsConfirmedTotal.inc({ status: "confirmed" });
+          } else if (refreshed.status === "failed") {
             failed += 1;
             txsConfirmedTotal.inc({ status: "failed" });
           }
-          continue;
-        }
-
-        // "submitted" status: only do inline confirmation if no BullMQ queue is configured
-        // (fallback for test / no-Redis environments)
-        if (this.txQueue) {
-          continue;
-        }
-
-        const refreshed = await this.paymentService.confirmSubmittedTransaction(transaction.id);
-        if (refreshed.status === "confirmed") {
-          confirmed += 1;
-          txsConfirmedTotal.inc({ status: "confirmed" });
-        } else if (refreshed.status === "failed") {
+        } catch (error) {
           failed += 1;
           txsConfirmedTotal.inc({ status: "failed" });
+          logger.error(
+            {
+              transactionId: transaction.id,
+              error,
+            },
+            "PaymentWorker.processBatch: unexpected error",
+          );
         }
-      } catch (error) {
-        failed += 1;
-        txsConfirmedTotal.inc({ status: "failed" });
-        logger.error(
-          {
-            transactionId: transaction.id,
-            error,
-          },
-          "PaymentWorker.processBatch: unexpected error",
-        );
       }
-    }
 
-    return {
-      processed: pending.length,
-      submitted,
-      confirmed,
-      failed,
-      retried,
-      deadLettered,
-    };
+      return {
+        processed: pending.length,
+        submitted,
+        confirmed,
+        failed,
+        retried,
+        deadLettered,
+      };
+    } finally {
+      this.isRunning = false;
+    }
   }
 
   /**

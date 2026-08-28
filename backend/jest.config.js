@@ -14,6 +14,7 @@ module.exports = {
     "<rootDir>/tests/auth-middleware\\.unit\\.test\\.ts",
     "<rootDir>/tests/arenas\\.route\\.unit\\.test\\.ts",
     "<rootDir>/tests/worker\\.route\\.unit\\.test\\.ts",
+    "<rootDir>/tests/paymentWorker\\.test\\.ts",
     // Legacy script-style runners (no Jest `describe`/`it`)
     "<rootDir>/tests/leaderboard\\.test\\.ts",
     "<rootDir>/tests/security-headers\\.test\\.ts",
