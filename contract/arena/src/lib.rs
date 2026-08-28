@@ -92,6 +92,8 @@ impl ArenaContract {
     /// - `admin`: Address that will control admin-only operations. Must authorize this call.
     /// - `stake_token`: SAC token address used for entry fees and prize payouts.
     /// - `yield_vault`: RWA adapter contract that earns yield on the staked principal.
+    ///   Initialization performs a shallow `balance_of` reachability/interface check;
+    ///   vault initialization state is enforced by later adapter calls.
     /// - `entry_fee`: Exact token amount every player must stake to join.
     /// - `oracle_contract`: On-chain oracle queried for the current yield rate on each round resolution.
     ///
@@ -128,10 +130,10 @@ impl ArenaContract {
             return Err(ArenaError::InvalidPlayerLimits);
         }
 
-        // Validate the provided yield_vault implements the expected RWA adapter interface
-        let rwa_client = RwaAdapterClient::new(&env, &yield_vault);
-        // Attempt a harmless read to ensure the contract is reachable and implements the interface
-        // Here we use try_balance_of on the arena contract address; any error indicates an invalid vault
+        // Validate that the provided yield_vault is reachable and exposes the expected RWA
+        // adapter interface. This is intentionally a shallow interface check: the current
+        // adapter returns 0 from balance_of when uninitialized, so adapter initialization
+        // state is enforced by later deposit/withdraw calls rather than by this probe.
         let dummy_addr = env.current_contract_address();
         if rwa_client.try_balance_of(&dummy_addr).is_err() {
             return Err(ArenaError::InvalidVaultAddress);
@@ -540,8 +542,8 @@ impl ArenaContract {
 
     /// Start a new commit-reveal round.
     ///
-    /// Only callable by the admin while the arena is `Open` or `Finished`
-    /// (i.e., between rounds). Transitions the arena to `Active` and records
+    /// Only callable by the admin while the arena is `Open`.
+    /// Transitions the arena to `Active` and records
     /// the round start timestamp. Players must submit commitments before
     /// `duration_seconds` elapses, after which reveals are accepted.
     ///
@@ -556,7 +558,7 @@ impl ArenaContract {
     /// - `ArenaError::ContractPaused` if the contract is paused.
     /// - `ArenaError::InvalidDuration` if `duration_seconds` is outside
     ///   [`MIN_ROUND_DURATION_SECONDS`, `MAX_ROUND_DURATION_SECONDS`].
-    /// - `ArenaError::InvalidGameState` if the arena is not in `Open` or `Finished` state.
+    /// - `ArenaError::InvalidGameState` if the arena is not in the `Open` state.
     ///
     /// # Events
     /// Emits `game_started` with the round number and duration.
@@ -949,6 +951,7 @@ impl ArenaContract {
 
     /// Claim a refund when the arena has been cancelled.
     pub fn claim_refund(env: Env, player: Address) -> Result<(), ArenaError> {
+        ArenaStorage::enter_reentrancy_guard(&env)?;
         player.require_auth();
 
         let config = ArenaStorage::load_config(&env)?;
@@ -976,6 +979,7 @@ impl ArenaContract {
         token_client.transfer(&env.current_contract_address(), &player, &config.entry_fee);
 
         ArenaEvents::refund_claimed(&env, &player);
+        ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
     }
 
