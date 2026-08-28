@@ -594,10 +594,14 @@ mod test {
     #[test]
     fn pause_requires_admin() {
         let (env, client, _admin, _token, _staker) = setup();
-        env.mock_all_auths_allowing_non_root_auth();
-        // Non-admin should fail — we test by not calling mock_all_auths for specific addr
-        let result = client.try_pause();
-        assert!(result.is_ok()); // mock_all_auths allows everything in test
+
+        // Drop the mocked auths so pause must prove the stored admin authorized it.
+        env.set_auths(&[]);
+
+        assert!(
+            client.try_pause().is_err(),
+            "pause without the admin's authorization must be rejected"
+        );
     }
 
     #[test]
