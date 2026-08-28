@@ -81,7 +81,20 @@ export function createApp(deps: AppDependencies): express.Application {
   // JSON parser buffers the payload. Mounted ahead of the global parser so
   // oversized webhook bodies are rejected with 413 at the network layer
   // instead of being accumulated in memory.
-  app.use("/api/oracle", express.json({ limit: "4kb" }));
+  // `verify` stashes the exact bytes express-body-parser read off the wire
+  // onto req.rawBody, before JSON.parse touches them — verifyWebhookSignature
+  // HMACs that instead of JSON.stringify(req.body), since re-serializing an
+  // already-parsed object is not guaranteed to reproduce the sender's exact
+  // byte sequence (number formatting, key order, whitespace).
+  app.use(
+    "/api/oracle",
+    express.json({
+      limit: "4kb",
+      verify: (req, _res, buf) => {
+        (req as express.Request).rawBody = Buffer.from(buf);
+      },
+    }),
+  );
   app.use(express.json());
   app.use(requestLogger);
   app.use(requestContextMiddleware);

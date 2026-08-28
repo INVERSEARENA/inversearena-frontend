@@ -10,10 +10,19 @@ export function verifyWebhookSignature(secret: string): RequestHandler {
       return;
     }
 
+    if (!req.rawBody) {
+      // Only happens if this middleware is ever wired up on a route not
+      // behind the express.json({ verify }) parser mounted for /api/oracle
+      // in app.ts — a wiring bug, not a caller error, so this is a 500 not
+      // a 401.
+      next(apiError(500, "WEBHOOK_RAW_BODY_MISSING", "Raw request body was not captured"));
+      return;
+    }
+
     const expected =
       "sha256=" +
       createHmac("sha256", secret)
-        .update(JSON.stringify(req.body))
+        .update(req.rawBody)
         .digest("hex");
 
     const sigBuf = Buffer.from(signature);
