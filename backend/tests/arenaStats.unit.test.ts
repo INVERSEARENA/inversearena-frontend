@@ -166,6 +166,63 @@ describe("ArenaStatsService.getArenaStats", () => {
     }
   });
 
+  it("does not double-count a user eliminated in more than one round", async () => {
+    if (!process.env.DATABASE_URL) return;
+
+    // #1280: eliminatedUserIds is now sourced from a separate distinct
+    // eliminationLog query instead of iterating rounds.eliminationLogs in
+    // memory. A user who somehow has elimination log rows against more than
+    // one round (e.g. a re-entry/rejoin flow, or a data-correction re-log)
+    // must still only be subtracted from survivorCount once.
+    const arena = await createArena(50);
+    const users = await Promise.all([
+      createUser("D1"),
+      createUser("D2"),
+      createUser("D3"),
+    ]);
+
+    await prisma.pool.createMany({
+      data: users.map(() => ({ arenaId: arena.id, stakeAmount: 50 })),
+    });
+
+    const round1 = await prisma.round.create({
+      data: {
+        arenaId: arena.id,
+        roundNumber: 1,
+        state: "RESOLVED",
+        metadata: { playerChoices: users.map((u) => ({ userId: u.id, stake: 50 })) },
+      },
+    });
+    const round2 = await prisma.round.create({
+      data: {
+        arenaId: arena.id,
+        roundNumber: 2,
+        state: "RESOLVED",
+        metadata: { playerChoices: users.map((u) => ({ userId: u.id, stake: 50 })) },
+      },
+    });
+
+    await prisma.eliminationLog.createMany({
+      data: [
+        { roundId: round1.id, userId: users[0].id },
+        { roundId: round2.id, userId: users[1].id },
+        // users[0] eliminated again in round 2 — same user, different round.
+        { roundId: round2.id, userId: users[0].id, reason: "re-eliminated" },
+      ],
+    });
+
+    try {
+      const stats = await service.getArenaStats(arena.id);
+
+      expect(stats.playerCount).toBe(3);
+      // 2 distinct eliminated users (users[0], users[1]), not 3 elimination rows.
+      expect(stats.survivorCount).toBe(1);
+    } finally {
+      await cleanup(arena.id);
+      await cleanupUsers(users.map((u) => u.id));
+    }
+  });
+
   it("accumulates yield across multiple resolved rounds", async () => {
     if (!process.env.DATABASE_URL) return;
 

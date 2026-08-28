@@ -14,11 +14,16 @@ export class ArenaStatsService {
     const arena = await this.prisma.arena.findUnique({
       where: { id: arenaId },
       include: {
+        // Round-level fields (state/metadata) are needed across the *whole*
+        // history — yield fallback and SETTLED detection both scan every
+        // round, not just the latest — so we still fetch all rounds. But
+        // eliminationLogs was pulling every elimination row's full content
+        // into memory (id, reason, eliminatedAt, ...) just to read distinct
+        // userIds; that's fetched separately below via a single distinct
+        // query instead, which Prisma can satisfy without materializing
+        // full row objects for a long-running arena's entire history.
         rounds: {
           orderBy: { roundNumber: "asc" },
-          include: {
-            eliminationLogs: true,
-          },
         },
       },
     });
@@ -61,13 +66,14 @@ export class ArenaStatsService {
       playerCount = await this.prisma.pool.count({ where: { arenaId } });
     }
 
-    const eliminatedUserIds = new Set<string>();
-    rounds.forEach((round) => {
-      round.eliminationLogs.forEach((log) => {
-        eliminatedUserIds.add(log.userId);
-      });
-    });
-    const survivorCount = Math.max(0, playerCount - eliminatedUserIds.size);
+    const eliminatedCount = await this.prisma.eliminationLog
+      .findMany({
+        where: { round: { arenaId } },
+        distinct: ["userId"],
+        select: { userId: true },
+      })
+      .then((rows) => rows.length);
+    const survivorCount = Math.max(0, playerCount - eliminatedCount);
 
     const latestRound = rounds[rounds.length - 1];
     const latestRoundMetadata = (latestRound?.metadata as Record<string, unknown>) ?? {};

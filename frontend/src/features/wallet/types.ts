@@ -9,7 +9,8 @@ export interface WalletState {
 }
 
 export interface WalletContextType extends WalletState {
-  connect: () => Promise<void>;
+  /** Resolves with the connected public key, or null if connection failed. */
+  connect: () => Promise<string | null>;
   disconnect: () => void;
   network: string;
   /** Alias of publicKey, kept for parity with the Freighter-direct wallet hook this replaces. */
