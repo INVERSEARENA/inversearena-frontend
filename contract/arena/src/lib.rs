@@ -134,6 +134,7 @@ impl ArenaContract {
         // adapter interface. This is intentionally a shallow interface check: the current
         // adapter returns 0 from balance_of when uninitialized, so adapter initialization
         // state is enforced by later deposit/withdraw calls rather than by this probe.
+        let rwa_client = RwaAdapterClient::new(&env, &yield_vault);
         let dummy_addr = env.current_contract_address();
         if rwa_client.try_balance_of(&dummy_addr).is_err() {
             return Err(ArenaError::InvalidVaultAddress);
