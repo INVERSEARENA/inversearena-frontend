@@ -1,9 +1,9 @@
 #![no_std]
 use soroban_sdk::{Address, Env, contract, contractimpl, token};
 
-const YIELD_BPS_PER_YEAR: i128 = 500;
 const SECONDS_PER_YEAR: u64 = 31_536_000;
 
+mod oracle;
 mod storage;
 mod types;
 
@@ -17,7 +17,12 @@ pub struct RwaAdapter;
 
 #[contractimpl]
 impl RwaAdapter {
-    pub fn initialize(env: Env, admin: Address, stake_token: Address) -> Result<(), RwaError> {
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        stake_token: Address,
+        oracle: Address,
+    ) -> Result<(), RwaError> {
         admin.require_auth();
         if RwaStorage::assert_initialized(&env).is_ok() {
             return Err(RwaError::AlreadyInitialized);
@@ -25,6 +30,7 @@ impl RwaAdapter {
         let config = RwaConfig {
             admin,
             stake_token,
+            oracle,
             total_deposited: 0,
         };
         RwaStorage::save_config(&env, &config);
@@ -78,9 +84,10 @@ impl RwaAdapter {
             return Err(RwaError::AlreadyWithdrawn);
         }
 
+        let yield_bps = oracle::fetch_yield_bps(&env, &config.oracle);
         let base_yield = pos
             .principal
-            .checked_mul(YIELD_BPS_PER_YEAR)
+            .checked_mul(yield_bps as i128)
             .and_then(|v| v.checked_div(10000))
             .ok_or(RwaError::ArithmeticOverflow)?;
         let elapsed = env.ledger().timestamp().saturating_sub(pos.deposited_at);
@@ -131,14 +138,15 @@ impl RwaAdapter {
 
     pub fn balance_of(env: Env, user: Address) -> i128 {
         RwaStorage::load_config(&env)
-            .map(|_| {
+            .map(|config| {
                 let pos = RwaStorage::load_position(&env, &user);
                 if pos.withdrawn {
                     0
                 } else {
+                    let yield_bps = oracle::fetch_yield_bps(&env, &config.oracle);
                     let base_yield = pos
                         .principal
-                        .checked_mul(YIELD_BPS_PER_YEAR)
+                        .checked_mul(yield_bps as i128)
                         .and_then(|y| y.checked_div(10000))
                         .unwrap_or(0);
                     let elapsed = env.ledger().timestamp().saturating_sub(pos.deposited_at);
@@ -205,7 +213,15 @@ mod test {
         token::StellarAssetClient,
     };
 
-    // ── helpers ───────────────────────────────────────────────────────────────
+    #[contract]
+    struct MockOracle;
+
+    #[contractimpl]
+    impl MockOracle {
+        pub fn get_current_yield_bps(_env: Env) -> u32 {
+            500
+        }
+    }
 
     /// Register the RwaAdapter and wire up a SAC token, writing config directly
     /// into storage so tests can control auth independently of `initialize`.
@@ -215,12 +231,14 @@ mod test {
         let token_id = env
             .register_stellar_asset_contract_v2(token_admin)
             .address();
+        let oracle_id = env.register(MockOracle, ());
         let admin = Address::generate(env);
 
         env.as_contract(&contract_id, || {
             let config = RwaConfig {
                 admin: admin.clone(),
                 stake_token: token_id.clone(),
+                oracle: oracle_id,
                 total_deposited: 0,
             };
             RwaStorage::save_config(env, &config);
@@ -382,10 +400,13 @@ mod test {
         let admin = Address::generate(&env);
         let new_admin = Address::generate(&env);
 
+        let oracle_id = env.register(MockOracle, ());
+
         env.as_contract(&contract_id, || {
             let config = RwaConfig {
                 admin: admin.clone(),
                 stake_token: token_id.clone(),
+                oracle: oracle_id,
                 total_deposited: 0,
             };
             RwaStorage::save_config(&env, &config);
@@ -414,10 +435,13 @@ mod test {
         let admin = Address::generate(&env);
         let new_admin = Address::generate(&env);
 
+        let oracle_id = env.register(MockOracle, ());
+
         env.as_contract(&contract_id, || {
             let config = RwaConfig {
                 admin: admin.clone(),
                 stake_token: token_id.clone(),
+                oracle: oracle_id,
                 total_deposited: 0,
             };
             RwaStorage::save_config(&env, &config);
@@ -445,10 +469,13 @@ mod test {
             .address();
         let admin = Address::generate(&env);
 
+        let oracle_id = env.register(MockOracle, ());
+
         env.as_contract(&contract_id, || {
             let config = RwaConfig {
                 admin: admin.clone(),
                 stake_token: token_id.clone(),
+                oracle: oracle_id,
                 total_deposited: 0,
             };
             RwaStorage::save_config(&env, &config);

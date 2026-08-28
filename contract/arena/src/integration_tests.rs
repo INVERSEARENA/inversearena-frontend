@@ -60,7 +60,7 @@ fn full_game_lifecycle_commit_reveal() {
     // 4. Deploy and initialize RWA Adapter
     let rwa_id = env.register(RwaAdapter, ());
     let rwa_client = RwaAdapterClient::new(&env, &rwa_id);
-    rwa_client.initialize(&admin, &token_id);
+    rwa_client.initialize(&admin, &token_id, &oracle_id);
     all_events.extend(env.events().all().iter());
 
     // 5. Deploy and initialize Arena Contract
@@ -271,7 +271,7 @@ fn factory_arena_payout_full_lifecycle() {
     // ── 3. Deploy and initialise RWA Adapter (vault) ───────────────────
     let rwa_id = env.register(RwaAdapter, ());
     let rwa_client = RwaAdapterClient::new(&env, &rwa_id);
-    rwa_client.initialize(&admin, &token_id);
+    rwa_client.initialize(&admin, &token_id, &oracle_id);
 
     // ── 4. Deploy and initialise Payout contract ───────────────────────
     let payout_id = env.register(PayoutContract, ());
