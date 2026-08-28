@@ -144,6 +144,14 @@ impl FactoryContract {
         Ok(())
     }
 
+    pub fn is_approved_vault(env: Env, vault: Address) -> bool {
+        FactoryStorage::is_approved_vault(&env, &vault)
+    }
+
+    pub fn is_approved_oracle(env: Env, oracle: Address) -> bool {
+        FactoryStorage::is_approved_oracle(&env, &oracle)
+    }
+
     pub fn add_supported_token(env: Env, token: Address) -> Result<(), FactoryError> {
         Self::require_admin(&env)?;
         FactoryStorage::set_supported_token(&env, &token, true);
@@ -246,6 +254,12 @@ impl FactoryContract {
         }
         if !FactoryStorage::is_supported_token(&env, &config.stake_token) {
             return Err(FactoryError::UnsupportedToken);
+        }
+        if !FactoryStorage::is_approved_vault(&env, &config.yield_vault) {
+            return Err(FactoryError::InvalidVault);
+        }
+        if !FactoryStorage::is_approved_oracle(&env, &config.oracle_contract) {
+            return Err(FactoryError::InvalidOracle);
         }
 
         // Check active pool limit for this host
@@ -734,5 +748,58 @@ mod test {
         assert!(client.is_token_supported(&token));
         client.remove_supported_token(&token);
         assert!(!client.is_token_supported(&token));
+    }
+
+    #[test]
+    fn approved_vault_and_oracle_add_and_remove_controls_status() {
+        let (env, client, _admin, _host) = setup();
+        let vault = Address::generate(&env);
+        let oracle = Address::generate(&env);
+
+        assert!(!client.is_approved_vault(&vault));
+        client.add_approved_vault(&vault);
+        assert!(client.is_approved_vault(&vault));
+        client.remove_approved_vault(&vault);
+        assert!(!client.is_approved_vault(&vault));
+
+        assert!(!client.is_approved_oracle(&oracle));
+        client.add_approved_oracle(&oracle);
+        assert!(client.is_approved_oracle(&oracle));
+        client.remove_approved_oracle(&oracle);
+        assert!(!client.is_approved_oracle(&oracle));
+    }
+
+    #[test]
+    fn create_pool_rejects_unapproved_vault() {
+        let (env, client, _admin, host) = setup();
+        client.add_to_whitelist(&host);
+        
+        let cfg = pool_config(&env, 100);
+        client.add_supported_token(&cfg.stake_token);
+        client.add_approved_oracle(&cfg.oracle_contract);
+
+        let err = client
+            .try_create_pool(&host, &cfg)
+            .err()
+            .expect("unapproved vault must error")
+            .expect("error must be a contract error");
+        assert_eq!(err, FactoryError::InvalidVault);
+    }
+
+    #[test]
+    fn create_pool_rejects_unapproved_oracle() {
+        let (env, client, _admin, host) = setup();
+        client.add_to_whitelist(&host);
+        
+        let cfg = pool_config(&env, 100);
+        client.add_supported_token(&cfg.stake_token);
+        client.add_approved_vault(&cfg.yield_vault);
+
+        let err = client
+            .try_create_pool(&host, &cfg)
+            .err()
+            .expect("unapproved oracle must error")
+            .expect("error must be a contract error");
+        assert_eq!(err, FactoryError::InvalidOracle);
     }
 }
