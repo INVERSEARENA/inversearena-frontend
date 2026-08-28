@@ -90,6 +90,112 @@ function StakeModalLikeConsumer() {
   );
 }
 
+/**
+ * #1281 — a passkey session must be merged into the shared useWallet()
+ * context, not left as a disconnected island only ConnectWalletButton can
+ * see. These tests exercise the real usePasskeyWallet hook (unmocked) via
+ * localStorage, mirroring how a returning user with a previously-registered
+ * passkey would show up as already connected everywhere.
+ */
+function PasskeyAwareConsumer() {
+  const { isConnected, address, disconnect } = useWallet();
+  return (
+    <div>
+      <span data-testid="passkey-connected">{String(isConnected)}</span>
+      <span data-testid="passkey-address">{address ?? "none"}</span>
+      <button onClick={() => disconnect()}>Disconnect</button>
+    </div>
+  );
+}
+
+describe("WalletProvider — passkey session merged into shared context (#1281)", () => {
+  const PASSKEY_STORAGE_KEY = "inversearena_passkey";
+  const PASSKEY_ADDRESS = "GCKFBEIYTKP5RDBQMUFJUMOOR2A46QMWDS4M7A6NZK2WQOG3ZHPJDPD3";
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    window.localStorage.clear();
+    mockStellarConfigState.isStellarConfigured = true;
+    mockStellarConfigState.stellarConfig = {
+      network: "configured-network",
+      horizonUrl: "https://horizon.example",
+    };
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => ({ sequence: "1", balances: [] }) });
+  });
+
+  it("reflects a previously-registered passkey as connected via the shared useWallet() context", async () => {
+    window.localStorage.setItem(
+      PASSKEY_STORAGE_KEY,
+      JSON.stringify({ address: PASSKEY_ADDRESS, keyId: "some-key-id" }),
+    );
+
+    render(
+      <WalletProvider>
+        <NavbarLikeConsumer />
+        <PasskeyAwareConsumer />
+      </WalletProvider>,
+    );
+
+    // Before #1281's fix, a stored passkey never reached the shared
+    // context: useWallet() would report disconnected everywhere except
+    // ConnectWalletButton's own separate usePasskeyWallet() call.
+    expect(screen.getByTestId("navbar-status").textContent).toBe("connected");
+    expect(screen.getByTestId("navbar-address").textContent).toBe(PASSKEY_ADDRESS);
+    expect(screen.getByTestId("passkey-connected").textContent).toBe("true");
+    expect(screen.getByTestId("passkey-address").textContent).toBe(PASSKEY_ADDRESS);
+  });
+
+  it("a passkey session takes precedence over an unconnected extension wallet", () => {
+    window.localStorage.setItem(
+      PASSKEY_STORAGE_KEY,
+      JSON.stringify({ address: PASSKEY_ADDRESS, keyId: "some-key-id" }),
+    );
+
+    render(
+      <WalletProvider>
+        <PasskeyAwareConsumer />
+      </WalletProvider>,
+    );
+
+    expect(screen.getByTestId("passkey-address").textContent).toBe(PASSKEY_ADDRESS);
+  });
+
+  it("disconnect() clears a passkey session and is reflected in the shared context", async () => {
+    window.localStorage.setItem(
+      PASSKEY_STORAGE_KEY,
+      JSON.stringify({ address: PASSKEY_ADDRESS, keyId: "some-key-id" }),
+    );
+
+    render(
+      <WalletProvider>
+        <PasskeyAwareConsumer />
+      </WalletProvider>,
+    );
+
+    expect(screen.getByTestId("passkey-connected").textContent).toBe("true");
+
+    fireEvent.click(screen.getByText("Disconnect"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("passkey-connected").textContent).toBe("false");
+    });
+    expect(window.localStorage.getItem(PASSKEY_STORAGE_KEY)).toBeNull();
+  });
+
+  it("reports disconnected when there is no stored passkey and no extension connection", () => {
+    render(
+      <WalletProvider>
+        <PasskeyAwareConsumer />
+      </WalletProvider>,
+    );
+
+    expect(screen.getByTestId("passkey-connected").textContent).toBe("false");
+    expect(screen.getByTestId("passkey-address").textContent).toBe("none");
+  });
+});
+
 describe("WalletProvider consolidation", () => {
   beforeEach(() => {
     jest.clearAllMocks();
