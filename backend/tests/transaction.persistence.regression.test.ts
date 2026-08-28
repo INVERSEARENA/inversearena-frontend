@@ -132,7 +132,7 @@ describe("SqlTransactionRepository owner column", () => {
 
   it("keeps owner_id stable across status updates", async () => {
     const db = new FakeDb((sql) =>
-      /SELECT \*/i.test(sql) ? { rows: [makeRow({ owner_id: "user-42" })] } : { rows: [] },
+      /SELECT \*|RETURNING \*/i.test(sql) ? { rows: [makeRow({ owner_id: "user-42" })] } : { rows: [] },
     );
 
     await new SqlTransactionRepository(db).update("tx-sql-1", {

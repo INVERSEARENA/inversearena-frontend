@@ -5,7 +5,7 @@ import React from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import GamesPage from "../page";
 
-const mockGet = jest.fn((key: string) => {
+const mockGet = jest.fn((key: string): string | null => {
   if (key === "filter") return null;
   if (key === "q") return null;
   return null;

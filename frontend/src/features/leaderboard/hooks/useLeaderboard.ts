@@ -26,7 +26,7 @@ export interface LeaderboardApiResponse {
 }
 
 // ── Map API player → frontend Survivor ────────────────────────────
-function toSurvivor(p: ApiPlayer): Survivor {
+function toSurvivor(p: z.infer<typeof apiPlayerSchema>): Survivor {
   return {
     id: p.id,
     agentId: p.walletAddress,
@@ -68,7 +68,14 @@ export function useLeaderboard(limit = 20): UseLeaderboardReturn {
         if (cursor) params.set("cursor", cursor);
 
         const url = `${API_BASE}/api/leaderboard?${params.toString()}`;
-        const res = await fetch(url);
+        const token =
+          typeof window !== "undefined"
+            ? window.localStorage.getItem("access_token")
+            : null;
+        const headers: HeadersInit = token
+          ? { Authorization: `Bearer ${token}` }
+          : {};
+        const res = await fetch(url, { headers });
 
         if (!res.ok) {
           throw new Error(`Leaderboard request failed: ${res.status}`);

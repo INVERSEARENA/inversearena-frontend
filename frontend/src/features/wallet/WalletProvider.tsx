@@ -103,7 +103,7 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
       isLoadingBalance,
       balanceError,
       connect: connectWallet,
-      disconnect: disconnectWallet,
+      disconnect,
       signTransaction,
       refreshBalance,
     }),

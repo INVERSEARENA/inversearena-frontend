@@ -118,6 +118,7 @@ describe("useArenaStream", () => {
         expect.stringContaining("Failed to parse SSE event data"),
         expect.any(Error),
         expect.any(String),
+        expect.any(String),
       );
     });
 
@@ -242,6 +243,7 @@ describe("useArenaStream", () => {
         expect.stringContaining("Failed to parse SSE event data"),
         expect.any(Error),
         expect.any(String),
+        expect.any(String),
       );
     });
 
@@ -280,6 +282,7 @@ describe("useArenaStream", () => {
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining("Failed to parse SSE event data"),
         expect.any(Error),
+        expect.any(String),
         expect.any(String),
       );
     });

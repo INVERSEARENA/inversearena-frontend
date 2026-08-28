@@ -21,7 +21,7 @@ fn compute_commitment(env: &Env, choice: Choice, salt: &BytesN<32>) -> BytesN<32
 #[test]
 fn full_game_lifecycle_commit_reveal() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let mut all_events = std::vec::Vec::new();
 
@@ -95,8 +95,11 @@ fn full_game_lifecycle_commit_reveal() {
     assert_eq!(token_client.balance(&p2), 0);
     assert_eq!(token_client.balance(&p3), 0);
     assert_eq!(token_client.balance(&p4), 0);
-    // Entry fees (400 total) are held by the Arena Contract
-    assert_eq!(token_client.balance(&arena_id), 400);
+    // join_arena deposits each entry fee into the vault immediately (per-join,
+    // not batched), so the arena itself holds nothing between joins — the
+    // vault (rwa_id) receives the full 400 total instead (#1299).
+    assert_eq!(token_client.balance(&arena_id), 0);
+    assert_eq!(token_client.balance(&rwa_id), 400);
 
     // 7. Start Round 1
     let start_ts = 1000;
@@ -239,7 +242,7 @@ fn full_game_lifecycle_commit_reveal() {
 #[test]
 fn factory_arena_payout_full_lifecycle() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     // ── Participants ───────────────────────────────────────────────────────
     let admin      = Address::generate(&env);
@@ -324,8 +327,11 @@ fn factory_arena_payout_full_lifecycle() {
     assert_eq!(token_client.balance(&p1), 0);
     assert_eq!(token_client.balance(&p2), 0);
     assert_eq!(token_client.balance(&p3), 0);
-    // 300 tokens held by arena (before vault deposit routing)
-    assert_eq!(token_client.balance(&arena_addr), 300);
+    // join_arena deposits each entry fee into the vault immediately (per-join,
+    // not batched), so the arena itself holds nothing between joins — the
+    // vault (rwa_id) receives the full 300 total instead (#1299).
+    assert_eq!(token_client.balance(&arena_addr), 0);
+    assert_eq!(token_client.balance(&rwa_id), 300);
 
     // ── 8. Admin starts round 1 ────────────────────────────────────────
     let start_ts: u64 = 1_000;
