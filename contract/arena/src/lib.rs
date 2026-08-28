@@ -2585,8 +2585,8 @@ mod test {
     }
 
     /// When every remaining active player fails to reveal, the round resolves
-    /// with zero survivors and the game transitions to Finished with no winner.
-    /// The prize pool remains locked in the contract.
+    /// with zero survivors and the game transitions to Cancelled with no winner.
+    /// The prize pool is released so players can claim refunds.
     #[test]
     fn zero_survivor_round_resolution() {
         let env = Env::default();
@@ -2642,10 +2642,10 @@ mod test {
             assert!(!s2.active, "p2 should be eliminated");
         });
 
-        // Game ends Finished with no winner.
+        // Game ends Cancelled with no winner.
         env.as_contract(&client.address, || {
             let config = ArenaStorage::load_config(&env).unwrap();
-            assert_eq!(config.state, GameState::Finished);
+            assert_eq!(config.state, GameState::Cancelled);
         });
 
         // Prize pool stays locked — no tokens moved to any player.

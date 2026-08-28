@@ -12,6 +12,7 @@ pub struct PendingAdmin {
 pub struct RwaConfig {
     pub admin: Address,
     pub stake_token: Address,
+    pub oracle: Address,
     pub total_deposited: i128,
 }
 

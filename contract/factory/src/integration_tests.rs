@@ -56,7 +56,7 @@ fn factory_deploys_arena_and_full_game_plays() {
     // Deploy and initialize RWA Adapter
     let vault_id = env.register(RwaAdapter, ());
     let vault_client = RwaAdapterClient::new(&env, &vault_id);
-    vault_client.initialize(&admin, &token_id);
+    vault_client.initialize(&admin, &token_id, &oracle_id);
 
     // ── 2. Initialize factory ────────────────────────────────────────────
     factory_client.initialize(&admin, &100);
