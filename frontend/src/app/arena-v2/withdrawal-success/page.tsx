@@ -1,17 +1,48 @@
 "use client";
 
 import { useSearchParams, useRouter } from "next/navigation";
-import { Suspense } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { SuccessHeader } from "@/components/arena-v2/withdrawal/SuccessHeader";
 import { UnlockedPadlock } from "@/components/arena-v2/withdrawal/UnlockedPadlock";
 import { WithdrawalDetails } from "@/components/arena-v2/withdrawal/WithdrawalDetails";
+import { consumeWithdrawalToken } from "@/lib/withdrawalSession";
 
 const STELLAR_EXPERT_BASE = "https://stellar.expert/explorer/public/tx";
 
 function WithdrawalSuccessContent() {
   const params = useSearchParams();
   const router = useRouter();
+
+  /**
+   * `authorized` starts as `null` (undetermined) while we wait for the
+   * client-side sessionStorage check.  This prevents a flash of the success
+   * screen before the guard has run, while still honouring Next.js SSR (which
+   * cannot access sessionStorage).
+   */
+  const [authorized, setAuthorized] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    // consumeWithdrawalToken() reads and immediately removes the one-time
+    // token written by the withdrawal flow before navigation (#1298).
+    // If the token is absent the URL was constructed directly — reject it.
+    // This effect is intentionally run only once on mount: the session check
+    // is a one-shot gate and router is stable after mount in Next.js.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const valid = consumeWithdrawalToken();
+    setAuthorized(valid);
+    if (!valid) {
+      router.replace("/");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // `null`  → still waiting for the client-side session check (SSR / first paint).
+  // `false` → token was absent; redirect is already in flight via router.replace.
+  // In both cases render nothing to avoid flashing the success screen.
+  if (!authorized) {
+    return null;
+  }
 
   const totalWithdrawn = params.get("amount");
   const currency = params.get("currency") ?? "USDC";
