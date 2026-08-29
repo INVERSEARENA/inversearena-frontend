@@ -473,7 +473,7 @@ export function PoolCreationModal({
         title="Confirm Pool Creation"
         description="Review transaction details"
         details={txDetails}
-        onConfirm={async () => {
+        onConfirm={async ({ onSigned }) => {
           if (!address) throw new Error("Wallet disconnected. Please reconnect and try again.");
           const tx = await buildCreatePoolTransaction(address, {
             stakeAmount,
@@ -482,6 +482,7 @@ export function PoolCreationModal({
             arenaCapacity,
           });
           const signedXdr = await signTransaction(tx.toXDR());
+          onSigned();
           await submitSignedTransaction(signedXdr);
           onInitialize?.({
             stakeAmount,
