@@ -739,6 +739,7 @@ impl ArenaContract {
             let _ = factory_client.try_release_arena(&arena_addr);
             let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Active);
         } else if config.state == GameState::Cancelled {
+            let _ = rwa_client.try_withdraw_all(&arena_addr);
             let _ = factory_client.try_release_arena(&arena_addr);
             let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
             let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Cancelled);
