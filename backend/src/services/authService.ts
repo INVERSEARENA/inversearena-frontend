@@ -151,25 +151,42 @@ export class AuthService {
     }
 
     const tokenHash = hashToken(refreshToken);
-    const storedToken = await RefreshTokenModel.findOne({ tokenHash });
 
-    if (!storedToken) {
-      const err = Object.assign(new Error("Refresh token has been revoked or expired"), { status: 401 });
-      throw err;
-    }
+    // Atomically claim the token: match only a row that is still unused and
+    // unrevoked, and flip `used` in the same operation. A separate read-then-
+    // write let two concurrent requests both observe `used: false` before
+    // either write landed, so both were issued fresh pairs and the reuse
+    // branch never fired — defeating the very control it implements (#1347).
+    // MongoDB applies a single-document update atomically, so exactly one
+    // racing request can match this filter.
+    const claimedToken = await RefreshTokenModel.findOneAndUpdate(
+      { tokenHash, used: false, revoked: false },
+      { $set: { used: true } },
+      { new: false }
+    );
 
-    if (storedToken.revoked) {
-      const err = Object.assign(new Error("Refresh token has been revoked"), { status: 401 });
-      throw err;
-    }
+    if (!claimedToken) {
+      // The claim failed. Re-read to tell the three possible causes apart:
+      // the token never existed / expired, it was revoked, or it was already
+      // used — the last of which is a replay and must burn the family.
+      const existingToken = await RefreshTokenModel.findOne({ tokenHash });
 
-    if (storedToken.used) {
+      if (!existingToken) {
+        const err = Object.assign(new Error("Refresh token has been revoked or expired"), { status: 401 });
+        throw err;
+      }
+
+      if (existingToken.revoked) {
+        const err = Object.assign(new Error("Refresh token has been revoked"), { status: 401 });
+        throw err;
+      }
+
       // Token reuse detected — this is a theft attempt.
       // Revoke all tokens in this family and wipe the wallet's active JTIs.
       // Also revoke all JTIs minted from this family to invalidate access tokens
       // that were issued before the reuse was detected.
       await RefreshTokenModel.updateMany(
-        { familyId: storedToken.familyId },
+        { familyId: existingToken.familyId },
         { $set: { revoked: true } }
       );
       await this.sessions.removeAllSessions(payload.wallet);
@@ -180,15 +197,14 @@ export class AuthService {
       throw err;
     }
 
-    // Mark the presented token as used and retire its JTI so the same
-    // refresh token cannot be replayed against the new access token.
-    await RefreshTokenModel.findByIdAndUpdate(storedToken._id, { used: true });
+    // The token is now marked used, so a replay cannot claim it again.
+    // Retire its JTI so it cannot be replayed against the new access token.
     if (payload.jti) {
       await this.sessions.removeSession(payload.jti);
     }
 
     // Issue a new token pair in the same family
-    return this.issueTokenPair(payload.sub, payload.wallet, storedToken.familyId);
+    return this.issueTokenPair(payload.sub, payload.wallet, claimedToken.familyId);
   }
 
   /**
