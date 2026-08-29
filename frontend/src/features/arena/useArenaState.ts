@@ -29,6 +29,8 @@ export function toArenaState(data: ArenaStateResponse): ArenaState {
   return {
     id: data.arenaId,
     state: (function mapState() {
+      // gameState is null when not yet available from contract (#1330)
+      if (data.gameState === null) return "open";
       if (data.hasWon && data.gameState === 4) return "finished";
       switch (data.gameState) {
         case 0: return "open";
@@ -46,7 +48,7 @@ export function toArenaState(data: ArenaStateResponse): ArenaState {
     hasWon: data.hasWon,
     currentStake: data.currentStake,
     potentialPayout: data.potentialPayout,
-    entryFee: data.entryFee,
+    entryFee: data.entryFee ?? 0,
     playerCount: data.playerCount,
   };
 }

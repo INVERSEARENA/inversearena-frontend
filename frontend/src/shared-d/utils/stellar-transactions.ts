@@ -439,8 +439,8 @@ export interface ArenaStateResponse {
   currentStake: number;
   potentialPayout: number;
   roundNumber: number;
-  gameState: number;
-  entryFee: number;
+  gameState: number | null;
+  entryFee: number | null;
   playerCount: number;
   commitDeadline: number | null;
   revealDeadline: number | null;
@@ -507,8 +507,8 @@ export async function fetchArenaState(
     const display = buildArenaDisplayState(arenaState);
 
     // entry_fee, player_count, and game_state aren't part of get_full_state's
-    // return value yet (contract follow-up). Falling back to sane defaults keeps
-    // this a single round trip.
+    // return value yet (contract follow-up). Returning null instead of
+    // hardcoded "real" values forces callers to handle the unknown state (#1330).
     return {
       arenaId: validatedArenaId,
       survivorsCount: display.survivorsCount,
@@ -518,8 +518,8 @@ export async function fetchArenaState(
       currentStake: display.currentStake,
       potentialPayout: display.potentialPayout,
       roundNumber: display.roundNumber,
-      gameState: 0,
-      entryFee: stroopsToDisplayAmount(0n),
+      gameState: null,
+      entryFee: null,
       playerCount: display.survivorsCount,
       commitDeadline: null,
       revealDeadline: null,
