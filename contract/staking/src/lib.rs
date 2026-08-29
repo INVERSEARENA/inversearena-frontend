@@ -347,6 +347,10 @@ impl StakingContract {
             return Err(StakingError::InvalidAmount);
         }
 
+        if Self::total_shares(env.clone()) == 0 {
+            return Err(StakingError::NoSharesOutstanding);
+        }
+
         let total_staked = Self::total_staked(env.clone());
         env.storage()
             .persistent()
@@ -856,5 +860,14 @@ mod test {
         client.accept_admin();
 
         assert_eq!(client.admin(), addr_b);
+    }
+
+    #[test]
+    fn distribute_rewards_rejects_empty_pool() {
+        let (env, client, _admin, token, _staker) = setup();
+        let reward_provider = mint_staker(&env, &token, 50_000);
+        assert_eq!(client.total_shares(), 0);
+        let result = client.try_distribute_rewards(&reward_provider, &50);
+        assert_eq!(result, Err(Ok(StakingError::NoSharesOutstanding)));
     }
 }
