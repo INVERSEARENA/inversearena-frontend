@@ -73,8 +73,13 @@ export function PoolCreationModal({
 
   const getMaxStake = useCallback(() => {
     if (!isConnected) return Infinity;
-    return currency === "XLM" ? balance.xlm : balance.usdc;
-  }, [isConnected, currency, balance]);
+    const rawBalance = currency === "XLM" ? balance.xlm : balance.usdc;
+    // For XLM, subtract the estimated network fee to ensure sufficient balance (#1332)
+    if (currency === "XLM") {
+      return Math.max(0, rawBalance - estimatedFee);
+    }
+    return rawBalance;
+  }, [isConnected, currency, balance, estimatedFee]);
 
   const validateForm = useCallback(() => {
     const numericStake = parseFloat(stakeAmountInput);
