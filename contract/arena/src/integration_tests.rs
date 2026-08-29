@@ -554,6 +554,87 @@ fn expire_arena_and_force_cancel_arena_pay_out_identically() {
     );
 }
 
+// ── Regression: zero-survivor resolve_round refundability (#1355) ───────────
+//
+// resolve_round with zero survivors transitions to Cancelled to enable
+// claim_refund, but historically never called rwa_client.withdraw_all (unlike
+// cancel_arena / expire_arena / force_cancel_arena). Because join_arena now
+// deposits each entry fee into the vault immediately (#1299/#1325), the arena's
+// own balance was ~0 at that point, so every claim_refund transfer failed and
+// all player funds were permanently locked. These tests pin that the resolution
+// path withdraws the principal back so claim_refund can pay it out.
+
+#[test]
+fn zero_survivor_resolve_round_claim_refund_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+
+    let admin = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+    let token_client = token::TokenClient::new(&env, &token_id);
+    let mint = StellarAssetClient::new(&env, &token_id);
+
+    // Two players who both go AFK (never commit or reveal) → zero survivors.
+    let p1 = Address::generate(&env);
+    let p2 = Address::generate(&env);
+    for p in [&p1, &p2] {
+        mint.mint(p, &100);
+    }
+
+    let oracle_id = env.register(OracleContract, ());
+    OracleContractClient::new(&env, &oracle_id).initialize(&admin, &0);
+
+    let rwa_id = env.register(RwaAdapter, ());
+    RwaAdapterClient::new(&env, &rwa_id).initialize(&admin, &token_id, &oracle_id);
+
+    let arena_id = env.register(ArenaContract, ());
+    let arena_client = ArenaContractClient::new(&env, &arena_id);
+    arena_client.initialize(
+        &admin,
+        &token_id,
+        &rwa_id,
+        &100,
+        &oracle_id,
+        &Address::generate(&env),
+        &1,
+        &2,
+        &10,
+        &60,
+    );
+
+    arena_client.join_arena(&p1);
+    arena_client.join_arena(&p2);
+
+    // Entry fees go straight into the vault; the arena keeps nothing (#1299).
+    assert_eq!(token_client.balance(&arena_id), 0);
+    assert_eq!(token_client.balance(&rwa_id), 200);
+
+    // Start a round and advance well past the deadline with no reveals.
+    env.ledger().with_mut(|li| li.timestamp = 1000);
+    arena_client.start_round(&3600);
+    env.ledger().with_mut(|li| li.timestamp = 1000 + 3601);
+
+    arena_client.resolve_round();
+
+    // Zero survivors → Cancelled, and resolve_round must have withdrawn the
+    // principal back from the vault so claim_refund can transfer it out.
+    assert_eq!(token_client.balance(&rwa_id), 0);
+    assert_eq!(token_client.balance(&arena_id), 200);
+
+    // Every joined player can claim their full entry fee.
+    for p in [&p1, &p2] {
+        assert!(
+            arena_client.try_claim_refund(p).is_ok(),
+            "claim_refund must succeed after a zero-survivor resolve_round",
+        );
+        assert_eq!(token_client.balance(p), 100);
+    }
+
+    // The arena paid out everything it withdrew; nothing stays locked.
+    assert_eq!(token_client.balance(&arena_id), 0);
+}
+
 #[test]
 fn expire_arena_does_not_strand_eliminated_players_principal() {
     let env = Env::default();
