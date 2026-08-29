@@ -33,10 +33,10 @@ describe("buildSubmitCommitmentTransaction", () => {
     expect(tx.operations.length).toBe(1);
   });
 
-  it("saves the choice and a freshly generated salt to localStorage keyed by pool + round", async () => {
+  it("saves the choice and a freshly generated salt to localStorage keyed by pool + round + publicKey", async () => {
     await buildSubmitCommitmentTransaction(PUBLIC_KEY, POOL_ID, "Tails", 5);
 
-    const stored = loadCommitment(POOL_ID, 5);
+    const stored = loadCommitment(POOL_ID, 5, PUBLIC_KEY);
     expect(stored).not.toBeNull();
     expect(stored!.choice).toBe("Tails");
     expect(stored!.salt.length).toBe(32);
@@ -89,19 +89,56 @@ describe("clearCommitmentForRound / hasStoredCommitmentForRound", () => {
   });
 
   it("hasStoredCommitmentForRound reflects whether a commitment was saved", async () => {
-    expect(hasStoredCommitmentForRound(POOL_ID, 2)).toBe(false);
+    expect(hasStoredCommitmentForRound(POOL_ID, 2, PUBLIC_KEY)).toBe(false);
 
     await buildSubmitCommitmentTransaction(PUBLIC_KEY, POOL_ID, "Heads", 2);
 
-    expect(hasStoredCommitmentForRound(POOL_ID, 2)).toBe(true);
+    expect(hasStoredCommitmentForRound(POOL_ID, 2, PUBLIC_KEY)).toBe(true);
   });
 
   it("clearCommitmentForRound removes the stored commitment", async () => {
     await buildSubmitCommitmentTransaction(PUBLIC_KEY, POOL_ID, "Heads", 2);
-    expect(hasStoredCommitmentForRound(POOL_ID, 2)).toBe(true);
+    expect(hasStoredCommitmentForRound(POOL_ID, 2, PUBLIC_KEY)).toBe(true);
 
-    clearCommitmentForRound(POOL_ID, 2);
+    clearCommitmentForRound(POOL_ID, 2, PUBLIC_KEY);
 
-    expect(hasStoredCommitmentForRound(POOL_ID, 2)).toBe(false);
+    expect(hasStoredCommitmentForRound(POOL_ID, 2, PUBLIC_KEY)).toBe(false);
+  });
+
+  it("multiple wallets on the same device can independently commit/reveal for the same arena/round (#1331)", async () => {
+    const WALLET_1 = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
+    const WALLET_2 = "GDQERENWDDSQZS7R7WKHZI3BSOYMV3U3YDDJE2LWTFHZHHRVNBSMH6JK";
+
+    // Wallet 1 commits Heads
+    await buildSubmitCommitmentTransaction(WALLET_1, POOL_ID, "Heads", 3);
+    
+    // Wallet 2 commits Tails for the same arena and round
+    await buildSubmitCommitmentTransaction(WALLET_2, POOL_ID, "Tails", 3);
+
+    // Both commitments should exist independently
+    expect(hasStoredCommitmentForRound(POOL_ID, 3, WALLET_1)).toBe(true);
+    expect(hasStoredCommitmentForRound(POOL_ID, 3, WALLET_2)).toBe(true);
+
+    // Each wallet should have its own choice stored
+    const stored1 = loadCommitment(POOL_ID, 3, WALLET_1);
+    const stored2 = loadCommitment(POOL_ID, 3, WALLET_2);
+
+    expect(stored1!.choice).toBe("Heads");
+    expect(stored2!.choice).toBe("Tails");
+
+    // Salts should be different (freshly generated per commitment)
+    expect(stored1!.salt).not.toEqual(stored2!.salt);
+
+    // Each wallet can reveal independently
+    const reveal1 = await buildRevealChoiceTransaction(WALLET_1, POOL_ID, 3);
+    const reveal2 = await buildRevealChoiceTransaction(WALLET_2, POOL_ID, 3);
+
+    expect(reveal1.operations.length).toBe(1);
+    expect(reveal2.operations.length).toBe(1);
+
+    // Clearing one wallet's commitment doesn't affect the other
+    clearCommitmentForRound(POOL_ID, 3, WALLET_1);
+    expect(hasStoredCommitmentForRound(POOL_ID, 3, WALLET_1)).toBe(false);
+    expect(hasStoredCommitmentForRound(POOL_ID, 3, WALLET_2)).toBe(true);
   });
 });

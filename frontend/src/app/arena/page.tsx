@@ -143,12 +143,12 @@ function ArenaGameView() {
   // this device already has a commitment stored for it — relevant on
   // remount/reload, since the commitment lives in localStorage, not state.
   useEffect(() => {
-    if (!ARENA_ID) return;
+    if (!ARENA_ID || !address) return;
     setRoundPhase("commit");
     setSelectedChoice(null);
     setCommitTimeExpired(false);
-    setHasCommittedForRound(hasStoredCommitmentForRound(ARENA_ID, currentRound));
-  }, [ARENA_ID, currentRound]);
+    setHasCommittedForRound(hasStoredCommitmentForRound(ARENA_ID, currentRound, address));
+  }, [ARENA_ID, currentRound, address]);
 
   useEffect(() => {
     if (!ARENA_ID || !snapshot) return;
@@ -557,7 +557,9 @@ function ArenaGameView() {
               // Only clear now that the reveal has actually confirmed —
               // clearing earlier would strand the salt if signing was
               // cancelled or submission failed.
-              clearCommitmentForRound(ARENA_ID, currentRound);
+              if (address) {
+                clearCommitmentForRound(ARENA_ID, currentRound, address);
+              }
               setHasCommittedForRound(false);
             }
 
