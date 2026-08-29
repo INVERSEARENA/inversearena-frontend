@@ -266,6 +266,14 @@ pub enum ArenaError {
 
     /// Returned when `update_platform_fee` is called with a value above `MAX_PLATFORM_FEE_BPS`.
     InvalidPlatformFee = 36,
+
+    /// Returned by `join_arena` once at least one round has been played.
+    ///
+    /// The arena returns to `Open` between rounds so `start_round` can run
+    /// again, so `state == Open` alone does not mean the lobby is still
+    /// recruiting. Joining after eliminations would let a latecomer buy in at
+    /// the original entry fee against a thinned field.
+    ArenaAlreadyStarted = 37,
 }
 
 #[contracttype]

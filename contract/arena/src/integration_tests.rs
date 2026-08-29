@@ -414,3 +414,166 @@ fn factory_arena_payout_full_lifecycle() {
     // we already verified the round result above.
     assert!(payout_client.is_paid(&1), "payout_id 1 must be marked paid");
 }
+
+// ── Regression: expire_arena payout completeness (#1359) ─────────────────────
+//
+// expire_arena used to transition to Finished and push entry_fee only to players
+// still `active`. Eliminated players' stakes then had no way out of the contract:
+// `claim` needs a stored_winner that expiry never set, and no sweep existed.
+// force_cancel_arena, on the same arena, refunded everyone. These tests pin that
+// the two paths now pay out equally.
+
+/// Build an arena with `n` joined players, run one round that eliminates the
+/// majority, and return the pieces needed to compare payout paths.
+fn arena_after_one_elimination_round(
+    env: &Env,
+) -> (ArenaContractClient<'static>, token::TokenClient<'static>, Address, std::vec::Vec<Address>) {
+    let admin = Address::generate(env);
+    let token_admin = Address::generate(env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+    let token_client = token::TokenClient::new(env, &token_id);
+    let mint = StellarAssetClient::new(env, &token_id);
+
+    // Five players so the round leaves TWO survivors: with one survivor the
+    // arena finishes outright and never reopens, which is not the stuck-mid-game
+    // situation expire_arena exists for.
+    let players: std::vec::Vec<Address> = (0..5).map(|_| Address::generate(env)).collect();
+    for p in &players {
+        mint.mint(p, &100);
+    }
+
+    let oracle_id = env.register(OracleContract, ());
+    OracleContractClient::new(env, &oracle_id).initialize(&admin, &0);
+
+    let rwa_id = env.register(RwaAdapter, ());
+    RwaAdapterClient::new(env, &rwa_id).initialize(&admin, &token_id, &oracle_id);
+
+    let arena_id = env.register(ArenaContract, ());
+    let arena_client = ArenaContractClient::new(env, &arena_id);
+    arena_client.initialize(
+        &admin,
+        &token_id,
+        &rwa_id,
+        &100,
+        &oracle_id,
+        &Address::generate(env),
+        &1,
+        &2,
+        &10,
+        &60,
+    );
+
+    for p in &players {
+        arena_client.join_arena(p);
+    }
+
+    // One round: players 0 and 1 pick the minority and survive; the other three
+    // are eliminated, so the arena returns to Open with more than one survivor.
+    env.ledger().with_mut(|li| li.timestamp = 1000);
+    arena_client.start_round(&3600);
+
+    let salts: std::vec::Vec<BytesN<32>> = (0..5)
+        .map(|i| BytesN::from_array(env, &[i as u8 + 1; 32]))
+        .collect();
+    let choices = [
+        Choice::Tails,
+        Choice::Tails,
+        Choice::Heads,
+        Choice::Heads,
+        Choice::Heads,
+    ];
+
+    for i in 0..5 {
+        arena_client.submit_commitment(&players[i], &compute_commitment(env, choices[i], &salts[i]));
+    }
+    env.ledger().with_mut(|li| li.timestamp = 1000 + 3601);
+    for i in 0..5 {
+        arena_client.reveal_choice(&players[i], &choices[i], &salts[i]);
+    }
+    arena_client.resolve_round();
+
+    (arena_client, token_client, arena_id, players)
+}
+
+#[test]
+fn expire_arena_lets_every_joined_player_reclaim_their_stake() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+
+    let (arena_client, token_client, _arena_id, players) = arena_after_one_elimination_round(&env);
+
+    // Another round is under way and nobody resolves it — the arena is stuck.
+    arena_client.start_round(&3600);
+    env.ledger().with_mut(|li| li.timestamp = 1000 + 3601 + 3601);
+    arena_client.expire_arena();
+
+    for p in &players {
+        assert!(
+            arena_client.try_claim_refund(p).is_ok(),
+            "every joined player must be refundable after expiry, eliminated or not",
+        );
+        assert_eq!(
+            token_client.balance(p),
+            100,
+            "each player should have their entry fee back",
+        );
+    }
+}
+
+#[test]
+fn expire_arena_and_force_cancel_arena_pay_out_identically() {
+    // Expiry path.
+    let expire_env = Env::default();
+    expire_env.mock_all_auths_allowing_non_root_auth();
+    let (expire_client, expire_token, _, expire_players) =
+        arena_after_one_elimination_round(&expire_env);
+    expire_client.start_round(&3600);
+    expire_env.ledger().with_mut(|li| li.timestamp = 1000 + 3601 + 3601);
+    expire_client.expire_arena();
+    for p in &expire_players {
+        let _ = expire_client.try_claim_refund(p);
+    }
+    let expired_balances: std::vec::Vec<i128> =
+        expire_players.iter().map(|p| expire_token.balance(p)).collect();
+
+    // Force-cancel path, same shape of arena.
+    let cancel_env = Env::default();
+    cancel_env.mock_all_auths_allowing_non_root_auth();
+    let (cancel_client, cancel_token, _, cancel_players) =
+        arena_after_one_elimination_round(&cancel_env);
+    cancel_client.force_cancel_arena();
+    for p in &cancel_players {
+        let _ = cancel_client.try_claim_refund(p);
+    }
+    let cancelled_balances: std::vec::Vec<i128> =
+        cancel_players.iter().map(|p| cancel_token.balance(p)).collect();
+
+    assert_eq!(
+        expired_balances, cancelled_balances,
+        "expiry must pay out exactly as force-cancel does",
+    );
+}
+
+#[test]
+fn expire_arena_does_not_strand_eliminated_players_principal() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+
+    let (arena_client, token_client, arena_id, players) = arena_after_one_elimination_round(&env);
+
+    arena_client.start_round(&3600);
+    env.ledger().with_mut(|li| li.timestamp = 1000 + 3601 + 3601);
+    arena_client.expire_arena();
+
+    for p in &players {
+        let _ = arena_client.try_claim_refund(p);
+    }
+
+    // Every player's principal (5 × 100) has left the contract. Anything still
+    // held is accrued yield, which force_cancel_arena leaves behind too.
+    let residual = token_client.balance(&arena_id);
+    assert!(
+        residual < 500,
+        "eliminated players' principal must not remain stranded (residual: {residual})",
+    );
+}

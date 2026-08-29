@@ -206,10 +206,21 @@ impl FactoryContract {
     /// Called by the arena contract itself (verified via creator stake record)
     /// when the arena finishes or is cancelled. Decrements the creator's active
     /// pool count, allowing the creator to deploy new arenas.
+    /// Deliberately **not** gated on `is_paused` (#1360).
+    ///
+    /// Pause exists to stop new activity — chiefly `create_pool`. This is the
+    /// opposite: a bookkeeping decrement for an arena that has already finished
+    /// or cancelled, triggered by that arena's own lifecycle, not by a user
+    /// starting something new.
+    ///
+    /// Gating it caused permanent damage. The arena calls this exactly once, via
+    /// `try_release_arena`, with no retry path. If the factory happened to be
+    /// paused at that moment the call failed silently, while the neighbouring
+    /// `try_reclaim_creator_stake` — which has no pause check — still succeeded
+    /// and removed the stake record. Any later retry then fails with
+    /// `ArenaNotFound`, so the creator loses one `max_active_pools` slot forever,
+    /// for an arena that has already fully completed.
     pub fn release_arena(env: Env, arena: Address) -> Result<(), FactoryError> {
-        if FactoryStorage::is_paused(&env) {
-            return Err(FactoryError::ContractPaused);
-        }
         arena.require_auth();
 
         // Verify this arena was deployed by the factory
@@ -822,5 +833,113 @@ mod test {
             .expect("unapproved oracle must error")
             .expect("error must be a contract error");
         assert_eq!(err, FactoryError::InvalidOracle);
+    }
+    // ── Regression: pause must not strand a pool slot (#1360) ────────────────
+    //
+    // release_arena and reclaim_creator_stake are both called exactly once per
+    // arena, from the same lifecycle transition, via try_* with no retry. When
+    // release_arena was pause-gated, a factory paused at that moment lost the
+    // decrement while the stake was still refunded and its record deleted —
+    // costing the creator a max_active_pools slot permanently, for an arena that
+    // had already completed.
+
+    /// Register an arena against `creator` as though the factory had deployed it,
+    /// and count it towards their active pools.
+    fn register_arena_for(env: &Env, factory: &Address, creator: &Address) -> Address {
+        let arena = Address::generate(env);
+
+        // A real asset contract, funded so reclaim_creator_stake's transfer can
+        // actually settle — otherwise the test would fail on the token, not on
+        // the behaviour under test.
+        let token_admin = Address::generate(env);
+        let token = env.register_stellar_asset_contract_v2(token_admin).address();
+        soroban_sdk::token::StellarAssetClient::new(env, &token).mint(factory, &100);
+
+        env.as_contract(factory, || {
+            FactoryStorage::save_creator_stake(
+                env,
+                &arena,
+                &CreatorStakeRecord {
+                    creator: creator.clone(),
+                    amount: 100,
+                    stake_token: token,
+                },
+            );
+            FactoryStorage::increment_active_pool_count(env, creator);
+        });
+        arena
+    }
+
+    fn active_pool_count(env: &Env, factory: &Address, creator: &Address) -> u32 {
+        env.as_contract(factory, || FactoryStorage::load_active_pool_count(env, creator))
+    }
+
+    #[test]
+    fn release_arena_succeeds_while_the_factory_is_paused() {
+        let (env, client, _admin, creator) = setup();
+        let arena = register_arena_for(&env, &client.address, &creator);
+        assert_eq!(active_pool_count(&env, &client.address, &creator), 1);
+
+        client.pause();
+
+        assert!(
+            client.try_release_arena(&arena).is_ok(),
+            "releasing a completed arena is bookkeeping, not new activity — pause must not block it",
+        );
+        assert_eq!(
+            active_pool_count(&env, &client.address, &creator),
+            0,
+            "the creator's slot must be freed even though the factory was paused",
+        );
+    }
+
+    #[test]
+    fn a_paused_completion_window_does_not_cost_the_creator_a_slot() {
+        let (env, client, _admin, creator) = setup();
+        let arena = register_arena_for(&env, &client.address, &creator);
+
+        // The arena finishes while the factory happens to be paused: both calls
+        // fire together, exactly as resolve_round and expire_arena issue them.
+        client.pause();
+        let released = client.try_release_arena(&arena);
+        let reclaimed = client.try_reclaim_creator_stake(&arena);
+
+        assert!(released.is_ok(), "release must not be refused during pause");
+        assert!(reclaimed.is_ok(), "reclaim was never pause-gated");
+        assert_eq!(
+            active_pool_count(&env, &client.address, &creator),
+            0,
+            "slot must be released; previously it leaked and could never be recovered",
+        );
+    }
+
+    #[test]
+    fn pause_still_blocks_new_pool_creation() {
+        let (env, client, _admin, host) = setup();
+        client.add_to_whitelist(&host);
+        client.pause();
+
+        // Removing the gate from release_arena must not weaken the pause switch
+        // where it actually matters.
+        let err = client
+            .try_create_pool(&host, &pool_config(&env, 100))
+            .err()
+            .expect("paused factory must still refuse new pools")
+            .expect("error must be a contract error");
+
+        assert_eq!(err, FactoryError::ContractPaused);
+    }
+
+    #[test]
+    fn release_arena_still_rejects_an_unknown_arena() {
+        let (env, client, _admin, _creator) = setup();
+
+        let err = client
+            .try_release_arena(&Address::generate(&env))
+            .err()
+            .expect("an arena the factory never deployed must error")
+            .expect("error must be a contract error");
+
+        assert_eq!(err, FactoryError::ArenaNotFound);
     }
 }
