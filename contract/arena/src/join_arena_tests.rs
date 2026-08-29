@@ -373,3 +373,104 @@ fn join_rejected_when_vault_deposit_fails() {
         "a rejected join must not advance the yield baseline"
     );
 }
+
+// ── Regression: joins after eliminations (#1358) ─────────────────────────────
+//
+// `Open` covers two different situations: the initial recruiting lobby, and the
+// gap between rounds when more than one survivor remains. Only the first should
+// accept new players — otherwise someone who watched round 1 thin the field can
+// buy in at the original entry fee against far better odds.
+
+/// Set `round_count` on an already-built arena, simulating "a round has been played".
+fn set_round_count(env: &Env, contract_id: &Address, round_count: u32) {
+    env.as_contract(contract_id, || {
+        let mut config = ArenaStorage::load_config(env).unwrap();
+        config.round_count = round_count;
+        ArenaStorage::save_config(env, &config);
+    });
+}
+
+#[test]
+fn join_rejected_after_a_round_has_been_played_even_though_state_is_open() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+    set_round_count(&env, &client.address, 1);
+
+    let latecomer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&latecomer, &100);
+
+    assert_eq!(
+        client.try_join_arena(&latecomer),
+        Err(Ok(ArenaError::ArenaAlreadyStarted)),
+        "a player must not be able to join once eliminations have happened",
+    );
+}
+
+#[test]
+fn join_rejected_for_every_round_count_above_zero() {
+    for round_count in [1u32, 2, 7] {
+        let (env, client, token_id) = setup_arena(GameState::Open);
+        set_round_count(&env, &client.address, round_count);
+
+        let latecomer = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_id).mint(&latecomer, &100);
+
+        assert_eq!(
+            client.try_join_arena(&latecomer),
+            Err(Ok(ArenaError::ArenaAlreadyStarted)),
+            "join must stay closed at round_count = {round_count}",
+        );
+    }
+}
+
+#[test]
+fn join_still_accepted_in_the_initial_lobby() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+    // round_count is 0 from setup — the recruiting lobby.
+    let player = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&player, &100);
+
+    assert!(
+        client.try_join_arena(&player).is_ok(),
+        "the initial lobby must still accept players",
+    );
+}
+
+#[test]
+fn late_join_does_not_charge_the_entry_fee() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+    set_round_count(&env, &client.address, 1);
+
+    let latecomer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&latecomer, &100);
+
+    let _ = client.try_join_arena(&latecomer);
+
+    // The guard runs before the transfer, so a rejected join must not move funds.
+    assert_eq!(
+        TokenClient::new(&env, &token_id).balance(&latecomer),
+        100,
+        "a rejected late join must not take the entry fee",
+    );
+}
+
+#[test]
+fn late_join_does_not_increase_the_player_count() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+
+    let original = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&original, &100);
+    client.join_arena(&original);
+
+    let before = client.get_players(&0).len();
+    set_round_count(&env, &client.address, 1);
+
+    let latecomer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&latecomer, &100);
+    let _ = client.try_join_arena(&latecomer);
+
+    assert_eq!(
+        client.get_players(&0).len(),
+        before,
+        "a rejected late join must not dilute the field",
+    );
+}

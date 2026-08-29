@@ -275,6 +275,8 @@ impl ArenaContract {
     /// - `ArenaError::NotInitialized` if `initialize` has not been called.
     /// - `ArenaError::ContractPaused` if the contract is paused.
     /// - `ArenaError::InvalidGameState` if the arena is not in the `Open` state.
+    /// - `ArenaError::ArenaAlreadyStarted` if at least one round has been played,
+    ///   even though the arena is back in `Open` between rounds.
     ///
     /// # Events
     /// Emits `player_joined` with the player address and updated total player count.
@@ -285,6 +287,15 @@ impl ArenaContract {
         Self::require_not_paused(&config)?;
         if config.state != GameState::Open {
             return Err(ArenaError::InvalidGameState);
+        }
+        // `Open` is reused for two different situations: the initial recruiting
+        // lobby, and the gap between rounds when more than one survivor remains
+        // (so `start_round` can run again). Only the first accepts new players —
+        // otherwise someone who watched round 1 eliminate the majority could buy
+        // into a 3-player field for the price the original 10 paid, which is
+        // exactly the edge the minority-wins model is meant to deny (#1358).
+        if config.round_count > 0 {
+            return Err(ArenaError::ArenaAlreadyStarted);
         }
         if player == config.admin {
             return Err(ArenaError::CreatorCannotJoin);
@@ -461,12 +472,22 @@ impl ArenaContract {
         Ok(())
     }
 
-    /// Expire the arena and refund all survivors.
+    /// Expire a stuck arena, making every joined player refundable.
     ///
     /// Any caller may trigger this when the arena is `Active` and the current
     /// round's commit deadline has already passed, i.e. the arena is stuck
-    /// because no one called `resolve_round`. Transitions to `Finished` and
-    /// refunds all surviving players to prevent indefinite fund lockup.
+    /// because no one called `resolve_round`.
+    ///
+    /// Transitions to `Cancelled` and lets every player who ever joined —
+    /// including those already eliminated — reclaim their entry fee through
+    /// `claim_refund`, exactly as `force_cancel_arena` does (#1359).
+    ///
+    /// This previously transitioned to `Finished` and pushed `entry_fee` only to
+    /// players still `active`. Eliminated players' stakes then had no path out of
+    /// the contract at all: `claim` requires a `stored_winner` that expiry never
+    /// set, and no sweep existed. An arena that expired mid-game therefore
+    /// stranded every eliminated player's stake permanently — while the *same*
+    /// arena cancelled by an admin refunded all of them.
     ///
     /// # Errors
     /// - `ArenaError::NotInitialized` if `initialize` has not been called.
@@ -484,7 +505,11 @@ impl ArenaContract {
             return Err(ArenaError::DeadlineTooSoon);
         }
 
-        config.state = GameState::Finished;
+        // Cancelled, not Finished: `claim_refund` is gated on the cancelled state
+        // and pays any joined player, which is precisely the payout completeness
+        // an expired arena needs. Refunds are pull-based here, matching
+        // force_cancel_arena rather than pushing to a subset of players.
+        config.state = GameState::Cancelled;
         ArenaStorage::save_config(&env, &config);
 
         let arena_addr = env.current_contract_address();
@@ -493,23 +518,14 @@ impl ArenaContract {
             let _ = rwa_client.withdraw_all(&arena_addr);
         }
 
-        let token_client = token::TokenClient::new(&env, &config.stake_token);
-        let players = ArenaStorage::load_all_players(&env);
-        for player in players.iter() {
-            if ArenaStorage::load_player(&env, &player)
-                .map(|s| s.active)
-                .unwrap_or(false)
-            {
-                token_client.transfer(&arena_addr, &player, &config.entry_fee);
-            }
-        }
-
         ArenaEvents::arena_expired(&env);
-        
-        // Notify factory of expiration: release active pool slot and sync status
+
+        // Notify the factory exactly as a cancellation does: release the active
+        // pool slot, return the creator's stake, and report the arena cancelled.
         let factory_client = FactoryClient::new(&env, &config.factory);
         let _ = factory_client.try_release_arena(&arena_addr);
-        let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Finished);
+        let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
+        let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Cancelled);
         
         ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())

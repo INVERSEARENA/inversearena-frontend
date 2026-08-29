@@ -129,24 +129,49 @@ export class AdminController {
     res.json({ transaction });
   };
 
+  /**
+   * Pool reindex — **not implemented** (#1350).
+   *
+   * This previously consumed the confirmation token, wrote a `success` audit
+   * entry and answered "Pool reindex queued", while no queue, worker or reindex
+   * logic existed anywhere in the codebase. An admin reaching for this to repair
+   * a stale pool record got a 200 and an audit trail saying it worked, and the
+   * pool stayed exactly as broken as before — the worst possible failure mode
+   * for a repair tool.
+   *
+   * Until a real indexer exists, the endpoint reports itself unimplemented:
+   *
+   *  - responds 501, so callers and monitoring see the truth;
+   *  - does **not** consume the single-use confirmation token, so the admin does
+   *    not have to mint a new one once this is implemented;
+   *  - records the attempt as `failed`, so the audit log stops asserting that a
+   *    repair happened.
+   */
   reindexPool = async (req: Request, res: Response): Promise<void> => {
     const { id } = req.params;
-    const { token } = TokenOnlySchema.parse(req.body);
+    TokenOnlySchema.parse(req.body);
     const adminId = req.adminId!;
 
-    await this.adminService.verifyAndConsumeToken(token, "reindex_pool", id!, adminId);
+    const message =
+      "Pool reindex is not implemented: no indexer exists to rebuild pool state. " +
+      "The confirmation token has not been consumed and no changes were made.";
 
     await this.adminService.log({
       adminId,
       action: "reindex_pool",
       resourceType: "pool",
       resourceId: id!,
-      status: "success",
+      status: "failed",
+      errorMessage: "not_implemented",
       ...(req.ip !== undefined && { ipAddress: req.ip }),
       ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
     });
 
-    res.json({ message: "Pool reindex queued", poolId: id });
+    res.status(501).json({
+      error: "Not Implemented",
+      message,
+      poolId: id,
+    });
   };
 
   runReconciliation = async (req: Request, res: Response): Promise<void> => {
