@@ -171,7 +171,9 @@ test("AuthService.refreshTokens: valid token with rotation", async () => {
   // Pre-register the JTI as active so the refresh endpoint accepts it.
   await sessions.addSession(VALID_ADDRESS, jti, 3600);
 
-  mock.method(RefreshTokenModel, "findOne", async () => ({
+  // The token is unused, so the atomic claim matches and returns the
+  // pre-update document (#1347).
+  mock.method(RefreshTokenModel, "findOneAndUpdate", async () => ({
     _id: "stored-id",
     tokenHash: "somehash",
     familyId: "family-1",
@@ -179,7 +181,6 @@ test("AuthService.refreshTokens: valid token with rotation", async () => {
     used: false,
     revoked: false,
   }));
-  mock.method(RefreshTokenModel, "findByIdAndUpdate", async () => ({}));
   mock.method(RefreshTokenModel, "create", async () => ({}));
 
   const result = await authService.refreshTokens(refreshToken);
@@ -209,6 +210,9 @@ test("AuthService.refreshTokens: reuse of consumed token invalidates family", as
 
   const familyId = "family-attack";
 
+  // Already consumed — the atomic claim filters on `used: false`, so it
+  // matches nothing and the service falls through to reuse detection.
+  mock.method(RefreshTokenModel, "findOneAndUpdate", async () => null);
   mock.method(RefreshTokenModel, "findOne", async () => ({
     _id: "stored-id-1",
     tokenHash: "somehash",
@@ -244,6 +248,8 @@ test("AuthService.refreshTokens: revoked token returns 401", async () => {
   const refreshToken = jwt.sign(payload, secret);
   await sessions.addSession(VALID_ADDRESS, jti, 3600);
 
+  // Revoked rows are excluded by the claim filter.
+  mock.method(RefreshTokenModel, "findOneAndUpdate", async () => null);
   mock.method(RefreshTokenModel, "findOne", async () => ({
     _id: "stored-id-revoked",
     tokenHash: "somehash",
@@ -266,6 +272,7 @@ test("AuthService.refreshTokens: unknown token returns 401", async () => {
   const refreshToken = jwt.sign(payload, secret);
   await sessions.addSession(VALID_ADDRESS, jti, 3600);
 
+  mock.method(RefreshTokenModel, "findOneAndUpdate", async () => null);
   mock.method(RefreshTokenModel, "findOne", async () => null);
 
   await assert.rejects(
@@ -364,4 +371,168 @@ test("AuthService.verifyAccessToken: rejects token with revoked JTI", async () =
     () => authService.verifyAccessToken(token),
     (err: any) => err.status === 401 && err.message.includes("revoked")
   );
+});
+
+/**
+ * #1347 — refresh-token reuse detection must be atomic.
+ *
+ * The old implementation did `findOne` (check `used`) and then a separate
+ * `findByIdAndUpdate` (set `used`). Two concurrent requests presenting the
+ * same token could both read `used: false` before either write landed, so
+ * both were issued fresh pairs and the reuse branch never fired.
+ *
+ * The fake below models MongoDB's guarantee that a single-document update is
+ * atomic: `findOneAndUpdate` matches on `used: false` and flips the flag in
+ * one indivisible step, so only one of N racers can win. An `await` is
+ * inserted before the write to give the interleaving a chance to go wrong —
+ * under the old read-then-write shape this test fails.
+ */
+function fakeAtomicTokenStore(doc: {
+  _id: string;
+  tokenHash: string;
+  familyId: string;
+  userId: string;
+  used: boolean;
+  revoked: boolean;
+}) {
+  const row = { ...doc };
+  let claimCount = 0;
+
+  mock.method(RefreshTokenModel, "findOneAndUpdate", async (filter: any) => {
+    // Yield to the event loop *before* evaluating the guard, so a
+    // non-atomic implementation would interleave here and double-issue.
+    await Promise.resolve();
+    // The service hashes the presented token, so the fake store keys off the
+    // filter it is handed rather than a hardcoded hash.
+    if (filter.used === false && row.used) return null;
+    if (filter.revoked === false && row.revoked) return null;
+
+    const before = { ...row };
+    row.used = true; // the atomic flip
+    claimCount += 1;
+    return before;
+  });
+
+  mock.method(RefreshTokenModel, "findOne", async () => ({ ...row }));
+  mock.method(RefreshTokenModel, "create", async () => ({}));
+
+  return { getClaimCount: () => claimCount, row };
+}
+
+test("AuthService.refreshTokens: concurrent replay of the same token is detected", async () => {
+  const secret = process.env.JWT_SECRET!;
+  const userId = "user-id";
+  const jti = "refresh-jti-race";
+  const familyId = "family-race";
+  const payload = { sub: userId, wallet: VALID_ADDRESS, type: "refresh", jti };
+  const refreshToken = jwt.sign(payload, secret);
+  await sessions.addSession(VALID_ADDRESS, jti, 3600);
+
+  const store = fakeAtomicTokenStore({
+    _id: "stored-id-race",
+    tokenHash: "somehash",
+    familyId,
+    userId,
+    used: false,
+    revoked: false,
+  });
+
+  let revokedFamilyId = "";
+  mock.method(RefreshTokenModel, "updateMany", async (filter: any) => {
+    revokedFamilyId = filter.familyId;
+    return { modifiedCount: 2 };
+  });
+
+  // A genuine client retry racing a thief's replay: same token, fired
+  // together with no ordering between them.
+  const results = await Promise.allSettled([
+    authService.refreshTokens(refreshToken),
+    authService.refreshTokens(refreshToken),
+  ]);
+
+  const fulfilled = results.filter((r) => r.status === "fulfilled");
+  const rejected = results.filter((r) => r.status === "rejected");
+
+  // Exactly one caller may receive a new token pair.
+  assert.strictEqual(fulfilled.length, 1, "only one racer may be issued tokens");
+  assert.strictEqual(rejected.length, 1, "the replay must be rejected");
+  assert.strictEqual(store.getClaimCount(), 1, "the token may be claimed once");
+
+  // The loser must trip reuse detection, not a generic error.
+  const err = (rejected[0] as PromiseRejectedResult).reason as any;
+  assert.strictEqual(err.status, 401);
+  assert.ok(
+    err.message.includes("Refresh token reuse detected"),
+    `expected reuse detection, got: ${err.message}`
+  );
+
+  // Reuse detection must burn the whole family and wipe the wallet's sessions.
+  assert.strictEqual(revokedFamilyId, familyId);
+  assert.strictEqual(await sessions.isActive(jti), false);
+});
+
+test("AuthService.refreshTokens: reuse detection holds under a wider race", async () => {
+  const secret = process.env.JWT_SECRET!;
+  const userId = "user-id";
+  const jti = "refresh-jti-race-wide";
+  const payload = { sub: userId, wallet: VALID_ADDRESS, type: "refresh", jti };
+  const refreshToken = jwt.sign(payload, secret);
+  await sessions.addSession(VALID_ADDRESS, jti, 3600);
+
+  const store = fakeAtomicTokenStore({
+    _id: "stored-id-race-wide",
+    tokenHash: "somehash",
+    familyId: "family-race-wide",
+    userId,
+    used: false,
+    revoked: false,
+  });
+  mock.method(RefreshTokenModel, "updateMany", async () => ({ modifiedCount: 5 }));
+
+  const results = await Promise.allSettled(
+    Array.from({ length: 5 }, () => authService.refreshTokens(refreshToken))
+  );
+
+  const fulfilled = results.filter((r) => r.status === "fulfilled");
+  assert.strictEqual(fulfilled.length, 1, "only one of five racers may succeed");
+  assert.strictEqual(store.getClaimCount(), 1);
+
+  // Every loser must be rejected as a replay, not as a generic failure.
+  for (const r of results.filter((x) => x.status === "rejected")) {
+    const err = (r as PromiseRejectedResult).reason as any;
+    assert.strictEqual(err.status, 401);
+    assert.ok(err.message.includes("Refresh token reuse detected"));
+  }
+});
+
+test("AuthService.refreshTokens: claim filter excludes used and revoked rows", async () => {
+  const secret = process.env.JWT_SECRET!;
+  const jti = "refresh-jti-filter";
+  const payload = { sub: "user-id", wallet: VALID_ADDRESS, type: "refresh", jti };
+  const refreshToken = jwt.sign(payload, secret);
+  await sessions.addSession(VALID_ADDRESS, jti, 3600);
+
+  let claimFilter: any = null;
+  let claimUpdate: any = null;
+  mock.method(RefreshTokenModel, "findOneAndUpdate", async (filter: any, update: any) => {
+    claimFilter = filter;
+    claimUpdate = update;
+    return {
+      _id: "stored-id-filter",
+      tokenHash: "somehash",
+      familyId: "family-filter",
+      userId: "user-id",
+      used: false,
+      revoked: false,
+    };
+  });
+  mock.method(RefreshTokenModel, "create", async () => ({}));
+
+  await authService.refreshTokens(refreshToken);
+
+  // The guard must live in the query itself — that is what makes it atomic.
+  assert.strictEqual(claimFilter.used, false);
+  assert.strictEqual(claimFilter.revoked, false);
+  assert.ok(claimFilter.tokenHash, "claim must be scoped to the token hash");
+  assert.strictEqual(claimUpdate.$set.used, true);
 });

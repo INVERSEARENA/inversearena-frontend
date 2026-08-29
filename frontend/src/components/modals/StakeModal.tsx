@@ -10,6 +10,15 @@ import {
   STAKING_CONTRACT_ID,
   STELLAR_PLACEHOLDERS,
 } from "@/shared-d/utils/stellar-transactions";
+import {
+  formatCurrencyInput,
+  sanitizeNumericInput,
+  type Currency,
+} from "@/shared-d/utils/form-validation";
+
+// Stakes here are denominated in XLM (the modal validates against
+// balance.xlm), so the shared helpers use XLM's 7-decimal precision.
+const STAKE_CURRENCY: Currency = "XLM";
 
 type TransactionState = "idle" | "signing" | "submitting" | "success" | "error";
 
@@ -121,7 +130,12 @@ export default function StakeModal({
   };
 
   const handleAmountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = e.target.value.replace(/[^0-9.]/g, "");
+    // #1340 — the previous /[^0-9.]/g strip allowed multiple decimal points,
+    // so "12..34" stayed on screen while parseFloat silently read it as 12.
+    // Reuse the shared helpers PoolCreationModal already uses so both modals
+    // normalise identically.
+    const sanitized = sanitizeNumericInput(e.target.value);
+    const value = formatCurrencyInput(sanitized, STAKE_CURRENCY);
     setAmount(value);
     if (txState === "error") {
       setTxState("idle");
