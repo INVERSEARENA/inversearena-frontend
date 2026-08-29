@@ -30,8 +30,8 @@ function baseResponse(overrides: Partial<ArenaStateResponse> = {}): ArenaStateRe
     currentStake: 0,
     potentialPayout: 0,
     roundNumber: 1,
-    gameState: 0,
-    entryFee: 100,
+    gameState: null,
+    entryFee: null,
     playerCount: 0,
     commitDeadline: null,
     revealDeadline: null,
@@ -75,6 +75,16 @@ describe("toArenaState", () => {
   it("falls back to open for an unrecognized gameState value", () => {
     const state = toArenaState(baseResponse({ gameState: 99 }));
     expect(state.state).toBe("open");
+  });
+
+  it("maps null gameState to open when contract data is unavailable (#1330)", () => {
+    const state = toArenaState(baseResponse({ gameState: null }));
+    expect(state.state).toBe("open");
+  });
+
+  it("handles null entryFee gracefully (#1330)", () => {
+    const state = toArenaState(baseResponse({ entryFee: null }));
+    expect(state.entryFee).toBe(0);
   });
 
   // Documents the mismatch found while writing this coverage: the on-chain
