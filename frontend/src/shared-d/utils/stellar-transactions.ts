@@ -290,7 +290,7 @@ export async function buildSubmitCommitmentTransaction(
 
     const salt = generateSalt();
     const commitment = await computeCommitment(validatedChoice, salt);
-    saveCommitment(validatedPoolId, validatedRoundNumber, {
+    saveCommitment(validatedPoolId, validatedRoundNumber, validatedPublicKey, {
       choice: validatedChoice,
       salt,
     });
@@ -336,7 +336,7 @@ export async function buildRevealChoiceTransaction(
     const validatedPoolId = StellarContractIdSchema.parse(poolId);
     const validatedRoundNumber = RoundNumberSchema.parse(roundNumber);
 
-    const stored = loadCommitment(validatedPoolId, validatedRoundNumber);
+    const stored = loadCommitment(validatedPoolId, validatedRoundNumber, validatedPublicKey);
     if (!stored) {
       throw new ContractError({
         code: ContractErrorCode.VALIDATION_FAILED,
@@ -367,13 +367,13 @@ export async function buildRevealChoiceTransaction(
 }
 
 /** Re-exported so callers can clear a round's stored commitment after a confirmed reveal (#1137). */
-export function clearCommitmentForRound(poolId: string, roundNumber: number): void {
-  clearCommitment(poolId, roundNumber);
+export function clearCommitmentForRound(poolId: string, roundNumber: number, publicKey: string): void {
+  clearCommitment(poolId, roundNumber, publicKey);
 }
 
 /** True if this device has a stored commitment for the round — i.e. reveal is possible (#1137). */
-export function hasStoredCommitmentForRound(poolId: string, roundNumber: number): boolean {
-  return loadCommitment(poolId, roundNumber) !== null;
+export function hasStoredCommitmentForRound(poolId: string, roundNumber: number, publicKey: string): boolean {
+  return loadCommitment(poolId, roundNumber, publicKey) !== null;
 }
 
 /**
