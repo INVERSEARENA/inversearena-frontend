@@ -135,3 +135,71 @@ describe('#1343 — getOnChainActivePlayerIds error contract', () => {
     expect(err.message).toContain('simulation failed');
   });
 });
+
+describe('#1344 — resolveRound with a failing get_winner read', () => {
+  beforeEach(() => {
+    mockGetActivePlayers.mockReset();
+    mockGetWinner.mockReset();
+  });
+
+  it('does not resolve the round with zero payouts when the winner read fails', async () => {
+    // get_players succeeds and leaves exactly one survivor, so the contract
+    // has genuinely set a winner — only the get_winner read is broken.
+    mockGetActivePlayers.mockResolvedValue([PLAYER_A]);
+    mockGetWinner.mockRejectedValue(
+      new OnChainReadError('get_winner', ARENA_ID, new Error('rpc timeout')),
+    );
+    const { service, resolveAtomically } = buildService();
+
+    await expect(service.resolveRound(buildInput())).rejects.toThrow(OnChainReadError);
+
+    // Previously this committed RESOLVED with payouts: [] and the winner
+    // could never be paid, because resolveRound rejects any retry once the
+    // round has left OPEN/CLOSED.
+    expect(resolveAtomically).not.toHaveBeenCalled();
+  });
+
+  it('leaves the round retryable, and the retry pays the winner', async () => {
+    mockGetActivePlayers.mockResolvedValue([PLAYER_A]);
+    mockGetWinner.mockRejectedValueOnce(
+      new OnChainReadError('get_winner', ARENA_ID, new Error('rpc timeout')),
+    );
+    const { service, resolveAtomically } = buildService();
+
+    await expect(service.resolveRound(buildInput())).rejects.toThrow(OnChainReadError);
+    expect(resolveAtomically).not.toHaveBeenCalled();
+
+    // The round never left OPEN, so a reconciliation retry is accepted once
+    // the RPC recovers — this is the recovery path the old code lacked.
+    mockGetWinner.mockResolvedValue(PLAYER_A);
+    const result = await service.resolveRound(buildInput());
+
+    expect(result.payouts).toHaveLength(1);
+    expect(result.payouts[0]!.userId).toBe(PLAYER_A);
+    expect(result.payouts[0]!.amount).toBeGreaterThan(0);
+    expect(resolveAtomically).toHaveBeenCalledTimes(1);
+  });
+
+  it('still treats a successful read of "no winner" as game-in-progress', async () => {
+    // Both players survive; the contract legitimately has no winner yet.
+    mockGetActivePlayers.mockResolvedValue([PLAYER_A, PLAYER_B]);
+    mockGetWinner.mockResolvedValue(null);
+    const { service, resolveAtomically } = buildService();
+
+    const result = await service.resolveRound(buildInput());
+
+    expect(result.payouts).toEqual([]);
+    expect(result.eliminatedPlayers).toEqual([]);
+    expect(resolveAtomically).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('#1344 — getOnChainWinner error contract', () => {
+  it('distinguishes a read failure from an unset winner', () => {
+    const err = new OnChainReadError('get_winner', ARENA_ID, new Error('timeout'));
+
+    expect(err).toBeInstanceOf(OnChainReadError);
+    expect(err.functionName).toBe('get_winner');
+    expect(err.contractId).toBe(ARENA_ID);
+  });
+});

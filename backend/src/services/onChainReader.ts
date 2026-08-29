@@ -197,13 +197,21 @@ export async function getOnChainActivePlayerIds(
 export async function getOnChainWinner(
   contractId: string,
 ): Promise<string | null> {
+  let result: unknown;
   try {
-    const result = await simulateViewCall(contractId, "get_winner");
-    if (result === null || result === undefined) return null;
-    return String(result);
-  } catch {
-    return null;
+    result = await simulateViewCall(contractId, "get_winner");
+  } catch (error) {
+    // A failed read is NOT the same as "no winner yet". Returning null here
+    // would let the round commit as RESOLVED with zero payouts, and
+    // resolveRound's state guard then rejects every retry — stranding the
+    // winner's prize permanently. Surface the failure so the caller can
+    // abort and retry.
+    throw new OnChainReadError("get_winner", contractId, error);
   }
+  // A successful simulation that yields no value genuinely means the contract
+  // has not called set_winner yet, i.e. the game is still in progress.
+  if (result === null || result === undefined) return null;
+  return String(result);
 }
 
 /**

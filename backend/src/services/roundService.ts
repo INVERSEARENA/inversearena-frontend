@@ -242,6 +242,11 @@ export class RoundService {
    * If the game is not yet finished (multi-round game still in progress)
    * there is no on-chain winner yet and we return an empty array — payout
    * records are only created at game end.
+   *
+   * A failed `get_winner` read is deliberately NOT treated as "no winner
+   * yet" (#1344): it throws OnChainReadError, which aborts the resolution
+   * before the round is committed as RESOLVED. Collapsing the two cases
+   * would strand a real winner's prize behind resolveRound's state guard.
    */
   private async computePayouts(
     arenaContractId: string,
@@ -249,7 +254,9 @@ export class RoundService {
     eliminatedPlayers: string[],
     oracleYield: number
   ): Promise<Payout[]> {
-    // Attempt to read the single authoritative winner from on-chain.
+    // Read the single authoritative winner from on-chain. A transient RPC
+    // failure propagates as OnChainReadError rather than being flattened
+    // into the "no winner yet" branch below.
     const onChainWinner = await this.onChainReader.getWinner(arenaContractId);
     if (!onChainWinner) {
       // Game is still in progress (more rounds to go); no payout yet.
