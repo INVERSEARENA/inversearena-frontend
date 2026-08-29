@@ -16,7 +16,6 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
     return;
   }
 
-  const message = err instanceof Error ? err.message : "Internal server error";
   const status = (err as { status?: number; statusCode?: number }).status
     ?? (err as { statusCode?: number }).statusCode
     ?? 500;
@@ -25,6 +24,14 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
       ? (err as { code: string }).code
       : defaultErrorCode(status)
     : defaultErrorCode(status);
+
+  // Never relay raw internal messages (Prisma/Mongoose/SDK) on 5xx. 4xx
+  // HttpErrors and other intentional client errors keep their message.
+  const message = status >= 500
+    ? "Internal server error"
+    : err instanceof Error
+      ? err.message
+      : "Internal server error";
 
   if (status >= 500) {
     logger.error({ err, reqId: req.id, url: req.url, method: req.method }, "Unhandled Server Error");

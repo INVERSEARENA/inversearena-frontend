@@ -212,6 +212,75 @@ describe("UsersController.me — aggregateStats (#1217)", () => {
     expect(body.currentRank).toBeNull();
   });
 
+  it("credits a win when elimination rows exist only on a non-RESOLVED arena (#1346)", async () => {
+    if (!hasDb()) return;
+
+    // Participated in resolved arenas {A, B, C}; eliminated in {A, B} plus
+    // arena D on an OPEN (non-RESOLVED) round. Subtraction of independently
+    // scoped counts yields 3 - 3 = 0; the anti-join still credits arena C.
+    const userId = await createLinkedUser("GDIVERGENTSET001");
+    const other = await prisma.user.create({ data: { walletAddress: "GDIVERGENTSET002" } });
+    const otherId = other.id;
+
+    const [arenaA, arenaB, arenaC, arenaD] = await Promise.all([
+      prisma.arena.create({ data: {} }),
+      prisma.arena.create({ data: {} }),
+      prisma.arena.create({ data: {} }),
+      prisma.arena.create({ data: {} }),
+    ]);
+
+    const makeResolved = (arenaId: string, eliminated: string, winner: string, amount: number) =>
+      prisma.round.create({
+        data: {
+          arenaId,
+          roundNumber: 1,
+          state: "RESOLVED",
+          metadata: {
+            playerChoices: [
+              { userId, choice: "heads", stake: 100 },
+              { userId: otherId, choice: "tails", stake: 100 },
+            ],
+            resolution: {
+              eliminatedPlayers: [eliminated],
+              payouts: [{ userId: winner, amount }],
+            },
+          },
+        },
+      });
+
+    const rA = await makeResolved(arenaA.id, userId, otherId, 150);
+    const rB = await makeResolved(arenaB.id, userId, otherId, 150);
+    await makeResolved(arenaC.id, otherId, userId, 200);
+    const rD = await prisma.round.create({
+      data: {
+        arenaId: arenaD.id,
+        roundNumber: 1,
+        state: "OPEN",
+        metadata: { playerChoices: [{ userId, choice: "heads", stake: 100 }] },
+      },
+    });
+
+    await prisma.eliminationLog.createMany({
+      data: [
+        { roundId: rA.id, userId, reason: "ELIMINATED_BY_ROUND" },
+        { roundId: rB.id, userId, reason: "ELIMINATED_BY_ROUND" },
+        { roundId: rD.id, userId, reason: "ELIMINATED_BY_ROUND" },
+      ],
+    });
+
+    const req = makeReq(userId);
+    const res = makeRes();
+    const next: NextFunction = () => {
+      throw new Error("should not call next()");
+    };
+
+    await controller.me(req, res as unknown as Response, next);
+    const body = res.captured as any;
+
+    expect(body.gamesWon).toBe(1);
+    expect(body.totalYieldEarned).toBe("200.00");
+  });
+
   it("returns 404 when the Mongo user identity is missing", async () => {
     if (!hasDb()) return;
 

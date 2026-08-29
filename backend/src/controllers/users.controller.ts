@@ -56,9 +56,10 @@ export class UsersController {
    *  - gamesPlayed — distinct arenas from playerChoices metadata UNION
    *                  distinct arenas from elimination_logs (a user eliminated
    *                  without a matching metadata entry still counts).
-   *  - gamesWon    — arenas from playerChoices metadata that the user was
-   *                  never eliminated in (elimination-only arenas, with no
-   *                  metadata participation, are not eligible to be "won").
+   *  - gamesWon    — distinct metadata-participation arenas with no matching
+   *                  RESOLVED-round elimination (anti-join, not subtraction of
+   *                  independently-scoped counts). Elimination-only arenas are
+   *                  not eligible to be "won".
    *  - totalYieldEarned / currentRank — summed/ranked purely from resolution
    *                  payouts in playerChoices metadata, platform-wide.
    *
@@ -66,7 +67,7 @@ export class UsersController {
    *  1. round_choices  – unnests playerChoices JSONB arrays from RESOLVED
    *                      rounds platform-wide, joined to that round's payout
    *  2. participation  – per user: distinct arenas participated in (metadata), total yield
-   *  3. elimination    – per user: distinct arenas where they were eliminated
+   *  3. won            – participation arenas with no RESOLVED-round elimination
    *  4. ranked         – every user with any yield, ranked by total yield DESC
    *                      via a window function, matching the original
    *                      platform-wide rank comparison
@@ -99,18 +100,26 @@ export class UsersController {
       participation AS (
         SELECT
           user_id,
-          COUNT(DISTINCT arena_id) AS arenas_participated,
-          SUM(payout)              AS total_yield
+          SUM(payout) AS total_yield
         FROM round_choices
         GROUP BY user_id
       ),
-      elimination AS (
-        SELECT
-          el.user_id,
-          COUNT(DISTINCT r.arena_id) AS arenas_eliminated
-        FROM elimination_logs el
-        JOIN rounds r ON r.id = el.round_id
-        GROUP BY el.user_id
+      won AS (
+        -- Anti-join: credit a win only when the user participated in a
+        -- RESOLVED arena and has no RESOLVED-round elimination in that arena.
+        -- Counting then subtracting independently-scoped sets undercounts
+        -- when elimination rows exist for non-RESOLVED rounds (#1346).
+        SELECT rc.user_id, COUNT(*)::bigint AS arenas_won
+        FROM (SELECT DISTINCT user_id, arena_id FROM round_choices) rc
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM elimination_logs el
+          JOIN rounds r ON r.id = el.round_id
+          WHERE el.user_id = rc.user_id
+            AND r.arena_id = rc.arena_id
+            AND r.state = 'RESOLVED'
+        )
+        GROUP BY rc.user_id
       ),
       played AS (
         -- Union of metadata-participation arenas and elimination-only arenas,
@@ -133,14 +142,13 @@ export class UsersController {
       )
       SELECT
         COALESCE(pl.arenas_played, 0)::bigint                                          AS "gamesPlayed",
-        GREATEST(0, COALESCE(p.arenas_participated, 0)::bigint - COALESCE(e.arenas_eliminated, 0)::bigint)
-                                                                                        AS "gamesWon",
+        COALESCE(w.arenas_won, 0)::bigint                                              AS "gamesWon",
         COALESCE(p.total_yield, 0)::numeric                                            AS "totalYield",
         r.rank::bigint                                                                 AS "rank"
       FROM (SELECT ${userId}::text AS user_id) target
       LEFT JOIN played pl ON pl.user_id = target.user_id
       LEFT JOIN participation p ON p.user_id = target.user_id
-      LEFT JOIN elimination e ON e.user_id = target.user_id
+      LEFT JOIN won w ON w.user_id = target.user_id
       LEFT JOIN ranked r ON r.user_id = target.user_id
     `;
 
