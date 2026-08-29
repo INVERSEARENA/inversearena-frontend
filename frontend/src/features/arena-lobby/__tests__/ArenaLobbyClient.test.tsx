@@ -167,4 +167,53 @@ describe("ArenaLobbyClient join flow", () => {
     expect(participantRow).not.toHaveTextContent("HEADS");
     expect(participantRow).not.toHaveTextContent("TAILS");
   });
+
+  it("allows joining and choice submission when joinDeadline is null (open-ended arena) (#1334)", async () => {
+    // An arena with joinDeadline: null is open-ended and should always
+    // allow joining and choice submission while the arena status is "open"
+    const openEndedStats = {
+      ...STATS,
+      joinDeadline: null,
+    };
+
+    render(
+      <ArenaLobbyClient
+        arenaId="arena-1"
+        initialStats={openEndedStats}
+        initialParticipants={[]}
+        initialNextCursor={null}
+      />,
+    );
+
+    // Join button should be enabled for open-ended arenas
+    const joinButton = await screen.findByRole("button", { name: "Join Arena" });
+    expect(joinButton).toBeEnabled();
+    expect(joinButton).toHaveTextContent("Join Arena");
+
+    // Countdown should show "No deadline"
+    expect(screen.getByText("No deadline")).toBeInTheDocument();
+
+    // Choice submission should also show "No deadline" and be enabled
+    expect(screen.getByText(/Submission deadline/i)).toBeInTheDocument();
+  });
+
+  it("disables joining when joinDeadline has passed", async () => {
+    // An arena with a past deadline should disable joining
+    const pastDeadlineStats = {
+      ...STATS,
+      joinDeadline: new Date(Date.now() - 60_000).toISOString(),
+    };
+
+    render(
+      <ArenaLobbyClient
+        arenaId="arena-1"
+        initialStats={pastDeadlineStats}
+        initialParticipants={[]}
+        initialNextCursor={null}
+      />,
+    );
+
+    const joinButton = await screen.findByRole("button", { name: "Join Unavailable" });
+    expect(joinButton).toBeDisabled();
+  });
 });
