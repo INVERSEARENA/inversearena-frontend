@@ -5,7 +5,7 @@ import { z } from "zod";
 import { useRouter } from "next/navigation";
 import { ArenaStatsSkeleton } from "@/components/arena/ArenaStatsSkeleton";
 import { ChoiceSubmission } from "@/components/arena/ChoiceSubmission";
-import { TransactionModal } from "@/components/modals/TransactionModal";
+import { TransactionModal, type TransactionProgress } from "@/components/modals/TransactionModal";
 import { useWallet } from "@/features/wallet/useWallet";
 import {
   buildJoinArenaTransaction,
@@ -282,7 +282,7 @@ export function ArenaLobbyClient({
       ? "Join Unavailable"
       : "Join Arena";
 
-  const handleConfirmJoin = async () => {
+  const handleConfirmJoin = async ({ onSigned }: TransactionProgress) => {
     if (!wallet.publicKey) {
       throw new Error("Connect a wallet before joining this arena.");
     }
@@ -293,6 +293,7 @@ export function ArenaLobbyClient({
       stats.entryFee,
     );
     const signedXdr = await wallet.signTransaction(unsignedTx.toXDR());
+    onSigned();
     await submitSignedTransaction(signedXdr);
 
     await Promise.all([fetchStats(), fetchParticipants(0, true)]);

@@ -530,7 +530,7 @@ function ArenaGameView() {
                 ? "Sign & Reveal"
                 : "Sign & Claim"
         }
-        onConfirm={async () => {
+        onConfirm={async ({ onSigned }) => {
           if (!address || !txType) return;
 
           try {
@@ -548,6 +548,7 @@ function ArenaGameView() {
             }
 
             const signedXdr = await signTransaction(tx.toXDR());
+            onSigned();
             await submitSignedTransaction(signedXdr);
 
             if (txType === "COMMIT") {

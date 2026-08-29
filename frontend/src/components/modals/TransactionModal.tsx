@@ -12,13 +12,23 @@ interface TransactionDetail {
     isImportant?: boolean;
 }
 
+/**
+ * Progress callbacks handed to `onConfirm` so the modal can follow a flow it
+ * does not own. Callers that both sign and submit must call `onSigned()` once
+ * the wallet has returned the signed XDR — otherwise the modal cannot tell
+ * signing apart from the on-chain confirmation wait that follows it (#1336).
+ */
+export interface TransactionProgress {
+    onSigned: () => void;
+}
+
 interface TransactionModalProps {
     isOpen: boolean;
     onClose: () => void;
     title: string;
     description?: string;
     details: TransactionDetail[];
-    onConfirm: () => Promise<void>;
+    onConfirm: (progress: TransactionProgress) => Promise<void>;
     confirmLabel?: string;
 }
 
@@ -48,14 +58,12 @@ export function TransactionModal({
             // Give a small delay to show state change or await actual wallet interaction
             await new Promise(r => setTimeout(r, 500));
 
-            // Call the actual confirm handler (which triggers wallet sign)
-            await onConfirm();
+            // Call the actual confirm handler (which triggers wallet sign, then
+            // submits). It reports back the moment the wallet has signed so the
+            // several-second on-chain confirmation wait no longer sits behind
+            // "Please approve the transaction in Freighter" (#1336).
+            await onConfirm({ onSigned: () => setState("SUBMITTING") });
 
-            // If we get here, we assume it's submitting or done. 
-            // The caller might handle the actual submission and state updates, but if `onConfirm` resolves, 
-            // we usually consider it submitted. 
-            // However, if onConfirm involves the whole flow including submission, it might take time.
-            // Let's assume onConfirm resolves when the txn is successfully submitted on-chain or at least sent.
             setState("SUCCESS");
         } catch (err: unknown) {
             setState("ERROR");
