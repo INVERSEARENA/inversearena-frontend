@@ -23,9 +23,3 @@ export const nonceRateLimitConfig: RouteRateLimitConfig = {
   points: readPositiveInt("RATE_LIMIT_NONCE_POINTS", 5),
   durationSeconds: readPositiveInt("RATE_LIMIT_NONCE_WINDOW_SECONDS", 60),
 };
-
-export const poolsRateLimitConfig: RouteRateLimitConfig = {
-  keyPrefix: process.env.RATE_LIMIT_POOLS_PREFIX ?? "rl:pools:create",
-  points: readPositiveInt("RATE_LIMIT_POOLS_POINTS", 3),
-  durationSeconds: readPositiveInt("RATE_LIMIT_POOLS_WINDOW_SECONDS", 60),
-};
