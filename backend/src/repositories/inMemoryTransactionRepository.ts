@@ -12,6 +12,13 @@ export class InMemoryTransactionRepository implements TransactionRepository {
     return this.records.get(id) ?? null;
   }
 
+  async findByPayoutId(payoutId: string): Promise<TransactionRecord | null> {
+    for (const record of this.records.values()) {
+      if (record.payoutId === payoutId) return record;
+    }
+    return null;
+  }
+
   async findById(id: string): Promise<TransactionRecord | null> {
     return this.records.get(id) ?? null;
   }

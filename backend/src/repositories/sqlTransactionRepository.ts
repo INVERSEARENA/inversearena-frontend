@@ -62,6 +62,16 @@ export class SqlTransactionRepository implements TransactionRepository {
     return mapRow(row);
   }
 
+  async findByPayoutId(payoutId: string): Promise<TransactionRecord | null> {
+    const result = await this.db.query<TransactionRow>(
+      "SELECT * FROM transactions WHERE payout_id = $1 LIMIT 1",
+      [payoutId]
+    );
+    const row = result.rows[0];
+    if (row === undefined) return null;
+    return mapRow(row);
+  }
+
   async findById(id: string): Promise<TransactionRecord | null> {
     const result = await this.db.query<TransactionRow>(
       "SELECT * FROM transactions WHERE id = $1 LIMIT 1",

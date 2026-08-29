@@ -82,6 +82,26 @@ export interface PaymentServiceOptions {
   circuitBreaker?: CircuitBreaker;
 }
 
+/**
+ * Raised when a second payout is attempted for a payout id that already has a
+ * transaction, under a different idempotency key (#1353).
+ */
+export class PayoutConflictError extends Error {
+  readonly status = 409;
+  readonly code = "PAYOUT_ALREADY_EXISTS";
+
+  constructor(
+    readonly payoutId: string,
+    readonly existingIdempotencyKey: string,
+  ) {
+    super(
+      `A payout transaction already exists for payoutId ${payoutId}. ` +
+        "Re-send the original idempotency key to retrieve it rather than creating a second payout.",
+    );
+    this.name = "PayoutConflictError";
+  }
+}
+
 export class PaymentService {
   private readonly config: PaymentConfig;
   private readonly rpcServer: any;
@@ -110,6 +130,21 @@ export class PaymentService {
         transaction: existing,
         unsignedXdr: existing.unsignedXdr,
       };
+    }
+
+    // De-duplicating on the caller-supplied idempotency key alone was not enough
+    // (#1353). A retry after an ambiguous timeout typically generates a *fresh*
+    // key, which sailed past the check above, reserved its own nonce and built a
+    // second, independently-submittable transaction for the same prize — a real
+    // double payment. The payout id is the business identity of the payout, so
+    // it is what uniqueness must be enforced on.
+    //
+    // The database now also carries a unique constraint on payout_id; this check
+    // exists so the caller gets a clear conflict instead of a driver error, and
+    // so the nonce below is never burned on a duplicate.
+    const duplicate = await this.transactions.findByPayoutId(request.payoutId);
+    if (duplicate) {
+      throw new PayoutConflictError(request.payoutId, duplicate.idempotencyKey);
     }
 
     const nonce = await this.transactions.reserveNextNonce(this.config.sourceAccount);

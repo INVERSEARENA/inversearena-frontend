@@ -38,6 +38,21 @@ export function getPoolsRateLimitConfig(): RateLimitConfig {
   };
 }
 
+/**
+ * Limiter for POST /api/arenas/:id/sync-players (#1351).
+ *
+ * Same shape and default budget as pool creation — the route reaches Soroban RPC
+ * on every call — but its own bucket, so syncing players cannot eat a user's
+ * pool-creation allowance or vice versa.
+ */
+export function getSyncPlayersRateLimitConfig(): RateLimitConfig {
+  return {
+    keyPrefix: process.env.RATE_LIMIT_SYNC_PLAYERS_PREFIX ?? "rl:arenas:sync-players",
+    points: readPositiveInt("RATE_LIMIT_SYNC_PLAYERS_POINTS", 3),
+    durationSeconds: readPositiveInt("RATE_LIMIT_SYNC_PLAYERS_WINDOW_SECONDS", 60),
+  };
+}
+
 export function getVerifyRateLimitConfig(): RateLimitConfig {
   return {
     keyPrefix: process.env.RATE_LIMIT_VERIFY_PREFIX ?? "rl:auth:verify",

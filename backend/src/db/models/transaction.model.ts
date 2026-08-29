@@ -8,7 +8,10 @@ export interface TransactionDocument extends Omit<TransactionRecord, "id"> {
 const TransactionSchema = new Schema<TransactionDocument>(
   {
     _id: { type: String, required: true },
-    payoutId: { type: String, required: true },
+    // Unique: one on-chain payout per payout id. Without this a retry that
+    // generated a fresh idempotencyKey passed the de-dup check and produced a
+    // second, independently-submittable transaction for the same prize (#1353).
+    payoutId: { type: String, required: true, unique: true },
     idempotencyKey: { type: String, required: true, unique: true },
     sourceAccount: { type: String, required: true },
     destinationAccount: { type: String, required: true },
