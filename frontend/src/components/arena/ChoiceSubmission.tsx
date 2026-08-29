@@ -20,6 +20,8 @@ interface ChoiceSubmissionProps {
 type SubmissionPhase = "idle" | "signing" | "submitting" | "submitted" | "error";
 
 function formatRemaining(seconds: number): string {
+  // Special case: no deadline set
+  if (seconds === Number.MAX_SAFE_INTEGER) return "No deadline";
   if (seconds <= 0) return "00:00";
   const minutes = Math.floor(seconds / 60);
   const remainder = seconds % 60;
@@ -58,13 +60,20 @@ export function ChoiceSubmission({
   const [error, setError] = useState<string | null>(null);
   const [secondsRemaining, setSecondsRemaining] = useState(0);
 
-  const deadlineMs = useMemo(() => Date.parse(deadline), [deadline]);
-  const isDeadlineReached = secondsRemaining <= 0;
+  // deadline === "" means no deadline (null from server); treat as always open
+  const deadlineMs = useMemo(() => (deadline ? Date.parse(deadline) : null), [deadline]);
+  const isDeadlineReached = deadlineMs !== null && secondsRemaining <= 0;
   const isArenaOpen = arenaStatus.toUpperCase() === "OPEN";
   const isLocked = phase === "signing" || phase === "submitting" || phase === "submitted";
 
   useEffect(() => {
     const tick = () => {
+      // No deadline means never reached
+      if (deadlineMs === null) {
+        setSecondsRemaining(Number.MAX_SAFE_INTEGER);
+        return;
+      }
+
       if (Number.isNaN(deadlineMs)) {
         setSecondsRemaining(0);
         return;

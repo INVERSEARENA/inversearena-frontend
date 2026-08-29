@@ -72,7 +72,8 @@ function formatCurrency(value: number, token: string): string {
 }
 
 function formatCountdown(joinDeadline: string | null): string {
-  if (!joinDeadline) return "Unknown";
+  // null deadline means no deadline (open-ended arena)
+  if (!joinDeadline) return "No deadline";
   const remaining = Math.max(0, Date.parse(joinDeadline) - Date.now());
   const totalSeconds = Math.floor(remaining / 1000);
   const hours = Math.floor(totalSeconds / 3600);
@@ -275,7 +276,9 @@ export function ArenaLobbyClient({
 
   const playerCapacity =
     stats.maxPlayers > 0 ? `${stats.playerCount}/${stats.maxPlayers}` : `${stats.playerCount}`;
-  const joinDisabled = !isOpen || !stats.joinDeadline || loadingStats || !walletConnected;
+  // joinDeadline === null means "no deadline" (always open), not "already passed"
+  const hasPassedDeadline = stats.joinDeadline && Date.parse(stats.joinDeadline) <= Date.now();
+  const joinDisabled = !isOpen || hasPassedDeadline || loadingStats || !walletConnected;
   const joinLabel = !walletConnected
     ? "Wallet Required"
     : joinDisabled
