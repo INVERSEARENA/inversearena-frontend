@@ -70,24 +70,13 @@ export class LeaderboardController {
   // ──────────────────────────────────────────────────────────────────
 
   /**
-   * Aggregates per-user stats using a single PostgreSQL CTE, avoiding the
-   * O(rounds × players) memory spike of loading all round rows into Node.js.
-   *
-   * The CTE pipeline:
-   *  1. round_choices  – unnests playerChoices JSONB arrays from RESOLVED rounds
-   *  2. round_stats    – groups by userId: totalYield, roundsParticipated, arenas
-   *  3. elim_stats     – groups elimination_logs by userId
-   *  4. all_users      – UNION of both sets so eliminated-only players are included
-   *
-   * Result is pre-sorted by totalYield DESC, arenasWon DESC so JS only assigns ranks.
-   */
-  /**
    * Fetch one page of the ranked leaderboard.
    *
    * Rank is computed by the database with `ROW_NUMBER()` over the full ordering,
    * so a row's rank is its position on the whole leaderboard — not its index
-   * within the page, which is what deriving it in JS would give once the query
-   * stopped returning every user (#1352).
+   * within the page (#1352). arenasWon / survivalStreak use an anti-join
+   * against RESOLVED-round eliminations rather than subtracting independently
+   * scoped counts (#1346).
    */
   private async buildRankedPlayers(limit: number, offset: number): Promise<PlayerStats[]> {
     type RawRow = {
@@ -117,20 +106,41 @@ export class LeaderboardController {
       round_stats AS (
         SELECT
           user_id,
-          SUM(payout)                   AS total_yield,
-          COUNT(*)                      AS rounds_participated,
-          COUNT(DISTINCT arena_id)      AS arenas_participated
+          SUM(payout) AS total_yield
         FROM round_choices
         GROUP BY user_id
       ),
       elim_stats AS (
-        SELECT
-          el.user_id,
-          COUNT(DISTINCT r.arena_id)    AS arenas_eliminated,
-          COUNT(*)                      AS eliminations
+        SELECT DISTINCT el.user_id
         FROM elimination_logs el
         JOIN rounds r ON r.id = el.round_id
-        GROUP BY el.user_id
+        WHERE r.state = 'RESOLVED'
+      ),
+      arena_wins AS (
+        SELECT rc.user_id, COUNT(*)::bigint AS arenas_won
+        FROM (SELECT DISTINCT user_id, arena_id FROM round_choices) rc
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM elimination_logs el
+          JOIN rounds r ON r.id = el.round_id
+          WHERE el.user_id = rc.user_id
+            AND r.arena_id = rc.arena_id
+            AND r.state = 'RESOLVED'
+        )
+        GROUP BY rc.user_id
+      ),
+      round_survivals AS (
+        SELECT rc.user_id, COUNT(*)::bigint AS survival_streak
+        FROM (SELECT DISTINCT user_id, round_id FROM round_choices) rc
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM elimination_logs el
+          JOIN rounds r ON r.id = el.round_id
+          WHERE el.user_id = rc.user_id
+            AND el.round_id = rc.round_id
+            AND r.state = 'RESOLVED'
+        )
+        GROUP BY rc.user_id
       ),
       all_user_ids AS (
         SELECT user_id FROM round_stats
@@ -141,26 +151,18 @@ export class LeaderboardController {
         u.id,
         u.wallet_address                                                    AS "walletAddress",
         COALESCE(rs.total_yield, 0)::numeric                                AS "totalYield",
-        GREATEST(0,
-          COALESCE(rs.arenas_participated, 0)::bigint
-          - COALESCE(es.arenas_eliminated, 0)::bigint
-        )                                                                   AS "arenasWon",
-        GREATEST(0,
-          COALESCE(rs.rounds_participated, 0)::bigint
-          - COALESCE(es.eliminations, 0)::bigint
-        )                                                                   AS "survivalStreak",
+        COALESCE(aw.arenas_won, 0)::bigint                                  AS "arenasWon",
+        COALESCE(sv.survival_streak, 0)::bigint                             AS "survivalStreak",
         ROW_NUMBER() OVER (
           ORDER BY
             COALESCE(rs.total_yield, 0)::numeric DESC,
-            GREATEST(0,
-              COALESCE(rs.arenas_participated, 0)::bigint
-              - COALESCE(es.arenas_eliminated, 0)::bigint
-            ) DESC
+            COALESCE(aw.arenas_won, 0)::bigint DESC
         )                                                                   AS "rank"
       FROM all_user_ids au
       JOIN users u ON u.id = au.user_id
       LEFT JOIN round_stats rs ON rs.user_id = au.user_id
-      LEFT JOIN elim_stats es ON es.user_id = au.user_id
+      LEFT JOIN arena_wins aw ON aw.user_id = au.user_id
+      LEFT JOIN round_survivals sv ON sv.user_id = au.user_id
       ORDER BY "totalYield" DESC, "arenasWon" DESC
       LIMIT ${limit} OFFSET ${offset}
     `;

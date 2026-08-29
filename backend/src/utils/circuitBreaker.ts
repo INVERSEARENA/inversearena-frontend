@@ -7,6 +7,8 @@ interface CircuitBreakerOptions {
   errorThresholdPercentage: number;
   resetTimeout: number;
   volumeThreshold?: number;
+  /** Sliding window over which success/failure counts are evaluated. */
+  rollingWindowMs?: number;
 }
 
 export interface CircuitBreakerStats {
@@ -21,16 +23,17 @@ export class CircuitBreaker {
   private failures = 0;
   private successes = 0;
   private lastFailureTime: number | null = null;
-  private readonly windowStart: number;
+  private successTimes: number[] = [];
+  private failureTimes: number[] = [];
   private readonly options: Required<CircuitBreakerOptions>;
   private readonly listeners: Map<string, Array<() => void>> = new Map();
 
   constructor(options: CircuitBreakerOptions) {
     this.options = {
       volumeThreshold: 5,
+      rollingWindowMs: 60_000,
       ...options,
     };
-    this.windowStart = Date.now();
   }
 
   async fire<T>(action: () => Promise<T>): Promise<T> {
@@ -63,6 +66,7 @@ export class CircuitBreaker {
   }
 
   getStats(): CircuitBreakerStats {
+    this.pruneWindow(Date.now());
     return {
       state: this.state,
       failures: this.failures,
@@ -77,7 +81,9 @@ export class CircuitBreaker {
   }
 
   private onSuccess(): void {
-    this.successes++;
+    const now = Date.now();
+    this.successTimes.push(now);
+    this.pruneWindow(now);
     if (this.state === "half-open") {
       this.transitionTo("closed");
       this.reset();
@@ -85,8 +91,10 @@ export class CircuitBreaker {
   }
 
   private onFailure(): void {
-    this.failures++;
-    this.lastFailureTime = Date.now();
+    const now = Date.now();
+    this.failureTimes.push(now);
+    this.lastFailureTime = now;
+    this.pruneWindow(now);
 
     const total = this.failures + this.successes;
     if (total < this.options.volumeThreshold) return;
@@ -95,6 +103,15 @@ export class CircuitBreaker {
     if (errorRate >= this.options.errorThresholdPercentage) {
       this.transitionTo("open");
     }
+  }
+
+  /** Drop samples older than the rolling window so historical successes cannot dilute a real outage. */
+  private pruneWindow(now: number): void {
+    const cutoff = now - this.options.rollingWindowMs;
+    this.successTimes = dropOlderThan(this.successTimes, cutoff);
+    this.failureTimes = dropOlderThan(this.failureTimes, cutoff);
+    this.successes = this.successTimes.length;
+    this.failures = this.failureTimes.length;
   }
 
   private shouldAttemptReset(): boolean {
@@ -120,7 +137,15 @@ export class CircuitBreaker {
   private reset(): void {
     this.failures = 0;
     this.successes = 0;
+    this.successTimes = [];
+    this.failureTimes = [];
   }
+}
+
+function dropOlderThan(times: number[], cutoff: number): number[] {
+  const firstKept = times.findIndex((t) => t > cutoff);
+  if (firstKept === -1) return [];
+  return firstKept === 0 ? times : times.slice(firstKept);
 }
 
 export class CircuitOpenError extends Error {

@@ -70,6 +70,32 @@ describe('CircuitBreaker.fire()', () => {
     await expect(breaker.fire(() => Promise.resolve('ok'))).rejects.toBeInstanceOf(CircuitOpenError);
   });
 
+  it('opens after a failure burst even when a large historical success count has aged out of the window (#1345)', async () => {
+    const breaker = new CircuitBreaker({
+      timeout: 5000,
+      errorThresholdPercentage: 50,
+      resetTimeout: 10_000,
+      volumeThreshold: 5,
+      rollingWindowMs: 1000,
+    });
+
+    for (let i = 0; i < 100; i++) {
+      await breaker.fire(() => Promise.resolve('ok'));
+    }
+    expect(breaker.getStats().state).toBe('closed');
+    expect(breaker.getStats().successes).toBe(100);
+
+    jest.advanceTimersByTime(1000);
+
+    for (let i = 0; i < 5; i++) {
+      await expect(breaker.fire(() => Promise.reject(new Error('outage')))).rejects.toThrow('outage');
+    }
+
+    expect(breaker.getStats().state).toBe('open');
+    expect(breaker.getStats().successes).toBe(0);
+    await expect(breaker.fire(() => Promise.resolve('ok'))).rejects.toBeInstanceOf(CircuitOpenError);
+  });
+
   it('transitions to half-open after resetTimeout and closes on success', async () => {
     const breaker = new CircuitBreaker({
       timeout: 5000,
