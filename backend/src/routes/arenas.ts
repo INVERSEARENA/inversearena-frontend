@@ -13,6 +13,8 @@ import { RoundRepository } from "../repositories/roundRepository";
 import { apiError } from "../utils/apiError";
 import type { ArenaParticipant } from "../types/arena";
 import { getOnChainPlayers } from "../services/onChainReader";
+import { isAuthorizedAdminWallet } from "../services/walletRoleService";
+import { createRateLimitMiddleware, getSyncPlayersRateLimitConfig } from "../middleware/rateLimit";
 
 const PaginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
@@ -336,9 +338,14 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
    * Syncs on-chain player list to the database.
    * Reads the contract's get_players() paginated response and upserts player records.
    */
+  // Same protection as pools/wallet-role: this route reaches Soroban RPC on
+  // every call, so it needs a budget rather than none at all (#1351).
+  const syncPlayersRateLimiter = createRateLimitMiddleware(getSyncPlayersRateLimitConfig());
+
   router.post(
     "/:id/sync-players",
     authMiddleware,
+    syncPlayersRateLimiter,
     asyncHandler(async (req, res) => {
       const id = req.params.id;
       if (!id) {
@@ -351,6 +358,28 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
       }
 
       const metadata = (arena.metadata as Record<string, unknown>) ?? {};
+
+      // Authorisation (#1351): a valid JWT alone used to be enough, so any
+      // logged-in wallet could drive a live simulateTransaction plus DB writes
+      // for every arena id in the system — an authenticated amplification
+      // vector against the Soroban RPC with no relationship to the arena.
+      // Syncing is now limited to the arena's creator and admin wallets.
+      const caller = req.user?.walletAddress;
+      if (!caller) {
+        throw apiError(401, "UNAUTHORIZED", "Unauthorized");
+      }
+
+      const createdBy = metadata.createdBy as string | undefined;
+      const isOwner = createdBy !== undefined && createdBy === caller;
+
+      if (!isOwner && !isAuthorizedAdminWallet(caller)) {
+        throw apiError(
+          403,
+          "FORBIDDEN",
+          "Only the arena creator or an admin may sync players for this arena",
+        );
+      }
+
       const contractAddress = metadata.contractAddress as string | undefined;
 
       if (!contractAddress) {

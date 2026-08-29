@@ -33,6 +33,11 @@ export class MongoTransactionRepository implements TransactionRepository {
     return doc ? docToRecord(doc) : null;
   }
 
+  async findByPayoutId(payoutId: string): Promise<TransactionRecord | null> {
+    const doc = await TransactionModel.findOne({ payoutId });
+    return doc ? docToRecord(doc) : null;
+  }
+
   async findById(id: string): Promise<TransactionRecord | null> {
     const doc = await TransactionModel.findById(id);
     return doc ? docToRecord(doc) : null;
