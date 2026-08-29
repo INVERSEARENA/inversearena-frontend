@@ -19,6 +19,29 @@ const { Server } = rpc;
 /** On-chain game states — matches the contract's GameState enum. */
 export type OnChainGameState = "Open" | "InProgress" | "Finished" | "Cancelled";
 
+/**
+ * Raised when an on-chain read fails for a transient/infrastructure reason
+ * (RPC timeout, simulation error, malformed response) as opposed to the
+ * contract legitimately reporting "no value yet".
+ *
+ * Callers MUST NOT convert this into a benign empty/null result: an empty
+ * player list means "everyone was eliminated" and a null winner means "game
+ * still in progress", both of which are irreversible state transitions.
+ */
+export class OnChainReadError extends Error {
+  constructor(
+    readonly functionName: string,
+    readonly contractId: string,
+    override readonly cause?: unknown,
+  ) {
+    super(
+      `On-chain read failed for ${functionName} on ${contractId}: ` +
+        (cause instanceof Error ? cause.message : String(cause)),
+    );
+    this.name = "OnChainReadError";
+  }
+}
+
 let rpcServer: rpc.Server | null = null;
 let sourcePublicKey: string | null = null;
 
@@ -154,10 +177,10 @@ export async function getOnChainActivePlayerIds(
     return entries
       .filter(([, state]) => state.active)
       .map(([addr]) => addr);
-  } catch {
+  } catch (error) {
     // Propagate: callers must not silently swallow this — an empty list
     // would incorrectly mark all players as eliminated.
-    return [];
+    throw new OnChainReadError("get_players", contractId, error);
   }
 }
 
