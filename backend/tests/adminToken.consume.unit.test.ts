@@ -74,4 +74,69 @@ describe("Admin confirmation token consume (#1348)", () => {
     const stored = await ConfirmationTokenModel.findOne({ action: "force_resolve" });
     expect(stored?.used).toBe(true);
   });
+
+  it("accepts a valid token with matching action, resource, and admin", async () => {
+    const service = new AdminService();
+    const { token } = await service.requestToken(ADMIN_ID, "force_resolve", TX_ID);
+
+    await expect(
+      service.verifyAndConsumeToken(token, "force_resolve", TX_ID, ADMIN_ID),
+    ).resolves.toBeUndefined();
+
+    const stored = await ConfirmationTokenModel.findOne({ action: "force_resolve" });
+    expect(stored?.used).toBe(true);
+  });
+
+  it("returns 404 for an unknown token", async () => {
+    await expect(
+      new AdminService().verifyAndConsumeToken("unknown", "force_resolve", TX_ID, ADMIN_ID),
+    ).rejects.toMatchObject({ status: 404, message: "Confirmation token not found" });
+  });
+
+  it("returns 409 for a token that was already consumed", async () => {
+    const service = new AdminService();
+    const { token } = await service.requestToken(ADMIN_ID, "force_resolve", TX_ID);
+    await service.verifyAndConsumeToken(token, "force_resolve", TX_ID, ADMIN_ID);
+
+    await expect(
+      service.verifyAndConsumeToken(token, "force_resolve", TX_ID, ADMIN_ID),
+    ).rejects.toMatchObject({ status: 409, message: "Confirmation token already used" });
+  });
+
+  it("returns 410 for an expired token", async () => {
+    const service = new AdminService();
+    const { token } = await service.requestToken(ADMIN_ID, "force_resolve", TX_ID);
+    await ConfirmationTokenModel.updateOne(
+      { action: "force_resolve" },
+      { $set: { expiresAt: new Date(Date.now() - 1_000) } },
+    );
+
+    await expect(
+      service.verifyAndConsumeToken(token, "force_resolve", TX_ID, ADMIN_ID),
+    ).rejects.toMatchObject({ status: 410, message: "Confirmation token expired" });
+  });
+
+  it("returns 403 for an action or resource mismatch", async () => {
+    const service = new AdminService();
+    const { token } = await service.requestToken(ADMIN_ID, "force_resolve", TX_ID);
+
+    await expect(
+      service.verifyAndConsumeToken(token, "resubmit", TX_ID, ADMIN_ID),
+    ).rejects.toMatchObject({
+      status: 403,
+      message: "Confirmation token action or resource mismatch",
+    });
+  });
+
+  it("returns 403 when the token belongs to another admin", async () => {
+    const service = new AdminService();
+    const { token } = await service.requestToken(ADMIN_ID, "force_resolve", TX_ID);
+
+    await expect(
+      service.verifyAndConsumeToken(token, "force_resolve", TX_ID, "different-admin"),
+    ).rejects.toMatchObject({
+      status: 403,
+      message: "Confirmation token belongs to a different admin",
+    });
+  });
 });

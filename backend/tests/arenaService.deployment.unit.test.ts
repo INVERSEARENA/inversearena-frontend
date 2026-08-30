@@ -135,3 +135,75 @@ test("confirmArenaDeployment refuses to run when the factory contract is unconfi
     /ARENA_FACTORY_CONTRACT_ID is not configured/,
   );
 });
+
+test("getSnapshot aggregates arena state and extracts recent eliminations", async () => {
+  const prisma = {
+    arena: {
+      findUnique: async () => ({
+        id: DEPLOYED_ARENA_ID,
+        rounds: [
+          {
+            roundNumber: 1,
+            state: "RESOLVED",
+            eliminationLogs: [
+              {
+                id: "elimination-1",
+                userId: "user-1",
+                reason: "minority",
+                eliminatedAt: new Date("2026-01-02T00:00:00.000Z"),
+              },
+            ],
+          },
+          { roundNumber: 2, state: "OPEN", eliminationLogs: [] },
+        ],
+      }),
+    },
+  };
+  const statsService = {
+    getArenaStats: async () => ({
+      currentRound: 2,
+      playerCount: 8,
+      survivorCount: 4,
+      status: "active",
+    }),
+  };
+  const service = new ArenaService(prisma as never, statsService as never);
+
+  const snapshot = await service.getSnapshot(DEPLOYED_ARENA_ID);
+
+  assert.deepStrictEqual(snapshot, {
+    arenaId: DEPLOYED_ARENA_ID,
+    currentRound: 2,
+    playerCount: 8,
+    survivorCount: 4,
+    status: "active",
+    recentEliminations: [
+      {
+        id: "elimination-1",
+        userId: "user-1",
+        roundNumber: 1,
+        reason: "minority",
+        eliminatedAt: "2026-01-02T00:00:00.000Z",
+      },
+    ],
+    lastRoundState: "OPEN",
+  });
+});
+
+test("getSnapshot rejects an arena that does not exist", async () => {
+  const prisma = { arena: { findUnique: async () => null } };
+  const statsService = {
+    getArenaStats: async () => ({
+      currentRound: 0,
+      playerCount: 0,
+      survivorCount: 0,
+      status: "missing",
+    }),
+  };
+  const service = new ArenaService(prisma as never, statsService as never);
+
+  await assert.rejects(
+    () => service.getSnapshot(DEPLOYED_ARENA_ID),
+    /Arena with ID .* not found/,
+  );
+});

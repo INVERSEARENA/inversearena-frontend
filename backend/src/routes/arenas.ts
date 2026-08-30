@@ -15,6 +15,7 @@ import type { ArenaParticipant } from "../types/arena";
 import { getOnChainPlayers } from "../services/onChainReader";
 import { isAuthorizedAdminWallet } from "../services/walletRoleService";
 import { createRateLimitMiddleware, getSyncPlayersRateLimitConfig } from "../middleware/rateLimit";
+import { createSseConnectionLimitMiddleware } from "../middleware/sseConnectionLimit";
 
 const PaginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
@@ -120,6 +121,7 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   const arenaService = new ArenaService(prisma);
   const arenaStatsService = new ArenaStatsService(prisma);
   const roundRepository = new RoundRepository(prisma);
+  const sseConnectionLimiter = createSseConnectionLimitMiddleware();
 
   /**
    * POST /api/arenas
@@ -301,6 +303,8 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
    */
   router.get(
     "/:id/stream",
+    authMiddleware,
+    sseConnectionLimiter,
     asyncHandler(async (req, res) => {
       const id = req.params.id!;
 

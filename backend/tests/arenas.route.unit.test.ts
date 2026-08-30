@@ -33,6 +33,24 @@ test("GET /api/arenas/:id/rounds returns 404 when arena does not exist", async (
   assert.deepStrictEqual(response.body, { error: { code: "ARENA_NOT_FOUND" } });
 });
 
+test("GET /api/arenas/:id/stream requires authentication (#1225)", async () => {
+  let authCalls = 0;
+  const app = express();
+  app.use(
+    "/api/arenas",
+    createArenasRouter((_req, res) => {
+      authCalls += 1;
+      res.status(401).json({ error: { code: "UNAUTHORIZED" } });
+    }),
+  );
+
+  const response = await request(app).get("/api/arenas/arena-1/stream");
+
+  assert.strictEqual(response.status, 401);
+  assert.strictEqual(authCalls, 1);
+  assert.deepStrictEqual(response.body, { error: { code: "UNAUTHORIZED" } });
+});
+
 test("GET /api/arenas/:id/rounds returns paginated round history", async () => {
   prisma.arena = {
     findUnique: async () => ({ id: "arena-1" }),

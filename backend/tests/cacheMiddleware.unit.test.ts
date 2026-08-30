@@ -75,4 +75,26 @@ describe("cacheMiddleware (#1213)", () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(set).toHaveBeenCalledWith("cache-key", JSON.stringify({ created: true }), "EX", 60);
   });
+
+  it("serves a cache hit without calling the route handler", async () => {
+    get.mockResolvedValueOnce(JSON.stringify({ cached: true }));
+    const handler = jest.fn((_req, res) => res.json({ cached: false }));
+    const response = await request(buildApp(handler)).get("/thing");
+
+    expect(response.status).toBe(200);
+    expect(response.headers["x-cache"]).toBe("HIT");
+    expect(response.body).toEqual({ cached: true });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("falls through when Redis is unavailable", async () => {
+    get.mockRejectedValueOnce(new Error("Redis unavailable"));
+    const response = await request(
+      buildApp((_req, res) => res.json({ recovered: true })),
+    ).get("/thing");
+
+    expect(response.status).toBe(200);
+    expect(response.headers["x-cache"]).toBe("MISS");
+    expect(response.body).toEqual({ recovered: true });
+  });
 });
