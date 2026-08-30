@@ -210,22 +210,19 @@ export class ArenaService {
   }
 
   async getSnapshot(arenaId: string): Promise<ArenaSnapshot> {
-    const arena = await this.prisma.$transaction(
-      (tx) => tx.arena.findUnique({
-        where: { id: arenaId },
-        include: {
-          rounds: {
-            orderBy: { roundNumber: "asc" },
-            include: {
-              eliminationLogs: {
-                orderBy: { eliminatedAt: "asc" },
-              },
+    const arena = await this.prisma.arena.findUnique({
+      where: { id: arenaId },
+      include: {
+        rounds: {
+          orderBy: { roundNumber: "asc" },
+          include: {
+            eliminationLogs: {
+              orderBy: { eliminatedAt: "asc" },
             },
           },
         },
-      }),
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-    );
+      },
+    });
     const stats = await this.statsService.getArenaStats(arenaId);
 
     if (!arena) {

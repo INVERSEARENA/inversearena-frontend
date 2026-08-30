@@ -2,7 +2,6 @@ import "dotenv/config";
 // import { db } from "./db/client";
 import { redis } from "./cache/redisClient";
 import { prisma } from "./db/prisma";
-import { SqlTransactionRepository } from "./repositories/sqlTransactionRepository";
 import { connectDB } from "./db/connection";
 import { MongoTransactionRepository } from "./repositories/mongoTransactionRepository";
 import { validateConfig } from "./config/validate";
