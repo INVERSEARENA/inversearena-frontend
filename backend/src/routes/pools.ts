@@ -69,6 +69,14 @@ export function createPoolsRouter(authMiddleware: RequestHandler): Router {
       });
       const { arenaId, stakeAmount } = PoolCreateSchema.parse(req.body);
 
+      const arena = await prisma.arena.findUnique({
+        where: { id: arenaId },
+        select: { id: true },
+      });
+      if (!arena) {
+        throw apiError(404, "ARENA_NOT_FOUND", `Arena with ID ${arenaId} not found`);
+      }
+
       const pool = await prisma.pool.create({
         data: { arenaId, stakeAmount },
       });

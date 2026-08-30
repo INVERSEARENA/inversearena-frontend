@@ -118,6 +118,9 @@ Redis-backed limits (`rate-limiter-flexible`) apply to:
 - `POST /api/auth/verify` (IP + wallet dual scope)
 - `POST /api/auth/refresh`
 - `POST /api/pools`
+- `GET /api/arenas/:id/stream` requires authentication and caps active streams
+  per IP and per arena. Configure the process-local caps with
+  `SSE_MAX_CONNECTIONS_PER_IP` and `SSE_MAX_CONNECTIONS_PER_ARENA`.
 
 Violations return HTTP `429` with a `Retry-After` header. Configure via `RATE_LIMIT_*` env vars (see `.env.example`).
 
