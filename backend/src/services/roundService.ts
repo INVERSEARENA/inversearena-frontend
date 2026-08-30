@@ -264,7 +264,6 @@ export class RoundService {
     }
 
     // Compute prize = all eliminated stakes + oracle yield on the total pool.
-    const totalStake = playerChoices.reduce((sum, p) => sum + p.stake, 0);
     const eliminatedStake = playerChoices
       .filter(p => eliminatedPlayers.includes(p.userId))
       .reduce((sum, p) => sum + p.stake, 0);
@@ -279,9 +278,6 @@ export class RoundService {
       // Winner receives their own stake back plus the full prize pool.
       amount: winnerStake + prizePool,
     }];
-
-    // Suppress unused-variable warning; totalStake retained for future use.
-    void totalStake;
   }
 
   async closeRound(roundId: string): Promise<{ state: RoundState }> {
