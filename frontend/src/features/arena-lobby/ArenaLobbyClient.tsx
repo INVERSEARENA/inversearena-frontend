@@ -293,7 +293,6 @@ export function ArenaLobbyClient({
     const unsignedTx = await buildJoinArenaTransaction(
       wallet.publicKey,
       arenaId,
-      stats.entryFee,
     );
     const signedXdr = await wallet.signTransaction(unsignedTx.toXDR());
     onSigned();

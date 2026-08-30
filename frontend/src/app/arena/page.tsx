@@ -241,7 +241,7 @@ function ArenaGameView() {
                   setTxType("JOIN");
                   setTxDetails([
                     { label: "Action", value: "Join Arena" },
-                    { label: "Entry Fee", value: "100 XLM" }, // Example
+                    { label: "Entry Fee", value: `${entryFee ?? 0} XLM` },
                     { label: "Arena ID", value: ARENA_ID },
                   ]);
                   setShowTxModal(true);
@@ -536,7 +536,7 @@ function ArenaGameView() {
           try {
             let tx;
             if (txType === "JOIN") {
-              tx = await buildJoinArenaTransaction(address, ARENA_ID, 100);
+              tx = await buildJoinArenaTransaction(address, ARENA_ID);
             } else if (txType === "COMMIT" && selectedChoice) {
               tx = await buildSubmitCommitmentTransaction(address, ARENA_ID, selectedChoice === "heads" ? "Heads" : "Tails", currentRound);
             } else if (txType === "REVEAL") {

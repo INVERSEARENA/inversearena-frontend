@@ -103,7 +103,6 @@ describe("ArenaLobbyClient join flow", () => {
       expect(buildJoinArenaTransaction).toHaveBeenCalledWith(
         WALLET_ADDRESS,
         "arena-1",
-        STATS.entryFee,
       );
     });
     expect(walletMock.signTransaction).toHaveBeenCalledWith("unsigned-xdr");
