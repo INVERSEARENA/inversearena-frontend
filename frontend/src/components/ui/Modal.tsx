@@ -118,6 +118,36 @@ function useFocusTrap(isOpen: boolean) {
   return { containerRef, handleKeyDown };
 }
 
+let modalEscapeId = 0;
+const openModalEscapeIds: number[] = [];
+
+function useEscapeHandler(
+  isOpen: boolean,
+  closeOnEscape: boolean,
+  onClose: () => void
+) {
+  useEffect(() => {
+    if (!isOpen || !closeOnEscape) return;
+
+    const id = ++modalEscapeId;
+    openModalEscapeIds.push(id);
+
+    const handleEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      const topId = openModalEscapeIds[openModalEscapeIds.length - 1];
+      if (id !== topId) return;
+      onClose();
+    };
+
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("keydown", handleEscape);
+      const index = openModalEscapeIds.indexOf(id);
+      if (index !== -1) openModalEscapeIds.splice(index, 1);
+    };
+  }, [isOpen, closeOnEscape, onClose]);
+}
+
 function useBodyScrollLock(isOpen: boolean) {
   useEffect(() => {
     if (!isOpen) return;
@@ -156,18 +186,7 @@ export function Modal({
 
   useBodyScrollLock(isOpen);
 
-  useEffect(() => {
-    if (!isOpen || !closeOnEscape) return;
-
-    const handleEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    };
-
-    document.addEventListener("keydown", handleEscape);
-    return () => document.removeEventListener("keydown", handleEscape);
-  }, [isOpen, closeOnEscape, onClose]);
+  useEscapeHandler(isOpen, closeOnEscape, onClose);
 
   const handleOverlayClick = useCallback(() => {
     if (closeOnOverlayClick) {

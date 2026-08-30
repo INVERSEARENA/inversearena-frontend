@@ -121,4 +121,22 @@ describe('LeaderboardPage', () => {
 
         expect(screen.getByText(errorMsg)).toBeInTheDocument();
     });
+
+    it('labels the stat cards as partial, not platform totals (#1338)', async () => {
+        render(<LeaderboardPage />);
+
+        act(() => {
+            jest.advanceTimersByTime(1100);
+        });
+
+        // Cards are clearly labeled as reflecting only the loaded page,
+        // never presented as fabricated platform-wide aggregates.
+        expect(screen.getByText('LOADED AGENTS')).toBeInTheDocument();
+        expect(screen.getByText('YIELD ON THIS PAGE')).toBeInTheDocument();
+
+        // The loaded-agent card reports the number of survivors actually
+        // loaded so far (11), not an invented platform total.
+        expect(screen.getByText('11')).toBeInTheDocument();
+        expect(screen.getByText(/11 loaded · shown above/i)).toBeInTheDocument();
+    });
 });

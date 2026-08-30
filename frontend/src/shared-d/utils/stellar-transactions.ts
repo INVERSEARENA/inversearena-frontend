@@ -245,13 +245,11 @@ export async function buildUnstakeProtocolTransaction(
 export async function buildJoinArenaTransaction(
   publicKey: string,
   poolId: string,
-  amount: number,
 ) {
   const FN = "buildJoinArenaTransaction";
   try {
     const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
     const validatedPoolId = StellarContractIdSchema.parse(poolId);
-    PositiveAmountSchema.parse(amount);
 
     const account = await getAccount(validatedPublicKey, FN);
     const poolContract = defaultSorobanClients.createContract(validatedPoolId);
