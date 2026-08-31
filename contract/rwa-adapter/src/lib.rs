@@ -52,9 +52,12 @@ impl RwaAdapter {
             .principal
             .checked_add(amount)
             .ok_or(RwaError::ArithmeticOverflow)?;
-        // Set deposit timestamp only if this is the first deposit (principal was 0)
+        // Fresh position (principal was 0): reset the deposit timestamp and clear
+        // the withdrawn flag, otherwise a re-deposit after a full withdrawal would
+        // permanently fail withdraw_all()'s AlreadyWithdrawn check (#1356, #1357).
         if pos.principal == amount {
             pos.deposited_at = env.ledger().timestamp();
+            pos.withdrawn = false;
         }
         RwaStorage::save_position(&env, &from, &pos);
 
@@ -691,5 +694,58 @@ mod test {
             0,
             "vault must be empty after full withdrawal"
         );
+    }
+
+    // ── Regression test: withdrawn flag must reset on re-deposit (#1356, #1357) ──
+
+    /// REGRESSION TEST: deposit() must clear `withdrawn` back to false when
+    /// starting a fresh position (principal was 0).
+    ///
+    /// The original bug: withdraw_all() sets `withdrawn = true` unconditionally
+    /// on a successful withdrawal, but deposit()'s "fresh position" branch only
+    /// reset `deposited_at`, never `withdrawn`. So a second deposit after a full
+    /// withdrawal would succeed (real tokens transferred in), but the following
+    /// withdraw_all() would hit the `AlreadyWithdrawn` check — which runs before
+    /// the principal check — forever, stranding the newly-deposited tokens.
+    #[test]
+    fn deposit_after_full_withdrawal_can_withdraw_again() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, token_id, contract_id) = setup(&env);
+        let from = Address::generate(&env);
+
+        StellarAssetClient::new(&env, &token_id).mint(&from, &2_000);
+
+        // First cycle: deposit then fully withdraw.
+        client.deposit(&from, &1_000);
+        let first_withdrawn = client.withdraw_all(&from);
+        assert_eq!(first_withdrawn, 1_000);
+
+        env.as_contract(&contract_id, || {
+            let pos = RwaStorage::load_position(&env, &from);
+            assert!(pos.withdrawn, "position must be marked withdrawn");
+            assert_eq!(pos.principal, 0);
+        });
+
+        // Second cycle: deposit again — this must not be permanently bricked.
+        client.deposit(&from, &1_000);
+
+        env.as_contract(&contract_id, || {
+            let pos = RwaStorage::load_position(&env, &from);
+            assert!(
+                !pos.withdrawn,
+                "withdrawn flag must be cleared on re-deposit"
+            );
+        });
+
+        // withdraw_all() must succeed again instead of failing with AlreadyWithdrawn.
+        let second_withdrawn = client.withdraw_all(&from);
+        assert_eq!(second_withdrawn, 1_000);
+
+        env.as_contract(&contract_id, || {
+            let pos = RwaStorage::load_position(&env, &from);
+            assert!(pos.withdrawn);
+            assert_eq!(pos.principal, 0);
+        });
     }
 }
