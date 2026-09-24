@@ -23,6 +23,9 @@ import {
   fetchArenaState,
   clearCommitmentForRound,
   hasStoredCommitmentForRound,
+  captureTransactionOutcome,
+  reconcileTransaction,
+  type TransactionOutcome,
 } from "@/shared-d/utils/stellar-transactions";
 import { useArenaStream } from "@/features/arena/useArenaStream";
 
@@ -188,6 +191,23 @@ function ArenaGameView() {
       updateArenaState();
     }
   }, [isConnected, address, updateArenaState]);
+
+  // Deterministic client reconciliation (#1385). After a Soroban transaction
+  // reaches a terminal confirmation state — SUCCESS, REJECTED, or TIMEOUT —
+  // the optimistic client state must converge to the chain's authoritative
+  // state. Resolving the outcome through the shared engine (deduped, with
+  // retry + latency observability) and then re-reading the chain makes that
+  // convergence deterministic for every caller of this page.
+  const reconcileOutcome = useCallback(
+    async (outcome: TransactionOutcome) => {
+      await reconcileTransaction(outcome, { arenaId: ARENA_ID });
+      // Re-read the authoritative chain state so optimistic UI state
+      // (isJoined, hasCommittedForRound, balances) converges to the chain.
+      await updateArenaState();
+      await refreshBalance();
+    },
+    [ARENA_ID, updateArenaState, refreshBalance],
+  );
 
   return (
     <>
@@ -549,7 +569,27 @@ function ArenaGameView() {
 
             const signedXdr = await signTransaction(tx.toXDR());
             onSigned();
-            await submitSignedTransaction(signedXdr);
+
+            let outcome: TransactionOutcome;
+            try {
+              const txResult = await submitSignedTransaction(signedXdr);
+              outcome = { status: "SUCCESS", hash: String(txResult.txHash) };
+            } catch (e) {
+              // Map every failure to a deterministic outcome and reconcile in
+              // the background: on REJECTED (chain unchanged) and on TIMEOUT
+              // (may still land) the chain is the authority, so we converge
+              // to it instead of leaving optimistic state in place.
+              outcome = captureTransactionOutcome(e);
+              void reconcileOutcome(outcome).catch((reconcileError) => {
+                console.error("Reconciliation failed:", reconcileError);
+              });
+              throw e;
+            }
+
+            // SUCCESS already confirmed — deterministically converge the
+            // optimistic UI to the chain's authoritative state before
+            // settling the round-scoped side effects below.
+            await reconcileOutcome(outcome);
 
             if (txType === "COMMIT") {
               setHasCommittedForRound(true);
@@ -562,10 +602,6 @@ function ArenaGameView() {
               }
               setHasCommittedForRound(false);
             }
-
-            // Trigger real-time updates
-            await refreshBalance();
-            await updateArenaState();
 
             setShowTxModal(false);
           } catch (e) {
