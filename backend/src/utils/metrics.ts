@@ -106,6 +106,20 @@ export const queueRefreshDuration = new Histogram({
   registers: [register],
 });
 
+export const diagnosticsRunsTotal = new Counter({
+  name: "inversearena_transaction_diagnostics_runs_total",
+  help: "Total transaction simulation diagnostics runs, by outcome",
+  labelNames: ["outcome"],
+  registers: [register],
+});
+
+export const diagnosticsRunDuration = new Histogram({
+  name: "inversearena_transaction_diagnostics_duration_seconds",
+  help: "Transaction simulation diagnostics duration in seconds",
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+  registers: [register],
+});
+
 export const workerJobAttemptsTotal = new Counter({
   name: "inversearena_worker_job_attempts_total",
   help: "Total worker job processing attempts",

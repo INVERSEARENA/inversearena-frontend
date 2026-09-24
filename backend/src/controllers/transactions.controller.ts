@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import type { TransactionRepository } from "../repositories/transactionRepository";
 import { filterAccessibleTransactions, loadAccessibleTransaction } from "../utils/transactionAccess";
+import { diagnoseTransaction } from "../services/transactionDiagnosticsService";
 
 export class TransactionsController {
   constructor(private readonly transactions: TransactionRepository) {}
@@ -31,5 +32,24 @@ export class TransactionsController {
       .catch((error: unknown) => { next(error); return null; });
     if (!tx) return;
     res.json(tx);
+  };
+
+  /**
+   * Re-simulates a transaction's stored unsignedXdr and reports whether it
+   * would still succeed (#1400). Never submits or mutates the transaction;
+   * a caller who can view the transaction's status may always run
+   * diagnostics on it, using the same access policy as getById.
+   */
+  diagnose = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const tx = await loadAccessibleTransaction(this.transactions, req.params.id!, req, "diagnose")
+      .catch((error: unknown) => { next(error); return null; });
+    if (!tx) return;
+
+    try {
+      const diagnostics = await diagnoseTransaction(tx.unsignedXdr);
+      res.json({ version: 1, transactionId: tx.id, ...diagnostics });
+    } catch (error) {
+      next(error);
+    }
   };
 }
