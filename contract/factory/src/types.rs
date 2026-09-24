@@ -68,4 +68,6 @@ pub enum FactoryError {
     EntryFeeTooLow = 17,
     InvalidConfig = 18,
     NoPendingAdmin = 19,
+    /// Scaling `min_stake` to a token's decimals overflowed i128 (#1361).
+    ArithmeticOverflow = 20,
 }
