@@ -388,6 +388,24 @@ export const intentLatencySeconds = new Histogram({
   registers: [register],
 });
 
+// Arena lifecycle command idempotency (#1386) — resolveRound/closeRound
+// wrapped with a request-level idempotency key checked before any side
+// effect (on-chain submission, state transition) runs.
+export const lifecycleCommandOutcomeTotal = new Counter({
+  name: 'inversearena_lifecycle_command_outcome_total',
+  help: 'Total arena lifecycle command outcomes by action and result',
+  labelNames: ['action', 'outcome'], // outcome: executed | replayed | conflict | retried_after_failure
+  registers: [register],
+});
+
+export const lifecycleCommandDurationSeconds = new Histogram({
+  name: 'inversearena_lifecycle_command_duration_seconds',
+  help: 'Duration of a freshly-executed (non-replayed) arena lifecycle command',
+  labelNames: ['action'],
+  buckets: [0.1, 0.5, 1, 2, 5, 15, 30, 60],
+  registers: [register],
+});
+
 // 0 = closed (healthy), 1 = half-open (probing), 2 = open (failing)
 export const sorobanCircuitBreakerState = new Gauge({
   name: 'inversearena_soroban_circuit_breaker_state',

@@ -3,11 +3,16 @@ import { Contract, Keypair, TransactionBuilder, xdr } from "@stellar/stellar-sdk
 import { StellarRpcGateway } from "../../frontend/src/shared-d/services/stellarRpcGateway";
 
 import { RoundRepository } from '../repositories/roundRepository';
+import {
+  IdempotentCommandRepository,
+  type IdempotentCommandAction,
+} from '../repositories/idempotentCommandRepository';
 import type {
   RoundInput,
   RoundMetadata,
   RoundResolution,
   CommitReceipt,
+  Payout,
 } from '../types/round';
 import { RoundState } from '../types/round';
 import {
@@ -18,6 +23,8 @@ import {
   roundResolutionDuration,
   commitReceiptLookupsTotal,
   commitReceiptLookupDuration,
+  lifecycleCommandOutcomeTotal,
+  lifecycleCommandDurationSeconds,
 } from '../utils/metrics';
 import { invalidateArenaStats } from '../cache/cacheService';
 import {
@@ -67,11 +74,36 @@ export class SorobanOnChainReader implements OnChainReader {
   }
 }
 
+/**
+ * Raised when an idempotency key is already claimed by a request that is
+ * still genuinely in flight (not stale). Distinct from a generic Error so
+ * the controller can map it to 409 rather than string-matching on the
+ * message like it does for the underlying state-guard errors.
+ */
+export class IdempotencyConflictError extends Error {
+  readonly status = 409;
+  readonly code = 'IDEMPOTENCY_KEY_IN_PROGRESS';
+
+  constructor(idempotencyKey: string) {
+    super(`A request with idempotency key ${idempotencyKey} is already in progress`);
+    this.name = 'IdempotencyConflictError';
+  }
+}
+
+// A claim older than this is treated as abandoned (process crash, restart
+// during work) rather than a genuinely concurrent request, and may be
+// released so a retry can proceed. Comfortably longer than
+// submitOnChainResolve's worst realistic case (roundConfirmMaxPolls *
+// ~30s cap), so a slow-but-alive resolution is never mistaken for a dead
+// one.
+const STALE_CLAIM_MS = 10 * 60 * 1000;
+
 export class RoundService {
   private roundRepo: RoundRepository;
   private onChainReader: OnChainReader;
   private explicitStellarConfig: StellarConfig | undefined;
   private resolvedStellarConfig: StellarConfig | undefined;
+  private idempotentCommands: IdempotentCommandRepository;
 
   constructor(
     private prisma: PrismaClient,
@@ -82,6 +114,7 @@ export class RoundService {
     this.roundRepo = new RoundRepository(prisma);
     this.onChainReader = onChainReader ?? new SorobanOnChainReader();
     this.explicitStellarConfig = stellarConfig;
+    this.idempotentCommands = new IdempotentCommandRepository(prisma);
   }
 
   /**
@@ -177,6 +210,115 @@ export class RoundService {
       );
     }
     throw new Error(`resolve_round send failed: ${sendResult.status}`);
+  }
+
+  /**
+   * Run `action` exactly once per idempotencyKey, ahead of any side effect
+   * the action performs (#1386). Three outcomes:
+   *  - No prior row for this key: claim it, run the action, record the
+   *    outcome, return the fresh result ("executed").
+   *  - A prior COMPLETED row: return its stored result without running the
+   *    action again ("replayed") — a genuine duplicate delivery.
+   *  - A prior FAILED row, or an IN_PROGRESS row stale enough to be
+   *    abandoned: release it and retry ("retried_after_failure") — a
+   *    legitimate retry of a request that never completed must still be
+   *    allowed to proceed (#1344's retryability guarantee), so this is
+   *    deliberately NOT rejected the way a fresh IN_PROGRESS conflict is.
+   *  - A prior IN_PROGRESS row that is still fresh: reject with
+   *    IdempotencyConflictError — a genuinely concurrent request with the
+   *    same key, not a retry.
+   */
+  private async runIdempotentCommand<T>(
+    idempotencyKey: string,
+    action: IdempotentCommandAction,
+    roundId: string,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const claimed = await this.idempotentCommands.tryClaim(idempotencyKey, action, roundId);
+
+    if (claimed) {
+      return this.executeAndRecord(idempotencyKey, action, run);
+    }
+
+    // The key already exists — decide how to respond based on its current
+    // status rather than recursing back into tryClaim, which would just
+    // fail again for the same reason.
+    const existing = await this.idempotentCommands.findByKey(idempotencyKey);
+    if (!existing) {
+      // The row we just failed to claim was deleted between tryClaim and
+      // this read (vanishingly unlikely). One retry is enough — if it
+      // still can't claim, something else is racing this exact key
+      // unusually fast, which the conflict path below handles safely.
+      const reclaimed = await this.idempotentCommands.tryClaim(idempotencyKey, action, roundId);
+      if (reclaimed) return this.executeAndRecord(idempotencyKey, action, run);
+      lifecycleCommandOutcomeTotal.inc({ action, outcome: 'conflict' });
+      throw new IdempotencyConflictError(idempotencyKey);
+    }
+
+    if (existing.status === 'completed') {
+      lifecycleCommandOutcomeTotal.inc({ action, outcome: 'replayed' });
+      contextLogger().info({ idempotencyKey, action, roundId }, 'Replaying completed lifecycle command');
+      return existing.result as T;
+    }
+
+    const ageMs = Date.now() - existing.updatedAt.getTime();
+    const isStaleInProgress = existing.status === 'in_progress' && ageMs >= STALE_CLAIM_MS;
+
+    if (existing.status === 'failed' || isStaleInProgress) {
+      const reclaimed = await this.idempotentCommands.reclaimForRetry(
+        idempotencyKey,
+        existing.status === 'failed' ? 'failed' : 'in_progress',
+        STALE_CLAIM_MS,
+      );
+
+      if (!reclaimed) {
+        // A concurrent caller reclaimed this same retry first — this
+        // caller is now the duplicate of THAT retry, not the original
+        // owner. Reject rather than run a second concurrent execution.
+        lifecycleCommandOutcomeTotal.inc({ action, outcome: 'conflict' });
+        throw new IdempotencyConflictError(idempotencyKey);
+      }
+
+      lifecycleCommandOutcomeTotal.inc({ action, outcome: 'retried_after_failure' });
+      contextLogger().info(
+        { idempotencyKey, action, roundId, priorStatus: existing.status },
+        'Retrying lifecycle command after a prior failure or abandoned attempt',
+      );
+      return this.executeAndRecord(idempotencyKey, action, run);
+    }
+
+    lifecycleCommandOutcomeTotal.inc({ action, outcome: 'conflict' });
+    throw new IdempotencyConflictError(idempotencyKey);
+  }
+
+  private async executeAndRecord<T>(
+    idempotencyKey: string,
+    action: IdempotentCommandAction,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const start = Date.now();
+    try {
+      const result = await run();
+      await this.idempotentCommands.markCompleted(idempotencyKey, result);
+      lifecycleCommandOutcomeTotal.inc({ action, outcome: 'executed' });
+      lifecycleCommandDurationSeconds.observe({ action }, (Date.now() - start) / 1000);
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Lifecycle command failed';
+      await this.idempotentCommands.markFailed(idempotencyKey, message);
+      lifecycleCommandDurationSeconds.observe({ action }, (Date.now() - start) / 1000);
+      throw error;
+    }
+  }
+
+  async resolveRoundIdempotent(idempotencyKey: string, input: RoundInput): Promise<RoundResolution> {
+    return this.runIdempotentCommand(idempotencyKey, 'resolve_round', input.roundId, () =>
+      this.resolveRound(input),
+    );
+  }
+
+  async closeRoundIdempotent(idempotencyKey: string, roundId: string): Promise<{ state: RoundState }> {
+    return this.runIdempotentCommand(idempotencyKey, 'close_round', roundId, () => this.closeRound(roundId));
   }
 
   async resolveRound(input: RoundInput): Promise<RoundResolution> {
@@ -386,7 +528,9 @@ export class RoundService {
     if (round.state !== RoundState.OPEN) {
       throw new Error(`Round is not OPEN (current state: ${round.state})`);
     }
-    await this.roundRepo.updateState(roundId, RoundState.CLOSED);
+    // Conditional UPDATE (#1386) — closes the same TOCTOU race
+    // resolveAtomically already guards against for resolveRound.
+    await this.roundRepo.closeAtomically(roundId, RoundState.OPEN, RoundState.CLOSED);
     arenaStateTransitionsTotal.inc({ from_state: RoundState.OPEN, to_state: RoundState.CLOSED });
     return { state: RoundState.CLOSED };
   }

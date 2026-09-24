@@ -141,3 +141,25 @@ model ArenaProjectionCheckpoint {
   @@index([status])
   @@map("arena_projection_checkpoints")
 }
+
+// Request-level idempotency for arena lifecycle commands (#1386).
+// One row per (idempotencyKey), checked BEFORE any side effect
+// (on-chain submission, state transition) runs, so a duplicate/retried
+// request returns the prior durable result instead of re-executing.
+// Deliberately separate from Round.state: that field is coarse and
+// shared across every caller, not a substitute for per-request dedup —
+// see docs/ARENA_LIFECYCLE_IDEMPOTENCY.md.
+model IdempotentCommand {
+  id             String   @id @default(uuid())
+  idempotencyKey String   @unique @map("idempotency_key")
+  action         String   // "resolve_round" | "close_round"
+  roundId        String   @map("round_id")
+  status         String   // "in_progress" | "completed" | "failed"
+  result         Json?    // The durable response body to replay on retry, once completed
+  errorMessage   String?  @map("error_message")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([roundId])
+  @@map("idempotent_commands")
+}
