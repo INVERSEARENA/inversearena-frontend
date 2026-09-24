@@ -10,6 +10,7 @@ import type { CreateArenaInput } from "../types/arena";
 import { ArenaService } from "../services/arenaService";
 import { ArenaStatsService } from "../services/arenaStatsService";
 import { RoundRepository } from "../repositories/roundRepository";
+import { ParticipantEligibilityService } from "../services/participantEligibilityService";
 import { apiError } from "../utils/apiError";
 import type { ArenaParticipant } from "../types/arena";
 import { getOnChainPlayers } from "../services/onChainReader";
@@ -121,6 +122,7 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   const arenaService = new ArenaService(prisma);
   const arenaStatsService = new ArenaStatsService(prisma);
   const roundRepository = new RoundRepository(prisma);
+  const eligibilityService = new ParticipantEligibilityService(prisma);
   const sseConnectionLimiter = createSseConnectionLimitMiddleware();
 
   /**
@@ -290,6 +292,44 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
         nextCursor: cursor + limit < total ? cursor + limit : null,
         hasMore: cursor + limit < total,
         items,
+      });
+    }),
+  );
+
+  /**
+   * POST /api/arenas/:id/eligibility-preflight
+   * Verify participant eligibility before join transaction construction.
+   * Reports capacity, phase, balance, token, and duplicate-membership failures.
+   */
+  router.post(
+    "/:id/eligibility-preflight",
+    authMiddleware,
+    asyncHandler(async (req, res) => {
+      const { id } = req.params;
+      const { balance, balanceAsset } = z
+        .object({
+          balance: z.number().positive(),
+          balanceAsset: z.enum(["USDC", "XLM", "EURC"]).default("USDC"),
+        })
+        .parse(req.body);
+
+      if (!id) {
+        throw apiError(400, "INVALID_ARENA_ID", "Arena ID is required");
+      }
+
+      const playerWallet = req.user?.walletAddress;
+      if (!playerWallet) {
+        throw apiError(401, "UNAUTHORIZED", "Wallet address required");
+      }
+
+      const eligibility = await eligibilityService.checkEligibility(id, playerWallet, balance, balanceAsset);
+
+      res.status(eligibility.isEligible ? 200 : 403).json({
+        isEligible: eligibility.isEligible,
+        errors: eligibility.errors,
+        warnings: eligibility.warnings,
+        metadata: eligibility.metadata,
+        requestId: randomUUID(),
       });
     }),
   );

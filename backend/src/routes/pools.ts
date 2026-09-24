@@ -7,6 +7,7 @@ import { prisma } from "../db/prisma";
 import { createRateLimitMiddleware, getPoolsRateLimitConfig } from "../middleware/rateLimit";
 import type { RequestHandler } from "express";
 import { apiError } from "../utils/apiError";
+import { getAssetMetadata, formatAmount } from "../types/asset";
 
 const PaginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
@@ -57,6 +58,7 @@ export function createPoolsRouter(authMiddleware: RequestHandler): Router {
   /**
    * POST /api/pools
    * Rate-limited pool creation endpoint.
+   * Validates stake amount against asset decimals and limits.
    */
   router.post(
     "/",
@@ -66,22 +68,50 @@ export function createPoolsRouter(authMiddleware: RequestHandler): Router {
       const PoolCreateSchema = z.object({
         arenaId: z.string().length(56).regex(/^C[A-Z2-7]{55}$/),
         stakeAmount: z.number().positive(),
+        assetCode: z.string().min(1).max(12).default("USDC"),
       });
-      const { arenaId, stakeAmount } = PoolCreateSchema.parse(req.body);
+      const { arenaId, stakeAmount, assetCode } = PoolCreateSchema.parse(req.body);
 
       const arena = await prisma.arena.findUnique({
         where: { id: arenaId },
-        select: { id: true },
+        select: { id: true, stakeToken: true },
       });
       if (!arena) {
         throw apiError(404, "ARENA_NOT_FOUND", `Arena with ID ${arenaId} not found`);
+      }
+
+      const assetMetadata = getAssetMetadata(assetCode);
+
+      if (stakeAmount < assetMetadata.minimumAmount || stakeAmount > assetMetadata.maximumAmount) {
+        throw apiError(
+          400,
+          "INVALID_STAKE_AMOUNT",
+          `Stake amount must be between ${assetMetadata.minimumAmount} and ${assetMetadata.maximumAmount} ${assetCode}`
+        );
       }
 
       const pool = await prisma.pool.create({
         data: { arenaId, stakeAmount },
       });
 
-      res.status(201).json(pool);
+      const displayAmount = formatAmount(
+        (stakeAmount * Math.pow(10, assetMetadata.decimals)).toString(),
+        assetMetadata.decimals,
+        assetMetadata.displayDecimals
+      );
+
+      res.status(201).json({
+        ...pool,
+        assetMetadata: {
+          code: assetMetadata.code,
+          decimals: assetMetadata.decimals,
+          displayDecimals: assetMetadata.displayDecimals,
+          displayAmount,
+          minimumAmount: assetMetadata.minimumAmount,
+          maximumAmount: assetMetadata.maximumAmount,
+        },
+        requestId: require("crypto").randomUUID(),
+      });
     }),
   );
 
