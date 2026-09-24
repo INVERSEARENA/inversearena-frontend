@@ -6,6 +6,7 @@ import type {
   RoundResolution,
 } from '../types/round';
 import { RoundState } from '../types/round';
+import { enforcePayloadLimits } from '../validation/payloadLimits';
 
 export class RoundRepository {
   constructor(private prisma: PrismaClient) {}
@@ -203,6 +204,7 @@ export class RoundRepository {
   }
 
   private toJsonMetadata(metadata: RoundMetadata): Prisma.InputJsonValue {
-    return JSON.parse(JSON.stringify(metadata)) as Prisma.InputJsonValue;
+    // #1455: reject oversized/over-nested metadata before it reaches the JSON column.
+    return enforcePayloadLimits(JSON.parse(JSON.stringify(metadata)) as Prisma.InputJsonValue, "round_metadata");
   }
 }

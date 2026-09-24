@@ -185,7 +185,10 @@ Copy `backend/.env.example` → `backend/.env` and `frontend/.env.example` →
 | `REDIS_URL` | Redis URL for caching (arena stats, leaderboard) |
 | `ADMIN_API_KEY` | API key gating admin routes |
 | `ADMIN_TOKEN_TTL_SECONDS` | Lifetime of issued admin tokens |
-| `JWT_SECRET` | Secret for signing auth JWTs |
+| `JWT_SECRET` | Secret for signing auth JWTs (current key, ≥ 32 chars) |
+| `JWT_SECRET_KID` | Optional key id for the current JWT secret (default: SHA-256 fingerprint) |
+| `JWT_SECRET_PREVIOUS` / `JWT_SECRET_PREVIOUS_KID` / `JWT_SECRET_PREVIOUS_EXPIRES_AT` | Rotation overlap: previous secret stays verify-only until the ISO expiry (≤ 30 days). See `docs/design/secret-rotation.md` |
+| `ORACLE_WEBHOOK_SECRET` (+ `_KID`, `_PREVIOUS`, `_PREVIOUS_KID`, `_PREVIOUS_EXPIRES_AT`) | Oracle webhook HMAC key and its rotation overlap, same rules as JWT |
 | `JWT_EXPIRES_IN` / `JWT_REFRESH_EXPIRES_IN` | Access / refresh token lifetimes |
 | `NONCE_TTL_SECONDS` | Validity window for auth challenge nonces |
 | `SOROBAN_RPC_URL` | Soroban RPC endpoint |

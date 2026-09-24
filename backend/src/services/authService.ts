@@ -7,17 +7,46 @@ import { UserModel } from "../db/models/user.model";
 import { RefreshTokenModel, generateFamilyId } from "../db/models/refreshToken.model";
 import { SessionStore, sessionStore as defaultSessionStore } from "../cache/sessionStore";
 import type { AuthUser, DeviceMetadata, JwtPayload, SessionView, TokenPair } from "../types/auth";
+import { getKeyring, recordVerification, verificationCandidates, type SecretKeyring } from "../config/secretKeyring";
 
 const NONCE_PREFIX = "Sign this message to authenticate with InverseArena:\n";
 
 const PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
 
-function getJwtSecret(): string {
-  const secret = process.env.JWT_SECRET;
-  if (!secret || secret.length < 32) {
-    throw new Error("JWT_SECRET must be set and at least 32 characters");
+function getJwtKeyring(): SecretKeyring {
+  const keyring = getKeyring("jwt");
+  if (!keyring) throw new Error("JWT_SECRET must be set and at least 32 characters");
+  return keyring;
+}
+
+/**
+ * Verify a JWT against the rotation keyring (#1456). The `kid` header selects
+ * exactly one key; an unknown or retired kid is rejected without trying other
+ * keys. Tokens minted before kids existed (no header) are checked against the
+ * current key and, during an overlap window, the previous one.
+ */
+function verifyJwt(token: string): JwtPayload {
+  const keyring = getJwtKeyring();
+  const decoded = jwt.decode(token, { complete: true });
+  const rawKid = decoded && typeof decoded === "object" ? decoded.header?.kid : undefined;
+  const kid = typeof rawKid === "string" ? rawKid : undefined;
+  const candidates = verificationCandidates(keyring, kid);
+  if (candidates.length === 0) {
+    recordVerification("jwt", "unknown_kid", "none", kid);
+    throw new Error("Unknown JWT key id");
   }
-  return secret;
+  for (const key of candidates) {
+    try {
+      const payload = jwt.verify(token, key.secret, { algorithms: ["HS256"] }) as JwtPayload;
+      recordVerification("jwt", "accepted", key.slot, kid);
+      return payload;
+    } catch (err) {
+      // Expiry is only reported after the signature checked out: stop here.
+      if (err instanceof jwt.TokenExpiredError) throw err;
+    }
+  }
+  recordVerification("jwt", "bad_signature", "none", kid);
+  throw new Error("Invalid JWT signature");
 }
 
 function nonceTtlSeconds(): number {
@@ -133,7 +162,7 @@ export class AuthService {
   async refreshTokens(refreshToken: string): Promise<TokenPair> {
     let payload: JwtPayload;
     try {
-      payload = jwt.verify(refreshToken, getJwtSecret()) as JwtPayload;
+      payload = verifyJwt(refreshToken);
     } catch {
       const err = Object.assign(new Error("Invalid or expired refresh token"), { status: 401 });
       throw err;
@@ -295,7 +324,7 @@ export class AuthService {
   async verifyAccessToken(token: string): Promise<JwtPayload> {
     let payload: JwtPayload;
     try {
-      payload = jwt.verify(token, getJwtSecret()) as JwtPayload;
+      payload = verifyJwt(token);
     } catch {
       const err = Object.assign(new Error("Invalid or expired access token"), { status: 401 });
       throw err;
@@ -323,7 +352,9 @@ export class AuthService {
     existingFamilyId?: string,
     device?: DeviceMetadata
   ): Promise<TokenPair> {
-    const secret = getJwtSecret();
+    // New tokens are always signed with the current key and carry its kid.
+    const { current } = getJwtKeyring();
+    const signOptions = { algorithm: "HS256" as const, keyid: current.kid };
     const accessTtl = accessTokenTtlSeconds();
     const refreshTtl = refreshTokenTtlSeconds();
     const accessJti = randomUUID();
@@ -342,8 +373,8 @@ export class AuthService {
       jti: refreshJti,
     };
 
-    const accessToken = jwt.sign(accessPayload, secret, { expiresIn: accessTtl });
-    const refreshToken = jwt.sign(refreshPayload, secret, { expiresIn: refreshTtl });
+    const accessToken = jwt.sign(accessPayload, current.secret, { ...signOptions, expiresIn: accessTtl });
+    const refreshToken = jwt.sign(refreshPayload, current.secret, { ...signOptions, expiresIn: refreshTtl });
 
     // Persist the refresh token (hashed) for the family-based rotation
     // checks in `refreshTokens`. The DB is the durable record; Redis is the

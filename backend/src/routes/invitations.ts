@@ -5,6 +5,7 @@ import { prisma } from "../db/prisma";
 import { apiError } from "../utils/apiError";
 import { InvitationService } from "../services/invitationService";
 import { randomUUID } from "crypto";
+import { STRING_LIMITS, boundedString } from "../validation/payloadLimits";
 
 export function createInvitationsRouter(authMiddleware: RequestHandler): Router {
   const router = Router();
@@ -80,7 +81,7 @@ export function createInvitationsRouter(authMiddleware: RequestHandler): Router 
   router.post(
     "/:id/invitations/verify",
     asyncHandler(async (req, res) => {
-      const { code } = z.object({ code: z.string() }).parse(req.body);
+      const { code } = z.object({ code: boundedString(STRING_LIMITS.shortText).min(1) }).parse(req.body);
       const arenaId = req.params.id;
 
       if (!arenaId) {

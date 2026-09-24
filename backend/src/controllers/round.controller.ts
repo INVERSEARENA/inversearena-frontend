@@ -2,7 +2,7 @@ import { NextFunction, Request, Response } from 'express';
 import { RoundService } from '../services/roundService';
 import { RoundInputSchema, RoundState } from '../types/round';
 import type { RoundInput } from '../types/round';
-import { apiError } from '../utils/apiError';
+import { apiError, HttpError } from '../utils/apiError';
 
 export class RoundController {
   constructor(private roundService: RoundService) { }
@@ -18,6 +18,8 @@ export class RoundController {
         data: resolution,
       });
     } catch (error) {
+      // Typed client errors (e.g. PayloadLimitError, 413) keep their status.
+      if (error instanceof HttpError) { next(error); return; }
       const message = error instanceof Error ? error.message : 'Failed to resolve round';
       const status = message.includes('not found') ? 404 : message.includes('already in state') ? 409 : 500;
       const code = status === 404

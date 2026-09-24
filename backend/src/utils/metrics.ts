@@ -111,6 +111,27 @@ export const maintenanceWindowsScheduledTotal = new Counter({
   registers: [register],
 });
 
+export const transactionAccessDecisionsTotal = new Counter({
+  name: 'inversearena_transaction_access_decisions_total',
+  help: 'Transaction/payout status access decisions, by operation, outcome and (server-side only) reason',
+  labelNames: ['operation', 'outcome', 'reason'],
+  registers: [register],
+});
+
+export const payloadLimitRejectionsTotal = new Counter({
+  name: 'inversearena_payload_limit_rejections_total',
+  help: 'Untrusted payloads rejected by schema-level size/depth limits, by boundary and limit kind',
+  labelNames: ['boundary', 'limit'],
+  registers: [register],
+});
+
+export const secretKeyVerificationsTotal = new Counter({
+  name: 'inversearena_secret_key_verifications_total',
+  help: 'JWT/webhook signature verifications during key rotation, by purpose, matched key slot and outcome',
+  labelNames: ['purpose', 'slot', 'outcome'],
+  registers: [register],
+});
+
 export async function refreshArenaMetrics(prisma: PrismaClient): Promise<void> {
   const activeRounds = await prisma.round.findMany({
     where: {

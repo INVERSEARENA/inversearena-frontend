@@ -5,6 +5,7 @@ import { cacheMiddleware } from "../middleware/cache";
 import { cache, cacheKeys, cacheTTL } from "../cache/cacheService";
 import { redis } from "../cache/redisClient";
 import { verifyWebhookSignature } from "../middleware/verifyWebhook";
+import { getKeyring } from "../config/secretKeyring";
 
 interface YieldData {
   protocol: string;
@@ -49,12 +50,13 @@ export function createOracleRouter(): Router {
   router.post(
     "/yield",
     asyncHandler(async (req, res, next) => {
-      const ORACLE_WEBHOOK_SECRET = process.env.ORACLE_WEBHOOK_SECRET;
-      if (!ORACLE_WEBHOOK_SECRET) {
+      // Current + (during rotation) previous key, see config/secretKeyring.
+      const keyring = getKeyring("webhook");
+      if (!keyring) {
         res.status(503).json({ error: "ORACLE_WEBHOOK_SECRET not configured" });
         return;
       }
-      verifyWebhookSignature(ORACLE_WEBHOOK_SECRET)(req, res, next);
+      verifyWebhookSignature(keyring)(req, res, next);
     }),
     validateBody(YieldUpdateSchema),
     asyncHandler(async (req, res) => {

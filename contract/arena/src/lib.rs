@@ -1004,10 +1004,15 @@ impl ArenaContract {
     }
 
     /// Configure the leaderboard size limit (admin only).
+    ///
+    /// # Errors
+    /// - `ArenaError::InvalidLeaderboardLimit` if `limit` is 0 or exceeds
+    ///   `types::MAX_LEADERBOARD_LIMIT`. Nothing is persisted in that case.
     pub fn configure_leaderboard_limit(env: Env, limit: u32) -> Result<(), ArenaError> {
         let config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
 
+        let limit = types::validate_leaderboard_limit(limit)?;
         ArenaStorage::save_leaderboard_limit(&env, limit);
         Ok(())
     }
@@ -3377,6 +3382,38 @@ mod test {
                 let entry: LeaderboardEntry = leaderboard.get(i).unwrap();
                 assert_eq!(entry.rounds_survived, 19 - i);
             }
+        });
+    }
+
+    #[test]
+    fn configure_leaderboard_limit_rejects_out_of_bounds_without_persisting() {
+        let (env, client) = setup(0);
+        let contract_id = client.address.clone();
+
+        assert_eq!(
+            client.try_configure_leaderboard_limit(&0),
+            Err(Ok(ArenaError::InvalidLeaderboardLimit))
+        );
+        assert_eq!(
+            client.try_configure_leaderboard_limit(&(types::MAX_LEADERBOARD_LIMIT + 1)),
+            Err(Ok(ArenaError::InvalidLeaderboardLimit))
+        );
+        assert_eq!(
+            client.try_configure_leaderboard_limit(&u32::MAX),
+            Err(Ok(ArenaError::InvalidLeaderboardLimit))
+        );
+        env.as_contract(&contract_id, || {
+            assert_eq!(ArenaStorage::load_leaderboard_limit(&env), 100);
+        });
+
+        // Boundary values are accepted.
+        client.configure_leaderboard_limit(&1);
+        client.configure_leaderboard_limit(&types::MAX_LEADERBOARD_LIMIT);
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                ArenaStorage::load_leaderboard_limit(&env),
+                types::MAX_LEADERBOARD_LIMIT
+            );
         });
     }
 

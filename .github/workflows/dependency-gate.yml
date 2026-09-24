@@ -1,0 +1,108 @@
+name: Dependency Threat Gate
+
+# #1457 — blocks critical advisories anywhere, and high advisories in the
+# wallet / crypto / contract toolchain, unless a reviewed, unexpired
+# exception exists in .github/dependency-exceptions.json.
+# Design note: docs/design/dependency-threat-gate.md
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "frontend/package.json"
+      - "frontend/pnpm-lock.yaml"
+      - "backend/package.json"
+      - "backend/package-lock.json"
+      - "contract/Cargo.toml"
+      - "contract/Cargo.lock"
+      - "contract/*/Cargo.toml"
+      - ".github/dependency-exceptions.json"
+      - ".github/workflows/dependency-gate.yml"
+      - "scripts/dependency-gate/**"
+  push:
+    branches: ["main"]
+  schedule:
+    # New advisories land against unchanged lockfiles; re-check daily and
+    # let expiring exceptions fail on schedule, not on someone's next PR.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate-self-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+      - name: Gate policy unit + integration tests
+        run: node --test scripts/dependency-gate/gate.test.mjs
+
+  audit:
+    needs: gate-self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      # Audit tools exit non-zero when they *find* advisories, so success is
+      # judged by whether a parseable JSON report was produced. Transient
+      # registry/advisory-DB failures are retried; if all attempts fail the
+      # report is left missing and the gate fails closed.
+      - name: Produce audit reports
+        shell: bash
+        run: |
+          mkdir -p audit
+          retry_report() {
+            local out="$1"; shift
+            for attempt in 1 2 3; do
+              "$@" > "$out" 2> "$out.stderr" || true
+              if node -e 'const t=require("fs").readFileSync(process.argv[1],"utf8");JSON.parse(t.slice(t.indexOf("{")))' "$out" 2>/dev/null; then
+                echo "{\"event\":\"dependency_audit_report\",\"out\":\"$out\",\"attempt\":$attempt,\"ok\":true}"
+                return 0
+              fi
+              echo "{\"event\":\"dependency_audit_retry\",\"out\":\"$out\",\"attempt\":$attempt}"
+              sleep $((attempt * 10))
+            done
+            rm -f "$out"
+            echo "{\"event\":\"dependency_audit_report\",\"out\":\"$out\",\"ok\":false}"
+          }
+          (cd backend && retry_report ../audit/backend.json npm audit --package-lock-only --json)
+          (cd frontend && retry_report ../audit/frontend.json pnpm audit --json)
+          (cd contract && retry_report ../audit/contract.json cargo audit --json)
+
+      - name: Evaluate gate
+        run: >
+          node scripts/dependency-gate/gate.mjs
+          --npm backend=audit/backend.json
+          --pnpm frontend=audit/frontend.json
+          --cargo contract=audit/contract.json
+          --exceptions .github/dependency-exceptions.json
+          --summary-out audit/gate-summary.json
+
+      - name: Upload audit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-gate-reports
+          path: audit/
+          if-no-files-found: warn

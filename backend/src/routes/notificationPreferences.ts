@@ -10,6 +10,7 @@ import { asyncHandler } from "../middleware/validate";
 import { prisma } from "../db/prisma";
 import { NotificationPreferencesService } from "../services/notificationPreferencesService";
 import { apiError } from "../utils/apiError";
+import { STRING_LIMITS, boundedString } from "../validation/payloadLimits";
 
 const UpdatePreferencesSchema = z.object({
   emailEnabled: z.boolean().optional(),
@@ -18,8 +19,8 @@ const UpdatePreferencesSchema = z.object({
   roundNotifications: z.boolean().optional(),
   payoutNotifications: z.boolean().optional(),
   eliminationNotifications: z.boolean().optional(),
-  email: z.string().email().optional(),
-  pushToken: z.string().optional(),
+  email: z.string().max(STRING_LIMITS.email).email().optional(),
+  pushToken: boundedString(STRING_LIMITS.pushToken).optional(),
 });
 
 export function createNotificationPreferencesRouter(authMiddleware: any): Router {
