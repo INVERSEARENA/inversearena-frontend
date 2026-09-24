@@ -1,7 +1,15 @@
 import { z } from "zod";
+import { Money } from '../types/money';
 import { HttpError } from "../utils/apiError";
 import { logger } from "../utils/logger";
 import { payloadLimitRejectionsTotal } from "../utils/metrics";
+
+
+export const MoneySchema = z.object({
+  atomicAmount: z.union([z.string().regex(/^\d+$/).transform(BigInt), z.number().int().nonnegative().transform(BigInt)]),
+  assetCode: z.string().min(1),
+  assetIssuer: z.string().optional(),
+}).transform((data) => new Money(data.atomicAmount, data.assetCode, data.assetIssuer));
 
 /**
  * Schema-level limits for untrusted metadata and event payloads (#1455).

@@ -3,7 +3,19 @@ use crate::types::{
     ArenaConfig, ArenaError, Choice, GameState, PendingAdmin, PlayerState, RoundResult,
     YieldSnapshot,
 };
-use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, Vec, contracttype, symbol_short};
+use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, Vec, contracttype, symbol_short, storage::Persistent, symbol};
+
+pub trait StorageRepository<K, V> {
+    fn has(env: &Env, key: &K) -> bool;
+    fn get(env: &Env, key: &K) -> Option<V>;
+    fn set(env: &Env, key: &K, val: &V);
+    fn remove(env: &Env, key: &K);
+}
+
+pub trait TtlRepository<K> {
+    fn extend_ttl(env: &Env, key: &K, threshold: u32, extend_to: u32);
+}
+
 
 const PERSISTENT_TTL_THRESHOLD: u32 = 100;
 const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
@@ -30,6 +42,306 @@ enum DataKey {
     Leaderboard,
     LeaderboardLimit,
     PlatformFeeBps,
+}
+
+
+pub struct ArenaRepository<'a> {
+    env: &'a Env,
+}
+
+impl<'a> ArenaRepository<'a> {
+    pub fn new(env: &'a Env) -> Self {
+        ArenaRepository { env }
+    }
+
+    // Generic function to extend TTL for any persistent key
+    fn extend_persistent_ttl<K>(env: &Env, key: &K)
+    where
+        K: IntoVal<Env, Val>,
+    {
+        if env.storage().persistent().has(key) {
+            env.storage().persistent().extend_ttl(
+                key,
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_EXTEND_TO,
+            );
+        }
+    }
+}
+
+// Implement StorageRepository for DataKey and various Value types
+impl StorageRepository<DataKey, PlayerState> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        env.storage().persistent().has(key)
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<PlayerState> {
+        env.storage().persistent().get(key)
+    }
+    fn set(env: &Env, key: &DataKey, val: &PlayerState) {
+        env.storage().persistent().set(key, val);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, bool> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        env.storage().persistent().has(key)
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<bool> {
+        env.storage().persistent().get(key)
+    }
+    fn set(env: &Env, key: &DataKey, val: &bool) {
+        env.storage().persistent().set(key, val);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, u32> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        env.storage().persistent().has(key)
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<u32> {
+        env.storage().persistent().get(key)
+    }
+    fn set(env: &Env, key: &DataKey, val: &u32) {
+        env.storage().persistent().set(key, val);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, BytesN<32>> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        env.storage().persistent().has(key)
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<BytesN<32>> {
+        env.storage().persistent().get(key)
+    }
+    fn set(env: &Env, key: &DataKey, val: &BytesN<32>) {
+        env.storage().persistent().set(key, val);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, Choice> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        env.storage().persistent().has(key)
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<Choice> {
+        env.storage().persistent().get(key)
+    }
+    fn set(env: &Env, key: &DataKey, val: &Choice) {
+        env.storage().persistent().set(key, val);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, u64> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        env.storage().persistent().has(key)
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<u64> {
+        env.storage().persistent().get(key)
+    }
+    fn set(env: &Env, key: &DataKey, val: &u64) {
+        env.storage().persistent().set(key, val);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, i128> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        env.storage().persistent().has(key)
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<i128> {
+        env.storage().persistent().get(key)
+    }
+    fn set(env: &Env, key: &DataKey, val: &i128) {
+        env.storage().persistent().set(key, val);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, YieldSnapshot> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        env.storage().persistent().has(key)
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<YieldSnapshot> {
+        env.storage().persistent().get(key)
+    }
+    fn set(env: &Env, key: &DataKey, val: &YieldSnapshot) {
+        env.storage().persistent().set(key, val);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, RoundResult> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        env.storage().persistent().has(key)
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<RoundResult> {
+        env.storage().persistent().get(key)
+    }
+    fn set(env: &Env, key: &DataKey, val: &RoundResult) {
+        env.storage().persistent().set(key, val);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, Address> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        env.storage().persistent().has(key)
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<Address> {
+        env.storage().persistent().get(key)
+    }
+    fn set(env: &Env, key: &DataKey, val: &Address) {
+        env.storage().persistent().set(key, val);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, Vec<Address>> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        env.storage().persistent().has(key)
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<Vec<Address>> {
+        env.storage().persistent().get(key)
+    }
+    fn set(env: &Env, key: &DataKey, val: &Vec<Address>) {
+        env.storage().persistent().set(key, val);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, crate::types::LeaderboardEntry> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        env.storage().persistent().has(key)
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<crate::types::LeaderboardEntry> {
+        env.storage().persistent().get(key)
+    }
+    fn set(env: &Env, key: &DataKey, val: &crate::types::LeaderboardEntry) {
+        env.storage().persistent().set(key, val);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, Vec<crate::types::LeaderboardEntry>> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        env.storage().persistent().has(key)
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<Vec<crate::types::LeaderboardEntry>> {
+        env.storage().persistent().get(key)
+    }
+    fn set(env: &Env, key: &DataKey, val: &Vec<crate::types::LeaderboardEntry>) {
+        env.storage().persistent().set(key, val);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+// Implement TTLRepository for DataKey
+impl TtlRepository<DataKey> for ArenaRepository<'_> {
+    fn extend_ttl(env: &Env, key: &DataKey, threshold: u32, extend_to: u32) {
+        if env.storage().persistent().has(key) {
+            env.storage().persistent().extend_ttl(key, threshold, extend_to);
+        }
+    }
+}
+
+// Implement StorageRepository for Symbol and various Value types (for instance storage)
+impl StorageRepository<soroban_sdk::Symbol, ArenaConfig> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &soroban_sdk::Symbol) -> bool {
+        env.storage().persistent().has(key)
+    }
+    fn get(env: &Env, key: &soroban_sdk::Symbol) -> Option<ArenaConfig> {
+        env.storage().persistent().get(key)
+    }
+    fn set(env: &Env, key: &soroban_sdk::Symbol, val: &ArenaConfig) {
+        env.storage().persistent().set(key, val);
+    }
+    fn remove(env: &Env, key: &soroban_sdk::Symbol) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<soroban_sdk::Symbol, Vec<Address>> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &soroban_sdk::Symbol) -> bool {
+        env.storage().persistent().has(key)
+    }
+    fn get(env: &Env, key: &soroban_sdk::Symbol) -> Option<Vec<Address>> {
+        env.storage().persistent().get(key)
+    }
+    fn set(env: &Env, key: &soroban_sdk::Symbol, val: &Vec<Address>) {
+        env.storage().persistent().set(key, val);
+    }
+    fn remove(env: &Env, key: &soroban_sdk::Symbol) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<soroban_sdk::Symbol, PendingAdmin> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &soroban_sdk::Symbol) -> bool {
+        env.storage().persistent().has(key)
+    }
+    fn get(env: &Env, key: &soroban_sdk::Symbol) -> Option<PendingAdmin> {
+        env.storage().persistent().get(key)
+    }
+    fn set(env: &Env, key: &soroban_sdk::Symbol, val: &PendingAdmin) {
+        env.storage().persistent().set(key, val);
+    }
+    fn remove(env: &Env, key: &soroban_sdk::Symbol) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<soroban_sdk::Symbol, PendingUpgrade> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &soroban_sdk::Symbol) -> bool {
+        env.storage().persistent().has(key)
+    }
+    fn get(env: &Env, key: &soroban_sdk::Symbol) -> Option<PendingUpgrade> {
+        env.storage().persistent().get(key)
+    }
+    fn set(env: &Env, key: &soroban_sdk::Symbol, val: &PendingUpgrade) {
+        env.storage().persistent().set(key, val);
+    }
+    fn remove(env: &Env, key: &soroban_sdk::Symbol) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+// Implement TTLRepository for Symbol (for instance storage)
+impl TtlRepository<soroban_sdk::Symbol> for ArenaRepository<'_> {
+    fn extend_ttl(env: &Env, key: &soroban_sdk::Symbol, threshold: u32, extend_to: u32) {
+        if env.storage().persistent().has(key) {
+            env.storage().persistent().extend_ttl(key, threshold, extend_to);
+        }
+    }
 }
 
 pub struct ArenaStorage;

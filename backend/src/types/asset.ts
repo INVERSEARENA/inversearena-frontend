@@ -9,12 +9,6 @@ export interface AssetMetadata {
   description?: string;
 }
 
-export interface AmountMetadata {
-  asset: AssetMetadata;
-  displayAmount: string;
-  atomicAmount: string;
-  usdValue?: number;
-}
 
 export const ASSET_DECIMALS: Record<string, number> = {
   USDC: 6,

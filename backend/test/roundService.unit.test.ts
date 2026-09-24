@@ -1,5 +1,6 @@
 import { RoundService } from '../src/services/roundService';
 import type { PlayerChoice } from '../src/types/round';
+import { Money } from '../src/types/money';
 
 // computePayouts is private but pure enough to reach via `any` cast.
 // Elimination logic was moved on-chain (#1098), so computeEliminations
@@ -33,8 +34,8 @@ describe('RoundService.computePayouts', () => {
   it('returns empty array when on-chain says no winner yet (game in progress)', async () => {
     mockGetOnChainWinner.mockResolvedValue(null);
     const choices: PlayerChoice[] = [
-      { userId: 'a', choice: 'heads', stake: 100 },
-      { userId: 'b', choice: 'tails', stake: 100 },
+      { userId: 'a', choice: 'heads', stake: Money.fromDisplayAmount("100", "USDC") },
+      { userId: 'b', choice: 'tails', stake: Money.fromDisplayAmount("100", "USDC") },
     ];
     const payouts = await callComputePayouts(ARENA_ID, choices, ['b'], 5);
     expect(payouts).toEqual([]);
@@ -43,8 +44,8 @@ describe('RoundService.computePayouts', () => {
   it('pays the on-chain winner their stake + prize pool from eliminated stakes + yield', async () => {
     mockGetOnChainWinner.mockResolvedValue('a');
     const choices: PlayerChoice[] = [
-      { userId: 'a', choice: 'heads', stake: 100 },
-      { userId: 'b', choice: 'tails', stake: 100 },
+      { userId: 'a', choice: 'heads', stake: Money.fromDisplayAmount("100", "USDC") },
+      { userId: 'b', choice: 'tails', stake: Money.fromDisplayAmount("100", "USDC") },
     ];
     const eliminated = ['b'];
     const oracleYield = 10; // 10%
@@ -54,24 +55,24 @@ describe('RoundService.computePayouts', () => {
     // winner payout = winnerStake + prizePool = 100 + 110 = 210
     expect(payouts).toHaveLength(1);
     expect(payouts[0].userId).toBe('a');
-    expect(payouts[0].amount).toBeCloseTo(210, 5);
+    expect(payouts[0].amount.toDisplayString()).toBeCloseTo("210.000000", 5);
   });
 
   it('winner receives at least their original stake (no loss)', async () => {
     mockGetOnChainWinner.mockResolvedValue('a');
     const choices: PlayerChoice[] = [
-      { userId: 'a', choice: 'heads', stake: 50 },
-      { userId: 'b', choice: 'tails', stake: 200 },
+      { userId: 'a', choice: 'heads', stake: Money.fromDisplayAmount("50", "USDC") },
+      { userId: 'b', choice: 'tails', stake: Money.fromDisplayAmount("200", "USDC") },
     ];
     const payouts = await callComputePayouts(ARENA_ID, choices, ['b'], 0);
-    const winnerStake = 50;
-    expect(payouts[0].amount).toBeGreaterThanOrEqual(winnerStake);
+    const winnerStake = Money.fromDisplayAmount("50", "USDC");
+    expect(payouts[0].amount.isGreaterThanOrEqual(winnerStake)).toBe(true);
   });
 
   it('returns empty array when all players eliminated (on-chain winner missing from choices)', async () => {
     mockGetOnChainWinner.mockResolvedValue(null);
     const choices: PlayerChoice[] = [
-      { userId: 'a', choice: 'heads', stake: 100 },
+      { userId: 'a', choice: 'heads', stake: Money.fromDisplayAmount("100", "USDC") },
     ];
     const payouts = await callComputePayouts(ARENA_ID, choices, ['a'], 5);
     expect(payouts).toEqual([]);
