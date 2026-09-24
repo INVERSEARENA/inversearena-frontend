@@ -1,7 +1,7 @@
 import { TransactionModel } from "../db/models/transaction.model";
 import { PayoutNonceCounterModel } from "../db/models/payoutNonceCounter.model";
 import type { PaymentStatus, TransactionRecord } from "../types/payment";
-import type { TransactionRepository } from "./transactionRepository";
+import type { TransactionPatch, TransactionRepository } from "./transactionRepository";
 
 function docToRecord(doc: { toObject(): Record<string, unknown> } & { _id: string }): TransactionRecord {
   const obj = doc.toObject() as Record<string, unknown>;
@@ -50,12 +50,21 @@ export class MongoTransactionRepository implements TransactionRepository {
   async reserveNextNonce(sourceAccount: string): Promise<number> {
     // Atomic $inc upsert on a dedicated counter document. The old
     // MAX(nonce)+1 read let two concurrent creates reserve the same nonce.
-    const counter = await PayoutNonceCounterModel.findOneAndUpdate(
-      { _id: sourceAccount },
-      { $inc: { lastNonce: 1 } },
-      { upsert: true, new: true }
-    );
-    return counter.lastNonce;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        const counter = await PayoutNonceCounterModel.findOneAndUpdate(
+          { _id: sourceAccount },
+          { $inc: { lastNonce: 1 } },
+          { upsert: true, new: true }
+        );
+        return counter.lastNonce;
+      } catch (error) {
+        const duplicateUpsert =
+          typeof error === "object" && error !== null && "code" in error && error.code === 11000;
+        if (!duplicateUpsert || attempt >= 7) throw error;
+        await new Promise((resolve) => setTimeout(resolve, attempt + 1));
+      }
+    }
   }
 
   async insert(record: TransactionRecord): Promise<void> {
@@ -85,7 +94,7 @@ export class MongoTransactionRepository implements TransactionRepository {
 
   async update(
     id: string,
-    patch: Partial<Omit<TransactionRecord, "id" | "createdAt">>
+    patch: TransactionPatch
   ): Promise<TransactionRecord> {
     const doc = await TransactionModel.findByIdAndUpdate(
       id,

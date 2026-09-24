@@ -21,7 +21,26 @@ export interface RawContractEvent {
         xdr: string; // Base64 encoded ScVal XDR string
     };
     ledgerCloseAt?: string;
+    /** Version of the event envelope/decoder contract. Legacy events are v1. */
+    schemaVersion?: number;
 }
+
+type EventDecoder = (raw: RawContractEvent) => ArenaDomainEvent | null;
+
+/** Keep decoder ownership explicit; new wire formats receive a new version. */
+export const EVENT_DECODER_REGISTRY: Readonly<Record<number, Readonly<Record<string, EventDecoder>>>> = {
+    1: {
+        init: parseArenaCreatedEvent,
+        join: parsePlayerJoinedEvent,
+        started: parseRoundStartedEvent,
+        commit: parseChoiceSubmittedEvent,
+        reveal: parseChoiceRevealedEvent,
+        resolved: parseRoundResolvedEvent,
+        finished: parseWinnersDeclaredEvent,
+        claimed: parsePrizeClaimedEvent,
+        elim: parsePlayerEliminatedEvent,
+    },
+};
 
 /**
  * Normalizes raw Stellar/Soroban contract events into strongly-typed arena domain objects.
@@ -36,29 +55,16 @@ export function parseArenaEvent(raw: RawContractEvent): ArenaDomainEvent | null 
         const eventNameScVal = xdr.ScVal.fromXDR(raw.topic[0]!, 'base64');
         const eventName = scValToNative(eventNameScVal);
 
-        switch (eventName) {
-            case 'init':
-                return parseArenaCreatedEvent(raw);
-            case 'join':
-                return parsePlayerJoinedEvent(raw);
-            case 'started':
-                return parseRoundStartedEvent(raw);
-            case 'commit':
-                return parseChoiceSubmittedEvent(raw);
-            case 'reveal':
-                return parseChoiceRevealedEvent(raw);
-            case 'resolved':
-                return parseRoundResolvedEvent(raw);
-            case 'finished':
-                return parseWinnersDeclaredEvent(raw);
-            case 'claimed':
-                return parsePrizeClaimedEvent(raw);
-            case 'elim':
-                return parsePlayerEliminatedEvent(raw);
-            default:
-                console.warn(`[SorobanEventParser] Unknown event type detected: ${eventName}`, raw);
-                return null;
+        const version = raw.schemaVersion ?? 1;
+        const decoder = EVENT_DECODER_REGISTRY[version]?.[String(eventName).toLowerCase()];
+        if (!decoder) {
+            console.warn(
+                `[SorobanEventParser] Unknown event type or schema version: ${version}:${String(eventName)}`,
+                raw,
+            );
+            return null;
         }
+        return decoder(raw);
     } catch (error) {
         console.error('[SorobanEventParser] Failed to parse event', error, raw);
         return null;

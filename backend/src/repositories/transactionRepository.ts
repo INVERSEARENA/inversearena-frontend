@@ -13,8 +13,12 @@ export interface TransactionRepository {
   insert(record: TransactionRecord): Promise<void>;
   update(
     id: string,
-    patch: Partial<Omit<TransactionRecord, "id" | "createdAt">>
+    patch: TransactionPatch
   ): Promise<TransactionRecord>;
   listByStatus(statuses: PaymentStatus[], limit: number): Promise<TransactionRecord[]>;
 }
+
+export type TransactionPatch = Partial<
+  Omit<TransactionRecord, "id" | "createdAt" | "payoutId" | "idempotencyKey" | "sourceAccount" | "nonce">
+>;
 

@@ -41,8 +41,17 @@ export const useStellarWallet = (network: Networks): WalletHook => {
   const [status, setStatus] = useState<WalletStatus>('disconnected');
   const [error, setError] = useState<string | null>(null);
   const kitInitializedRef = useRef(false);
+  const connectAttemptRef = useRef(0);
+  const currentNetworkRef = useRef(network);
 
   useEffect(() => {
+    if (currentNetworkRef.current !== network) {
+      currentNetworkRef.current = network;
+      setPublicKey(null);
+      setIsConnected(false);
+      setStatus('disconnected');
+      setError(null);
+    }
     // Suppress auto-reconnect if the user previously disconnected intentionally:
     // skip initializing the kit entirely so it never attempts to restore the
     // last session. connectWallet() will initialize it lazily on demand.
@@ -60,10 +69,14 @@ export const useStellarWallet = (network: Networks): WalletHook => {
     });
     kitInitializedRef.current = true;
 
-    return () => { StellarWalletsKit.disconnect(); };
+    return () => {
+      connectAttemptRef.current += 1;
+      StellarWalletsKit.disconnect();
+    };
   }, [network]);
 
   const connectWallet = useCallback(async () => {
+    const attempt = ++connectAttemptRef.current;
     try {
       setStatus('connecting');
       setError(null);
@@ -79,6 +92,9 @@ export const useStellarWallet = (network: Networks): WalletHook => {
       }
       const { address } = await StellarWalletsKit.authModal();
 
+      // A disconnect, network change, or newer connect request supersedes this result.
+      if (attempt !== connectAttemptRef.current) return null;
+
       if (!isValidStellarPublicKey(address)) {
         setIsConnected(false);
         setPublicKey(null);
@@ -92,6 +108,7 @@ export const useStellarWallet = (network: Networks): WalletHook => {
       setStatus('connected');
       return address;
     } catch (err) {
+      if (attempt !== connectAttemptRef.current) return null;
       console.error("Failed to connect wallet:", err);
       setIsConnected(false);
       setPublicKey(null);
@@ -118,6 +135,7 @@ export const useStellarWallet = (network: Networks): WalletHook => {
   }, [publicKey]);
 
   const disconnectWallet = useCallback(() => {
+    connectAttemptRef.current += 1;
     StellarWalletsKit.disconnect();
     setPublicKey(null);
     setIsConnected(false);

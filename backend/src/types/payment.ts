@@ -32,7 +32,7 @@ export interface TransactionRecord {
   /**
    * Settlement breakdown (#1407), in display-unit XLM/USDC (not stroops),
    * populated only for payouts created from a round settlement — see
-   * roundService.computePayouts / settlementService.computeSettlementBreakdown.
+   * domain/roundResolution and domain/settlement calculations.
    * Null/undefined for ad-hoc admin-created payouts, which never had this
    * context computed.
    */

@@ -19,6 +19,12 @@ Events are emitted via `env.events().publish((topic,), data)` using the Soroban 
 
 Decode `topic[0]` as a Soroban `Symbol` (max 9 ASCII chars). Decode `value.xdr` per the type column below.
 
+## Decoder versioning and ownership
+
+`frontend/src/components/hook-d/sorobanEventParser.ts` owns the UI-domain decoder registry. The current raw Soroban envelope is schema version `1`; existing events that do not carry a `schemaVersion` field are interpreted as v1 for compatibility. Adding a new wire shape or changing a payload contract requires a new registry version and fixture coverage before consumers switch. Unknown event names and unknown versions are logged and ignored, never coerced into a known domain event. The version is local decoder metadata; it is not an extra Soroban topic and does not alter contract ABI.
+
+The backend currently reads authoritative round state through Soroban view calls rather than decoding the frontend event stream. Any future backend event consumer must use the fixtures and mappings in this document and add the same raw-event fixtures to its suite before becoming authoritative.
+
 ---
 
 ## Events

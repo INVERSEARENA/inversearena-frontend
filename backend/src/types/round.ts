@@ -44,7 +44,7 @@ export interface Payout {
   amount: Money;
   /**
    * Settlement breakdown (#1407) for this payout — see
-   * settlementService.computeSettlementBreakdown. principal + yieldAmount
+   * domain/settlement.computeSettlementBreakdown. principal + yieldAmount
    * always equals amount + platformFee + dust.
    */
   principal: Money;

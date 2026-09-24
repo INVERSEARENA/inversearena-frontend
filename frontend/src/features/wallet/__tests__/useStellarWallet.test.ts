@@ -121,6 +121,28 @@ describe("useStellarWallet", () => {
     expect(result.current.error).toBeNull();
   });
 
+  it("ignores a delayed connection result after the user disconnects", async () => {
+    let resolveAuth!: (value: { address: string }) => void;
+    StellarWalletsKit.authModal.mockReturnValue(
+      new Promise((resolve: (value: { address: string }) => void) => {
+        resolveAuth = resolve;
+      }),
+    );
+    const { result } = renderHook(() => useStellarWallet(Networks.TESTNET));
+    let pending!: Promise<string | null>;
+    await act(async () => {
+      pending = result.current.connectWallet();
+    });
+    act(() => result.current.disconnectWallet());
+    await act(async () => {
+      resolveAuth({ address: VALID_KEY });
+      await pending;
+    });
+    expect(result.current.status).toBe("disconnected");
+    expect(result.current.publicKey).toBeNull();
+    expect(result.current.isConnected).toBe(false);
+  });
+
   it("sets error state when wallet returns an invalid public key", async () => {
     StellarWalletsKit.authModal.mockResolvedValue({ address: INVALID_KEY });
 
@@ -255,6 +277,22 @@ describe("useStellarWallet", () => {
       network: "Public Global Stellar Network ; September 2015",
       modules: expect.any(Array),
     });
+  });
+
+  it("clears the previous account when the configured network changes", async () => {
+    StellarWalletsKit.authModal.mockResolvedValue({ address: VALID_KEY });
+    const publicNetwork = "Public Global Stellar Network ; September 2015" as Networks;
+    const { result, rerender } = renderHook(
+      ({ network }: { network: Networks }) => useStellarWallet(network),
+      { initialProps: { network: Networks.TESTNET } },
+    );
+    await act(async () => {
+      await result.current.connectWallet();
+    });
+    rerender({ network: publicNetwork });
+    expect(result.current.status).toBe("disconnected");
+    expect(result.current.publicKey).toBeNull();
+    expect(result.current.isConnected).toBe(false);
   });
 
   describe("intentional disconnect suppresses auto-reconnect", () => {

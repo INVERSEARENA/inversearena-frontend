@@ -1,9 +1,11 @@
 import type { PaymentStatus, TransactionRecord } from "../types/payment";
-import type { TransactionRepository } from "./transactionRepository";
+import type { TransactionPatch, TransactionRepository } from "./transactionRepository";
 
 export class InMemoryTransactionRepository implements TransactionRepository {
   private readonly records = new Map<string, TransactionRecord>();
   private readonly idempotencyMap = new Map<string, string>();
+  private readonly payoutMap = new Map<string, string>();
+  private readonly nonceMap = new Set<string>();
   private readonly nonceBySource = new Map<string, number>();
 
   async findByIdempotencyKey(idempotencyKey: string): Promise<TransactionRecord | null> {
@@ -31,13 +33,24 @@ export class InMemoryTransactionRepository implements TransactionRepository {
   }
 
   async insert(record: TransactionRecord): Promise<void> {
+    const nonceKey = `${record.sourceAccount}:${record.nonce}`;
+    if (
+      this.records.has(record.id) ||
+      this.idempotencyMap.has(record.idempotencyKey) ||
+      this.payoutMap.has(record.payoutId) ||
+      this.nonceMap.has(nonceKey)
+    ) {
+      throw new Error("Duplicate transaction identifier, payout, idempotency key, or nonce");
+    }
     this.records.set(record.id, record);
     this.idempotencyMap.set(record.idempotencyKey, record.id);
+    this.payoutMap.set(record.payoutId, record.id);
+    this.nonceMap.add(nonceKey);
   }
 
   async update(
     id: string,
-    patch: Partial<Omit<TransactionRecord, "id" | "createdAt">>
+    patch: TransactionPatch
   ): Promise<TransactionRecord> {
     const current = this.records.get(id);
     if (!current) {
