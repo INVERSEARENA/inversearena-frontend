@@ -1,6 +1,25 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { AuditLogModel } from "../db/models/auditLog.model";
 import { logger } from "../utils/logger";
+import { PAYLOAD_LIMITS, findPayloadLimitViolation } from "../validation/payloadLimits";
+import { payloadLimitRejectionsTotal } from "../utils/metrics";
+
+/**
+ * Bound handler-supplied audit context before it reaches the Mongo Mixed
+ * field (#1455). An oversized value is replaced by a small marker rather than
+ * dropping the audit entry — the fact that the action happened must survive.
+ */
+export function boundAuditMetadata(metadata: unknown): Record<string, unknown> | undefined {
+  if (metadata === undefined || metadata === null) return undefined;
+  if (typeof metadata !== "object" || Array.isArray(metadata)) {
+    return { truncated: true, reason: "metadata must be a plain object" };
+  }
+  const violation = findPayloadLimitViolation(metadata, PAYLOAD_LIMITS.audit_metadata);
+  if (!violation) return metadata as Record<string, unknown>;
+  payloadLimitRejectionsTotal.inc({ boundary: "audit_metadata", limit: violation.kind });
+  logger.warn({ event: "payload_limit_rejected", boundary: "audit_metadata", kind: violation.kind, path: violation.path }, "audit metadata truncated");
+  return { truncated: true, limit: violation.kind, path: violation.path.slice(0, 8).join(".") };
+}
 
 /**
  * Express middleware that automatically writes an audit log entry for every
@@ -57,7 +76,7 @@ async function writeAuditLog(
       resourceType: deriveResourceType(req.path),
       resourceId: resourceId ?? "unknown",
       status: "auth_failed",
-      metadata: res.locals.auditMetadata as Record<string, unknown> | undefined,
+      metadata: boundAuditMetadata(res.locals.auditMetadata),
       ipAddress: req.ip,
       userAgent: req.headers["user-agent"],
     });
@@ -72,7 +91,7 @@ async function writeAuditLog(
     resourceType: deriveResourceType(req.path),
     resourceId: resourceId ?? "unknown",
     status,
-    metadata: res.locals.auditMetadata as Record<string, unknown> | undefined,
+    metadata: boundAuditMetadata(res.locals.auditMetadata),
     ipAddress: req.ip,
     userAgent: req.headers["user-agent"],
   });

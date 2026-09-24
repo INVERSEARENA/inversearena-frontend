@@ -1,5 +1,25 @@
 use soroban_sdk::{Address, BytesN, contracterror, contracttype};
 
+/// Schema-level limits for untrusted, size-variable inputs (#1455).
+///
+/// Every admin- or caller-supplied value that controls how much data is
+/// stored or emitted must be checked against one of these before it is
+/// persisted. See `contract/BOUNDS.md`.
+///
+/// Upper bound for `configure_leaderboard_limit`. The leaderboard is a
+/// persistent `Vec<LeaderboardEntry>` rewritten on every resolution, so an
+/// unbounded limit lets its storage entry grow with the player set. It can
+/// never usefully exceed the player cap.
+pub const MAX_LEADERBOARD_LIMIT: u32 = 100;
+
+/// Validate a requested leaderboard size before persisting it.
+pub fn validate_leaderboard_limit(limit: u32) -> Result<u32, ArenaError> {
+    if limit == 0 || limit > MAX_LEADERBOARD_LIMIT {
+        return Err(ArenaError::InvalidLeaderboardLimit);
+    }
+    Ok(limit)
+}
+
 /// Lifecycle state of an arena.
 ///
 /// Transitions: Open → Active → Finished
@@ -274,6 +294,10 @@ pub enum ArenaError {
     /// recruiting. Joining after eliminations would let a latecomer buy in at
     /// the original entry fee against a thinned field.
     ArenaAlreadyStarted = 37,
+
+    /// Returned by `configure_leaderboard_limit` when `limit` is 0 or above
+    /// `MAX_LEADERBOARD_LIMIT` (#1455). Appended; existing ordinals unchanged.
+    InvalidLeaderboardLimit = 38,
 }
 
 #[contracttype]

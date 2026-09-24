@@ -17,6 +17,7 @@ import type {
 } from "../types/arena";
 import { getStellarConfig } from "../config/stellarConfig";
 import { ArenaStatsService } from "./arenaStatsService";
+import { enforcePayloadLimits } from "../validation/payloadLimits";
 
 const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
 const TX_HASH_REGEX = /^[0-9a-f]{64}$/i;
@@ -177,7 +178,8 @@ export class ArenaService {
       throw new Error("Deployed arena address is not a valid Soroban contract ID");
     }
 
-    const metadata: Prisma.InputJsonValue = JSON.parse(
+    // #1455: bound the persisted JSON before the write, never after.
+    const metadata: Prisma.InputJsonValue = enforcePayloadLimits(JSON.parse(
       JSON.stringify({
         name: input.name,
         entryFee: input.entryFee,
@@ -192,7 +194,7 @@ export class ArenaService {
           factoryContractId,
         },
       }),
-    ) as Prisma.InputJsonValue;
+    ) as Prisma.InputJsonValue, "arena_metadata");
 
     const arena = await this.prisma.arena.create({
       data: {

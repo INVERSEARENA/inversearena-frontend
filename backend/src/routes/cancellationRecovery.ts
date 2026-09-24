@@ -10,12 +10,13 @@ import { asyncHandler } from "../middleware/validate";
 import { prisma } from "../db/prisma";
 import { CancellationRecoveryService } from "../services/cancellationRecoveryService";
 import { apiError } from "../utils/apiError";
+import { STRING_LIMITS, boundedString } from "../validation/payloadLimits";
 
 const UpdateRecoverySchema = z.object({
   status: z.enum(["refundable", "submitted", "confirmed", "failed"]),
-  refundAmount: z.number().optional(),
-  txHash: z.string().optional(),
-  failureReason: z.string().optional(),
+  refundAmount: z.number().finite().nonnegative().optional(),
+  txHash: boundedString(STRING_LIMITS.shortText).optional(),
+  failureReason: boundedString(STRING_LIMITS.reason).optional(),
 });
 
 export function createCancellationRecoveryRouter(authMiddleware: any): Router {

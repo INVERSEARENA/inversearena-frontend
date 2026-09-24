@@ -1,0 +1,16 @@
+{
+  "actions": [],
+  "advisories": {
+    "1099999": {
+      "id": 1099999, "module_name": "next", "severity": "critical", "title": "Authorization bypass in middleware",
+      "url": "https://github.com/advisories/GHSA-f82v-jwr5-mffw", "github_advisory_id": "GHSA-f82v-jwr5-mffw",
+      "cves": ["CVE-2025-29927"], "findings": [{ "version": "15.1.0", "paths": ["next"] }]
+    },
+    "1098888": {
+      "id": 1098888, "module_name": "lodash", "severity": "high", "title": "Prototype pollution",
+      "url": "https://github.com/advisories/GHSA-p6mc-m468-83gw", "github_advisory_id": "GHSA-p6mc-m468-83gw",
+      "cves": [], "findings": [{ "version": "4.17.15", "paths": ["recharts>lodash"] }]
+    }
+  },
+  "metadata": { "vulnerabilities": { "critical": 1, "high": 1 } }
+}

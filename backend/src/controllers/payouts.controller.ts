@@ -3,7 +3,8 @@ import type { PaymentService } from "../services/paymentService";
 import type { TransactionRepository } from "../repositories/transactionRepository";
 import { cache, cacheKeys } from "../cache/cacheService";
 import { apiError } from "../utils/apiError";
-import { canAccessTransaction } from "../utils/transactionAccess";
+import { loadAccessibleTransaction } from "../utils/transactionAccess";
+import type { TransactionRecord } from "../types/payment";
 import { buildSettlementManifest, toReceiptCsv } from "../services/settlementService";
 
 export class PayoutsController {
@@ -35,23 +36,15 @@ export class PayoutsController {
   };
 
   getPayout = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const { id } = req.params;
-    const transaction = await this.transactions.findById(id!);
-    if (!transaction || !canAccessTransaction(transaction, req)) {
-      // Missing and forbidden are indistinguishable so ids cannot be probed.
-      next(apiError(404, "TRANSACTION_NOT_FOUND", `Transaction ${id} not found`));
-      return;
-    }
+    const transaction = await this.loadOwned(req, next, "payout_status");
+    if (!transaction) return;
     res.json(transaction);
   };
 
   signPayout = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const { id } = req.params;
-    const transaction = await this.transactions.findById(id!);
-    if (!transaction || !canAccessTransaction(transaction, req)) {
-      next(apiError(404, "TRANSACTION_NOT_FOUND", `Transaction ${id} not found`));
-      return;
-    }
+    const transaction = await this.loadOwned(req, next, "payout_sign");
+    if (!transaction) return;
     const { signedXdr } = req.body as { signedXdr: string };
     const updated = await this.paymentService.queueSignedTransaction(id!, signedXdr);
     res.json(updated);
@@ -59,14 +52,24 @@ export class PayoutsController {
 
   submitPayout = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const { id } = req.params;
-    const transaction = await this.transactions.findById(id!);
-    if (!transaction || !canAccessTransaction(transaction, req)) {
-      next(apiError(404, "TRANSACTION_NOT_FOUND", `Transaction ${id} not found`));
-      return;
-    }
+    const transaction = await this.loadOwned(req, next, "payout_submit");
+    if (!transaction) return;
     const result = await this.paymentService.submitQueuedTransaction(id!);
     res.json(result);
   };
+
+  /**
+   * Shared ownership gate (#1454): absent and foreign ids both reach `next`
+   * with the identical opaque TRANSACTION_NOT_FOUND error.
+   */
+  private async loadOwned(req: Request, next: NextFunction, operation: string): Promise<TransactionRecord | null> {
+    try {
+      return await loadAccessibleTransaction(this.transactions, req.params.id!, req, operation);
+    } catch (error) {
+      next(error);
+      return null;
+    }
+  }
 
   /**
    * Settlement receipt (#1407). Requires the payout to be confirmed on-chain
@@ -75,11 +78,8 @@ export class PayoutsController {
    */
   private async loadConfirmedTransaction(req: Request, res: Response, next: NextFunction) {
     const { id } = req.params;
-    const transaction = await this.transactions.findById(id!);
-    if (!transaction || !canAccessTransaction(transaction, req)) {
-      next(apiError(404, "TRANSACTION_NOT_FOUND", `Transaction ${id} not found`));
-      return null;
-    }
+    const transaction = await this.loadOwned(req, next, "payout_receipt");
+    if (!transaction) return null;
     if (transaction.status !== "confirmed") {
       next(
         apiError(

@@ -124,6 +124,7 @@ The arena pool contract uses `#[contracterror]` with **explicit** `repr(u32)` va
 | 21 | `PlayerEliminated` | Eliminated player attempted action |
 | 42 | `NotWhitelisted` | Non-whitelisted player attempted to join a private arena |
 | 37 | `ArenaAlreadyStarted` | `join_arena` after at least one round has been played, even while the arena is back in `Open` between rounds (#1358) |
+| 38 | `InvalidLeaderboardLimit` | `configure_leaderboard_limit` with `0` or a value above `MAX_LEADERBOARD_LIMIT` (100) (#1455) |
 | 22 | `WrongRoundNumber` | Submitted for wrong round |
 | 23 | `NotEnoughPlayers` | Too few players to start/resolve round |
 | 24 | `InvalidCapacity` | `set_capacity` value out of `[MIN, MAX]` range |

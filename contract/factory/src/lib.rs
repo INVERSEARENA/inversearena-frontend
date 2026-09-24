@@ -50,7 +50,6 @@ pub trait ArenaInterface {
     );
 }
 
-const MAX_PAGE_SIZE: u32 = 50;
 const MIN_ROUND_DURATION: u64 = 60;
 const MAX_ROUND_DURATION: u64 = 604_800;
 const MIN_PLAYERS: u32 = 2;
@@ -413,7 +412,7 @@ impl FactoryContract {
     /// Pools are returned in creation order (pool_id ascending).
     pub fn get_arenas(env: Env, offset: u32, limit: u32) -> Vec<ArenaMetadata> {
         let total = FactoryStorage::pool_count(&env);
-        let limit = core::cmp::min(limit, MAX_PAGE_SIZE);
+        let limit = types::clamp_page_size(limit);
         let mut result: Vec<ArenaMetadata> = Vec::new(&env);
         let start = offset.saturating_add(1);
         let end = core::cmp::min(total, offset.saturating_add(limit));
@@ -491,6 +490,22 @@ mod test {
             max_players: 10,
             round_duration: 60,
         }
+    }
+
+    #[test]
+    fn clamp_page_size_bounds_untrusted_limits() {
+        assert_eq!(types::clamp_page_size(0), 0);
+        assert_eq!(types::clamp_page_size(types::MAX_ARENAS_PAGE_SIZE - 1), types::MAX_ARENAS_PAGE_SIZE - 1);
+        assert_eq!(types::clamp_page_size(types::MAX_ARENAS_PAGE_SIZE), types::MAX_ARENAS_PAGE_SIZE);
+        assert_eq!(types::clamp_page_size(types::MAX_ARENAS_PAGE_SIZE + 1), types::MAX_ARENAS_PAGE_SIZE);
+        assert_eq!(types::clamp_page_size(u32::MAX), types::MAX_ARENAS_PAGE_SIZE);
+    }
+
+    #[test]
+    fn get_arenas_with_huge_limit_on_empty_factory_returns_empty() {
+        let (_env, client, _admin, _host) = setup();
+        assert_eq!(client.get_arenas(&u32::MAX, &u32::MAX).len(), 0);
+        assert_eq!(client.get_arenas(&0, &u32::MAX).len(), 0);
     }
 
     #[test]

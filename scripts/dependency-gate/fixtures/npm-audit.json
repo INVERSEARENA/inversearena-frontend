@@ -1,0 +1,20 @@
+{
+  "auditReportVersion": 2,
+  "vulnerabilities": {
+    "jsonwebtoken": {
+      "name": "jsonwebtoken", "severity": "high", "isDirect": true,
+      "via": [{ "source": 1097690, "name": "jsonwebtoken", "dependency": "jsonwebtoken", "title": "jsonwebtoken unrestricted key type", "url": "https://github.com/advisories/GHSA-8cf7-32gw-wr33", "severity": "high", "range": "<=8.5.1" }],
+      "effects": [], "range": "<=8.5.1", "nodes": ["node_modules/jsonwebtoken"], "fixAvailable": true
+    },
+    "semver": {
+      "name": "semver", "severity": "moderate", "isDirect": false,
+      "via": [{ "source": 1096482, "name": "semver", "dependency": "semver", "title": "semver ReDoS", "url": "https://github.com/advisories/GHSA-c2qf-rxjj-qqgw", "severity": "moderate", "range": "<5.7.2" }],
+      "effects": ["make-dir"], "range": "<5.7.2", "nodes": ["node_modules/semver"], "fixAvailable": true
+    },
+    "make-dir": {
+      "name": "make-dir", "severity": "moderate", "isDirect": false, "via": ["semver"],
+      "effects": [], "range": "2.0.0 - 3.1.0", "nodes": ["node_modules/make-dir"], "fixAvailable": true
+    }
+  },
+  "metadata": { "vulnerabilities": { "info": 0, "low": 0, "moderate": 2, "high": 1, "critical": 0, "total": 3 } }
+}
