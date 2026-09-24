@@ -1,5 +1,14 @@
+import { createHash } from "crypto";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { cache } from "../cache/cacheService";
+
+/**
+ * Derives a deterministic weak ETag from a serialised response body.
+ * SHA-1 is used purely as a fast fingerprint — not for security.
+ */
+function generateETag(serialized: string): string {
+  return `"${createHash("sha1").update(serialized).digest("hex").slice(0, 20)}"`;
+}
 
 type KeyGenerator = (req: Request) => string;
 
@@ -16,6 +25,12 @@ export function cacheMiddleware(keyGen: KeyGenerator, ttlSeconds: number): Reque
     try {
       const cached = await cache.get<unknown>(key);
       if (cached !== null) {
+        const etag = generateETag(JSON.stringify(cached));
+        res.setHeader("ETag", etag);
+        if (req.headers["if-none-match"] === etag) {
+          res.status(304).end();
+          return;
+        }
         res.setHeader("X-Cache", "HIT");
         res.json(cached);
         return;
@@ -33,6 +48,8 @@ export function cacheMiddleware(keyGen: KeyGenerator, ttlSeconds: number): Reque
       // check a single transient failure gets cached and replayed to every
       // subsequent request for the full TTL window.
       if (res.statusCode < 300) {
+        const serialized = JSON.stringify(body);
+        res.setHeader("ETag", generateETag(serialized));
         // Cache in background — don't block the response
         cache.set(key, body, ttlSeconds).catch(() => {});
       }

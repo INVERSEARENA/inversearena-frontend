@@ -11,11 +11,10 @@
  */
 
 import { Contract, Keypair, nativeToScVal, scValToNative, xdr } from "@stellar/stellar-sdk";
-// @ts-ignore
-import { rpc } from "@stellar/stellar-sdk";
+import { StellarRpcGateway } from "../../frontend/src/shared-d/services/stellarRpcGateway";
 import { getStellarConfig } from "../config/stellarConfig";
-const { Server } = rpc;
 
+let sourcePublicKey: string | null = null;
 /** On-chain game states — matches the contract's GameState enum. */
 export type OnChainGameState = "Open" | "InProgress" | "Finished" | "Cancelled";
 
@@ -42,20 +41,12 @@ export class OnChainReadError extends Error {
   }
 }
 
-let rpcServer: rpc.Server | null = null;
-let sourcePublicKey: string | null = null;
 
-function getRpcServer(): rpc.Server {
-  if (!rpcServer) {
-    rpcServer = new Server(getStellarConfig().sorobanRpcUrl, { allowHttp: false });
-  }
-  return rpcServer;
-}
+
+
 
 /** Test seam — mirrors the pattern used in arenaService.ts / ledgerClock.ts. */
-export function setRpcServerForTest(server: rpc.Server | null): void {
-  rpcServer = server;
-}
+
 
 /**
  * A dummy public key used as the simulation source for read-only calls.
@@ -82,10 +73,10 @@ function getSourcePublicKey(): string {
 async function simulateViewCall(
   contractId: string,
   functionName: string,
+  stellarRpcGateway: StellarRpcGateway,
   args: xdr.ScVal[] = [],
 ): Promise<unknown> {
-  const server = getRpcServer();
-  const sourceAccount = await server.getAccount(getSourcePublicKey());
+  const sourceAccount = await stellarRpcGateway.getAccount(getSourcePublicKey(), `simulateViewCall.${functionName}`);
 
   const contract = new Contract(contractId);
   const tx = new (await import("@stellar/stellar-sdk")).TransactionBuilder(sourceAccount, {
@@ -96,13 +87,13 @@ async function simulateViewCall(
     .setTimeout(60)
     .build();
 
-  const result = await server.simulateTransaction(tx);
+  const result = await stellarRpcGateway.simulateTransaction(tx);
 
-  if (rpc.Api.isSimulationError(result)) {
+  if ("error" in result) {
     throw new Error(`Simulation error for ${functionName}: ${result.error}`);
   }
 
-  if (!rpc.Api.isSimulationSuccess(result) || !result.result) {
+  if (!result.result) {
     throw new Error(`Simulation returned no result for ${functionName}`);
   }
 
@@ -114,8 +105,9 @@ async function simulateViewCall(
  * Returns the state string ("Open", "InProgress", "Finished", "Cancelled").
  */
 export async function getOnChainGameState(contractId: string): Promise<OnChainGameState> {
+  const stellarRpcGateway = new StellarRpcGateway();
   try {
-    const result = await simulateViewCall(contractId, "game_state");
+    const result = await simulateViewCall(contractId, "game_state", stellarRpcGateway);
     // The contract returns a Symbol; scValToNative converts it to a string.
     const state = String(result) as OnChainGameState;
     return state;
@@ -131,22 +123,23 @@ export async function getOnChainGameState(contractId: string): Promise<OnChainGa
  * Returns the number of players who joined on-chain.
  */
 export async function getOnChainPlayerCount(contractId: string): Promise<number> {
+  const stellarRpcGateway = new StellarRpcGateway();
   try {
-    const result = await simulateViewCall(contractId, "get_player_count");
+    const result = await simulateViewCall(contractId, "get_player_count", stellarRpcGateway);
     return Number(result as bigint | number);
   } catch {
     // If the contract call fails, fall back to 0.
     return 0;
   }
 }
-
 /**
  * Read the on-chain player list for an arena contract.
  * Returns an array of player wallet addresses.
  */
 export async function getOnChainPlayers(contractId: string): Promise<string[]> {
+  const stellarRpcGateway = new StellarRpcGateway();
   try {
-    const result = await simulateViewCall(contractId, "get_players");
+    const result = await simulateViewCall(contractId, "get_players", stellarRpcGateway);
     // The contract returns a Vec<Address>; scValToNative converts it to an array of strings.
     const players = result as string[];
     return players;
@@ -173,11 +166,12 @@ export async function getOnChainActivePlayerIds(
   contractId: string,
   page = 0,
 ): Promise<string[]> {
+  const stellarRpcGateway = new StellarRpcGateway();
   try {
     const pageArg = nativeToScVal(page, { type: "u32" });
     // get_players returns Vec<(Address, PlayerState)>; scValToNative gives
     // an array of [address_string, { active, rounds_survived, ... }] tuples.
-    const result = await simulateViewCall(contractId, "get_players", [pageArg]);
+    const result = await simulateViewCall(contractId, "get_players", stellarRpcGateway, [pageArg]);
     const entries = result as Array<[string, { active: boolean }]>;
     return entries
       .filter(([, state]) => state.active)
@@ -202,9 +196,10 @@ export async function getOnChainActivePlayerIds(
 export async function getOnChainWinner(
   contractId: string,
 ): Promise<string | null> {
+  const stellarRpcGateway = new StellarRpcGateway();
   let result: unknown;
   try {
-    result = await simulateViewCall(contractId, "get_winner");
+    result = await simulateViewCall(contractId, "get_winner", stellarRpcGateway);
   } catch (error) {
     // A failed read is NOT the same as "no winner yet". Returning null here
     // would let the round commit as RESOLVED with zero payouts, and
@@ -241,10 +236,11 @@ export async function getOnChainSnapshotOrThrow(
   contractId: string,
   vaultContractId: string,
 ): Promise<OnChainArenaSnapshot> {
+  const stellarRpcGateway = new StellarRpcGateway();
   const [playerCountRaw, gameStateRaw, yieldRaw] = await Promise.all([
-    simulateViewCall(contractId, "get_player_count"),
-    simulateViewCall(contractId, "game_state"),
-    simulateViewCall(vaultContractId, "get_total_yield"),
+    simulateViewCall(contractId, "get_player_count", stellarRpcGateway),
+    simulateViewCall(contractId, "game_state", stellarRpcGateway),
+    simulateViewCall(vaultContractId, "get_total_yield", stellarRpcGateway),
   ]);
 
   return {
@@ -259,8 +255,9 @@ export async function getOnChainSnapshotOrThrow(
  * Returns the total yield amount as a number.
  */
 export async function getOnChainTotalYield(contractId: string): Promise<number> {
+  const stellarRpcGateway = new StellarRpcGateway();
   try {
-    const result = await simulateViewCall(contractId, "get_total_yield");
+    const result = await simulateViewCall(contractId, "get_total_yield", stellarRpcGateway);
     return Number(result as bigint | number);
   } catch {
     // If the contract call fails, fall back to 0.

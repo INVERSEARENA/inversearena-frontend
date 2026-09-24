@@ -97,4 +97,65 @@ describe("cacheMiddleware (#1213)", () => {
     expect(response.headers["x-cache"]).toBe("MISS");
     expect(response.body).toEqual({ recovered: true });
   });
+
+  describe("ETag support (#1439)", () => {
+    it("sets an ETag header on a cache MISS", async () => {
+      const response = await request(
+        buildApp((_req, res) => res.json({ data: "fresh" })),
+      ).get("/thing");
+
+      expect(response.status).toBe(200);
+      expect(response.headers["etag"]).toMatch(/^"[0-9a-f]{20}"$/);
+    });
+
+    it("sets an ETag header on a cache HIT", async () => {
+      get.mockResolvedValueOnce(JSON.stringify({ cached: true }));
+
+      const response = await request(
+        buildApp((_req, res) => res.json({ cached: false })),
+      ).get("/thing");
+
+      expect(response.status).toBe(200);
+      expect(response.headers["x-cache"]).toBe("HIT");
+      expect(response.headers["etag"]).toMatch(/^"[0-9a-f]{20}"$/);
+    });
+
+    it("returns 304 when If-None-Match matches the ETag on a cache HIT", async () => {
+      const body = { arena: "abc" };
+      const { createHash } = await import("crypto");
+      const etag = `"${createHash("sha1").update(JSON.stringify(body)).digest("hex").slice(0, 20)}"`;
+      get.mockResolvedValueOnce(JSON.stringify(body));
+
+      const response = await request(
+        buildApp((_req, res) => res.json({ arena: "other" })),
+      )
+        .get("/thing")
+        .set("If-None-Match", etag);
+
+      expect(response.status).toBe(304);
+    });
+
+    it("does not return 304 when If-None-Match is stale", async () => {
+      get.mockResolvedValueOnce(JSON.stringify({ arena: "abc" }));
+
+      const response = await request(
+        buildApp((_req, res) => res.json({ arena: "other" })),
+      )
+        .get("/thing")
+        .set("If-None-Match", '"stale-etag-value"');
+
+      expect(response.status).toBe(200);
+      expect(response.headers["x-cache"]).toBe("HIT");
+      expect(response.body).toEqual({ arena: "abc" });
+    });
+
+    it("does not set ETag on a 4xx response", async () => {
+      const response = await request(
+        buildApp((_req, res) => res.status(404).json({ error: "not found" })),
+      ).get("/thing");
+
+      expect(response.status).toBe(404);
+      expect(response.headers["etag"]).toBeUndefined();
+    });
+  });
 });

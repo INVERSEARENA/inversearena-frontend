@@ -8,7 +8,7 @@ import {
   AuthUserResponseSchema,
   LogoutResponseSchema,
 } from "../validation/authSchemas";
-import { SignPayoutBodySchema, TransactionIdParamSchema } from "../validation/requestValidation";
+import { SignPayoutBodySchema, TransactionIdParamSchema, YieldUpdateSchema } from "../validation/requestValidation";
 import { RoundInputSchema } from "../types/round";
 import { z } from "./zodOpenApi";
 
@@ -89,4 +89,5 @@ export {
   TransactionIdParamSchema,
   RoundInputSchema,
   ApiErrorSchema,
+  YieldUpdateSchema,
 };

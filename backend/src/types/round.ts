@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { Money } from './money';
+import { MoneySchema } from '../validation/payloadLimits';
 
 export enum RoundState {
   OPEN = 'OPEN',
@@ -10,7 +12,7 @@ export enum RoundState {
 export const PlayerChoiceSchema = z.object({
   userId: z.string().uuid(),
   choice: z.enum(['heads', 'tails']),
-  stake: z.number().finite().positive(),
+  stake: MoneySchema,
 });
 
 export const RoundInputSchema = z.object({
@@ -25,7 +27,7 @@ export const RoundInputSchema = z.object({
 export interface PlayerChoice {
   userId: string;
   choice: string;
-  stake: number;
+  stake: Money;
 }
 
 export interface RoundInput {
@@ -39,22 +41,22 @@ export interface RoundInput {
 
 export interface Payout {
   userId: string;
-  amount: number;
+  amount: Money;
   /**
    * Settlement breakdown (#1407) for this payout — see
    * settlementService.computeSettlementBreakdown. principal + yieldAmount
    * always equals amount + platformFee + dust.
    */
-  principal: number;
-  yieldAmount: number;
-  platformFee: number;
-  dust: number;
+  principal: Money;
+  yieldAmount: Money;
+  platformFee: Money;
+  dust: Money;
 }
 
 export interface RoundResolution {
   eliminatedPlayers: string[];
   payouts: Payout[];
-  poolBalances: Record<string, number>;
+  poolBalances: Record<string, Money>;
 }
 
 export interface RoundMetadata {

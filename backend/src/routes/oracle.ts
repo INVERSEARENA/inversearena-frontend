@@ -17,13 +17,7 @@ interface YieldData {
   network: string;
 }
 
-const YieldUpdateSchema = z.object({
-  protocol: z.string().trim().min(1).max(64).optional(),
-  currentAPY: z.number().finite().min(0).max(100).optional(),
-  baseRate: z.number().finite().min(0).max(100).optional(),
-  surgeMultiplier: z.number().finite().min(0).max(10).optional(),
-  asset: z.string().trim().min(1).max(16).optional(),
-});
+import { YieldUpdateSchema } from "../validation/requestValidation";
 
 const DEFAULT_YIELD: YieldData = {
   protocol: "Ondo USDY",

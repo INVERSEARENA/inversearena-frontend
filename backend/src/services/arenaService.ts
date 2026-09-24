@@ -7,9 +7,8 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
-// @ts-ignore
-import { rpc } from "@stellar/stellar-sdk";
-const { Server } = rpc;
+import { StellarRpcGateway } from "../../frontend/src/shared-d/services/stellarRpcGateway";
+
 import type {
   ArenaCreationResult,
   ArenaStreamEvent,
@@ -23,24 +22,16 @@ const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
 const TX_HASH_REGEX = /^[0-9a-f]{64}$/i;
 const FACTORY_CREATE_POOL_FN = "create_pool";
 
-let rpcServer: rpc.Server | null = null;
 
-function getRpcServer(): rpc.Server {
-  if (!rpcServer) {
-    const url = process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
-    rpcServer = new Server(url, { allowHttp: false });
-  }
-  return rpcServer;
-}
+
+
 
 /**
  * Test seam: swaps the module-level RPC singleton so deployment-verification
  * tests can drive `confirmArenaDeployment` without a live network. Pass `null`
  * to restore the real server.
  */
-export function setRpcServerForTest(server: rpc.Server | null): void {
-  rpcServer = server;
-}
+
 
 /**
  * Asserts that `envelopeXdr` is a single `create_pool` invocation against the
@@ -126,6 +117,7 @@ export class ArenaService {
   constructor(
     private readonly prisma: PrismaClient,
     private readonly statsService = new ArenaStatsService(prisma),
+    private readonly stellarRpcGateway = new StellarRpcGateway(),
   ) {}
 
   /**
@@ -155,9 +147,9 @@ export class ArenaService {
     }
 
     const server = getRpcServer();
-    const tx = await server.getTransaction(txHash);
+    const tx = await this.stellarRpcGateway.getTransaction(txHash);
 
-    if (tx.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
+    if (tx.status !== "SUCCESS") {
       throw new Error(`Arena deployment transaction ${txHash} did not succeed on-chain`);
     }
 

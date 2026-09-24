@@ -13,6 +13,7 @@
 
 import { RoundState } from '../src/types/round';
 import type { RoundInput } from '../src/types/round';
+import { Money } from '../src/types/money';
 
 // Keep the real OnChainReadError class — only the network-touching readers
 // are stubbed, so `rejects.toThrow(OnChainReadError)` checks the real type.
@@ -51,8 +52,8 @@ function buildInput(): RoundInput {
   return {
     roundId: ROUND_ID,
     playerChoices: [
-      { userId: PLAYER_A, choice: 'heads', stake: 100 },
-      { userId: PLAYER_B, choice: 'tails', stake: 100 },
+      { userId: PLAYER_A, choice: 'heads', stake: Money.fromDisplayAmount("100", "USDC") },
+      { userId: PLAYER_B, choice: 'tails', stake: Money.fromDisplayAmount("100", "USDC") },
     ],
     allActivePlayerIds: [PLAYER_A, PLAYER_B],
     oracleYield: 0,
@@ -176,7 +177,7 @@ describe('#1344 — resolveRound with a failing get_winner read', () => {
 
     expect(result.payouts).toHaveLength(1);
     expect(result.payouts[0]!.userId).toBe(PLAYER_A);
-    expect(result.payouts[0]!.amount).toBeGreaterThan(0);
+    expect(result.payouts[0]!.amount.isGreaterThan(new Money(0n, "USDC"))).toBe(true);
     expect(resolveAtomically).toHaveBeenCalledTimes(1);
   });
 
