@@ -28,3 +28,11 @@ export const SignPayoutBodySchema = z.object({
     .min(20, "signedXdr is too short")
     .max(200_000, "signedXdr is too large"),
 });
+
+export const YieldUpdateSchema = z.object({
+  protocol: z.string().trim().min(1).max(64).optional(),
+  currentAPY: z.number().finite().min(0).max(100).optional(),
+  baseRate: z.number().finite().min(0).max(100).optional(),
+  surgeMultiplier: z.number().finite().min(0).max(10).optional(),
+  asset: z.string().trim().min(1).max(16).optional(),
+});

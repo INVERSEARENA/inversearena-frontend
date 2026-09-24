@@ -1,8 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { Contract, Keypair, TransactionBuilder, xdr } from "@stellar/stellar-sdk";
-// @ts-ignore
-import { rpc } from "@stellar/stellar-sdk";
-const { Server, Api, assembleTransaction } = rpc;
+import { StellarRpcGateway } from "../../frontend/src/shared-d/services/stellarRpcGateway";
+
 import { RoundRepository } from '../repositories/roundRepository';
 import type { RoundInput, RoundMetadata, RoundResolution, Payout } from '../types/round';
 import { RoundState } from '../types/round';
@@ -67,6 +66,7 @@ export class RoundService {
   constructor(
     private prisma: PrismaClient,
     private stellarConfig: StellarConfig = getStellarConfig(),
+    private stellarRpcGateway: StellarRpcGateway = new StellarRpcGateway(),
     onChainReader?: OnChainReader,
   ) {
     this.roundRepo = new RoundRepository(prisma);
@@ -87,9 +87,9 @@ export class RoundService {
       throw new Error("ARENA_ADMIN_SECRET is not configured. Cannot submit on-chain resolve_round.");
     }
 
-    const server = new Server(this.stellarConfig.sorobanRpcUrl, { allowHttp: false });
+    const server = this.stellarRpcGateway.rpcServer;
     const signer = Keypair.fromSecret(signerSecret);
-    const sourceAccount = await server.getAccount(signer.publicKey());
+    const sourceAccount = await this.stellarRpcGateway.getAccount(signer.publicKey(), "RoundService.submitOnChainResolve");
     const contract = new Contract(contractId);
 
     const tx = new TransactionBuilder(sourceAccount, {
@@ -100,18 +100,18 @@ export class RoundService {
       .setTimeout(60)
       .build();
 
-    const simulated = await server.simulateTransaction(tx);
-    if (Api.isSimulationError(simulated)) {
+    const simulated = await this.stellarRpcGateway.simulateTransaction(tx);
+    if (simulated.error) {
       throw new Error(`resolve_round simulation failed: ${simulated.error}`);
     }
-    if (!Api.isSimulationSuccess(simulated)) {
+    if (!("result" in simulated)) {
       throw new Error("resolve_round simulation returned no result");
     }
 
-    const prepared = assembleTransaction(tx, simulated).build();
+    const prepared = TransactionBuilder.fromXDR(xdr.Transaction.toXDR(tx), this.stellarConfig.networkPassphrase).build();
     prepared.sign(signer);
 
-    const sendResult = await server.sendTransaction(prepared);
+    const sendResult = await this.stellarRpcGateway.sendTransaction(prepared);
     if (sendResult.status === "PENDING" || sendResult.status === "DUPLICATE") {
       const hash = sendResult.hash;
       const maxPolls = this.stellarConfig.roundConfirmMaxPolls;
@@ -127,7 +127,7 @@ export class RoundService {
         await new Promise((resolve) => setTimeout(resolve, delay));
 
         const elapsed = Date.now() - start;
-        const status = await server.getTransaction(hash);
+        const status = await this.stellarRpcGateway.getTransaction(hash);
 
         console.info(
           `[roundService] resolve_round poll attempt=${attempt + 1}/${maxPolls} ` +

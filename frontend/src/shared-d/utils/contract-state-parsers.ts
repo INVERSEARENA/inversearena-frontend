@@ -1,5 +1,5 @@
 import type { xdr } from "@stellar/stellar-sdk";
-import type { ArenaState, UserState } from "@/shared-d/types/contract-state";
+import type { ContractArenaState, ContractUserState } from "@/shared-d/types/contract-state";
 import {
   extractBoolFromScVal,
   extractI128FromScVal,
@@ -7,7 +7,7 @@ import {
   stroopsToDisplayAmount,
 } from "@/shared-d/utils/stellar-scval-extract";
 
-export function parseArenaStateFromScVal(stateData: xdr.ScVal): ArenaState {
+export function parseArenaStateFromScVal(stateData: xdr.ScVal): ContractArenaState {
   return {
     survivors: extractU32FromScVal(stateData, "survivors_count") ?? 0,
     capacity: extractU32FromScVal(stateData, "max_capacity") ?? 0,
@@ -17,14 +17,14 @@ export function parseArenaStateFromScVal(stateData: xdr.ScVal): ArenaState {
   };
 }
 
-export function parseUserStateFromScVal(userData: xdr.ScVal): UserState {
+export function parseUserStateFromScVal(userData: xdr.ScVal): ContractUserState {
   return {
     active: extractBoolFromScVal(userData, "is_active") ?? false,
     won: extractBoolFromScVal(userData, "has_won") ?? false,
   };
 }
 
-export function buildArenaDisplayState(arenaState: ArenaState): Pick<
+export function buildArenaDisplayState(arenaState: ContractArenaState): Pick<
   import("@/shared-d/types/contract-state").FetchArenaStateResult,
   | "survivorsCount"
   | "maxCapacity"

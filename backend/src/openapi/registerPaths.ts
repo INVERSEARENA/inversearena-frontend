@@ -21,6 +21,7 @@ import {
   TransactionIdParamSchema,
   TransactionRecordSchema,
   VerifySchema,
+  YieldUpdateSchema,
 } from "./schemas";
 import { z } from "./zodOpenApi";
 
@@ -301,6 +302,87 @@ function registerAdminPaths(registry: OpenAPIRegistry): void {
   });
 }
 
+function registerAdminPaths(registry: OpenAPIRegistry): void {
+  const RoundResolutionSchema = z.object({
+    roundId: z.string().uuid(),
+    state: z.string(),
+    resolution: z.record(z.unknown()).optional(),
+  });
+
+  registry.registerPath({
+    method: "post",
+    path: "/api/admin/rounds/resolve",
+    summary: "Resolve a round (admin)",
+    security: [{ adminApiKey: [] }],
+    request: {
+      body: {
+        content: { "application/json": { schema: RoundInputSchema } },
+      },
+    },
+    responses: {
+      200: {
+        description: "Round resolved",
+        content: { "application/json": { schema: RoundResolutionSchema } },
+      },
+      400: {
+        description: "Validation error",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+      401: {
+        description: "Unauthorized",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+    },
+  });
+
+  registry.registerPath({
+    method: "post",
+    path: "/api/payouts/{id}/sign",
+    summary: "Queue a signed payout XDR (admin)",
+    security: [{ adminApiKey: [] }],
+    request: {
+      params: TransactionIdParamSchema,
+      body: {
+        content: { "application/json": { schema: SignPayoutBodySchema } },
+      },
+    },
+    responses: {
+      200: {
+        description: "Signed transaction queued",
+        content: { "application/json": { schema: TransactionRecordSchema } },
+      },
+      401: {
+        description: "Unauthorized — admin API key required",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+      404: {
+        description: "Transaction not found or not owned by requester",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+    },
+  });
+}
+
+function registerOraclePaths(registry: OpenAPIRegistry): void {
+  registry.registerPath({
+    method: "post",
+    path: "/api/oracle/yield",
+    summary: "Update current yield data (webhook)",
+    request: {
+      body: {
+        content: { "application/json": { schema: YieldUpdateSchema } },
+      },
+    },
+    responses: {
+      200: { description: "Yield data updated" },
+      400: {
+        description: "Validation error",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+    },
+  });
+}
+
 export function generateOpenApiDocument() {
   const registry = new OpenAPIRegistry();
 
@@ -311,6 +393,7 @@ export function generateOpenApiDocument() {
   registerArenaPaths(registry);
   registerPublicApiPaths(registry);
   registerAdminPaths(registry);
+  registerOraclePaths(registry);
 
   const generator = new OpenApiGeneratorV31(registry.definitions);
   return generator.generateDocument({

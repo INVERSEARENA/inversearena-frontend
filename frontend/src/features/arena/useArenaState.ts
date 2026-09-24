@@ -1,25 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import {
-  fetchArenaState,
-  type ArenaStateResponse,
-} from "@/shared-d/utils/stellar-transactions";
+import { fetchArenaState } from "@/shared-d/utils/stellar-transactions";
+import type { ArenaState, ArenaStateStatus, ArenaStateFromContract } from "@/shared-d/types/contract-state";
 
 export type ArenaHealthStatus = "connected" | "degraded" | "offline";
 
-export interface ArenaState {
-  id: string;
-  state: "open" | "round_active" | "resolving" | "finished" | "cancelled" | "settled";
-  survivorsCount: number;
-  maxCapacity: number;
-  currentRound: number;
-  isUserIn: boolean;
-  hasWon: boolean;
-  currentStake: number;
-  potentialPayout: number;
-  claimReady: boolean;
-  entryFee: number;
-  playerCount: number;
-}
+
 
 export interface UseArenaStateReturn {
   state: ArenaState | null;
@@ -39,13 +24,19 @@ export interface UseArenaStateReturn {
   reconcile: (publicKey?: string) => Promise<ArenaState | null>;
 }
 
-export function toArenaState(data: ArenaStateResponse): ArenaState {
+export function toArenaState(data: ArenaStateFromContract): ArenaState {
+  const id = data.arenaId;
+  const currentRound = data.contractArenaState.round;
+  const isUserIn = data.contractUserState.active;
+  const hasWon = data.contractUserState.won;
+  const currentStake = Number(data.contractArenaState.stakes) / 10_000_000; // Assuming 7 decimal places for display
+  const potentialPayout = Number(data.contractArenaState.payouts) / 10_000_000; // Assuming 7 decimal places for display
+
   return {
-    id: data.arenaId,
-    state: (function mapState() {
-      // gameState is null when not yet available from contract (#1330)
+    id,
+    status: (function mapState(): ArenaStateStatus {
       if (data.gameState === null) return "open";
-      if (data.hasWon && data.gameState === 4) return "finished";
+      if (hasWon && data.gameState === 4) return "finished";
       switch (data.gameState) {
         case 0: return "open";
         case 1: return "round_active";
@@ -55,16 +46,23 @@ export function toArenaState(data: ArenaStateResponse): ArenaState {
         default: return "open";
       }
     })(),
-    survivorsCount: data.survivorsCount,
-    maxCapacity: data.maxCapacity,
-    currentRound: data.roundNumber,
-    isUserIn: data.isUserIn,
-    hasWon: data.hasWon,
-    currentStake: data.currentStake,
-    potentialPayout: data.potentialPayout,
+    survivorsCount: data.playerCount,
+    maxCapacity: data.contractArenaState.capacity,
+    currentRound,
+    isUserIn,
+    hasWon,
+    currentStake,
+    potentialPayout,
     claimReady: false,
     entryFee: data.entryFee ?? 0,
     playerCount: data.playerCount,
+    survivors: data.contractArenaState.survivors,
+    capacity: data.contractArenaState.capacity,
+    round: data.contractArenaState.round,
+    stakes: data.contractArenaState.stakes,
+    payouts: data.contractArenaState.payouts,
+    commitDeadline: data.commitDeadline,
+    revealDeadline: data.revealDeadline,
   };
 }
 
@@ -76,7 +74,7 @@ export function useArenaState(arenaId: string): UseArenaStateReturn {
   const timeoutId = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isMounted = useRef(true);
 
-  const applyChainState = useCallback((data: ArenaStateResponse): ArenaState => {
+  const applyChainState = useCallback((data: ArenaStateFromContract): ArenaState => {
     const nextState = toArenaState(data);
     setState(nextState);
     setLastSyncedAt(Date.now());
