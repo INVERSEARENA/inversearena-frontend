@@ -30,6 +30,10 @@ const TransactionSchema = new Schema<TransactionDocument>(
     attempts: { type: Number, required: true, default: 0 },
     confirmedAt: { type: Date, default: null },
     ownerId: { type: String, default: null },
+    principal: { type: Number, default: null },
+    yieldAmount: { type: Number, default: null },
+    platformFee: { type: Number, default: null },
+    dust: { type: Number, default: null },
   },
   {
     timestamps: true,

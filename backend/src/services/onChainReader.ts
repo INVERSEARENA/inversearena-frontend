@@ -52,6 +52,11 @@ function getRpcServer(): rpc.Server {
   return rpcServer;
 }
 
+/** Test seam — mirrors the pattern used in arenaService.ts / ledgerClock.ts. */
+export function setRpcServerForTest(server: rpc.Server | null): void {
+  rpcServer = server;
+}
+
 /**
  * A dummy public key used as the simulation source for read-only calls.
  * Does not need funds — Soroban simulates without submitting.
@@ -212,6 +217,41 @@ export async function getOnChainWinner(
   // has not called set_winner yet, i.e. the game is still in progress.
   if (result === null || result === undefined) return null;
   return String(result);
+}
+
+/** Combined result of a single successful live-on-chain read (#1408). */
+export interface OnChainArenaSnapshot {
+  playerCount: number;
+  gameState: OnChainGameState;
+  yieldAccrued: number;
+}
+
+/**
+ * Read player count, game state, and total yield for an arena in one
+ * all-or-nothing attempt (#1408).
+ *
+ * Unlike getOnChainPlayerCount/getOnChainGameState/getOnChainTotalYield
+ * above, this throws on ANY failure instead of silently defaulting a single
+ * field — arenaStatsService needs to know whether "this batch of on-chain
+ * fields is genuinely live" as one fact, not three independently-defaulting
+ * ones, so it can decide whether to serve a flagged last-verified snapshot
+ * instead of silently mixing live and stale data.
+ */
+export async function getOnChainSnapshotOrThrow(
+  contractId: string,
+  vaultContractId: string,
+): Promise<OnChainArenaSnapshot> {
+  const [playerCountRaw, gameStateRaw, yieldRaw] = await Promise.all([
+    simulateViewCall(contractId, "get_player_count"),
+    simulateViewCall(contractId, "game_state"),
+    simulateViewCall(vaultContractId, "get_total_yield"),
+  ]);
+
+  return {
+    playerCount: Number(playerCountRaw as bigint | number),
+    gameState: String(gameStateRaw) as OnChainGameState,
+    yieldAccrued: Number(yieldRaw as bigint | number),
+  };
 }
 
 /**

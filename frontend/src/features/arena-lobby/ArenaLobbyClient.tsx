@@ -38,6 +38,12 @@ const arenaStatsSchema = z.object({
   yieldAccrued: z.number(),
   status: z.string(),
   lastUpdated: z.string(),
+  // #1408: present once the backend has ever completed a live on-chain read
+  // for this arena; optional so a response from before this field existed
+  // (or an intermediate cache entry) still validates.
+  degraded: z.boolean().optional(),
+  ledgerSequence: z.number().nullable().optional(),
+  snapshotVerifiedAt: z.string().nullable().optional(),
 });
 
 const arenaParticipantsResponseSchema = z.object({
@@ -319,6 +325,17 @@ export function ArenaLobbyClient({
                   {stats.status.toUpperCase()} / Round {stats.currentRound}
                 </span>
               </div>
+              {stats.degraded && (
+                <div
+                  role="status"
+                  className="inline-flex items-center gap-2 rounded-full border border-amber-400/40 bg-amber-950/60 px-3 py-1"
+                >
+                  <span className="h-2 w-2 rounded-full bg-amber-400" />
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-amber-200">
+                    Delayed data{stats.ledgerSequence != null ? ` — as of ledger ${stats.ledgerSequence}` : ""}
+                  </span>
+                </div>
+              )}
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-white/45">
                   Arena Lobby

@@ -19,8 +19,15 @@ interface JoinArenaModalProps {
   maxPlayers: number;
   yieldGeneration: number;
   arenaStatus: 'ACTIVE' | 'INACTIVE';
-  /** Optional pre-fetched stake limit info. If omitted the modal fetches it. */
-  stakeLimitInfo?: StakeLimitInfo | null;
+  walletBalance?: number;
+  balanceAsset?: 'USDC' | 'XLM' | 'EURC';
+  invitationCode?: string;
+}
+
+interface EligibilityError {
+  code: string;
+  message: string;
+  severity: 'error' | 'warning';
 }
 
 const JoinArenaModal: React.FC<JoinArenaModalProps> = ({
@@ -33,18 +40,14 @@ const JoinArenaModal: React.FC<JoinArenaModalProps> = ({
   maxPlayers,
   yieldGeneration,
   arenaStatus,
-  stakeLimitInfo: externalStakeLimitInfo,
+  walletBalance = 0,
+  balanceAsset = 'USDC',
+  invitationCode,
 }) => {
   const [isChecked, setIsChecked] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-
-  // ── Responsible game limits (#1411) ──────────────────────────────────────
-  const [stakeLimitInfo, setStakeLimitInfo] = useState<StakeLimitInfo | null>(
-    externalStakeLimitInfo ?? null,
-  );
-  const [stakeLimitLoading, setStakeLimitLoading] = useState(false);
-  const [stakeLimitError, setStakeLimitError] = useState<string | null>(null);
-
+  const [eligibilityErrors, setEligibilityErrors] = useState<EligibilityError[]>([]);
+  const [eligibilityWarnings, setEligibilityWarnings] = useState<string[]>([]);
   const isMountedRef = useRef(true);
 
   useEffect(() => {
@@ -52,47 +55,45 @@ const JoinArenaModal: React.FC<JoinArenaModalProps> = ({
 
     if (isOpen) {
       setIsChecked(false);
-
-      // If the parent supplied limit info, use it; otherwise fetch it.
-      if (externalStakeLimitInfo !== undefined) {
-        setStakeLimitInfo(externalStakeLimitInfo ?? null);
-      } else {
-        setStakeLimitLoading(true);
-        setStakeLimitError(null);
-
-        fetch('/api/users/me/stake-limit', {
-          credentials: 'include',
-        })
-          .then(async (res) => {
-            if (!res.ok) return; // not authenticated — skip enforcement
-            const data = (await res.json()) as StakeLimitInfo;
-            if (isMountedRef.current) setStakeLimitInfo(data);
-          })
-          .catch(() => {
-            // Non-fatal: if the check fails the button remains enabled but we
-            // show a warning. Server-side enforcement is the authoritative gate.
-            if (isMountedRef.current) {
-              setStakeLimitError('Could not verify stake limit. Server-side limits still apply.');
-            }
-          })
-          .finally(() => {
-            if (isMountedRef.current) setStakeLimitLoading(false);
-          });
-      }
+      checkEligibility();
     }
 
     return () => {
       isMountedRef.current = false;
     };
-  }, [isOpen, externalStakeLimitInfo]);
+  }, [isOpen, walletBalance, balanceAsset, invitationCode]);
 
-  const wouldExceedLimit =
-    stakeLimitInfo !== null &&
-    requiredStake > stakeLimitInfo.remainingCapacity;
+  const checkEligibility = async () => {
+    try {
+      const response = await fetch(`/api/arenas/${arenaId}/eligibility-preflight`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          balance: walletBalance,
+          balanceAsset,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        if (isMountedRef.current) {
+          setEligibilityErrors(data.errors || []);
+          setEligibilityWarnings(data.warnings || []);
+        }
+      } else {
+        if (isMountedRef.current) {
+          setEligibilityErrors([]);
+          const data = await response.json();
+          setEligibilityWarnings(data.warnings || []);
+        }
+      }
+    } catch (error) {
+      console.error('Eligibility check failed:', error);
+    }
+  };
 
   const handleConfirm = async () => {
-    if (!isChecked) return;
-    if (wouldExceedLimit) return;
+    if (!isChecked || eligibilityErrors.length > 0) return;
     setIsLoading(true);
     try {
       await onConfirm();
@@ -149,59 +150,27 @@ const JoinArenaModal: React.FC<JoinArenaModalProps> = ({
           </div>
         </div>
 
-        {/* ── Responsible game limits banner (#1411) ───────────────────── */}
-        {stakeLimitLoading && (
-          <div className="border-b-4 border-black px-6 md:px-8 py-4 bg-gray-50">
-            <p className="text-xs font-bold text-gray-500 tracking-widest">
-              CHECKING STAKE LIMIT…
-            </p>
+        {/* Eligibility Errors */}
+        {eligibilityErrors.length > 0 && (
+          <div className="border-b-4 border-red-500 px-6 md:px-8 py-4 bg-red-50">
+            <p className="text-xs font-bold tracking-widest text-red-700 mb-2">ELIGIBILITY ISSUES</p>
+            {eligibilityErrors.map((error, idx) => (
+              <p key={idx} className="text-sm text-red-600 mb-1">
+                • {error.message}
+              </p>
+            ))}
           </div>
         )}
 
-        {!stakeLimitLoading && stakeLimitInfo && (
-          <div
-            className={`border-b-4 border-black px-6 md:px-8 py-4 ${
-              wouldExceedLimit ? 'bg-red-50' : 'bg-lime-50'
-            }`}
-            role="status"
-            aria-live="polite"
-          >
-            <p className="text-xs font-bold tracking-widest text-gray-600 mb-1">
-              ACTIVE STAKE LIMIT
-            </p>
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-bold">
-                {stakeLimitInfo.currentActiveStake.toFixed(2)} /{' '}
-                {stakeLimitInfo.limit.toFixed(2)} USDC in active arenas
+        {/* Eligibility Warnings */}
+        {eligibilityWarnings.length > 0 && (
+          <div className="border-b-4 border-yellow-500 px-6 md:px-8 py-4 bg-yellow-50">
+            <p className="text-xs font-bold tracking-widest text-yellow-700 mb-2">WARNINGS</p>
+            {eligibilityWarnings.map((warning, idx) => (
+              <p key={idx} className="text-sm text-yellow-600 mb-1">
+                ⚠ {warning}
               </p>
-              <span
-                className={`text-xs font-black tracking-widest px-2 py-1 ${
-                  wouldExceedLimit
-                    ? 'bg-red-500 text-white'
-                    : 'bg-lime-400 text-black'
-                }`}
-              >
-                {wouldExceedLimit ? '■ OVER LIMIT' : '■ OK'}
-              </span>
-            </div>
-            {wouldExceedLimit && (
-              <p className="text-xs text-red-600 font-bold mt-2" role="alert">
-                You cannot join: this stake of {requiredStake} USDC would exceed your{' '}
-                {stakeLimitInfo.limit} USDC active stake limit. Resolve or wait for
-                other arenas to complete before joining a new one.
-              </p>
-            )}
-            {!wouldExceedLimit && (
-              <p className="text-xs text-gray-500 mt-1">
-                Remaining capacity: {stakeLimitInfo.remainingCapacity.toFixed(2)} USDC
-              </p>
-            )}
-          </div>
-        )}
-
-        {!stakeLimitLoading && stakeLimitError && (
-          <div className="border-b-4 border-black px-6 md:px-8 py-3 bg-yellow-50" role="alert">
-            <p className="text-xs font-bold text-yellow-700">{stakeLimitError}</p>
+            ))}
           </div>
         )}
 
@@ -212,8 +181,8 @@ const JoinArenaModal: React.FC<JoinArenaModalProps> = ({
               type="checkbox"
               checked={isChecked}
               onChange={(e) => setIsChecked(e.target.checked)}
-              disabled={wouldExceedLimit}
-              className="mt-1 w-6 h-6 border-2 border-black cursor-pointer accent-black disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={eligibilityErrors.length > 0}
+              className="mt-1 w-6 h-6 border-2 border-black cursor-pointer accent-black disabled:opacity-50"
             />
             <span className="text-md md:text-lg italic font-bold leading-tight">
               I UNDERSTAND THAT MINORITY WINS.
@@ -225,19 +194,14 @@ const JoinArenaModal: React.FC<JoinArenaModalProps> = ({
         <div className="space-y-4 p-6">
           <button
             onClick={handleConfirm}
-            disabled={!canConfirm}
-            aria-disabled={!canConfirm}
+            disabled={!isChecked || isLoading || eligibilityErrors.length > 0}
             className={`w-full border-3 border-black py-4 px-6 font-black text-lg italic tracking-wide transition-all ${
-              canConfirm
+              isChecked && !isLoading && eligibilityErrors.length === 0
                 ? 'bg-lime-400 text-black hover:bg-lime-300 active:scale-95'
                 : 'bg-gray-200 text-gray-400 cursor-not-allowed'
             }`}
           >
-            {isLoading
-              ? 'CONFIRMING...'
-              : wouldExceedLimit
-              ? 'STAKE LIMIT EXCEEDED'
-              : 'CONFIRM ENTRY'}
+            {isLoading ? 'CONFIRMING...' : eligibilityErrors.length > 0 ? 'INELIGIBLE' : 'CONFIRM ENTRY'}
           </button>
 
           <button

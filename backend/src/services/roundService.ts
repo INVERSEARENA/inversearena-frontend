@@ -19,6 +19,7 @@ import {
   getOnChainWinner,
 } from './onChainReader';
 import { getStellarConfig, type StellarConfig } from '../config/stellarConfig';
+import { computeSettlementBreakdown } from './settlementService';
 
 export interface OnChainRoundState {
   roundId: string;
@@ -267,16 +268,30 @@ export class RoundService {
     const eliminatedStake = playerChoices
       .filter(p => eliminatedPlayers.includes(p.userId))
       .reduce((sum, p) => sum + p.stake, 0);
-    const prizePool = eliminatedStake * (1 + oracleYield / 100);
 
     // Find the on-chain winner's stake entry to add their own principal back.
     const winnerChoice = playerChoices.find(p => p.userId === onChainWinner);
     const winnerStake = winnerChoice?.stake ?? 0;
 
+    // #1407: compute the reconcilable breakdown alongside the payout amount,
+    // rather than just the lump sum. amount stays exactly what it was before
+    // this breakdown existed (principal + yieldAmount, since platformFee/dust
+    // are 0 at the default PLATFORM_FEE_BPS) — see settlementService's design
+    // note for why the payout amount only actually changes if an operator
+    // opts into a nonzero fee.
+    const breakdown = computeSettlementBreakdown({
+      winnerStake,
+      eliminatedStake,
+      oracleYieldPercent: oracleYield,
+    });
+
     return [{
       userId: onChainWinner,
-      // Winner receives their own stake back plus the full prize pool.
-      amount: winnerStake + prizePool,
+      amount: breakdown.netPayout,
+      principal: breakdown.principal,
+      yieldAmount: breakdown.yieldAmount,
+      platformFee: breakdown.platformFee,
+      dust: breakdown.dust,
     }];
   }
 

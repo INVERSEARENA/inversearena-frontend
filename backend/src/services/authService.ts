@@ -6,7 +6,7 @@ import { NonceModel } from "../db/models/nonce.model";
 import { UserModel } from "../db/models/user.model";
 import { RefreshTokenModel, generateFamilyId } from "../db/models/refreshToken.model";
 import { SessionStore, sessionStore as defaultSessionStore } from "../cache/sessionStore";
-import type { AuthUser, JwtPayload, TokenPair } from "../types/auth";
+import type { AuthUser, DeviceMetadata, JwtPayload, SessionView, TokenPair } from "../types/auth";
 
 const NONCE_PREFIX = "Sign this message to authenticate with InverseArena:\n";
 
@@ -72,7 +72,8 @@ export class AuthService {
 
   async verifySignatureAndLogin(
     walletAddress: string,
-    signature: string
+    signature: string,
+    device?: DeviceMetadata
   ): Promise<TokenPair & { user: AuthUser }> {
     validateWalletAddress(walletAddress);
 
@@ -114,7 +115,7 @@ export class AuthService {
       { upsert: true, new: true }
     );
 
-    const tokens = await this.issueTokenPair(user._id.toString(), walletAddress);
+    const tokens = await this.issueTokenPair(user._id.toString(), walletAddress, undefined, device);
 
     const authUser: AuthUser = {
       id: user._id.toString(),
@@ -203,8 +204,13 @@ export class AuthService {
       await this.sessions.removeSession(payload.jti);
     }
 
-    // Issue a new token pair in the same family
-    return this.issueTokenPair(payload.sub, payload.wallet, claimedToken.familyId);
+    // Issue a new token pair in the same family, carrying the original
+    // login's device label/IP forward so a session's identity in the "active
+    // sessions" list doesn't change just because its access token rotated.
+    return this.issueTokenPair(payload.sub, payload.wallet, claimedToken.familyId, {
+      deviceLabel: claimedToken.deviceLabel ?? "Unknown device",
+      ip: claimedToken.ip ?? null,
+    });
   }
 
   /**
@@ -229,6 +235,61 @@ export class AuthService {
       { $set: { revoked: true } }
     );
     return revokedCount;
+  }
+
+  /**
+   * List this user's active sessions (#1410) — one row per refresh-token
+   * family that hasn't been rotated away, revoked, or expired. `currentJti`
+   * (the caller's own access-token jti) flags which entry is "this device".
+   */
+  async listSessions(userId: string, currentJti?: string): Promise<SessionView[]> {
+    const rows = await RefreshTokenModel.find({
+      userId,
+      used: false,
+      revoked: false,
+      expiresAt: { $gt: new Date() },
+    }).sort({ createdAt: -1 });
+
+    return rows.map((row) => ({
+      familyId: row.familyId,
+      deviceLabel: row.deviceLabel ?? "Unknown device",
+      ip: row.ip ?? null,
+      createdAt: row.createdAt,
+      expiresAt: row.expiresAt,
+      current: currentJti !== undefined && row.accessJti === currentJti,
+    }));
+  }
+
+  /**
+   * Revoke exactly one session (one refresh-token family) — the per-device
+   * counterpart to revokeAllSessions. Scoped by userId as well as familyId
+   * so a caller cannot revoke another user's session by guessing a familyId.
+   *
+   * Only that family's two JTIs are removed from Redis and only that
+   * family's DB rows are marked revoked; every other active family for this
+   * user (and its JTIs) is left untouched — this is what "without logging
+   * out other devices" means in practice.
+   */
+  async revokeSession(userId: string, familyId: string): Promise<void> {
+    const current = await RefreshTokenModel.findOne({
+      userId,
+      familyId,
+      used: false,
+      revoked: false,
+    });
+
+    if (!current) {
+      const err = Object.assign(
+        new Error("Session not found or already revoked"),
+        { status: 404 }
+      );
+      throw err;
+    }
+
+    await RefreshTokenModel.updateMany({ familyId }, { $set: { revoked: true } });
+
+    if (current.accessJti) await this.sessions.removeSession(current.accessJti);
+    if (current.refreshJti) await this.sessions.removeSession(current.refreshJti);
   }
 
   async verifyAccessToken(token: string): Promise<JwtPayload> {
@@ -259,7 +320,8 @@ export class AuthService {
   private async issueTokenPair(
     userId: string,
     walletAddress: string,
-    existingFamilyId?: string
+    existingFamilyId?: string,
+    device?: DeviceMetadata
   ): Promise<TokenPair> {
     const secret = getJwtSecret();
     const accessTtl = accessTokenTtlSeconds();
@@ -293,6 +355,10 @@ export class AuthService {
       used: false,
       revoked: false,
       expiresAt: new Date(Date.now() + refreshTtl * 1000),
+      accessJti,
+      refreshJti,
+      deviceLabel: device?.deviceLabel ?? "Unknown device",
+      ip: device?.ip ?? null,
     });
 
     // Register both JTIs in Redis so they can be revoked individually

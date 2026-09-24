@@ -12,6 +12,17 @@ export interface ArenaStats {
   yieldAccrued: number;
   status: string;
   lastUpdated: string;
+  /**
+   * True when playerCount/status/yieldAccrued came from the last verified
+   * on-chain snapshot rather than a fresh read, because the fresh read
+   * failed (RPC outage) — see #1408. Never true and non-null at the same
+   * time as a genuinely-live read.
+   */
+  degraded: boolean;
+  /** Soroban ledger sequence the on-chain fields were read at, or last verified at if degraded. Null if no on-chain read has ever succeeded for this arena. */
+  ledgerSequence: number | null;
+  /** ISO timestamp the on-chain fields were verified at. Null under the same condition as ledgerSequence. */
+  snapshotVerifiedAt: string | null;
 }
 
 export interface ArenaParticipant {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   fetchArenaState,
   type ArenaStateResponse,
@@ -23,6 +23,19 @@ export interface ArenaState {
 export interface UseArenaStateReturn {
   state: ArenaState | null;
   health: ArenaHealthStatus;
+  /** Epoch ms of the last successful chain-state read; null before the first. */
+  lastSyncedAt: number | null;
+  /**
+   * Deterministically converge optimistic/local state to the authoritative
+   * chain state (#1385). Re-reads the Soroban contract and replaces the
+   * hook's state with the fresh snapshot. Callers drive this after a
+   * transaction's confirmation is reconciled: SUCCESS, REJECTED, and TIMEOUT
+   * all end by calling `reconcile(publicKey)` so the UI never keeps a stale
+   * optimistic assumption. Resolves the fresh `ArenaState` (or null when no
+   * arenaId is configured); rethrows the underlying fetch error unchanged so
+   * callers can decide how to surface a failed convergence.
+   */
+  reconcile: (publicKey?: string) => Promise<ArenaState | null>;
 }
 
 export function toArenaState(data: ArenaStateResponse): ArenaState {
@@ -56,9 +69,34 @@ export function toArenaState(data: ArenaStateResponse): ArenaState {
 export function useArenaState(arenaId: string): UseArenaStateReturn {
   const [state, setState] = useState<ArenaState | null>(null);
   const [health, setHealth] = useState<ArenaHealthStatus>("connected");
+  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const errorCount = useRef(0);
   const timeoutId = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isMounted = useRef(true);
+
+  const applyChainState = useCallback((data: ArenaStateResponse): ArenaState => {
+    const nextState = toArenaState(data);
+    setState(nextState);
+    setLastSyncedAt(Date.now());
+    errorCount.current = 0;
+    setHealth("connected");
+    return nextState;
+  }, []);
+
+  const reconcile = useCallback(
+    async (publicKey?: string): Promise<ArenaState | null> => {
+      if (!arenaId) return null;
+
+      // A reconcile read is the same authoritative read the poll loop uses —
+      // passing the caller's wallet address (when given) additionally populates
+      // the user-scoped fields (isUserIn / hasWon / currentStake).
+      const data = await fetchArenaState(arenaId, publicKey ?? "");
+
+      if (!isMounted.current) return null;
+      return applyChainState(data);
+    },
+    [arenaId, applyChainState],
+  );
 
   useEffect(() => {
     isMounted.current = true;
@@ -66,6 +104,7 @@ export function useArenaState(arenaId: string): UseArenaStateReturn {
     if (!arenaId) {
       setState(null);
       setHealth("connected");
+      setLastSyncedAt(null);
       return () => {
         isMounted.current = false;
       };
@@ -78,10 +117,7 @@ export function useArenaState(arenaId: string): UseArenaStateReturn {
 
         if (!isMounted.current) return;
 
-        const nextState = toArenaState(data);
-        setState(nextState);
-        errorCount.current = 0;
-        setHealth("connected");
+        const nextState = applyChainState(data);
 
         // Slow down when game is finished
         const interval = nextState.state === "finished" ? 30_000 : 5_000;
@@ -107,7 +143,7 @@ export function useArenaState(arenaId: string): UseArenaStateReturn {
         timeoutId.current = null;
       }
     };
-  }, [arenaId]);
+  }, [arenaId, applyChainState]);
 
-  return { state, health };
+  return { state, health, lastSyncedAt, reconcile };
 }

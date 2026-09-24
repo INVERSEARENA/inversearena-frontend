@@ -39,6 +39,14 @@ export const cacheKeys = {
   oracleYield: () => "oracle:yield",
   arenaStats: (arenaId: string) => `arena:stats:${arenaId}`,
   leaderboard: () => "leaderboard",
+  /**
+   * The last *live* (non-degraded) on-chain read for an arena (#1408) —
+   * deliberately a separate, long-lived key from arenaStats: arenaStats is a
+   * disposable 15s cache of the full computed response, while this is the
+   * "last known good" record a degraded response falls back to when a fresh
+   * on-chain read fails.
+   */
+  arenaOnChainSnapshot: (arenaId: string) => `arena:onchain-snapshot:${arenaId}`,
 };
 
 /**
@@ -53,6 +61,12 @@ export const cacheTTL = {
   ARENA_STATS: 15,
   ARENA_ROUNDS: 10,
   LEADERBOARD: 30,
+  // Deliberately long: this is "how far back may a degraded response reach",
+  // not "how fresh is a normal response". Every degraded response carries its
+  // own ledgerSequence/verifiedAt regardless of how old it is, so a generous
+  // TTL trades a longer possible staleness window for surviving a longer
+  // Soroban outage without falling all the way back to unflagged DB data.
+  ARENA_ONCHAIN_SNAPSHOT: 60 * 60 * 24,
 } as const;
 
 /**

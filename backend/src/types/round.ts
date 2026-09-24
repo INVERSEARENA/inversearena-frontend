@@ -40,6 +40,15 @@ export interface RoundInput {
 export interface Payout {
   userId: string;
   amount: number;
+  /**
+   * Settlement breakdown (#1407) for this payout — see
+   * settlementService.computeSettlementBreakdown. principal + yieldAmount
+   * always equals amount + platformFee + dust.
+   */
+  principal: number;
+  yieldAmount: number;
+  platformFee: number;
+  dust: number;
 }
 
 export interface RoundResolution {

@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from "express";
 import type { AuthService } from "../services/authService";
 import { UserModel } from "../db/models/user.model";
 import { apiError } from "../utils/apiError";
+import { describeUserAgent } from "../utils/userAgent";
 import {
   NonceRequestSchema,
   RefreshSchema,
@@ -19,7 +20,11 @@ export class AuthController {
 
   verify = async (req: Request, res: Response): Promise<void> => {
     const { walletAddress, signature } = VerifySchema.parse(req.body);
-    const result = await this.authService.verifySignatureAndLogin(walletAddress, signature);
+    const device = {
+      deviceLabel: describeUserAgent(req.headers["user-agent"]),
+      ip: req.ip ?? null,
+    };
+    const result = await this.authService.verifySignatureAndLogin(walletAddress, signature, device);
     res.json(result);
   };
 
@@ -39,6 +44,19 @@ export class AuthController {
     const { id, walletAddress } = req.user!;
     const revoked = await this.authService.revokeAllSessions(walletAddress, id);
     res.json({ message: "All sessions revoked", revoked });
+  };
+
+  listSessions = async (req: Request, res: Response): Promise<void> => {
+    const { id, jti } = req.user!;
+    const sessions = await this.authService.listSessions(id, jti);
+    res.json({ sessions });
+  };
+
+  revokeSession = async (req: Request, res: Response): Promise<void> => {
+    const { id } = req.user!;
+    const { familyId } = req.params;
+    await this.authService.revokeSession(id, familyId!);
+    res.json({ message: "Session revoked" });
   };
 
   me = async (req: Request, res: Response, next: NextFunction): Promise<void> => {

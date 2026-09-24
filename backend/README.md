@@ -166,3 +166,8 @@ Returns a paginated list of participants in a specific arena with their status (
 - **[Payout Execution](./docs/PAYOUT_EXECUTION.md)** - Payment system guide
 - **[Quick Start Guide](./docs/QUICKSTART_ROUNDS.md)** - Getting started
 - **[Implementation Summary](./docs/IMPLEMENTATION_SUMMARY.md)** - Feature overview
+- **[Arena Stats API](./docs/ARENA_STATS_API.md)** - `GET /api/arenas/:id/stats` response schema, including degraded mode
+- **[Degraded-Mode Arena Reads](./docs/DEGRADED_ARENA_READS.md)** - #1408 design note
+- **[Admin Maintenance Windows](./docs/MAINTENANCE_WINDOWS.md)** - #1399 design note
+- **[Authenticated Device Sessions](./docs/DEVICE_SESSIONS.md)** - #1410 design note
+- **[Settlement Manifest & Receipts](./docs/SETTLEMENT_RECEIPTS.md)** - #1407 design note

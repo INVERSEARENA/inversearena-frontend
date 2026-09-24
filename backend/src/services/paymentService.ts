@@ -30,6 +30,13 @@ const PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
 const IDEMPOTENCY_REGEX = /^[a-zA-Z0-9:_-]{8,128}$/;
 const AMOUNT_REGEX = /^\d+(\.\d{0,7})?$/;
 
+const PayoutBreakdownSchema = z.object({
+  principal: z.number().finite().nonnegative(),
+  yieldAmount: z.number().finite().nonnegative(),
+  platformFee: z.number().finite().nonnegative(),
+  dust: z.number().finite().nonnegative(),
+});
+
 const CreatePayoutRequestSchema = z.object({
   payoutId: z.string().trim().min(1).max(128),
   destinationAccount: z
@@ -45,6 +52,12 @@ const CreatePayoutRequestSchema = z.object({
     .string()
     .trim()
     .regex(IDEMPOTENCY_REGEX, "Invalid idempotency key format"),
+  // #1407: optional settlement breakdown, populated when the caller (e.g. an
+  // operator submitting a round-settlement payout computed via
+  // roundService.computePayouts) has one. Persisted verbatim — this service
+  // does not recompute or validate it against `amount` beyond basic shape,
+  // since that game-economics logic belongs to whoever produced it.
+  breakdown: PayoutBreakdownSchema.optional(),
 });
 
 export function toStroops(amount: string): string {
@@ -188,6 +201,10 @@ export class PaymentService {
       updatedAt: now,
       confirmedAt: null,
       ownerId: ownerId ?? null,
+      principal: request.breakdown?.principal ?? null,
+      yieldAmount: request.breakdown?.yieldAmount ?? null,
+      platformFee: request.breakdown?.platformFee ?? null,
+      dust: request.breakdown?.dust ?? null,
     };
 
     await this.transactions.insert(transaction);

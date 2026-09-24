@@ -28,6 +28,19 @@ export function createPayoutsRouter(
   // Payout lifecycle is admin-only: creation, signing and submission move funds.
   router.post("/", adminAuthMiddleware, asyncHandler(controller.createPayout));
   router.get("/:id", requireAuth(authService), validateParams(TransactionIdParamSchema), asyncHandler(controller.getPayout));
+  // Settlement receipt (#1407): same ownership rule as GET /:id.
+  router.get(
+    "/:id/receipt",
+    requireAuth(authService),
+    validateParams(TransactionIdParamSchema),
+    asyncHandler(controller.getReceipt)
+  );
+  router.get(
+    "/:id/receipt.csv",
+    requireAuth(authService),
+    validateParams(TransactionIdParamSchema),
+    asyncHandler(controller.getReceiptCsv)
+  );
   router.post(
     "/:id/sign",
     adminAuthMiddleware,

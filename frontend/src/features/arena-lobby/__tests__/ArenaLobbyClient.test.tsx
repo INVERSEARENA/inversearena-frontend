@@ -226,4 +226,42 @@ describe("ArenaLobbyClient join flow", () => {
     const joinButton = await screen.findByRole("button", { name: "Join Unavailable" });
     expect(joinButton).toBeDisabled();
   });
+
+  it("shows a delayed-data badge with the snapshot ledger when the backend reports degraded stats (#1408)", async () => {
+    const degradedStats = { ...STATS, degraded: true, ledgerSequence: 4242, snapshotVerifiedAt: "2026-01-01T00:00:00.000Z" };
+
+    (global.fetch as jest.Mock).mockImplementation((url: string) => {
+      if (url.includes("/participants")) {
+        return Promise.resolve(
+          mockFetchOnce({ arenaId: "arena-1", total: 0, nextCursor: null, hasMore: false, items: [] }),
+        );
+      }
+      return Promise.resolve(mockFetchOnce(degradedStats));
+    });
+
+    render(
+      <ArenaLobbyClient
+        arenaId="arena-1"
+        initialStats={degradedStats}
+        initialParticipants={[]}
+        initialNextCursor={null}
+      />,
+    );
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/Delayed data.*ledger 4242/);
+  });
+
+  it("does not show the delayed-data badge for a normal (non-degraded) response", async () => {
+    render(
+      <ArenaLobbyClient
+        arenaId="arena-1"
+        initialStats={STATS}
+        initialParticipants={[]}
+        initialNextCursor={null}
+      />,
+    );
+
+    await screen.findByText("Alpha Arena");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
 });

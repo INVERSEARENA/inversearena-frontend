@@ -13,6 +13,8 @@ import { createArenaReplayRouter } from "./arenaReplay";
 import { createNotificationPreferencesRouter } from "./notificationPreferences";
 import { createPortfolioExposureRouter } from "./portfolioExposure";
 import { createCancellationRecoveryRouter } from "./cancellationRecovery";
+import { createConfigRouter } from "./config";
+import { createInvitationsRouter } from "./invitations";
 import type { PayoutsController } from "../controllers/payouts.controller";
 import type { WorkerController } from "../controllers/worker.controller";
 import type { AuthController } from "../controllers/auth.controller";
@@ -35,6 +37,7 @@ export function createApiRouter(
   const router = Router();
 
   router.use(createDocsRouter());
+  router.use("/config", createConfigRouter());
   router.use("/auth", createAuthRouter(authController, requireAuth));
   router.use("/users", createUsersRouter(usersController, requireAuth));
   router.use("/payouts", createPayoutsRouter(payoutsController, authService, adminAuthMiddleware));
@@ -48,6 +51,7 @@ export function createApiRouter(
   router.use("/arenas", createArenasRouter(requireAuth));
   router.use("/arenas", createArenaReplayRouter(requireAuth));
   router.use("/arenas", createCancellationRecoveryRouter(requireAuth));
+  router.use("/arenas", createInvitationsRouter(requireAuth));
   router.use("/pools", createPoolsRouter(requireAuth));
   router.use("/users", createNotificationPreferencesRouter(requireAuth));
   router.use("/users", createPortfolioExposureRouter(requireAuth));

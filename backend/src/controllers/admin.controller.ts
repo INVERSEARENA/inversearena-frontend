@@ -2,8 +2,10 @@ import type { Request, Response } from "express";
 import { z } from "zod";
 import type { AdminService } from "../services/adminService";
 import type { PaymentService } from "../services/paymentService";
+import type { MaintenanceService } from "../services/maintenanceService";
 import type { TransactionRepository } from "../repositories/transactionRepository";
 import { AuditLogModel } from "../db/models/auditLog.model";
+import { maintenanceWindowsScheduledTotal } from "../utils/metrics";
 
 const RequestTokenSchema = z.object({
   action: z.string().min(1).max(64),
@@ -30,11 +32,23 @@ const ListAuditLogsQuerySchema = z.object({
   adminId: z.string().optional(),
 });
 
+const ScheduleMaintenanceSchema = z.object({
+  token: z.string().min(1),
+  startLedgerSequence: z.number().int().positive(),
+  endLedgerSequence: z.number().int().positive().nullable().optional().transform((v) => v ?? null),
+  reason: z.string().trim().min(1).max(500),
+});
+
+const CancelMaintenanceSchema = z.object({
+  token: z.string().min(1),
+});
+
 export class AdminController {
   constructor(
     private readonly adminService: AdminService,
     private readonly paymentService: PaymentService,
-    private readonly transactions: TransactionRepository
+    private readonly transactions: TransactionRepository,
+    private readonly maintenanceService: MaintenanceService
   ) {}
 
   requestToken = async (req: Request, res: Response): Promise<void> => {
@@ -221,6 +235,93 @@ export class AdminController {
     }
 
     res.json(result);
+  };
+
+  scheduleMaintenance = async (req: Request, res: Response): Promise<void> => {
+    const { token, startLedgerSequence, endLedgerSequence, reason } =
+      ScheduleMaintenanceSchema.parse(req.body);
+    const adminId = req.adminId!;
+
+    await this.adminService.verifyAndConsumeToken(token, "schedule_maintenance", "global", adminId);
+
+    let window;
+    try {
+      window = await this.maintenanceService.schedule({
+        scheduledBy: adminId,
+        startLedgerSequence,
+        endLedgerSequence,
+        reason,
+      });
+
+      maintenanceWindowsScheduledTotal.inc({ status: "success" });
+      await this.adminService.log({
+        adminId,
+        action: "schedule_maintenance",
+        resourceType: "maintenance_window",
+        resourceId: window.id,
+        status: "success",
+        metadata: { startLedgerSequence, endLedgerSequence, reason },
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
+      });
+    } catch (err) {
+      maintenanceWindowsScheduledTotal.inc({ status: "failed" });
+      await this.adminService.log({
+        adminId,
+        action: "schedule_maintenance",
+        resourceType: "maintenance_window",
+        resourceId: "global",
+        status: "failed",
+        errorMessage: err instanceof Error ? err.message : "Unknown error",
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
+      });
+      throw err;
+    }
+
+    res.status(201).json({ window });
+  };
+
+  cancelMaintenance = async (req: Request, res: Response): Promise<void> => {
+    const { id } = req.params;
+    const { token } = CancelMaintenanceSchema.parse(req.body);
+    const adminId = req.adminId!;
+
+    await this.adminService.verifyAndConsumeToken(token, "cancel_maintenance", id!, adminId);
+
+    let window;
+    try {
+      window = await this.maintenanceService.cancel(id!, adminId);
+
+      await this.adminService.log({
+        adminId,
+        action: "cancel_maintenance",
+        resourceType: "maintenance_window",
+        resourceId: id!,
+        status: "success",
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
+      });
+    } catch (err) {
+      await this.adminService.log({
+        adminId,
+        action: "cancel_maintenance",
+        resourceType: "maintenance_window",
+        resourceId: id!,
+        status: "failed",
+        errorMessage: err instanceof Error ? err.message : "Unknown error",
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
+      });
+      throw err;
+    }
+
+    res.json({ window });
+  };
+
+  listMaintenanceWindows = async (_req: Request, res: Response): Promise<void> => {
+    const windows = await this.maintenanceService.list();
+    res.json({ windows });
   };
 
   listAuditLogs = async (req: Request, res: Response): Promise<void> => {

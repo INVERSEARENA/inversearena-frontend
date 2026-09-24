@@ -31,7 +31,7 @@ function buildApp() {
     },
   } as any;
 
-  const controller = new AdminController(adminService, {} as any, {} as any);
+  const controller = new AdminController(adminService, {} as any, {} as any, {} as any);
 
   const app = express();
   app.use(express.json());

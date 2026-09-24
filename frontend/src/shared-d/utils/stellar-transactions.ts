@@ -688,3 +688,353 @@ export async function reconcilePendingTransaction(
 
   return { hash, status: "NOT_FOUND" };
 }
+
+// ── Deterministic client reconciliation (#1385) ──────────────────────
+//
+// After a Soroban transaction's confirmation, the client boundary must
+// converge its optimistic state to chain state in a deterministic way,
+// regardless of whether the transaction succeeded, was rejected, or timed
+// out with an unknown status. This section is that single enforced
+// implementation:
+//
+//   - `captureTransactionOutcome` maps any error thrown by
+//     `submitSignedTransaction` (or equivalent) to a typed `TransactionOutcome`.
+//   - `reconcileTransaction` resolves an outcome to a terminal
+//     `ReconcileStatus` (`CONFIRMED` | `REJECTED` | `UNKNOWN`), deduping
+//     duplicate deliveries, sharing concurrent work for the same hash,
+//     retrying unknown transactions via Horizon (#1135), and emitting
+//     structured observability events (success / failure / retry / timeout)
+//     with latency so operators and developers can diagnose the boundary.
+//
+// State transitions (deterministic):
+//   SUCCESS  -> CONFIRMED immediately (source: rpc, 0 retries)
+//   REJECTED -> REJECTED immediately (terminal failure is authoritative)
+//   TIMEOUT  -> poll Horizon; SUCCESS -> CONFIRMED, FAILED -> REJECTED,
+//               exhausted -> UNKNOWN (still "unknown", never a hard failure)
+//
+// Compatibility constraints:
+//   - Public behavior of `submitSignedTransaction`, `checkTransactionOnHorizon`,
+//     and `reconcilePendingTransaction` is preserved unchanged.
+//   - The reconciliation cache is in-memory; a page reload loses it, but the
+//     normal polling path in `useArenaState` (and a fresh `reconcile()` after
+//     restart) reconverges to chain state by reading the chain directly.
+
+export type TransactionOutcome =
+  | { status: "SUCCESS"; hash: string }
+  | { status: "REJECTED"; hash?: string; reason: ContractErrorCode }
+  | { status: "TIMEOUT"; hash: string };
+
+export type ReconcileStatus = "CONFIRMED" | "REJECTED" | "UNKNOWN";
+
+export type ReconciliationSource = "rpc" | "horizon";
+
+export interface ReconciliationResult {
+  /** The outcome that triggered this reconciliation. */
+  outcome: TransactionOutcome;
+  /** Terminal, deterministic resolution of the outcome. */
+  resolved: ReconcileStatus;
+  /** Transaction hash this reconciliation converged on. */
+  hash: string;
+  /** Number of Horizon retries performed before resolving. */
+  retries: number;
+  /** Wall-clock time spent reconciling, in milliseconds. */
+  latencyMs: number;
+  /** Where the resolution was established. */
+  source: ReconciliationSource;
+}
+
+export type ReconciliationEventKind =
+  | "success"
+  | "failure"
+  | "retry"
+  | "timeout";
+
+export interface ReconciliationEvent {
+  event: ReconciliationEventKind;
+  hash: string;
+  outcome: TransactionOutcome["status"];
+  resolved: ReconcileStatus;
+  retries: number;
+  latencyMs: number;
+  source: ReconciliationSource;
+  /** Present when the outcome was REJECTED. */
+  reason?: ContractErrorCode;
+  /** Present when the caller supplied an arenaId for correlation. */
+  arenaId?: string;
+  /** True when this event corresponds to a deduped duplicate delivery. */
+  deduped?: boolean;
+}
+
+export type ReconciliationEventSink = (event: ReconciliationEvent) => void;
+
+export interface ReconciliationOptions {
+  /** Override Horizon base URL. Defaults to the configured HORIZON_URL. */
+  horizonBaseUrl?: string;
+  /** Poll interval between Horizon attempts. Defaults to 5s. */
+  intervalMs?: number;
+  /** Max Horizon attempts before resolving UNKNOWN. Defaults to 12. */
+  maxAttempts?: number;
+  /** Injectable fetch for tests. */
+  fetchFn?: typeof fetch;
+  /** Structured-log sink for observability events. Defaults to console.info. */
+  eventSink?: ReconciliationEventSink;
+  /** Optional correlation context (e.g. the arenaId driving the transaction). */
+  arenaId?: string;
+}
+
+const defaultReconciliationEventSink: ReconciliationEventSink = (event) => {
+  console.info(`[client-reconciliation] ${JSON.stringify(event)}`);
+};
+
+function isTerminalResolution(resolved: ReconcileStatus): boolean {
+  return resolved === "CONFIRMED" || resolved === "REJECTED";
+}
+
+function isValidTransactionHash(hash: string): boolean {
+  return typeof hash === "string" && hash.length >= 8 && hash.length <= 128;
+}
+
+/** Cache of terminal resolutions keyed by hash — powers duplicate-delivery idempotency. */
+const reconciliationCache = new Map<string, ReconciliationResult>();
+/** In-flight reconciliations keyed by hash — dedupes concurrent requests. */
+const inFlightReconciliations = new Map<string, Promise<ReconciliationResult>>();
+
+/**
+ * Map an error thrown while submitting/confirming a transaction to a typed
+ * {@link TransactionOutcome}. TRANSACTION_TIMEOUT (carrying a hash) becomes
+ * TIMEOUT — the only status that means "may still succeed" and therefore the
+ * only one that needs Horizon reconciliation. Everything else is a REJECTED
+ * terminal outcome.
+ */
+export function captureTransactionOutcome(error: unknown): TransactionOutcome {
+  const parsed =
+    error instanceof ContractError
+      ? error
+      : parseContractError(error, "captureTransactionOutcome");
+
+  if (parsed.code === ContractErrorCode.TRANSACTION_TIMEOUT && parsed.hash) {
+    return { status: "TIMEOUT", hash: parsed.hash };
+  }
+
+  return {
+    status: "REJECTED",
+    ...(parsed.hash ? { hash: parsed.hash } : {}),
+    reason: parsed.code,
+  };
+}
+
+function emitFinal(
+  sink: ReconciliationEventSink,
+  result: ReconciliationResult,
+  extra: { deduped?: boolean; arenaId?: string },
+): void {
+  const event: ReconciliationEvent =
+    result.resolved === "CONFIRMED"
+      ? {
+          event: "success",
+          hash: result.hash,
+          outcome: result.outcome.status,
+          resolved: result.resolved,
+          retries: result.retries,
+          latencyMs: result.latencyMs,
+          source: result.source,
+        }
+      : result.resolved === "REJECTED"
+        ? {
+            event: "failure",
+            hash: result.hash,
+            outcome: result.outcome.status,
+            resolved: result.resolved,
+            retries: result.retries,
+            latencyMs: result.latencyMs,
+            source: result.source,
+            ...(result.outcome.status === "REJECTED"
+              ? { reason: result.outcome.reason }
+              : {}),
+          }
+        : {
+            event: "timeout",
+            hash: result.hash,
+            outcome: result.outcome.status,
+            resolved: result.resolved,
+            retries: result.retries,
+            latencyMs: result.latencyMs,
+            source: result.source,
+          };
+
+  sink({
+    ...event,
+    ...(extra.deduped ? { deduped: true } : {}),
+    ...(extra.arenaId ? { arenaId: extra.arenaId } : {}),
+  });
+}
+
+/** Optional correlation context, honoring exactOptionalPropertyTypes. */
+function clusterArenaId(options: ReconciliationOptions): { arenaId?: string } {
+  return options.arenaId ? { arenaId: options.arenaId } : {};
+}
+
+async function resolveReconciliation(
+  outcome: TransactionOutcome,
+  options: ReconciliationOptions,
+  sink: ReconciliationEventSink,
+): Promise<ReconciliationResult> {
+  const startedAt = Date.now();
+  // reconcileTransaction guarantees a valid hash before delegating here.
+  const hash = outcome.hash;
+  if (!hash || !isValidTransactionHash(hash)) {
+    throw new ContractError({
+      code: ContractErrorCode.VALIDATION_FAILED,
+      message: `Cannot reconcile transaction: missing or invalid transaction hash "${hash}".`,
+      fn: "resolveReconciliation",
+    });
+  }
+
+  if (outcome.status === "SUCCESS") {
+    const result: ReconciliationResult = {
+      outcome,
+      resolved: "CONFIRMED",
+      hash,
+      retries: 0,
+      latencyMs: 0,
+      source: "rpc",
+    };
+    emitFinal(sink, result, clusterArenaId(options));
+    return result;
+  }
+
+  if (outcome.status === "REJECTED") {
+    const result: ReconciliationResult = {
+      outcome,
+      resolved: "REJECTED",
+      hash,
+      retries: 0,
+      latencyMs: Date.now() - startedAt,
+      source: "rpc",
+    };
+    emitFinal(sink, result, clusterArenaId(options));
+    return result;
+  }
+
+  // TIMEOUT: the final status is unknown. Converge via Horizon, which retains
+  // transaction history far longer than Soroban RPC's getTransaction window.
+  let retries = 0;
+  const baseFetchFn = options.fetchFn ?? fetch;
+  const trackedFetchFn: typeof fetch = (input, init) =>
+    baseFetchFn(input, init).then((response) => {
+      if (response.status === 404) {
+        retries += 1;
+        sink({
+          event: "retry",
+          hash,
+          outcome: outcome.status,
+          resolved: "UNKNOWN",
+          retries,
+          latencyMs: Date.now() - startedAt,
+          source: "horizon",
+        });
+      }
+      return response;
+    });
+
+  const horizonResult = await reconcilePendingTransaction(hash, {
+    ...(options.horizonBaseUrl ? { horizonBaseUrl: options.horizonBaseUrl } : {}),
+    ...(options.intervalMs ? { intervalMs: options.intervalMs } : {}),
+    ...(options.maxAttempts ? { maxAttempts: options.maxAttempts } : {}),
+    fetchFn: trackedFetchFn,
+  });
+
+  const resolved: ReconcileStatus =
+    horizonResult.status === "SUCCESS"
+      ? "CONFIRMED"
+      : horizonResult.status === "FAILED"
+        ? "REJECTED"
+        : "UNKNOWN";
+
+  const result: ReconciliationResult = {
+    outcome,
+    resolved,
+    hash,
+    retries,
+    latencyMs: Date.now() - startedAt,
+    source: "horizon",
+  };
+  emitFinal(sink, result, clusterArenaId(options));
+  return result;
+}
+
+/**
+ * Deterministic client reconciliation of a transaction outcome (#1385).
+ *
+ * Converges an optimistic/unknown client state to the chain's authoritative
+ * state after a Soroban transaction's confirmation attempt. Idempotent for
+ * duplicate deliveries and concurrent requests sharing the same hash: once a
+ * hash has resolved to a terminal status, later calls return the cached result
+ * (or share the in-flight promise) instead of re-querying the network.
+ *
+ * Callers should converge their UI to {@link ReconciliationResult.resolved}
+ * (e.g. via `useArenaState().reconcile(publicKey)`) whenever the result is
+ * CONFIRMED or REJECTED; UNKNOWN means "still unknown, keep the last known
+ * state and rely on the normal polling path to converge later".
+ */
+export async function reconcileTransaction(
+  outcome: TransactionOutcome,
+  options: ReconciliationOptions = {},
+): Promise<ReconciliationResult> {
+  const sink: ReconciliationEventSink =
+    options.eventSink ?? defaultReconciliationEventSink;
+
+  // A REJECTED outcome without a hash is terminal on its own — there is
+  // nothing to look up, so it resolves deterministically.
+  if (outcome.status === "REJECTED" && !outcome.hash) {
+    const startedAt = Date.now();
+    const result: ReconciliationResult = {
+      outcome,
+      resolved: "REJECTED",
+      hash: "",
+      retries: 0,
+      latencyMs: Date.now() - startedAt,
+      source: "rpc",
+    };
+    emitFinal(sink, result, clusterArenaId(options));
+    return result;
+  }
+
+  const hash = outcome.hash;
+  if (!hash || !isValidTransactionHash(hash)) {
+    throw new ContractError({
+      code: ContractErrorCode.VALIDATION_FAILED,
+      message: `Cannot reconcile transaction: missing or invalid transaction hash "${hash}".`,
+      fn: "reconcileTransaction",
+    });
+  }
+
+  // Duplicate delivery: a terminal resolution is authoritative. A duplicate
+  // TIMEOUT for an already-UNKNOWN hash carries no new information either.
+  const cached = reconciliationCache.get(hash);
+  if (cached) {
+    if (isTerminalResolution(cached.resolved) || outcome.status === "TIMEOUT") {
+      emitFinal(sink, cached, { deduped: true, ...clusterArenaId(options) });
+      return cached;
+    }
+  }
+
+  // Concurrent requests for the same hash share one deterministic outcome.
+  const inFlight = inFlightReconciliations.get(hash);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const run = (async () => {
+    try {
+      const result = await resolveReconciliation(outcome, options, sink);
+      reconciliationCache.set(hash, result);
+      return result;
+    } finally {
+      inFlightReconciliations.delete(hash);
+    }
+  })();
+
+  inFlightReconciliations.set(hash, run);
+  return run;
+}

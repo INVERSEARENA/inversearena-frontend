@@ -8,6 +8,7 @@ import { AdminController } from "../src/controllers/admin.controller";
 import { ConfirmationTokenModel } from "../src/db/models/confirmationToken.model";
 import { AuditLogModel } from "../src/db/models/auditLog.model";
 import type { PaymentService } from "../src/services/paymentService";
+import type { MaintenanceService } from "../src/services/maintenanceService";
 import type { TransactionRepository } from "../src/repositories/transactionRepository";
 import type { TransactionRecord } from "../src/types/payment";
 import { AdminService } from "../src/services/adminService";
@@ -53,6 +54,7 @@ describe("Admin confirmation token consume (#1348)", () => {
       adminService,
       {} as PaymentService,
       transactions,
+      {} as MaintenanceService,
     );
 
     const results = await Promise.allSettled([

@@ -4,15 +4,18 @@ import helmet from "helmet";
 import { createApiRouter } from "./routes";
 import { createAdminRouter } from "./routes/admin";
 import { createWalletRoleRouter } from "./routes/walletRole";
+import { createMaintenanceStatusRouter } from "./routes/maintenance";
 import { errorHandler } from "./middleware/errorHandler";
 import { requestLogger } from "./middleware/logger";
 import { requestContextMiddleware } from "./middleware/requestContext";
 import { metricsMiddleware } from "./middleware/metrics";
+import { maintenanceGuard } from "./middleware/maintenance";
 import {
   ApiKeyAuthProvider,
   requireAdmin,
   requireAuth,
 } from "./middleware/auth";
+import { MaintenanceService } from "./services/maintenanceService";
 import { PayoutsController } from "./controllers/payouts.controller";
 import { WorkerController } from "./controllers/worker.controller";
 import { AdminController } from "./controllers/admin.controller";
@@ -100,6 +103,9 @@ export function createApp(deps: AppDependencies): express.Application {
   app.use(requestContextMiddleware);
   app.use(metricsMiddleware);
 
+  const maintenanceService = new MaintenanceService();
+  app.use(maintenanceGuard(maintenanceService));
+
   app.get("/health", (_req, res) => {
     res.json({ status: "ok" });
   });
@@ -146,6 +152,7 @@ export function createApp(deps: AppDependencies): express.Application {
     deps.adminService,
     deps.paymentService,
     deps.transactions,
+    maintenanceService,
   );
   const authController = new AuthController(deps.authService);
   const usersController = new UsersController(prisma);
@@ -175,6 +182,7 @@ export function createApp(deps: AppDependencies): express.Application {
     "/api/admin",
     createAdminRouter(adminController, roundController, adminAuthMiddleware),
   );
+  app.use("/api", createMaintenanceStatusRouter(maintenanceService));
 
   app.use(errorHandler);
 

@@ -97,78 +97,17 @@ export const sorobanCircuitTransitionsTotal = new Counter({
   registers: [register],
 });
 
-// ── Issue #1411 — Active stake limits ────────────────────────────────────────
-
-export const activeStakeLimitBlockedTotal = new Counter({
-  name: 'inversearena_active_stake_limit_blocked_total',
-  help: 'Total join attempts blocked by the aggregate active stake limit',
-  labelNames: ['reason'],
+export const maintenanceMutationsBlockedTotal = new Counter({
+  name: 'inversearena_maintenance_mutations_blocked_total',
+  help: 'Total mutating requests rejected because a maintenance window was active',
+  labelNames: ['method'],
   registers: [register],
 });
 
-export const activeStakeCurrentGauge = new Gauge({
-  name: 'inversearena_active_stake_current',
-  help: 'Current active stake in USDC-equivalent units for a player (sampled at join time)',
-  labelNames: ['user_id'],
-  registers: [register],
-});
-
-// ── Issue #1412 — Arena health summary ───────────────────────────────────────
-
-export const arenaHealthGauge = new Gauge({
-  name: 'inversearena_arena_health_status',
-  help: 'Composite arena health: 0=healthy, 1=degraded, 2=critical',
-  labelNames: ['arena_id'],
-  registers: [register],
-});
-
-export const arenaChainLagGauge = new Gauge({
-  name: 'inversearena_arena_chain_lag_seconds',
-  help: 'Seconds since the arena was last confirmed on-chain',
-  labelNames: ['arena_id'],
-  registers: [register],
-});
-
-export const arenaQueueLagGauge = new Gauge({
-  name: 'inversearena_arena_queue_lag_seconds',
-  help: 'Age in seconds of the oldest queued/submitted payout for the arena',
-  labelNames: ['arena_id'],
-  registers: [register],
-});
-
-export const arenaStateDriftGauge = new Gauge({
-  name: 'inversearena_arena_state_drift_seconds',
-  help: 'Seconds the arena has spent in the current round state beyond the expected TTL',
-  labelNames: ['arena_id', 'state'],
-  registers: [register],
-});
-
-// ── Issue #1413 — Fee sponsorship ─────────────────────────────────────────────
-
-export const feeEligibilityIssuedTotal = new Counter({
-  name: 'inversearena_fee_eligibility_issued_total',
-  help: 'Total fee sponsorship eligibility tokens issued to winners',
-  registers: [register],
-});
-
-export const feeEligibilityConsumedTotal = new Counter({
-  name: 'inversearena_fee_eligibility_consumed_total',
-  help: 'Total fee sponsorship eligibility tokens consumed on claim',
-  registers: [register],
-});
-
-export const feeEligibilityExpiredTotal = new Counter({
-  name: 'inversearena_fee_eligibility_expired_total',
-  help: 'Total fee sponsorship eligibility tokens expired unused',
-  registers: [register],
-});
-
-// ── Issue #1414 — Player aliases ──────────────────────────────────────────────
-
-export const aliasUpdateTotal = new Counter({
-  name: 'inversearena_alias_update_total',
-  help: 'Total alias update attempts',
-  labelNames: ['result'],
+export const maintenanceWindowsScheduledTotal = new Counter({
+  name: 'inversearena_maintenance_windows_scheduled_total',
+  help: 'Total maintenance windows scheduled, by outcome',
+  labelNames: ['status'],
   registers: [register],
 });
 

@@ -27,6 +27,24 @@ export interface TransactionRecord {
   confirmedAt?: Date | null;
   /** Admin API key id or user id that created this payout (null for legacy rows). */
   ownerId?: string | null;
+  /**
+   * Settlement breakdown (#1407), in display-unit XLM/USDC (not stroops),
+   * populated only for payouts created from a round settlement — see
+   * roundService.computePayouts / settlementService.computeSettlementBreakdown.
+   * Null/undefined for ad-hoc admin-created payouts, which never had this
+   * context computed.
+   */
+  principal?: number | null;
+  yieldAmount?: number | null;
+  platformFee?: number | null;
+  dust?: number | null;
+}
+
+export interface PayoutBreakdown {
+  principal: number;
+  yieldAmount: number;
+  platformFee: number;
+  dust: number;
 }
 
 export interface CreatePayoutRequest {
@@ -35,6 +53,7 @@ export interface CreatePayoutRequest {
   amount: string;
   asset: "XLM" | "USDC";
   idempotencyKey: string;
+  breakdown?: PayoutBreakdown;
 }
 
 export interface BuildPayoutResult {

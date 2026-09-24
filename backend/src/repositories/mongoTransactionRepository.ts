@@ -24,6 +24,10 @@ function docToRecord(doc: { toObject(): Record<string, unknown> } & { _id: strin
     updatedAt: obj.updatedAt as Date,
     confirmedAt: (obj.confirmedAt as Date | null) ?? null,
     ownerId: (obj.ownerId as string | null) ?? null,
+    principal: (obj.principal as number | null) ?? null,
+    yieldAmount: (obj.yieldAmount as number | null) ?? null,
+    platformFee: (obj.platformFee as number | null) ?? null,
+    dust: (obj.dust as number | null) ?? null,
   };
 }
 
@@ -72,6 +76,10 @@ export class MongoTransactionRepository implements TransactionRepository {
       attempts: record.attempts,
       confirmedAt: record.confirmedAt ?? null,
       ownerId: record.ownerId ?? null,
+      principal: record.principal ?? null,
+      yieldAmount: record.yieldAmount ?? null,
+      platformFee: record.platformFee ?? null,
+      dust: record.dust ?? null,
     });
   }
 
