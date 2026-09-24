@@ -4,6 +4,7 @@ import { createWorkerRouter } from "./worker";
 import { createAuthRouter } from "./auth";
 import { createUsersRouter } from "./users";
 import { createTransactionsRouter } from "./transactions";
+import { createTransactionIntentsRouter } from "./transactionIntents";
 import { createOracleRouter } from "./oracle";
 import { createArenasRouter } from "./arenas";
 import { createLeaderboardRouter } from "./leaderboard";
@@ -23,6 +24,7 @@ import type { AuthController } from "../controllers/auth.controller";
 import type { UsersController } from "../controllers/users.controller";
 import type { LeaderboardController } from "../controllers/leaderboard.controller";
 import type { TransactionsController } from "../controllers/transactions.controller";
+import type { TransactionIntentsController } from "../controllers/transactionIntents.controller";
 import type { AuthService } from "../services/authService";
 import type { RoundProofBundleService } from "../services/roundProofBundleService";
 
@@ -33,6 +35,7 @@ export function createApiRouter(
   usersController: UsersController,
   leaderboardController: LeaderboardController,
   transactionsController: TransactionsController,
+  transactionIntentsController: TransactionIntentsController,
   adminAuthMiddleware: RequestHandler,
   requireAuth: RequestHandler,
   authService: AuthService,
@@ -50,6 +53,13 @@ export function createApiRouter(
     "/transactions",
     requireAuth,
     createTransactionsRouter(transactionsController),
+  );
+  // Deliberately not requireAuth-gated: the frontend has no wallet-login
+  // (JWT) flow wired up anywhere yet (see docs/TRANSACTION_INTENTS.md §1).
+  // Ownership is self-reported via `ownerWallet` in the request body/query.
+  router.use(
+    "/transaction-intents",
+    createTransactionIntentsRouter(transactionIntentsController),
   );
   router.use("/oracle", createOracleRouter());
   router.use("/arenas", createArenasRouter(requireAuth));

@@ -349,6 +349,45 @@ export const commitReceiptLookupDuration = new Histogram({
   registers: [register],
 });
 
+// Transaction intent metrics (#1381) — user-wallet-signed actions (create
+// pool, stake, join, commit/reveal, claim) tracked from build through
+// confirmation so a rejected/expired signature can be resumed.
+export const intentCreatedTotal = new Counter({
+  name: 'inversearena_intent_created_total',
+  help: 'Total transaction intents created (excludes idempotent resumes)',
+  labelNames: ['kind'],
+  registers: [register],
+});
+
+export const intentResumedTotal = new Counter({
+  name: 'inversearena_intent_resumed_total',
+  help: 'Total transaction intents resumed from an existing unexpired record',
+  labelNames: ['kind'],
+  registers: [register],
+});
+
+export const intentOutcomeTotal = new Counter({
+  name: 'inversearena_intent_outcome_total',
+  help: 'Total transaction intents reaching a terminal or retry-relevant status',
+  labelNames: ['kind', 'status'],
+  registers: [register],
+});
+
+export const intentSignRetryTotal = new Counter({
+  name: 'inversearena_intent_sign_retry_total',
+  help: 'Total times an intent was resubmitted for signing after a rejection or expiry',
+  labelNames: ['kind', 'reason'],
+  registers: [register],
+});
+
+export const intentLatencySeconds = new Histogram({
+  name: 'inversearena_intent_latency_seconds',
+  help: 'Time from intent creation to a terminal status (confirmed, failed, or expired)',
+  labelNames: ['kind', 'status'],
+  buckets: [1, 5, 15, 30, 60, 120, 300],
+  registers: [register],
+});
+
 // 0 = closed (healthy), 1 = half-open (probing), 2 = open (failing)
 export const sorobanCircuitBreakerState = new Gauge({
   name: 'inversearena_soroban_circuit_breaker_state',

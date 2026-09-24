@@ -26,9 +26,12 @@ import {
   captureTransactionOutcome,
   reconcileTransaction,
   type TransactionOutcome,
+  NETWORK_PASSPHRASE,
 } from "@/shared-d/utils/stellar-transactions";
 import { useArenaStream } from "@/features/arena/useArenaStream";
 import { useArenaStateActions } from "@/features/arena/useArenaState";
+import { useTransactionIntent, type IntentKind } from "@/shared-d/hooks/useTransactionIntent";
+import type { Transaction } from "@stellar/stellar-sdk";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
@@ -68,6 +71,7 @@ export default function ArenaPage() {
 
 function ArenaGameView() {
   const { isConnected, address, connect, signTransaction, refreshBalance } = useWallet();
+  const { runTrackedTransaction } = useTransactionIntent();
   const [selectedChoice, setSelectedChoice] = useState<"heads" | "tails" | null>(null);
   const [isJoined, setIsJoined] = useState(false);
   const [hasWon, setHasWon] = useState(false);
@@ -565,26 +569,51 @@ function ArenaGameView() {
           if (!address || !txType) return;
 
           try {
-            let tx;
+            let buildTransaction: (() => Promise<Transaction>) | null = null;
+            let intentKind: IntentKind | null = null;
+            let actionKey: string | null = null;
+
             if (txType === "JOIN") {
-              tx = await buildJoinArenaTransaction(address, ARENA_ID);
+              buildTransaction = () => buildJoinArenaTransaction(address, ARENA_ID);
+              intentKind = "join_arena";
+              actionKey = `join_arena:${ARENA_ID}`;
             } else if (txType === "COMMIT" && selectedChoice) {
-              tx = await buildSubmitCommitmentTransaction(address, ARENA_ID, selectedChoice === "heads" ? "Heads" : "Tails", currentRound);
+              const choice = selectedChoice === "heads" ? "Heads" : "Tails";
+              buildTransaction = () => buildSubmitCommitmentTransaction(address, ARENA_ID, choice, currentRound);
+              intentKind = "commit_choice";
+              actionKey = `commit_choice:${ARENA_ID}:${currentRound}`;
             } else if (txType === "REVEAL") {
-              tx = await buildRevealChoiceTransaction(address, ARENA_ID, currentRound);
+              buildTransaction = () => buildRevealChoiceTransaction(address, ARENA_ID, currentRound);
+              intentKind = "reveal_choice";
+              actionKey = `reveal_choice:${ARENA_ID}:${currentRound}`;
             } else if (txType === "CLAIM") {
-              tx = await buildClaimWinningsTransaction(address, ARENA_ID);
+              buildTransaction = () => buildClaimWinningsTransaction(address, ARENA_ID);
+              intentKind = "claim";
+              actionKey = `claim:${ARENA_ID}`;
             } else {
               return;
             }
 
-            const signedXdr = await signTransaction(tx.toXDR());
-            onSigned();
-
+            // Runs both #1381 (resumable intent tracking, so a wallet
+            // rejection/expiry can be resumed against the same backend
+            // record) and #1385 (deterministic outcome reconciliation, so
+            // optimistic UI state converges to the chain's authoritative
+            // state) together — neither alone is sufficient:
+            // runTrackedTransaction does not reconcile UI state, and the
+            // old inline sign/submit path had no intent tracking.
             let outcome: TransactionOutcome;
             try {
-              const txResult = await submitSignedTransaction(signedXdr);
-              outcome = { status: "SUCCESS", hash: String(txResult.txHash) };
+              const { hash } = await runTrackedTransaction({
+                kind: intentKind,
+                actionKey,
+                publicKey: address,
+                buildTransaction,
+                signTransaction,
+                submitSignedTransaction,
+                networkPassphrase: NETWORK_PASSPHRASE,
+                onSigned,
+              });
+              outcome = { status: "SUCCESS", hash };
             } catch (e) {
               // Map every failure to a deterministic outcome and reconcile in
               // the background: on REJECTED (chain unchanged) and on TIMEOUT
