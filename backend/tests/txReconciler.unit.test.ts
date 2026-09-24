@@ -1,10 +1,11 @@
 import type { Job } from "bullmq";
-import type { TransactionRepository } from "../src/repositories/transactionRepository";
 import type { PaymentService } from "../src/services/paymentService";
 import type { ConfirmJobData } from "../src/queues/txQueue";
+import { TransactionState } from "../src/domain/transactionState";
 import {
   handleTxReconcilerFailure,
   reconcileSubmittedTransaction,
+  type TxReconcilerStateMachine,
 } from "../src/workers/txReconciler";
 
 function job(attemptsMade = 1, attempts = 10): Job<ConfirmJobData> {
@@ -15,63 +16,76 @@ function job(attemptsMade = 1, attempts = 10): Job<ConfirmJobData> {
   } as Job<ConfirmJobData>;
 }
 
-function paymentServiceWithStatus(status: "submitted" | "confirmed" | "failed") {
-  return {
-    confirmSubmittedTransaction: jest.fn(async () => ({ status })),
-  } as unknown as PaymentService;
+function paymentService(): PaymentService {
+  return {} as PaymentService;
 }
 
-describe("txReconciler (#1226)", () => {
-  it("throws for a transaction that is still pending so BullMQ retries it", async () => {
+function stateMachine(
+  status: TransactionState,
+  markDead = jest.fn(async () => undefined),
+): TxReconcilerStateMachine {
+  return {
+    confirmSubmitted: jest.fn(async () => status),
+    markDead,
+  };
+}
+
+describe("txReconciler", () => {
+  it("throws while a transaction remains submitted", async () => {
     await expect(
-      reconcileSubmittedTransaction(job(), paymentServiceWithStatus("submitted")),
+      reconcileSubmittedTransaction(
+        job(),
+        paymentService(),
+        stateMachine(TransactionState.SUBMITTED),
+      ),
     ).rejects.toThrow("Transaction tx-1 still pending on-chain");
   });
 
-  it.each(["confirmed", "failed"] as const)(
-    "completes terminal %s transactions without retrying",
+  it.each([TransactionState.CONFIRMED, TransactionState.FAILED])(
+    "completes terminal %s transactions",
     async (status) => {
       await expect(
-        reconcileSubmittedTransaction(job(), paymentServiceWithStatus(status)),
+        reconcileSubmittedTransaction(
+          job(),
+          paymentService(),
+          stateMachine(status),
+        ),
       ).resolves.toBeUndefined();
     },
   );
 
-  it("does nothing when BullMQ cannot provide the failed job", async () => {
-    const update = jest.fn();
-    await handleTxReconcilerFailure(
-      undefined,
-      new Error("connection lost"),
-      { update } as unknown as TransactionRepository,
-    );
-    expect(update).not.toHaveBeenCalled();
+  it("handles a failed event without a job", async () => {
+    const machine = stateMachine(TransactionState.SUBMITTED);
+    await expect(
+      handleTxReconcilerFailure(
+        undefined,
+        new Error("connection lost"),
+        machine,
+      ),
+    ).resolves.toBeUndefined();
+    expect(machine.markDead).not.toHaveBeenCalled();
   });
 
   it("leaves a failed job retryable while attempts remain", async () => {
-    const update = jest.fn();
+    const machine = stateMachine(TransactionState.SUBMITTED);
     await handleTxReconcilerFailure(
       job(2, 3),
       new Error("still unavailable"),
-      { update } as unknown as TransactionRepository,
+      machine,
     );
-    expect(update).not.toHaveBeenCalled();
+    expect(machine.markDead).not.toHaveBeenCalled();
   });
 
-  it("dead-letters a confirmation job after all attempts are exhausted", async () => {
-    const update = jest.fn(async () => ({ status: "dead" }));
+  it("dead-letters a job after retries are exhausted", async () => {
+    const machine = stateMachine(TransactionState.SUBMITTED);
     await handleTxReconcilerFailure(
       job(3, 3),
       new Error("RPC timeout"),
-      { update } as unknown as TransactionRepository,
+      machine,
     );
-
-    expect(update).toHaveBeenCalledWith(
+    expect(machine.markDead).toHaveBeenCalledWith(
       "tx-1",
-      expect.objectContaining({
-        status: "dead",
-        errorMessage: "Confirmation failed after 3 attempts: RPC timeout",
-        updatedAt: expect.any(Date),
-      }),
+      "Confirmation failed after 3 attempts: RPC timeout",
     );
   });
 });

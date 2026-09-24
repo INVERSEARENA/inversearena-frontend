@@ -25,8 +25,30 @@ The backend exposes Prometheus-compatible metrics at `/metrics` for monitoring:
 ### Worker Metrics
 
 **`worker_jobs_pending`** (Gauge)
-- Number of pending worker jobs
+- Number of pending database-batch worker jobs
 - Labels: `job_type`
+
+**`inversearena_queue_backlog`** (Gauge)
+- Runnable `tx-confirm` jobs in waiting, prioritized, or waiting-child states
+- Delayed retries and paused jobs are excluded from scale-up demand
+
+**`inversearena_queue_oldest_age_seconds`** (Gauge)
+- Age of the oldest runnable confirmation job; `-1` means unavailable
+
+**`inversearena_queue_delayed`** (Gauge)
+- Jobs waiting for retry backoff
+
+**`inversearena_queue_active` / `inversearena_queue_capacity` / `inversearena_queue_saturation_ratio`** (Gauges)
+- Current jobs, configured worker concurrency, and `active / capacity`
+
+**`inversearena_queue_snapshot_available`** (Gauge)
+- `1` for a valid snapshot and `0` when Redis collection failed; an empty queue remains available with zero values
+
+**`inversearena_worker_job_attempts_total` / `inversearena_worker_job_retries_total` / `inversearena_worker_terminal_failures_total` / `inversearena_worker_jobs_success_total`** (Counters)
+- Attempt, retry, terminal-failure, and successful-completion rates
+
+**`inversearena_queue_refresh_*` / `inversearena_worker_job_processing_duration_seconds`** (Counter/Histogram)
+- Snapshot success/failure and refresh/job latency
 
 ### Transaction Metrics
 
@@ -63,6 +85,8 @@ docker-compose -f docker-compose.monitoring.yml up -d
 
 - Prometheus: http://localhost:9090
 - Grafana: http://localhost:3000 (admin/admin)
+
+The Compose stack provisions the Prometheus datasource and dashboard automatically. The backend must be running separately and scrape successfully before queue signals appear.
 
 ## Prometheus Configuration
 
@@ -111,6 +135,19 @@ histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by 
 ```promql
 worker_jobs_pending
 ```
+
+### Confirmation Queue Scaling Signals
+```promql
+inversearena_queue_backlog{queue="tx-confirm"}
+inversearena_queue_oldest_age_seconds{queue="tx-confirm"}
+inversearena_queue_saturation_ratio{queue="tx-confirm"}
+rate(inversearena_worker_jobs_success_total{queue="tx-confirm"}[5m])
+rate(inversearena_worker_job_retries_total{queue="tx-confirm"}[5m])
+/
+clamp_min(rate(inversearena_worker_job_attempts_total{queue="tx-confirm"}[5m]), 0.000000001)
+```
+
+Scale-up should require sustained backlog or oldest-age pressure together with available snapshots and saturation. A rising retry ratio should suppress aggressive scale-up and page the operator because the bottleneck may be Soroban or Redis rather than worker capacity. A value of `-1` or snapshot availability `0` is stale/unavailable and must not be interpreted as an empty queue.
 
 ### Transaction Confirmation Rate
 ```promql

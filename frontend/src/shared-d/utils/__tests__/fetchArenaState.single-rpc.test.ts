@@ -60,7 +60,13 @@ describe("fetchArenaState single RPC optimization", () => {
     expect(mockBuildGetFullStateCallOperation.mock.calls[0]?.[1]).toBe(userAddress);
     expect(mockSimulateTransaction).toHaveBeenCalledTimes(1);
     expect(result.arenaId).toBe(arenaId);
-    expect(result.isUserIn).toBe(true);
-    expect(result.hasWon).toBe(false);
+    expect(result.contractUserState).toEqual({ active: true, won: false });
+    expect(result.contractArenaState).toEqual({
+      survivors: 5,
+      capacity: 128,
+      round: 3,
+      stakes: 10,
+      payouts: 20,
+    });
   });
 });

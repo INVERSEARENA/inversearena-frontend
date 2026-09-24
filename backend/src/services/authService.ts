@@ -395,8 +395,10 @@ export class AuthService {
     // Register both JTIs in Redis so they can be revoked individually
     // (logout) or wholesale (revoke-all-sessions). The TTL on each key
     // matches the JWT lifetime, so expired tokens disappear automatically.
-    await this.sessions.addSession(walletAddress, accessJti, accessTtl);
-    await this.sessions.addSession(walletAddress, refreshJti, refreshTtl);
+    await this.sessions.addSessions([
+      { walletAddress, jti: accessJti, ttlSeconds: accessTtl },
+      { walletAddress, jti: refreshJti, ttlSeconds: refreshTtl },
+    ]);
 
     return { accessToken, refreshToken };
   }

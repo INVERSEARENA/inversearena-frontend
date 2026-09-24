@@ -14,13 +14,13 @@ import {
 import { useWallet } from "@/features/wallet/useWallet";
 import { TransactionModal } from "@/components/modals/TransactionModal";
 import { ArenaStatsSkeleton } from "@/components/arena/ArenaStatsSkeleton";
+import { ArenaStateSummary } from "@/components/arena/ArenaStateSummary";
 import {
   buildJoinArenaTransaction,
   buildSubmitCommitmentTransaction,
   buildRevealChoiceTransaction,
   buildClaimWinningsTransaction,
   submitSignedTransaction,
-  fetchArenaState,
   clearCommitmentForRound,
   hasStoredCommitmentForRound,
   captureTransactionOutcome,
@@ -28,6 +28,7 @@ import {
   type TransactionOutcome,
 } from "@/shared-d/utils/stellar-transactions";
 import { useArenaStream } from "@/features/arena/useArenaStream";
+import { useArenaStateActions } from "@/features/arena/useArenaState";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
@@ -103,6 +104,7 @@ function ArenaGameView() {
 
   // Demo arena identifier; when unset the page falls back to the static mock view.
   const ARENA_ID = process.env.NEXT_PUBLIC_DEMO_ARENA_ID ?? "";
+  const { reconcile: reconcileArenaState } = useArenaStateActions(ARENA_ID);
   const { status: streamStatus, snapshot, feed: streamFeed } = useArenaStream(ARENA_ID);
 
   const headsPercentage = 42;
@@ -170,7 +172,8 @@ function ArenaGameView() {
     if (!address || !ARENA_ID) return;
     setIsLoadingArena(true);
     try {
-      const state = await fetchArenaState(ARENA_ID, address);
+      const state = await reconcileArenaState(address);
+      if (!state) return;
       setSurvivors({ current: state.survivorsCount, max: state.maxCapacity });
       setIsJoined(state.isUserIn);
       setHasWon(state.hasWon);
@@ -185,13 +188,13 @@ function ArenaGameView() {
       setPotentialPayout(state.potentialPayout);
       setEntryFee(state.entryFee);
       setPlayerCount(state.playerCount);
-      setCurrentRound(state.roundNumber);
+      setCurrentRound(state.currentRound);
     } catch (error) {
       console.error("Failed to fetch arena state:", error);
     } finally {
       setIsLoadingArena(false);
     }
-  }, [address, ARENA_ID]);
+  }, [address, ARENA_ID, reconcileArenaState]);
 
   useEffect(() => {
     if (isConnected && address) {
@@ -408,6 +411,7 @@ function ArenaGameView() {
 
           {/* Right column - Stats */}
           <div className="space-y-4">
+            {ARENA_ID && <ArenaStateSummary />}
             {isLoadingArena || isLoadingYield || entryFee === null || playerCount === null ? (
               <ArenaStatsSkeleton />
             ) : (

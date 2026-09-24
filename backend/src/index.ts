@@ -5,6 +5,18 @@ export { InMemoryTransactionRepository } from "./repositories/inMemoryTransactio
 export type { TransactionRepository } from "./repositories/transactionRepository";
 export { PaymentService } from "./services/paymentService";
 export { PaymentWorker } from "./workers/paymentWorker";
+export {
+  BullMqQueueSnapshotSource,
+  TX_CONFIRM_QUEUE,
+  createTxQueue,
+} from "./queues/txQueue";
+export type {
+  ConfirmJobData,
+  QueueSnapshot,
+  QueueSnapshotReader,
+  QueueSnapshotSource,
+} from "./queues/txQueue";
+export { getTxWorkerConfig } from "./config/workerConfig";
 export type {
   BuildPayoutResult,
   CreatePayoutRequest,

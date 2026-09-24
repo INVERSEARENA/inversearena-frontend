@@ -30,10 +30,10 @@ pub trait FactoryInterface {
     fn update_arena_status(env: Env, pool_id: u32, status: ArenaStatus);
 }
 
-const PAGE_SIZE: u32 = 50;
+pub(crate) const PAGE_SIZE: u32 = 50;
 pub(crate) const MIN_PLAYERS_TO_START: u32 = 2;
 pub const MAX_PLAYERS_ALLOWED: u32 = 100;
-const CONTRACT_VERSION: u32 = 1;
+const CONTRACT_VERSION: u32 = 2;
 const UPGRADE_TIMELOCK_SECONDS: u64 = 86_400; // 1 day
 /// Maximum allowed platform fee: 1000 bps (10%). Enforced by `update_platform_fee`.
 const MAX_PLATFORM_FEE_BPS: u32 = 1000;
@@ -158,6 +158,7 @@ impl ArenaContract {
             platform_fee_bps: ArenaStorage::load_platform_fee_bps(&env),
         };
         ArenaStorage::save_config(&env, &config);
+        ArenaStorage::initialize_paged_roster(&env);
         ArenaStorage::save_player_limits(&env, min_players, max_players);
         ArenaStorage::save_last_vault_balance(&env, 0);
         ArenaEvents::initialized(&env, &admin);
@@ -334,7 +335,7 @@ impl ArenaContract {
         ArenaStorage::save_last_vault_balance(&env, baseline);
 
         ArenaStorage::add_player(&env, &player);
-        let count = ArenaStorage::load_all_players(&env).len();
+        let count = ArenaStorage::load_roster_count(&env);
         ArenaEvents::player_joined(&env, &player, count);
         ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
@@ -539,7 +540,9 @@ impl ArenaContract {
     /// # Parameters
     /// - `page`: Zero-based page index.
     pub fn get_players(env: Env, page: u32) -> Vec<(Address, PlayerState)> {
-        let start = page.saturating_mul(PAGE_SIZE);
+        let Some(start) = page.checked_mul(PAGE_SIZE) else {
+            return Vec::new(&env);
+        };
         let addrs = ArenaStorage::load_player_page(&env, start, PAGE_SIZE);
         let mut result: Vec<(Address, PlayerState)> = Vec::new(&env);
         for addr in addrs.iter() {
@@ -691,7 +694,7 @@ impl ArenaContract {
         ArenaStorage::save_last_vault_balance(&env, vault_balance);
         config.cumulative_yield = config.cumulative_yield.saturating_add(accrued);
 
-        let resolution = Self::resolve_players(&env, round);
+        let resolution = Self::resolve_players(&env, round, config.active_player_count);
         let result = RoundResult {
             round,
             eliminated: resolution.eliminated,
@@ -731,7 +734,7 @@ impl ArenaContract {
         // Clear per-round choice and commitment data to prevent stale data
         // from persisting into a future round.
         ArenaStorage::clear_round_data(&env, round);
-        
+
         // Notify factory of round resolution state changes
         let arena_addr = env.current_contract_address();
         let factory_client = FactoryClient::new(&env, &config.factory);
@@ -801,8 +804,7 @@ impl ArenaContract {
         let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
         let principal = config
             .entry_fee
-            .checked_mul(i128::from(config.player_count))
-            .ok_or(ArenaError::ArithmeticOverflow)?;
+            .saturating_mul(i128::from(config.player_count));
         let payout = principal.saturating_add(Self::total_yield(&env));
         let withdrawn = rwa_client
             .try_withdraw_all(&arena_addr)
@@ -1111,14 +1113,27 @@ impl ArenaContract {
         Ok(())
     }
 
-    fn resolve_players(env: &Env, round: u32) -> RoundResolution {
-        let players = ArenaStorage::load_all_players(env);
+    fn resolve_players(env: &Env, round: u32, expected_active: u32) -> RoundResolution {
+        let indexed = ArenaStorage::load_survivor_index(env);
+        let mut players = Vec::new(env);
+        for player in indexed.iter() {
+            if players.contains(&player) {
+                continue;
+            }
+            if let Some(state) = ArenaStorage::load_player(env, &player)
+                && state.active
+            {
+                players.push_back(player);
+            }
+        }
+
+        if players.len() != expected_active {
+            players = ArenaStorage::load_active_roster(env);
+        }
+
         let mut active_choices: Vec<Choice> = Vec::new(env);
         for player in players.iter() {
-            let state = ArenaStorage::load_player(env, &player).unwrap_or_default();
-            if state.active
-                && let Some(choice) = ArenaStorage::load_choice(env, &player, round)
-            {
+            if let Some(choice) = ArenaStorage::load_choice(env, &player, round) {
                 active_choices.push_back(choice);
             }
         }
@@ -1128,6 +1143,7 @@ impl ArenaContract {
         let mut eliminated = 0u32;
         let mut survivors = 0u32;
         let mut winner: Option<Address> = None;
+        let mut next_survivors = Vec::new(env);
 
         for player in players.iter() {
             let mut state = ArenaStorage::load_player(env, &player).unwrap_or_default();
@@ -1142,16 +1158,18 @@ impl ArenaContract {
             if should_eliminate {
                 state.active = false;
                 eliminated += 1;
-                // Remove eliminated player's choice so it cannot appear in subsequent rounds (#1075)
                 ArenaStorage::remove_player_choice(env, &player, round);
                 ArenaEvents::player_eliminated(env, &player, round);
             } else {
                 state.rounds_survived = state.rounds_survived.saturating_add(1);
                 survivors += 1;
                 winner = Some(player.clone());
+                next_survivors.push_back(player.clone());
             }
             ArenaStorage::save_player(env, &player, &state);
         }
+
+        ArenaStorage::rebuild_survivor_index(env, &next_survivors);
 
         if survivors == 1 {
             RoundResolution {
@@ -1172,19 +1190,27 @@ impl ArenaContract {
 }
 
 fn build_leaderboard(env: &Env) {
-    let players = ArenaStorage::load_all_players(env);
+    let total = ArenaStorage::load_roster_count(env);
+    let page_count = if total == 0 {
+        0
+    } else {
+        (total - 1) / PAGE_SIZE + 1
+    };
     let limit = ArenaStorage::load_leaderboard_limit(env);
-    let n = players.len();
 
     // Collect all player entries into an unsorted working Vec.
     let mut entries: Vec<LeaderboardEntry> = Vec::new(env);
-    for player in players.iter() {
-        let state = ArenaStorage::load_player(env, &player).unwrap_or_default();
-        entries.push_back(LeaderboardEntry {
-            player,
-            rounds_survived: state.rounds_survived,
-        });
+    for page_index in 0..page_count {
+        let players = ArenaStorage::load_roster_page(env, page_index);
+        for player in players.iter() {
+            let state = ArenaStorage::load_player(env, &player).unwrap_or_default();
+            entries.push_back(LeaderboardEntry {
+                player,
+                rounds_survived: state.rounds_survived,
+            });
+        }
     }
+    let n = entries.len();
 
     // Partial selection sort: K = min(limit, n) passes, each a single linear scan.
     // Total work O(K·n) — O(n) for a bounded limit — versus O(n²) for insertion sort.
@@ -1323,6 +1349,96 @@ mod test {
             }
         }
         assert_eq!(page0.len() + page1.len(), client.player_count());
+    }
+
+    #[test]
+    fn cross_page_minority_survives_and_compacts_survivor_index() {
+        let (env, client) = setup(51);
+        let mut expected_survivor = None;
+
+        env.as_contract(&client.address, || {
+            let players = ArenaStorage::load_all_players(&env);
+            for index in 0..players.len() {
+                let player = players.get(index).unwrap();
+                let choice = if index == 50 {
+                    Choice::Tails
+                } else {
+                    Choice::Heads
+                };
+                ArenaStorage::save_choice(&env, &player, 1, &choice);
+            }
+            expected_survivor = Some(players.get(50).unwrap());
+
+            let resolution = ArenaContract::resolve_players(&env, 1, 51);
+            assert_eq!(resolution.eliminated, 50);
+            assert_eq!(resolution.survivors, 1);
+            assert_eq!(resolution.winner, expected_survivor);
+
+            let survivors = ArenaStorage::load_survivor_index(&env);
+            assert_eq!(survivors.len(), 1);
+            assert_eq!(survivors.get(0), expected_survivor);
+        });
+
+        let expected_survivor = expected_survivor.unwrap();
+        for (player, state) in client.get_players(&0).iter() {
+            assert!(!state.active);
+            assert_ne!(player, expected_survivor);
+        }
+        let second_page = client.get_players(&1);
+        assert_eq!(second_page.len(), 1);
+        let (player, state) = second_page.get(0).unwrap();
+        assert_eq!(player, expected_survivor);
+        assert!(state.active);
+        assert!(client.get_players(&2).is_empty());
+    }
+
+    #[test]
+    fn stale_survivor_page_self_heals_from_player_state() {
+        let (env, client) = setup(2);
+        env.as_contract(&client.address, || {
+            let players = ArenaStorage::load_all_players(&env);
+            let stale = players.get(0).unwrap();
+            ArenaStorage::save_player(
+                &env,
+                &stale,
+                &PlayerState {
+                    active: false,
+                    rounds_survived: 1,
+                },
+            );
+            let mut stale_page = Vec::new(&env);
+            stale_page.push_back(stale);
+            ArenaStorage::save_survivor_page(&env, 0, &stale_page);
+            ArenaStorage::save_survivor_count(&env, 1);
+
+            let resolution = ArenaContract::resolve_players(&env, 1, 1);
+            assert_eq!(resolution.eliminated, 1);
+            assert_eq!(resolution.survivors, 0);
+            assert!(ArenaStorage::load_survivor_index(&env).is_empty());
+        });
+    }
+
+    #[test]
+    fn paged_player_read_budget_is_bounded_at_maximum_roster() {
+        let measure = |player_count: u32, page: u32| {
+            let (env, client) = setup(player_count);
+            assert_eq!(client.get_players(&page).len(), PAGE_SIZE);
+            env.cost_estimate().resources()
+        };
+
+        let fifty = measure(50, 0);
+        let hundred_first = measure(100, 0);
+        let hundred_second = measure(100, 1);
+
+        assert!(fifty.read_entries <= 53);
+        assert!(hundred_first.read_entries <= 53);
+        assert!(hundred_second.read_entries <= 53);
+        assert_eq!(hundred_first.read_bytes, fifty.read_bytes);
+        assert_eq!(hundred_second.read_bytes, hundred_first.read_bytes);
+        assert!(hundred_first.instructions <= fifty.instructions + 100_000);
+        assert!(hundred_second.instructions <= hundred_first.instructions + 100_000);
+        assert!(hundred_first.instructions < 50_000_000);
+        assert!(hundred_second.instructions < 50_000_000);
     }
 
     fn compute_commitment(env: &Env, choice: Choice, salt: &BytesN<32>) -> BytesN<32> {

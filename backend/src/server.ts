@@ -1,59 +1,87 @@
 import "dotenv/config";
-// import { db } from "./db/client";
 import { redis } from "./cache/redisClient";
 import { prisma } from "./db/prisma";
-import { connectDB } from "./db/connection";
+import { connectDB, mongoose } from "./db/connection";
 import { MongoTransactionRepository } from "./repositories/mongoTransactionRepository";
 import { validateConfig } from "./config/validate";
 import { getPaymentConfig } from "./config/paymentConfig";
-
 import { PaymentService } from "./services/paymentService";
 import { PaymentWorker } from "./workers/paymentWorker";
 import { AdminService } from "./services/adminService";
 import { AuthService } from "./services/authService";
 import { RoundService } from "./services/roundService";
-import { createTxQueue } from "./queues/txQueue";
+import { BullMqQueueSnapshotSource, createTxQueue } from "./queues/txQueue";
 import { startTxReconcilerWorker } from "./workers/txReconciler";
+import { TransactionStateMachine } from "./services/transactionStateMachine";
+import { getTxWorkerConfig } from "./config/workerConfig";
 import { createApp } from "./app";
-
 import { initSentry } from "./utils/sentry";
 import { logger } from "./utils/logger";
 
 const PORT = Number(process.env.PORT ?? 3001);
 
-async function main() {
+async function main(): Promise<void> {
   validateConfig();
   initSentry();
   await connectDB();
-   await redis.connect();
-
+  await redis.connect();
 
   const transactions = new MongoTransactionRepository();
-
+  const workerConfig = getTxWorkerConfig();
   const txQueue = createTxQueue();
+  const queueSnapshotSource = new BullMqQueueSnapshotSource(
+    txQueue,
+    workerConfig.capacity,
+  );
   const paymentService = new PaymentService(transactions);
   const paymentConfig = getPaymentConfig();
-  const paymentWorker = new PaymentWorker(transactions, paymentService, txQueue, {
-    failedRetryMax: paymentConfig.failedRetryMax,
-    failedRetryBaseMs: paymentConfig.failedRetryBaseMs,
-  });
-  startTxReconcilerWorker(paymentService, transactions);
-  const adminService = new AdminService();
-  const authService = new AuthService();
-  const roundService = new RoundService(prisma);
+  const paymentWorker = new PaymentWorker(
+    transactions,
+    paymentService,
+    txQueue,
+    {
+      failedRetryMax: paymentConfig.failedRetryMax,
+      failedRetryBaseMs: paymentConfig.failedRetryBaseMs,
+    },
+  );
+  const transactionStateMachine = new TransactionStateMachine(transactions);
+  const txReconcilerWorker = startTxReconcilerWorker(
+    paymentService,
+    transactionStateMachine,
+    { concurrency: workerConfig.concurrency },
+  );
 
-  const app = createApp({ 
-    paymentService, 
-    paymentWorker, 
-    transactions, 
-    adminService, 
-    authService,
-    roundService 
+  const app = createApp({
+    paymentService,
+    paymentWorker,
+    transactions,
+    adminService: new AdminService(),
+    authService: new AuthService(),
+    roundService: new RoundService(prisma),
+    queueSnapshotSource,
+    queueCapacity: workerConfig.capacity,
   });
-
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     logger.info({ port: PORT }, "InverseArena backend listening");
   });
+
+  let shuttingDown = false;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info({ signal }, "Shutting down InverseArena backend");
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await Promise.allSettled([
+      txReconcilerWorker.close(),
+      txQueue.close(),
+      mongoose.disconnect(),
+      prisma.$disconnect(),
+      redis.quit(),
+    ]);
+  };
+
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
+  process.once("SIGINT", () => void shutdown("SIGINT"));
 }
 
 main().catch((err) => {

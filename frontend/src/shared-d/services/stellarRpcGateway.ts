@@ -1,8 +1,13 @@
-import { Account, Horizon, rpc, xdr } from "@stellar/stellar-sdk";
+import { Account, Horizon, rpc } from "@stellar/stellar-sdk";
 import { ContractClientFactory } from "../utils/contract-client-factory";
 import { stellarConfig } from "@/lib/stellarConfig";
 import { HorizonAccountFetchError, loadAccountFromHorizon } from "../utils/horizon-account-loader";
 import { ContractError, ContractErrorCode, parseContractError } from "../utils/contract-error";
+
+export type SorobanRpcTransaction = Parameters<rpc.Server["simulateTransaction"]>[0];
+type SimulateTransactionResponse = Awaited<ReturnType<rpc.Server["simulateTransaction"]>>;
+type SendTransactionResponse = Awaited<ReturnType<rpc.Server["sendTransaction"]>>;
+type GetTransactionResponse = Awaited<ReturnType<rpc.Server["getTransaction"]>>;
 
 export class StellarRpcGateway {
   private rpcServer: rpc.Server;
@@ -13,16 +18,24 @@ export class StellarRpcGateway {
     this.horizonServer = new Horizon.Server(stellarConfig.horizonUrl);
   }
 
-  async simulateTransaction(transaction: xdr.Transaction): Promise<rpc.SimulateTransactionResponse> {
+  async simulateTransaction(
+    transaction: SorobanRpcTransaction,
+  ): Promise<SimulateTransactionResponse> {
     return this.rpcServer.simulateTransaction(transaction);
   }
 
-  async sendTransaction(transaction: xdr.Transaction): Promise<rpc.SendTransactionResponse> {
+  async sendTransaction(
+    transaction: SorobanRpcTransaction,
+  ): Promise<SendTransactionResponse> {
     return this.rpcServer.sendTransaction(transaction);
   }
 
-  async getTransaction(hash: string): Promise<rpc.GetTransactionResponse> {
+  async getTransaction(hash: string): Promise<GetTransactionResponse> {
     return this.rpcServer.getTransaction(hash);
+  }
+
+  prepareTransaction(transaction: SorobanRpcTransaction) {
+    return this.rpcServer.prepareTransaction(transaction);
   }
 
   async getAccount(publicKey: string, fn: string): Promise<Account> {
@@ -39,11 +52,15 @@ export class StellarRpcGateway {
     }
   }
 
-  async checkTransactionOnHorizon(hash: string, fetchFn: typeof fetch = fetch): Promise<{
+  async checkTransactionOnHorizon(
+    hash: string,
+    horizonBaseUrl: string,
+    fetchFn: typeof fetch = fetch,
+  ): Promise<{
     hash: string;
     status: "SUCCESS" | "FAILED" | "NOT_FOUND";
   }> {
-    const base = stellarConfig.horizonUrl.replace(/\/+$/, "");
+    const base = horizonBaseUrl.replace(/\/+$/, "");
     const res = await fetchFn(`${base}/transactions/${hash}`);
 
     if (res.status === 404) {

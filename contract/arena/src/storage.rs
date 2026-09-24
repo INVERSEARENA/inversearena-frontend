@@ -3,7 +3,7 @@ use crate::types::{
     ArenaConfig, ArenaError, Choice, GameState, PendingAdmin, PlayerState, RoundResult,
     YieldSnapshot,
 };
-use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, Vec, contracttype, symbol_short, storage::Persistent, symbol};
+use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, Vec, contracttype, symbol_short};
 
 pub trait StorageRepository<K, V> {
     fn has(env: &Env, key: &K) -> bool;
@@ -16,13 +16,14 @@ pub trait TtlRepository<K> {
     fn extend_ttl(env: &Env, key: &K, threshold: u32, extend_to: u32);
 }
 
-
 const PERSISTENT_TTL_THRESHOLD: u32 = 100;
 const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
+pub(crate) const PAGED_ROSTER_VERSION: u32 = 2;
+const LEGACY_ROSTER_VERSION: u32 = 1;
 
 /// Storage key for per-player data, keyed by the player's address.
 #[contracttype]
-enum DataKey {
+pub(crate) enum DataKey {
     Player(Address),
     BannedPlayer(Address),
     CommitmentForRound(Address, u32),
@@ -42,8 +43,12 @@ enum DataKey {
     Leaderboard,
     LeaderboardLimit,
     PlatformFeeBps,
+    PlayerPage(u32),
+    SurvivorPage(u32),
+    RosterCount,
+    SurvivorCount,
+    StorageVersion,
 }
-
 
 pub struct ArenaRepository<'a> {
     env: &'a Env,
@@ -380,49 +385,332 @@ impl ArenaStorage {
         env.storage().persistent().has(&symbol_short!("CONFIG"))
     }
 
-    /// Return the list of all player addresses that have joined this arena.
-    pub fn load_all_players(env: &Env) -> Vec<Address> {
-        Self::extend_persistent_ttl(env, &symbol_short!("PLAYERS"));
+    fn page_count(count: u32) -> u32 {
+        if count == 0 {
+            0
+        } else {
+            (count - 1) / crate::PAGE_SIZE + 1
+        }
+    }
+
+    fn load_legacy_players(env: &Env) -> Option<Vec<Address>> {
+        let key = symbol_short!("PLAYERS");
+        Self::extend_persistent_ttl(env, &key);
+        env.storage().persistent().get(&key)
+    }
+
+    fn remove_legacy_players(env: &Env) {
+        env.storage().persistent().remove(&symbol_short!("PLAYERS"));
+    }
+
+    fn load_storage_version_raw(env: &Env) -> u32 {
+        Self::extend_persistent_ttl(env, &DataKey::StorageVersion);
         env.storage()
             .persistent()
-            .get(&symbol_short!("PLAYERS"))
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(LEGACY_ROSTER_VERSION)
+    }
+
+    pub fn load_storage_version(env: &Env) -> u32 {
+        Self::ensure_paged_roster(env);
+        Self::load_storage_version_raw(env)
+    }
+
+    fn save_storage_version(env: &Env, version: u32) {
+        Self::extend_persistent_ttl(env, &DataKey::StorageVersion);
+        env.storage()
+            .persistent()
+            .set(&DataKey::StorageVersion, &version);
+    }
+
+    fn load_roster_count_raw(env: &Env) -> u32 {
+        Self::extend_persistent_ttl(env, &DataKey::RosterCount);
+        env.storage()
+            .persistent()
+            .get(&DataKey::RosterCount)
+            .unwrap_or(0)
+    }
+
+    pub fn load_roster_count(env: &Env) -> u32 {
+        Self::ensure_paged_roster(env);
+        Self::load_roster_count_raw(env)
+    }
+
+    pub(crate) fn save_roster_count(env: &Env, count: u32) {
+        Self::extend_persistent_ttl(env, &DataKey::RosterCount);
+        env.storage()
+            .persistent()
+            .set(&DataKey::RosterCount, &count);
+    }
+
+    fn load_survivor_count_raw(env: &Env) -> u32 {
+        Self::extend_persistent_ttl(env, &DataKey::SurvivorCount);
+        env.storage()
+            .persistent()
+            .get(&DataKey::SurvivorCount)
+            .unwrap_or(0)
+    }
+
+    pub fn load_survivor_count(env: &Env) -> u32 {
+        Self::ensure_paged_roster(env);
+        Self::load_survivor_count_raw(env)
+    }
+
+    pub(crate) fn save_survivor_count(env: &Env, count: u32) {
+        Self::extend_persistent_ttl(env, &DataKey::SurvivorCount);
+        env.storage()
+            .persistent()
+            .set(&DataKey::SurvivorCount, &count);
+    }
+
+    fn load_roster_page_raw(env: &Env, page: u32) -> Vec<Address> {
+        Self::extend_persistent_ttl(env, &DataKey::PlayerPage(page));
+        env.storage()
+            .persistent()
+            .get(&DataKey::PlayerPage(page))
             .unwrap_or_else(|| Vec::new(env))
+    }
+
+    pub fn load_roster_page(env: &Env, page: u32) -> Vec<Address> {
+        Self::ensure_paged_roster(env);
+        Self::load_roster_page_raw(env, page)
+    }
+
+    pub(crate) fn save_roster_page(env: &Env, page: u32, players: &Vec<Address>) {
+        Self::extend_persistent_ttl(env, &DataKey::PlayerPage(page));
+        env.storage()
+            .persistent()
+            .set(&DataKey::PlayerPage(page), players);
+    }
+
+    fn load_survivor_page_raw(env: &Env, page: u32) -> Vec<Address> {
+        Self::extend_persistent_ttl(env, &DataKey::SurvivorPage(page));
+        env.storage()
+            .persistent()
+            .get(&DataKey::SurvivorPage(page))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    pub fn load_survivor_page(env: &Env, page: u32) -> Vec<Address> {
+        Self::ensure_paged_roster(env);
+        Self::load_survivor_page_raw(env, page)
+    }
+
+    pub(crate) fn save_survivor_page(env: &Env, page: u32, players: &Vec<Address>) {
+        Self::extend_persistent_ttl(env, &DataKey::SurvivorPage(page));
+        env.storage()
+            .persistent()
+            .set(&DataKey::SurvivorPage(page), players);
+    }
+
+    fn write_roster_pages(env: &Env, players: &Vec<Address>) {
+        let previous_pages = Self::page_count(Self::load_roster_count_raw(env));
+        let mut page = Vec::new(env);
+        let mut page_index = 0u32;
+        for player in players.iter() {
+            page.push_back(player);
+            if page.len() == crate::PAGE_SIZE {
+                Self::save_roster_page(env, page_index, &page);
+                page = Vec::new(env);
+                page_index = page_index.saturating_add(1);
+            }
+        }
+        if !page.is_empty() {
+            Self::save_roster_page(env, page_index, &page);
+        }
+        Self::remove_stale_pages(env, previous_pages, Self::page_count(players.len()), false);
+    }
+
+    fn write_survivor_pages(env: &Env, players: &Vec<Address>) {
+        let previous_pages = Self::page_count(Self::load_survivor_count_raw(env));
+        let mut page = Vec::new(env);
+        let mut page_index = 0u32;
+        for player in players.iter() {
+            page.push_back(player);
+            if page.len() == crate::PAGE_SIZE {
+                Self::save_survivor_page(env, page_index, &page);
+                page = Vec::new(env);
+                page_index = page_index.saturating_add(1);
+            }
+        }
+        if !page.is_empty() {
+            Self::save_survivor_page(env, page_index, &page);
+        }
+        Self::remove_stale_pages(env, previous_pages, Self::page_count(players.len()), true);
+    }
+
+    fn remove_stale_pages(env: &Env, previous_pages: u32, current_pages: u32, survivors: bool) {
+        for page_index in current_pages..previous_pages {
+            let key = if survivors {
+                DataKey::SurvivorPage(page_index)
+            } else {
+                DataKey::PlayerPage(page_index)
+            };
+            env.storage().persistent().remove(&key);
+        }
+    }
+
+    fn load_existing_roster_pages(env: &Env) -> Vec<Address> {
+        let total = Self::load_roster_count_raw(env);
+        let mut players = Vec::new(env);
+        for page_index in 0..Self::page_count(total) {
+            let page = Self::load_roster_page_raw(env, page_index);
+            for player in page.iter() {
+                players.push_back(player);
+            }
+        }
+        players
+    }
+
+    pub fn initialize_paged_roster(env: &Env) {
+        Self::save_storage_version(env, PAGED_ROSTER_VERSION);
+        Self::save_roster_count(env, 0);
+        Self::save_survivor_count(env, 0);
+    }
+
+    pub fn ensure_paged_roster(env: &Env) {
+        if Self::load_storage_version_raw(env) >= PAGED_ROSTER_VERSION {
+            return;
+        }
+
+        let legacy = Self::load_legacy_players(env);
+        let has_legacy = legacy.is_some();
+        let players = match legacy {
+            Some(players) => players,
+            None => Self::load_existing_roster_pages(env),
+        };
+        Self::write_roster_pages(env, &players);
+
+        let mut survivors = Vec::new(env);
+        for player in players.iter() {
+            if let Some(state) = Self::load_player(env, &player)
+                && state.active
+                && !survivors.contains(&player)
+            {
+                survivors.push_back(player);
+            }
+        }
+        Self::write_survivor_pages(env, &survivors);
+        Self::save_roster_count(env, players.len());
+        Self::save_survivor_count(env, survivors.len());
+        if let Ok(mut config) = Self::load_config(env) {
+            config.player_count = players.len();
+            config.active_player_count = survivors.len();
+            Self::save_config(env, &config);
+        }
+        if has_legacy {
+            Self::remove_legacy_players(env);
+        }
+        Self::save_storage_version(env, PAGED_ROSTER_VERSION);
+    }
+
+    pub fn migrate_legacy_players(env: &Env) {
+        Self::ensure_paged_roster(env);
+    }
+
+    /// Return the list of all player addresses that have joined this arena.
+    pub fn load_all_players(env: &Env) -> Vec<Address> {
+        Self::ensure_paged_roster(env);
+        let total = Self::load_roster_count_raw(env);
+        let mut players = Vec::new(env);
+        for page_index in 0..Self::page_count(total) {
+            let page = Self::load_roster_page_raw(env, page_index);
+            for player in page.iter() {
+                players.push_back(player);
+            }
+        }
+        players
     }
 
     /// Return up to `count` player addresses starting at index `start`.
     ///
-    /// Reads only the single storage entry that covers the requested range,
-    /// avoiding the O(n) full-list deserialisation that `load_all_players`
-    /// would incur for large arenas.
+    /// Versioned arenas read one page entry. Legacy arenas use a read-only
+    /// fallback until the next state-changing entry point migrates the roster.
     pub fn load_player_page(env: &Env, start: u32, count: u32) -> Vec<Address> {
-        let all = Self::load_all_players(env);
-        let total = all.len();
-        if start >= total {
+        if count == 0 {
             return Vec::new(env);
         }
-        let end = (start.saturating_add(count)).min(total);
-        let mut page: Vec<Address> = Vec::new(env);
-        for i in start..end {
-            if let Some(addr) = all.get(i) {
-                page.push_back(addr);
+        if Self::load_storage_version_raw(env) < PAGED_ROSTER_VERSION {
+            let players = match Self::load_legacy_players(env) {
+                Some(players) => players,
+                None => Self::load_existing_roster_pages(env),
+            };
+            return Self::slice_player_page(env, &players, start, count);
+        }
+
+        let page_index = start / crate::PAGE_SIZE;
+        let offset = start % crate::PAGE_SIZE;
+        let page = Self::load_roster_page_raw(env, page_index);
+        Self::slice_player_page(env, &page, offset, count)
+    }
+
+    fn slice_player_page(
+        env: &Env,
+        players: &Vec<Address>,
+        start: u32,
+        count: u32,
+    ) -> Vec<Address> {
+        if start >= players.len() {
+            return Vec::new(env);
+        }
+        let end = start.saturating_add(count).min(players.len());
+        let mut result = Vec::new(env);
+        for index in start..end {
+            if let Some(player) = players.get(index) {
+                result.push_back(player);
             }
         }
-        page
+        result
     }
 
     pub fn save_players(env: &Env, players: &Vec<Address>) {
-        Self::extend_persistent_ttl(env, &symbol_short!("PLAYERS"));
-        env.storage()
-            .persistent()
-            .set(&symbol_short!("PLAYERS"), players);
+        let roster_pages = Self::page_count(Self::load_roster_count_raw(env));
+        let survivor_pages = Self::page_count(Self::load_survivor_count_raw(env));
+        Self::remove_stale_pages(env, roster_pages, 0, false);
+        Self::remove_stale_pages(env, survivor_pages, 0, true);
+        let key = symbol_short!("PLAYERS");
+        Self::extend_persistent_ttl(env, &key);
+        env.storage().persistent().set(&key, players);
+        Self::save_storage_version(env, LEGACY_ROSTER_VERSION);
+        env.storage().persistent().remove(&DataKey::RosterCount);
+        env.storage().persistent().remove(&DataKey::SurvivorCount);
+    }
+
+    fn append_roster_player(env: &Env, player: &Address, count: u32) {
+        let mut page_index = count / crate::PAGE_SIZE;
+        let mut page = Self::load_roster_page_raw(env, page_index);
+        if page.len() >= crate::PAGE_SIZE {
+            page_index = page_index.saturating_add(1);
+            page = Self::load_roster_page_raw(env, page_index);
+        }
+        page.push_back(player.clone());
+        Self::save_roster_page(env, page_index, &page);
+    }
+
+    fn append_survivor_player(env: &Env, player: &Address, count: u32) {
+        let mut page_index = count / crate::PAGE_SIZE;
+        let mut page = Self::load_survivor_page_raw(env, page_index);
+        if page.len() >= crate::PAGE_SIZE {
+            page_index = page_index.saturating_add(1);
+            page = Self::load_survivor_page_raw(env, page_index);
+        }
+        page.push_back(player.clone());
+        Self::save_survivor_page(env, page_index, &page);
     }
 
     pub fn add_player(env: &Env, player: &Address) {
-        let mut players = Self::load_all_players(env);
-        players.push_back(player.clone());
-        Self::save_players(env, &players);
+        Self::ensure_paged_roster(env);
+        let count = Self::load_roster_count_raw(env);
+        if count == u32::MAX {
+            return;
+        }
+        Self::append_roster_player(env, player, count);
+        Self::save_roster_count(env, count + 1);
 
-        // Initialise the joining player's state (active, no rounds survived yet).
+        let survivor_count = Self::load_survivor_count_raw(env);
+        Self::append_survivor_player(env, player, survivor_count);
+        Self::save_survivor_count(env, survivor_count.saturating_add(1));
+
         Self::save_player(
             env,
             player,
@@ -432,12 +720,52 @@ impl ArenaStorage {
             },
         );
 
-        // Keep the cached player count and active player count in `config` in sync.
         if let Ok(mut config) = Self::load_config(env) {
-            config.player_count = players.len();
+            config.player_count = count + 1;
             config.active_player_count = config.active_player_count.saturating_add(1);
             Self::save_config(env, &config);
         }
+    }
+
+    pub fn load_active_roster(env: &Env) -> Vec<Address> {
+        Self::ensure_paged_roster(env);
+        let total = Self::load_roster_count_raw(env);
+        let mut active = Vec::new(env);
+        for page_index in 0..Self::page_count(total) {
+            let page = Self::load_roster_page_raw(env, page_index);
+            for player in page.iter() {
+                if active.contains(&player) {
+                    continue;
+                }
+                if let Some(state) = Self::load_player(env, &player)
+                    && state.active
+                {
+                    active.push_back(player);
+                }
+            }
+        }
+        active
+    }
+
+    pub fn load_survivor_index(env: &Env) -> Vec<Address> {
+        Self::ensure_paged_roster(env);
+        let total = Self::load_survivor_count_raw(env);
+        let mut active = Vec::new(env);
+        for page_index in 0..Self::page_count(total) {
+            let page = Self::load_survivor_page_raw(env, page_index);
+            for player in page.iter() {
+                if !active.contains(&player) {
+                    active.push_back(player);
+                }
+            }
+        }
+        active
+    }
+
+    pub fn rebuild_survivor_index(env: &Env, players: &Vec<Address>) {
+        Self::ensure_paged_roster(env);
+        Self::write_survivor_pages(env, players);
+        Self::save_survivor_count(env, players.len());
     }
 
     /// Load a single player's state, or `None` if they never joined.
@@ -769,14 +1097,18 @@ impl ArenaStorage {
     /// Since commitments and choices are now keyed by (Address, round),
     /// this is primarily for cleanup. May be called at the start or end of a round.
     pub fn clear_round_data(env: &Env, round: u32) {
-        let players = Self::load_all_players(env);
-        for player in players.iter() {
-            env.storage()
-                .persistent()
-                .remove(&DataKey::ChoiceForRound(player.clone(), round));
-            env.storage()
-                .persistent()
-                .remove(&DataKey::CommitmentForRound(player.clone(), round));
+        Self::ensure_paged_roster(env);
+        let total = Self::load_roster_count_raw(env);
+        for page_index in 0..Self::page_count(total) {
+            let page = Self::load_roster_page_raw(env, page_index);
+            for player in page.iter() {
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::ChoiceForRound(player.clone(), round));
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::CommitmentForRound(player.clone(), round));
+            }
         }
     }
 }
@@ -805,5 +1137,78 @@ mod tests {
             pool_id: 0,
             platform_fee_bps: 1000,
         }
+    }
+
+    #[test]
+    fn paged_roster_handles_empty_boundaries_and_maximum_roster() {
+        let env = Env::default();
+        let contract_id = env.register(ArenaContract, ());
+        let admin = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            ArenaStorage::save_config(&env, &config(&env, &admin, GameState::Open));
+            assert_eq!(ArenaStorage::load_roster_count(&env), 0);
+            assert!(ArenaStorage::load_roster_page(&env, 0).is_empty());
+            assert!(ArenaStorage::load_player_page(&env, 0, 0).is_empty());
+
+            for _ in 0..100 {
+                ArenaStorage::add_player(&env, &Address::generate(&env));
+            }
+
+            assert_eq!(ArenaStorage::load_roster_count(&env), 100);
+            assert_eq!(ArenaStorage::load_roster_page(&env, 0).len(), 50);
+            assert_eq!(ArenaStorage::load_roster_page(&env, 1).len(), 50);
+            assert!(ArenaStorage::load_roster_page(&env, 2).is_empty());
+            assert!(ArenaStorage::load_player_page(&env, u32::MAX, 50).is_empty());
+        });
+    }
+
+    #[test]
+    fn legacy_roster_migration_is_complete_and_idempotent() {
+        let env = Env::default();
+        let contract_id = env.register(ArenaContract, ());
+        let admin = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            ArenaStorage::save_config(&env, &config(&env, &admin, GameState::Open));
+            let mut legacy = Vec::new(&env);
+            for index in 0..51 {
+                let player = Address::generate(&env);
+                legacy.push_back(player.clone());
+                ArenaStorage::save_player(
+                    &env,
+                    &player,
+                    &PlayerState {
+                        active: index % 3 != 0,
+                        rounds_survived: 0,
+                    },
+                );
+            }
+            ArenaStorage::save_players(&env, &legacy);
+            assert_eq!(ArenaStorage::load_player_page(&env, 0, 50).len(), 50);
+            assert_eq!(ArenaStorage::load_player_page(&env, 50, 50).len(), 1);
+            assert_eq!(
+                ArenaStorage::load_storage_version_raw(&env),
+                LEGACY_ROSTER_VERSION
+            );
+
+            ArenaStorage::migrate_legacy_players(&env);
+            let migrated = ArenaStorage::load_all_players(&env);
+            assert_eq!(
+                ArenaStorage::load_storage_version(&env),
+                PAGED_ROSTER_VERSION
+            );
+            assert_eq!(ArenaStorage::load_roster_count(&env), 51);
+            assert_eq!(ArenaStorage::load_survivor_count(&env), 34);
+            assert_eq!(migrated.len(), legacy.len());
+            for index in 0..legacy.len() {
+                assert_eq!(migrated.get(index), legacy.get(index));
+            }
+            assert!(!env.storage().persistent().has(&symbol_short!("PLAYERS")));
+
+            let before = ArenaStorage::load_roster_page(&env, 0);
+            ArenaStorage::migrate_legacy_players(&env);
+            assert_eq!(ArenaStorage::load_roster_page(&env, 0), before);
+        });
     }
 }

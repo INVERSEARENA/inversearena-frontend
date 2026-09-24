@@ -1,0 +1,10 @@
+apiVersion: 1
+providers:
+  - name: InverseArena
+    orgId: 1
+    folder: InverseArena
+    type: file
+    disableDeletion: false
+    editable: false
+    options:
+      path: /var/lib/grafana/dashboards

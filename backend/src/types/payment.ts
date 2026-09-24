@@ -5,7 +5,8 @@ export type PaymentStatus =
   | "submitted"
   | "confirmed"
   | "failed"
-  | "dead";
+  | "dead"
+  | "unknown";
 
 export interface TransactionRecord {
   id: string;

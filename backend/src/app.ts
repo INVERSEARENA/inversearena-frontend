@@ -24,8 +24,9 @@ import { UsersController } from "./controllers/users.controller";
 import { LeaderboardController } from "./controllers/leaderboard.controller";
 import { TransactionsController } from "./controllers/transactions.controller";
 import { RoundController } from "./controllers/round.controller";
-import { refreshArenaMetrics, register } from "./utils/metrics";
+import { refreshArenaMetrics, refreshQueueMetrics, register } from "./utils/metrics";
 import { redis } from "./cache/redisClient";
+import type { QueueSnapshotSource } from "./queues/txQueue";
 import type { PaymentService } from "./services/paymentService";
 import type { PaymentWorker } from "./workers/paymentWorker";
 import type { TransactionRepository } from "./repositories/transactionRepository";
@@ -41,6 +42,8 @@ export interface AppDependencies {
   adminService: AdminService;
   authService: AuthService;
   roundService: RoundService;
+  queueSnapshotSource?: QueueSnapshotSource;
+  queueCapacity?: number;
 }
 
 export function createApp(deps: AppDependencies): express.Application {
@@ -134,11 +137,17 @@ export function createApp(deps: AppDependencies): express.Application {
   });
 
   app.get("/metrics", async (_req, res) => {
-    try {
-      await refreshArenaMetrics(prisma);
-    } catch {
-      // Keep the metrics endpoint available even if the database is degraded.
+    const refreshes: Promise<unknown>[] = [refreshArenaMetrics(prisma)];
+    if (deps.queueSnapshotSource) {
+      const queueOptions =
+        deps.queueCapacity === undefined
+          ? {}
+          : { capacity: deps.queueCapacity };
+      refreshes.push(
+        refreshQueueMetrics(deps.queueSnapshotSource, queueOptions),
+      );
     }
+    await Promise.allSettled(refreshes);
     res.set("Content-Type", register.contentType);
     res.send(await register.metrics());
   });

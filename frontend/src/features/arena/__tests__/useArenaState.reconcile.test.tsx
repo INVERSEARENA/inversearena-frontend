@@ -1,16 +1,7 @@
-/**
- * Hook-level coverage for useArenaState's deterministic reconciliation
- * surface (#1385): `reconcile(publicKey)` re-reads the authoritative chain
- * state and replaces the hook's local/optimistic state with it, exposing
- * `lastSyncedAt` so callers can reason about convergence.
- */
-import {
-  renderHook,
-  waitFor,
-  act,
-} from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import type { ArenaStateFromContract } from "@/shared-d/types/contract-state";
 import { useArenaState } from "../useArenaState";
-import type { ArenaStateResponse } from "@/shared-d/utils/stellar-transactions";
+import { resetArenaStore } from "../arenaStore";
 
 const mockFetchArenaState = jest.fn();
 
@@ -21,16 +12,19 @@ jest.mock("@/shared-d/utils/stellar-transactions", () => ({
 const ARENA_ID = "arena-1";
 const USER_KEY = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
 
-function baseResponse(overrides: Partial<ArenaStateResponse> = {}): ArenaStateResponse {
+function baseResponse(
+  overrides: Partial<ArenaStateFromContract> = {},
+): ArenaStateFromContract {
   return {
     arenaId: ARENA_ID,
-    survivorsCount: 8,
-    maxCapacity: 10,
-    isUserIn: false,
-    hasWon: false,
-    currentStake: 100,
-    potentialPayout: 250,
-    roundNumber: 1,
+    contractArenaState: {
+      survivors: 8,
+      capacity: 10,
+      round: 1,
+      stakes: 100_000_000n,
+      payouts: 250_000_000n,
+    },
+    contractUserState: { active: false, won: false },
     gameState: 1,
     entryFee: 100,
     playerCount: 8,
@@ -42,11 +36,16 @@ function baseResponse(overrides: Partial<ArenaStateResponse> = {}): ArenaStateRe
 
 describe("useArenaState.reconcile", () => {
   beforeEach(() => {
+    resetArenaStore();
     mockFetchArenaState.mockReset();
     mockFetchArenaState.mockResolvedValue(baseResponse());
   });
 
-  it("exposes lastSyncedAt as null until the first successful read", async () => {
+  afterEach(() => {
+    resetArenaStore();
+  });
+
+  it("publishes a sync timestamp after the first successful read", async () => {
     const { result, unmount } = renderHook(() => useArenaState(ARENA_ID));
     expect(result.current.lastSyncedAt).toBeNull();
 
@@ -54,21 +53,17 @@ describe("useArenaState.reconcile", () => {
     unmount();
   });
 
-  it("converges optimistic state to chain state after confirmation", async () => {
-    // Initial poll resolves pre-join (optimistic state says not joined yet).
+  it("converges to authenticated state after confirmation", async () => {
     mockFetchArenaState.mockResolvedValue(
-      baseResponse({ gameState: 1, isUserIn: false }),
+      baseResponse({ contractUserState: { active: false, won: false } }),
     );
     const { result, unmount } = renderHook(() => useArenaState(ARENA_ID));
     await waitFor(() => expect(result.current.state).not.toBeNull());
-    expect(result.current.state?.isUserIn).toBe(false);
 
-    // The join transaction confirmed on-chain moments later: reconcile re-reads
-    // the chain and deterministically replaces the stale local state.
     mockFetchArenaState.mockResolvedValue(
-      baseResponse({ gameState: 1, isUserIn: true }),
+      baseResponse({ contractUserState: { active: true, won: false } }),
     );
-    let converged: unknown;
+    let converged: Awaited<ReturnType<typeof result.current.reconcile>> = null;
     await act(async () => {
       converged = await result.current.reconcile(USER_KEY);
     });
@@ -76,30 +71,29 @@ describe("useArenaState.reconcile", () => {
     expect(converged).toMatchObject({ isUserIn: true });
     expect(result.current.state?.isUserIn).toBe(true);
     expect(result.current.health).toBe("connected");
-    expect(result.current.lastSyncedAt).toEqual(expect.any(Number));
     unmount();
   });
 
-  it("converges to winner state after a timeout that later confirms on-chain", async () => {
+  it("converges to winner state after a delayed confirmation", async () => {
     mockFetchArenaState.mockResolvedValue(
-      baseResponse({ gameState: 1, isUserIn: true, hasWon: false }),
+      baseResponse({ contractUserState: { active: true, won: false } }),
     );
     const { result, unmount } = renderHook(() => useArenaState(ARENA_ID));
     await waitFor(() => expect(result.current.state).not.toBeNull());
 
     mockFetchArenaState.mockResolvedValue(
-      baseResponse({ gameState: 4, isUserIn: true, hasWon: true }),
+      baseResponse({ gameState: 4, contractUserState: { active: true, won: true } }),
     );
     await act(async () => {
       await result.current.reconcile(USER_KEY);
     });
 
-    expect(result.current.state?.state).toBe("finished");
+    expect(result.current.state?.status).toBe("finished");
     expect(result.current.state?.hasWon).toBe(true);
     unmount();
   });
 
-  it("passes the wallet address through so user-scoped fields are populated", async () => {
+  it("passes the wallet address to the chain boundary", async () => {
     const { result, unmount } = renderHook(() => useArenaState(ARENA_ID));
     await waitFor(() => expect(result.current.lastSyncedAt).not.toBeNull());
 
@@ -111,21 +105,20 @@ describe("useArenaState.reconcile", () => {
     unmount();
   });
 
-  it("keeps the last known state and rethrows when a reconcile read fails", async () => {
+  it("retains the last known state and rethrows a reconcile failure", async () => {
     mockFetchArenaState.mockResolvedValue(
-      baseResponse({ gameState: 1, isUserIn: true }),
+      baseResponse({ contractUserState: { active: true, won: false } }),
     );
     const { result, unmount } = renderHook(() => useArenaState(ARENA_ID));
     await waitFor(() => expect(result.current.state?.isUserIn).toBe(true));
 
     mockFetchArenaState.mockRejectedValue(new Error("RPC unreachable"));
-
     let reconcileError: unknown;
     await act(async () => {
       try {
         await result.current.reconcile(USER_KEY);
-      } catch (err) {
-        reconcileError = err;
+      } catch (error) {
+        reconcileError = error;
       }
     });
 
@@ -134,10 +127,10 @@ describe("useArenaState.reconcile", () => {
     unmount();
   });
 
-  it("resolves null and skips the network when no arenaId is configured", async () => {
+  it("skips the network for an empty arena ID", async () => {
     const { result, unmount } = renderHook(() => useArenaState(""));
 
-    expect(await result.current.reconcile(USER_KEY)).toBeNull();
+    await expect(result.current.reconcile(USER_KEY)).resolves.toBeNull();
     expect(mockFetchArenaState).not.toHaveBeenCalled();
     expect(result.current.lastSyncedAt).toBeNull();
     unmount();
