@@ -255,6 +255,21 @@ export const payoutsDeadLetterTotal = new Counter({
   registers: [register],
 });
 
+// Commit receipt status endpoint (#1383)
+export const commitReceiptLookupsTotal = new Counter({
+  name: 'inversearena_commit_receipt_lookups_total',
+  help: 'Total commit-status lookups, by resulting status and outcome',
+  labelNames: ['status', 'outcome'],
+  registers: [register],
+});
+
+export const commitReceiptLookupDuration = new Histogram({
+  name: 'inversearena_commit_receipt_lookup_duration_seconds',
+  help: 'Commit-status lookup duration in seconds',
+  buckets: [0.005, 0.01, 0.05, 0.1, 0.5, 1, 2],
+  registers: [register],
+});
+
 // 0 = closed (healthy), 1 = half-open (probing), 2 = open (failing)
 export const sorobanCircuitBreakerState = new Gauge({
   name: 'inversearena_soroban_circuit_breaker_state',

@@ -3,7 +3,12 @@ import { Contract, Keypair, TransactionBuilder, xdr } from "@stellar/stellar-sdk
 import { StellarRpcGateway } from "../../frontend/src/shared-d/services/stellarRpcGateway";
 
 import { RoundRepository } from '../repositories/roundRepository';
-import type { RoundInput, RoundMetadata, RoundResolution } from '../types/round';
+import type {
+  RoundInput,
+  RoundMetadata,
+  RoundResolution,
+  CommitReceipt,
+} from '../types/round';
 import { RoundState } from '../types/round';
 import {
   arenaStateTransitionsTotal,
@@ -11,6 +16,8 @@ import {
   refreshArenaMetrics,
   roundResolutionsTotal,
   roundResolutionDuration,
+  commitReceiptLookupsTotal,
+  commitReceiptLookupDuration,
 } from '../utils/metrics';
 import { invalidateArenaStats } from '../cache/cacheService';
 import {
@@ -19,6 +26,7 @@ import {
 } from './onChainReader';
 import { getStellarConfig, type StellarConfig } from '../config/stellarConfig';
 import { buildRoundResolution } from '../domain/roundResolution';
+import { contextLogger, maskWalletAddress } from '../utils/logger';
 
 export interface OnChainRoundState {
   roundId: string;
@@ -62,15 +70,38 @@ export class SorobanOnChainReader implements OnChainReader {
 export class RoundService {
   private roundRepo: RoundRepository;
   private onChainReader: OnChainReader;
+  private explicitStellarConfig: StellarConfig | undefined;
+  private resolvedStellarConfig: StellarConfig | undefined;
 
   constructor(
     private prisma: PrismaClient,
-    private stellarConfig: StellarConfig = getStellarConfig(),
-    private stellarRpcGateway: StellarRpcGateway = new StellarRpcGateway(),
+    stellarConfig?: StellarConfig,
     onChainReader?: OnChainReader,
+    private stellarRpcGateway: StellarRpcGateway = new StellarRpcGateway(),
   ) {
     this.roundRepo = new RoundRepository(prisma);
     this.onChainReader = onChainReader ?? new SorobanOnChainReader();
+    this.explicitStellarConfig = stellarConfig;
+  }
+
+  /**
+   * Resolved lazily (on first access), not eagerly in the constructor.
+   *
+   * getStellarConfig() throws outside NODE_ENV=test unless
+   * SOROBAN_RPC_URL/STELLAR_NETWORK_PASSPHRASE are set, but not every
+   * RoundService consumer needs on-chain config — getCommitStatus (#1383)
+   * is a pure Postgres read and performs no Soroban RPC calls at all.
+   * Constructing a RoundService (e.g. in createArenasRouter, or in a
+   * lightweight route test that mounts the router directly) must not
+   * require Stellar config to be present; only the on-chain resolve path
+   * (submitOnChainResolve) actually needs it, and that's where this getter
+   * is used.
+   */
+  private get stellarConfig(): StellarConfig {
+    if (!this.resolvedStellarConfig) {
+      this.resolvedStellarConfig = this.explicitStellarConfig ?? getStellarConfig();
+    }
+    return this.resolvedStellarConfig;
   }
 
   /**
@@ -213,6 +244,140 @@ export class RoundService {
       roundResolutionsTotal.inc({ status: 'error' });
       throw error;
     }
+  }
+
+  /**
+   * Round-scoped commit receipt status (#1383).
+   *
+   * Answers "what is the status of my submit_commitment for this round?"
+   * purely from data the backend already has — Round.state and the
+   * resolved round's playerChoices. See backend/docs/COMMIT_RECEIPT_DESIGN.md
+   * for the full state-machine rationale, including why `pending` cannot
+   * currently distinguish "never submitted" from "submitted but not yet
+   * indexed" (the backend does not index submit_commitment events).
+   *
+   * This method performs no on-chain reads — it is a read over Postgres
+   * only — so it has no OnChainReadError-style failure mode; a thrown error
+   * here is always an infrastructure failure (DB) and propagates to the
+   * caller's asyncHandler/errorHandler as a 500, same as any other route.
+   */
+  async getCommitStatus(
+    arenaId: string,
+    roundNumber: number,
+    walletAddress: string,
+  ): Promise<CommitReceipt> {
+    const start = Date.now();
+    const log = contextLogger();
+    const asOf = new Date().toISOString();
+
+    try {
+      const round = await this.roundRepo.findByArenaAndNumber(arenaId, roundNumber);
+
+      if (!round) {
+        const receipt: CommitReceipt = {
+          arenaId,
+          roundNumber,
+          walletAddress,
+          status: 'missing',
+          reason: 'ROUND_NOT_FOUND',
+          asOf,
+        };
+        this.recordCommitStatusOutcome(receipt, start, log, walletAddress);
+        return receipt;
+      }
+
+      const user = await this.prisma.user.findUnique({ where: { walletAddress } });
+      const playerChoice = user
+        ? round.playerChoices.find((choice) => choice.userId === user.id)
+        : undefined;
+
+      let receipt: CommitReceipt;
+
+      if (playerChoice) {
+        // Accepted: duplicate delivery is naturally idempotent here —
+        // playerChoices is looked up with .find (first match), so even if
+        // a caller somehow produced two entries for the same userId this
+        // still reports a single, clean "accepted" rather than erroring or
+        // double-reporting.
+        const revealedChoice =
+          playerChoice.choice === 'heads' || playerChoice.choice === 'tails'
+            ? playerChoice.choice
+            : undefined;
+        receipt = {
+          arenaId,
+          roundNumber,
+          walletAddress,
+          status: 'accepted',
+          // Spread rather than assign `choice: undefined` directly — the
+          // CommitReceipt type has exactOptionalPropertyTypes: true, so the
+          // key must be omitted entirely when there's no valid choice, not
+          // present-with-undefined.
+          ...(revealedChoice !== undefined ? { choice: revealedChoice } : {}),
+          asOf,
+        };
+      } else if (round.state === RoundState.RESOLVED || round.state === RoundState.SETTLED) {
+        // Round is done and this player has no recorded choice. We cannot
+        // tell "never committed" apart from "committed but missing from the
+        // resolution input" — `missing` is the more honest label than
+        // `expired`, which would imply positive evidence of a closed
+        // window we don't actually have for a resolved round.
+        receipt = {
+          arenaId,
+          roundNumber,
+          walletAddress,
+          status: 'missing',
+          reason: 'NO_COMMIT_RECORDED',
+          asOf,
+        };
+      } else if (round.state === RoundState.CLOSED) {
+        receipt = { arenaId, roundNumber, walletAddress, status: 'expired', asOf };
+      } else {
+        // OPEN (or any future state defaulted to OPEN by parseState) with
+        // no recorded choice yet: the window is still open from the
+        // backend's point of view.
+        receipt = { arenaId, roundNumber, walletAddress, status: 'pending', asOf };
+      }
+
+      this.recordCommitStatusOutcome(receipt, start, log, walletAddress);
+      return receipt;
+    } catch (error) {
+      const duration = (Date.now() - start) / 1000;
+      commitReceiptLookupDuration.observe(duration);
+      commitReceiptLookupsTotal.inc({ status: 'error', outcome: 'failure' });
+      log.error(
+        {
+          arenaId,
+          roundNumber,
+          walletAddress: maskWalletAddress(walletAddress),
+          err: error,
+          durationMs: Date.now() - start,
+        },
+        'commit-status lookup failed',
+      );
+      throw error;
+    }
+  }
+
+  private recordCommitStatusOutcome(
+    receipt: CommitReceipt,
+    start: number,
+    log: ReturnType<typeof contextLogger>,
+    walletAddress: string,
+  ): void {
+    const duration = (Date.now() - start) / 1000;
+    commitReceiptLookupDuration.observe(duration);
+    commitReceiptLookupsTotal.inc({ status: receipt.status, outcome: 'success' });
+    log.info(
+      {
+        arenaId: receipt.arenaId,
+        roundNumber: receipt.roundNumber,
+        walletAddress: maskWalletAddress(walletAddress),
+        status: receipt.status,
+        reason: receipt.reason,
+        durationMs: Date.now() - start,
+      },
+      'commit-status lookup',
+    );
   }
 
   async closeRound(roundId: string): Promise<{ state: RoundState }> {

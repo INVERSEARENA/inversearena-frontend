@@ -170,3 +170,36 @@ export interface RoundProofBundle {
   /** ISO-8601 timestamp of when the bundle was assembled. */
   generatedAt: string;
 }
+
+// ─── Round-scoped commit receipt (#1383) ────────────────────────────────────
+
+/**
+ * Round-scoped commit receipt status (#1383).
+ *
+ * `accepted`  — the round resolved and a choice was recorded for this player.
+ * `pending`   — the round's commit window is still open (state OPEN) and no
+ *               resolved choice exists yet. This cannot distinguish "never
+ *               submitted" from "submitted on-chain but not yet reflected
+ *               here" — see backend/docs/COMMIT_RECEIPT_DESIGN.md §7 for why.
+ * `expired`   — the round was closed (state CLOSED) with no recorded choice
+ *               for this player.
+ * `missing`   — absence, not a stored value: no round, no player record, or
+ *               a resolved/settled round with no recorded choice for them.
+ */
+export type CommitReceiptStatus = "accepted" | "pending" | "expired" | "missing";
+
+/** Machine-readable reason code, present only for the `missing` status. */
+export type CommitReceiptMissingReason = "ROUND_NOT_FOUND" | "NO_COMMIT_RECORDED";
+
+export interface CommitReceipt {
+  arenaId: string;
+  roundNumber: number;
+  walletAddress: string;
+  status: CommitReceiptStatus;
+  /** Present only when status === "missing". */
+  reason?: CommitReceiptMissingReason;
+  /** The player's revealed choice, present only when status === "accepted". */
+  choice?: "heads" | "tails";
+  /** Server timestamp (ISO 8601) this status was computed at — see §5/§7 on staleness. */
+  asOf: string;
+}
