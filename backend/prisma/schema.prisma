@@ -81,6 +81,18 @@ model Transaction {
   @@map("transactions")
 }
 
+// Resumable cursor state for background reconciliation/backfill jobs.
+// One row per job (keyed by `id`, e.g. "arena_discovery"), so a job resumes
+// from where it left off across restarts instead of rescanning from scratch
+// or losing progress (see docs/arena-discovery-backfill.md, #1391).
+model BackfillCursor {
+  id            String   @id // job name, e.g. "arena_discovery"
+  lastProcessed Int      @default(0) @map("last_processed")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("backfill_cursors")
+}
+
 model EliminationLog {
   id          String   @id @default(uuid())
   roundId     String   @map("round_id")

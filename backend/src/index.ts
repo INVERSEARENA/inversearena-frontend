@@ -17,6 +17,11 @@ export type {
   QueueSnapshotSource,
 } from "./queues/txQueue";
 export { getTxWorkerConfig } from "./config/workerConfig";
+export { ArenaBackfillWorker, ARENA_DISCOVERY_CURSOR_ID } from "./workers/arenaBackfillWorker";
+export type {
+  ArenaBackfillWorkerOptions,
+  ArenaBackfillRunResult,
+} from "./workers/arenaBackfillWorker";
 export type {
   BuildPayoutResult,
   CreatePayoutRequest,

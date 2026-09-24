@@ -28,6 +28,20 @@ let sourcePublicKey: string | null = null;
 export type OnChainGameState = "Open" | "InProgress" | "Finished" | "Cancelled";
 
 /**
+ * Test-only override for the raw Soroban RPC server `simulateViewCall` (and
+ * everything built on it, e.g. `getFactoryArenaPage`, `getArenaEvents`)
+ * uses, bypassing the real `StellarRpcGateway` a caller constructs —
+ * mirrors the same `setRpcServerForTest` pattern used in
+ * `arenaService.ts`/`ledgerClock.ts`. Restored to `null` (the default: use
+ * the real gateway) by passing `null` to `setRpcServerForTest`.
+ */
+let rpcServerOverride: rpc.Server | null = null;
+
+export function setRpcServerForTest(server: rpc.Server | null): void {
+  rpcServerOverride = server;
+}
+
+/**
  * Raised when an on-chain read fails for a transient/infrastructure reason
  * (RPC timeout, simulation error, malformed response) as opposed to the
  * contract legitimately reporting "no value yet".
@@ -50,17 +64,6 @@ export class OnChainReadError extends Error {
   }
 }
 
-
-/**
- * Test seam — mirrors the pattern used in arenaService.ts / ledgerClock.ts.
- * When set, simulateViewCall bypasses the real StellarRpcGateway and talks
- * directly to this stub server instead.
- */
-let rpcServerOverride: rpc.Server | null = null;
-
-export function setRpcServerForTest(server: rpc.Server | null): void {
-  rpcServerOverride = server;
-}
 /**
  * A dummy public key used as the simulation source for read-only calls.
  * Does not need funds — Soroban simulates without submitting.
@@ -89,6 +92,14 @@ async function simulateViewCall(
   stellarRpcGateway: StellarRpcGateway,
   args: xdr.ScVal[] = [],
 ): Promise<unknown> {
+  // Test seam: when `setRpcServerForTest` has set an override, it fully
+  // replaces the real `stellarRpcGateway` passed in by the caller for the
+  // duration of the override — mirrors `arenaService.ts`/`ledgerClock.ts`'s
+  // own `setRpcServerForTest` seams. The override is a raw `rpc.Server`
+  // (single-arg `getAccount(publicKey)`, matching the SDK's own signature),
+  // not the `StellarRpcGateway` wrapper (two-arg `getAccount(publicKey, fn)`,
+  // Horizon-backed) — the two call shapes differ, so this branches on which
+  // client is active rather than trying to unify them behind one type.
   const sourceAccount = rpcServerOverride
     ? await rpcServerOverride.getAccount(getSourcePublicKey())
     : await stellarRpcGateway.getAccount(getSourcePublicKey(), `simulateViewCall.${functionName}`);
@@ -296,6 +307,144 @@ export async function getOnChainSnapshotOrThrow(
     gameState: String(gameStateRaw) as OnChainGameState,
     yieldAccrued: Number(yieldRaw as bigint | number),
   };
+}
+
+/** On-chain lifecycle status of a factory-tracked pool — matches the factory
+ * contract's `ArenaStatus` enum (`contract/factory/src/types.rs`). */
+export type FactoryArenaStatus = "Pending" | "Active" | "Finished" | "Cancelled";
+
+/**
+ * A single pool entry as returned by the factory contract's `get_arenas`
+ * view call — matches `ArenaMetadata` (`contract/factory/src/types.rs`).
+ */
+export interface FactoryArenaMetadata {
+  arenaAddress: string;
+  poolId: number;
+  host: string;
+  entryFee: bigint;
+  status: FactoryArenaStatus;
+  createdAt: number;
+}
+
+/**
+ * Raised when a page of factory arena metadata cannot be read (RPC failure)
+ * or contains a record that fails basic shape validation (malformed/invalid
+ * on-chain data). Callers (the backfill worker) must not treat this as "no
+ * arenas in this page" — that would silently stop the backfill's cursor from
+ * advancing past a page that actually had data.
+ */
+export class FactoryReadError extends Error {
+  constructor(
+    readonly reason: string,
+    override readonly cause?: unknown,
+  ) {
+    super(
+      `Factory arena read failed: ${reason}` +
+        (cause instanceof Error ? ` (${cause.message})` : ""),
+    );
+    this.name = "FactoryReadError";
+  }
+}
+
+const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
+
+function decodeArenaMetadata(raw: unknown): FactoryArenaMetadata {
+  if (!raw || typeof raw !== "object") {
+    throw new FactoryReadError("arena metadata entry is not an object");
+  }
+  const entry = raw as Record<string, unknown>;
+
+  const arenaAddress = entry.arena_address;
+  if (typeof arenaAddress !== "string" || !CONTRACT_ID_REGEX.test(arenaAddress)) {
+    throw new FactoryReadError(
+      `arena_address is not a valid Soroban contract id: ${String(arenaAddress)}`,
+    );
+  }
+
+  const poolIdRaw = entry.pool_id;
+  const poolId = Number(poolIdRaw as bigint | number);
+  if (!Number.isInteger(poolId) || poolId <= 0) {
+    throw new FactoryReadError(`pool_id is not a positive integer: ${String(poolIdRaw)}`);
+  }
+
+  const host = entry.host;
+  if (typeof host !== "string" || host.length === 0) {
+    throw new FactoryReadError("host is missing or not a string");
+  }
+
+  const entryFeeRaw = entry.entry_fee;
+  let entryFee: bigint;
+  try {
+    entryFee = BigInt(entryFeeRaw as bigint | number | string);
+  } catch {
+    throw new FactoryReadError(`entry_fee is not a valid integer: ${String(entryFeeRaw)}`);
+  }
+
+  // `ArenaStatus` (contract/factory/src/types.rs) is a fieldless Rust enum.
+  // soroban-sdk's #[contracttype] derive encodes a fieldless enum variant as
+  // a one-element ScVec containing the variant's Symbol (`Vec([Symbol("Active")])`),
+  // not a bare Symbol — scValToNative therefore decodes it to a one-element
+  // array (`["Active"]`), not the string `"Active"`. Comparing `entry.status`
+  // directly against a string would never match any real on-chain value and
+  // would permanently fail every record. Confirmed empirically against the
+  // actual contract encoding (soroban-sdk 22.x) before writing this check.
+  const statusRaw = Array.isArray(entry.status) ? entry.status[0] : entry.status;
+  const validStatuses: FactoryArenaStatus[] = ["Pending", "Active", "Finished", "Cancelled"];
+  const status = validStatuses.find((candidate) => candidate === statusRaw);
+  if (!status) {
+    throw new FactoryReadError(`status is not a recognized ArenaStatus: ${String(statusRaw)}`);
+  }
+
+  const createdAtRaw = entry.created_at;
+  const createdAt = Number(createdAtRaw as bigint | number);
+  if (!Number.isFinite(createdAt) || createdAt < 0) {
+    throw new FactoryReadError(`created_at is not a valid timestamp: ${String(createdAtRaw)}`);
+  }
+
+  return { arenaAddress, poolId, host, entryFee, status, createdAt };
+}
+
+/**
+ * Read one page of factory-tracked arenas via the factory contract's
+ * `get_arenas(offset, limit)` view call (#1391).
+ *
+ * `offset` is the number of pools to skip (0-indexed); `limit` is clamped to
+ * 50 server-side by the contract regardless of what is requested here.
+ * Results are ordered by ascending `pool_id`, so the caller can treat
+ * `offset + results.length` as the next page's offset and detect the end of
+ * the list by getting back fewer than `limit` results (or zero).
+ *
+ * Throws `FactoryReadError` on any RPC failure or malformed record — this is
+ * a deliberate contrast with the other `getOnChain*` helpers in this module,
+ * which return safe fallback values on failure. A backfill job silently
+ * treating "RPC failed" the same as "no arenas here" would advance its
+ * cursor past pools it never actually read, permanently losing them.
+ */
+export async function getFactoryArenaPage(
+  factoryContractId: string,
+  offset: number,
+  limit: number,
+): Promise<FactoryArenaMetadata[]> {
+  let result: unknown;
+  try {
+    const stellarRpcGateway = new StellarRpcGateway();
+    const offsetArg = nativeToScVal(offset, { type: "u32" });
+    const limitArg = nativeToScVal(limit, { type: "u32" });
+    result = await simulateViewCall(factoryContractId, "get_arenas", stellarRpcGateway, [offsetArg, limitArg]);
+  } catch (error) {
+    throw new FactoryReadError(
+      `get_arenas(${offset}, ${limit}) simulation failed on ${factoryContractId}`,
+      error,
+    );
+  }
+
+  if (!Array.isArray(result)) {
+    throw new FactoryReadError(
+      `get_arenas(${offset}, ${limit}) returned a non-array result`,
+    );
+  }
+
+  return result.map((entry) => decodeArenaMetadata(entry));
 }
 
 /**

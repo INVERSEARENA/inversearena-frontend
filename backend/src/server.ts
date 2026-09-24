@@ -9,6 +9,7 @@ import { getPaymentConfig } from "./config/paymentConfig";
 
 import { PaymentService } from "./services/paymentService";
 import { PaymentWorker } from "./workers/paymentWorker";
+import { ArenaBackfillWorker } from "./workers/arenaBackfillWorker";
 import { AdminService } from "./services/adminService";
 import { AuthService } from "./services/authService";
 import { RoundService } from "./services/roundService";
@@ -23,6 +24,7 @@ import { initSentry } from "./utils/sentry";
 import { logger } from "./utils/logger";
 
 const PORT = Number(process.env.PORT ?? 3001);
+const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
 
 async function main() {
   validateConfig();
@@ -47,9 +49,21 @@ async function main() {
   const roundService = new RoundService(prisma);
   const roundProofBundleService = new RoundProofBundleService(prisma);
 
+  // #1391: reconciles the Arena table against the factory contract's
+  // authoritative get_arenas state. Same env var confirmArenaDeployment
+  // already requires — fail fast at boot rather than on first triggered run.
+  const arenaFactoryContractId = process.env.ARENA_FACTORY_CONTRACT_ID ?? "";
+  if (!CONTRACT_ID_REGEX.test(arenaFactoryContractId)) {
+    throw new Error(
+      "ARENA_FACTORY_CONTRACT_ID is not configured with a valid Soroban contract ID",
+    );
+  }
+  const arenaBackfillWorker = new ArenaBackfillWorker(prisma, arenaFactoryContractId);
+
   const app = createApp({
     paymentService,
     paymentWorker,
+    arenaBackfillWorker,
     transactions,
     adminService,
     authService,

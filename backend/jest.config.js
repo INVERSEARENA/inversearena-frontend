@@ -30,6 +30,9 @@ module.exports = {
     "<rootDir>/tests/payoutsReceipt\\.unit\\.test\\.ts",
     "<rootDir>/tests/contractCapability\\.integration\\.unit\\.test\\.ts",
     "<rootDir>/tests/roundProofBundle\\.route\\.unit\\.test\\.ts",
+    "<rootDir>/tests/onChainReader\\.factoryArenaPage\\.unit\\.test\\.ts",
+    "<rootDir>/tests/arenaBackfillWorker\\.unit\\.test\\.ts",
+    "<rootDir>/tests/arenaBackfill\\.integration\\.unit\\.test\\.ts",
     // Legacy script-style runners (no Jest `describe`/`it`)
     "<rootDir>/tests/leaderboard\\.test\\.ts",
     "<rootDir>/tests/security-headers\\.test\\.ts",

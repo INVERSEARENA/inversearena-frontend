@@ -29,6 +29,7 @@ import { redis } from "./cache/redisClient";
 import type { QueueSnapshotSource } from "./queues/txQueue";
 import type { PaymentService } from "./services/paymentService";
 import type { PaymentWorker } from "./workers/paymentWorker";
+import type { ArenaBackfillWorker } from "./workers/arenaBackfillWorker";
 import type { TransactionRepository } from "./repositories/transactionRepository";
 import type { AdminService } from "./services/adminService";
 import type { AuthService } from "./services/authService";
@@ -39,6 +40,7 @@ import { prisma } from "./db/prisma";
 export interface AppDependencies {
   paymentService: PaymentService;
   paymentWorker: PaymentWorker;
+  arenaBackfillWorker: ArenaBackfillWorker;
   transactions: TransactionRepository;
   adminService: AdminService;
   authService: AuthService;
@@ -158,7 +160,7 @@ export function createApp(deps: AppDependencies): express.Application {
     deps.paymentService,
     deps.transactions,
   );
-  const workerController = new WorkerController(deps.paymentWorker);
+  const workerController = new WorkerController(deps.paymentWorker, deps.arenaBackfillWorker);
   const adminController = new AdminController(
     deps.adminService,
     deps.paymentService,

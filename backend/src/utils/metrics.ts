@@ -501,6 +501,39 @@ export const proofBundleVerificationTotal = new Counter({
   registers: [register],
 });
 
+// Arena Discovery Backfill Metrics (#1391)
+export const backfillRunsTotal = new Counter({
+  name: 'inversearena_backfill_runs_total',
+  help: 'Total arena discovery backfill runs',
+  labelNames: ['status'],
+  registers: [register],
+});
+
+export const backfillArenasDiscoveredTotal = new Counter({
+  name: 'inversearena_backfill_arenas_discovered_total',
+  help: 'Total arenas successfully upserted by the backfill job',
+  registers: [register],
+});
+
+export const backfillArenasFailedTotal = new Counter({
+  name: 'inversearena_backfill_arenas_failed_total',
+  help: 'Total arenas whose backfill upsert failed and will be retried next run',
+  registers: [register],
+});
+
+export const backfillRunDurationSeconds = new Histogram({
+  name: 'inversearena_backfill_run_duration_seconds',
+  help: 'Arena discovery backfill run duration in seconds',
+  buckets: [0.5, 1, 2, 5, 10, 30, 60],
+  registers: [register],
+});
+
+export const backfillCursorPosition = new Gauge({
+  name: 'inversearena_backfill_cursor_position',
+  help: 'Last pool_id fully processed by the arena discovery backfill cursor',
+  registers: [register],
+});
+
 export async function refreshArenaMetrics(prisma: PrismaClient): Promise<void> {
   const activeRounds = await prisma.round.findMany({
     where: {
