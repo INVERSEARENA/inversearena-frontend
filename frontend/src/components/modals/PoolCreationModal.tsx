@@ -9,7 +9,8 @@ import {
   type DecodedEnvelope,
   type SigningPolicyError,
 } from "@/shared-d/security/policy";
-import { buildCreatePoolTransaction, submitSignedTransaction } from "@/shared-d/utils/stellar-transactions";
+import { buildCreatePoolTransaction, submitSignedTransaction, NETWORK_PASSPHRASE } from "@/shared-d/utils/stellar-transactions";
+import { useTransactionIntent } from "@/shared-d/hooks/useTransactionIntent";
 import {
   formatCurrencyInput,
   sanitizeNumericInput,
@@ -80,6 +81,7 @@ export function PoolCreationModal({
   const [estimatedFee] = useState(estimateCreatePoolFee());
 
   const { isConnected, address, connect, signTransaction, balance, isLoadingBalance } = useWallet();
+  const { runTrackedTransaction } = useTransactionIntent();
   const [showTxModal, setShowTxModal] = useState(false);
   const [txDetails, setTxDetails] = useState<{ label: string; value: string | number }[]>([]);
 
@@ -557,15 +559,22 @@ export function PoolCreationModal({
         details={txDetails}
         onConfirm={async ({ onSigned }) => {
           if (!address) throw new Error("Wallet disconnected. Please reconnect and try again.");
-          const tx = await buildCreatePoolTransaction(address, {
-            stakeAmount,
-            currency,
-            roundSpeed,
-            arenaCapacity,
+          await runTrackedTransaction({
+            kind: "create_pool",
+            actionKey: `create_pool:${currency}:${stakeAmount}:${roundSpeed}:${arenaCapacity}`,
+            publicKey: address,
+            buildTransaction: () =>
+              buildCreatePoolTransaction(address, {
+                stakeAmount,
+                currency,
+                roundSpeed,
+                arenaCapacity,
+              }),
+            signTransaction,
+            submitSignedTransaction,
+            networkPassphrase: NETWORK_PASSPHRASE,
+            onSigned,
           });
-          const signedXdr = await signTransaction(tx.toXDR());
-          onSigned();
-          await submitSignedTransaction(signedXdr);
           // The pool was created successfully, so the draft no longer
           // represents unsaved work; clear it rather than letting a stale
           // draft resurface on the next Pool Creation open (#1405).

@@ -92,6 +92,7 @@ describe("payout route authorization", () => {
         {
           getById: async (_req: Request, res: Response) => res.json({ ok: "tx" }),
         } as never,
+        {} as never,
         requireAdmin(new ApiKeyAuthProvider()),
         requireAuth(authService),
         authService,

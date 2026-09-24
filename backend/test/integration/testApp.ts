@@ -9,6 +9,8 @@ import { AuthService } from "../../src/services/authService";
 import { RoundService } from "../../src/services/roundService";
 import { RoundProofBundleService } from "../../src/services/roundProofBundleService";
 import { MongoTransactionRepository } from "../../src/repositories/mongoTransactionRepository";
+import { InMemoryTransactionIntentRepository } from "../../src/repositories/inMemoryTransactionIntentRepository";
+import { TransactionIntentService } from "../../src/services/transactionIntentService";
 import { prisma } from "../../src/db/prisma";
 
 const TEST_ARENA_FACTORY_CONTRACT_ID =
@@ -55,6 +57,7 @@ export function setupTestApp() {
         // No credit-asset issuers in tests; XLM is native and needs none.
         assetIssuers: {},
     });
+    const transactionIntentService = new TransactionIntentService(new InMemoryTransactionIntentRepository());
 
     const app = createApp({
         paymentService,
@@ -65,6 +68,7 @@ export function setupTestApp() {
         authService,
         roundService,
         roundProofBundleService,
+        transactionIntentService,
     });
 
     return app;

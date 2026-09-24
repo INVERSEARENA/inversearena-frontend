@@ -5,6 +5,8 @@ import type { ArenaBackfillWorker } from "../src/workers/arenaBackfillWorker";
 import type { TransactionRepository } from "../src/repositories/transactionRepository";
 import type { AdminService } from "../src/services/adminService";
 import type { AuthService } from "../src/services/authService";
+import type { RoundService } from "../src/services/roundService";
+import type { TransactionIntentService } from "../src/services/transactionIntentService";
 import type { Request, Response } from "express";
 
 // ── Mock dependencies ──────────────────────────────────────────────
@@ -17,6 +19,8 @@ const mockDeps: AppDependencies = {
   authService: {
     verifyToken: async () => ({ userId: "test-user" }),
   } as AuthService,
+  roundService: {} as RoundService,
+  transactionIntentService: {} as TransactionIntentService,
 };
 
 // ── Helper to capture response headers ────────────────────────────
