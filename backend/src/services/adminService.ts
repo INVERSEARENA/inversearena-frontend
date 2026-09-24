@@ -80,6 +80,10 @@ export class AdminService {
   }
 
   async log(entry: AuditLogEntry): Promise<void> {
-    await AuditLogModel.create(entry);
+    await AuditLogModel.create({
+      ...entry,
+      actor: entry.actor ?? { type: "admin", id: entry.adminId },
+      resource: entry.resource ?? { type: entry.resourceType, id: entry.resourceId },
+    });
   }
 }

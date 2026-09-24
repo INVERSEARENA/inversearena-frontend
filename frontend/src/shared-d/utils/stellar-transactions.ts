@@ -65,7 +65,7 @@ import {
 export { ContractError, ContractErrorCode, parseContractError } from "@/shared-d/utils/contract-error";
 
 export { ContractClientFactory } from "@/shared-d/utils/contract-client-factory";
-export type { ContractClientFactoryDeps } from "@/shared-d/utils/contract-client-factory";
+export type { ContractClientFactoryDeps, DeploymentManifest } from "@/shared-d/utils/contract-client-factory";
 
 export const FACTORY_CONTRACT_ID = stellarConfig.factoryContractId;
 export const XLM_CONTRACT_ID = stellarConfig.xlmContractId;
@@ -77,7 +77,17 @@ export const NETWORK_PASSPHRASE = stellarConfig.passphrase;
 export const HORIZON_URL = stellarConfig.horizonUrl;
 export const SOROBAN_RPC_URL = stellarConfig.sorobanRpcUrl;
 
-const defaultSorobanClients = new ContractClientFactory(SOROBAN_RPC_URL);
+export const DEFAULT_DEPLOYMENT_MANIFEST = {
+  network: process.env.NEXT_PUBLIC_STELLAR_NETWORK ?? "unknown",
+  rpcUrl: SOROBAN_RPC_URL,
+  passphrase: NETWORK_PASSPHRASE,
+  contracts: {
+    factory: { address: FACTORY_CONTRACT_ID },
+    staking: { address: STAKING_CONTRACT_ID },
+  },
+} as const;
+
+const defaultSorobanClients = new ContractClientFactory(DEFAULT_DEPLOYMENT_MANIFEST);
 
 /**
  * Orchestration: Horizon account load + {@link ContractError} mapping.

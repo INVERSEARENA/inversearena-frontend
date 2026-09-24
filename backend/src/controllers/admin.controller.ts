@@ -30,6 +30,10 @@ const ListAuditLogsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional().default(50),
   action: z.string().optional(),
   adminId: z.string().optional(),
+  actor: z.string().trim().min(1).max(128).optional(),
+  resource: z.string().trim().min(1).max(128).optional(),
+  result: z.enum(["success", "failed", "auth_failed"]).optional(),
+  correlationId: z.string().trim().min(1).max(128).optional(),
 });
 
 const ScheduleMaintenanceSchema = z.object({
@@ -325,11 +329,15 @@ export class AdminController {
   };
 
   listAuditLogs = async (req: Request, res: Response): Promise<void> => {
-    const { limit, action, adminId } = ListAuditLogsQuerySchema.parse(req.query);
+    const { limit, action, adminId, actor, resource, result, correlationId } = ListAuditLogsQuerySchema.parse(req.query);
     const filter: Record<string, unknown> = {};
 
     if (action !== undefined) filter.action = action;
     if (adminId !== undefined) filter.adminId = adminId;
+    if (actor !== undefined) filter.$or = [{ "actor.id": actor }, { adminId: actor }];
+    if (resource !== undefined) filter.$and = [{ $or: [{ "resource.id": resource }, { resourceId: resource }] }];
+    if (result !== undefined) filter.status = result;
+    if (correlationId !== undefined) filter.correlationId = correlationId;
 
     const [logs, total] = await Promise.all([
       AuditLogModel.find(filter).sort({ createdAt: -1 }).limit(limit).lean(),
