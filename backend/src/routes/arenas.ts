@@ -21,6 +21,8 @@ import { createSseConnectionLimitMiddleware } from "../middleware/sseConnectionL
 import { ActiveStakeLimitsService, ActiveStakeLimitError } from "../services/activeStakeLimitsService";
 // Issue #1412 — Arena health summary
 import { ArenaHealthService } from "../services/arenaHealthService";
+// Issue #1401 — Signed server-time synchronization
+import { arenaTimeRouter } from "./arenaTime";
 
 const PaginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
@@ -132,6 +134,15 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   const stakeService = new ActiveStakeLimitsService(prisma);
   // Issue #1412
   const healthService = new ArenaHealthService(prisma);
+
+  // GET /api/arenas/time (#1401) — mounted from its own module
+  // (arenaTime.ts) rather than defined inline here, so it can be
+  // unit-tested without constructing arenaService/onChainReader's
+  // dependency graph, which has a pre-existing broken cross-boundary
+  // import (see the comment in services/serverTimeService.ts) that fails
+  // both `tsc --noEmit` and ts-jest module loading whenever anything in
+  // this router file is imported.
+  router.use(arenaTimeRouter);
 
   /**
    * POST /api/arenas

@@ -106,6 +106,19 @@ export const queueRefreshDuration = new Histogram({
   registers: [register],
 });
 
+export const serverTimeIssuedTotal = new Counter({
+  name: "inversearena_server_time_issued_total",
+  help: "Total signed server-time tokens issued",
+  registers: [register],
+});
+
+export const serverTimeVerifiedTotal = new Counter({
+  name: "inversearena_server_time_verified_total",
+  help: "Total signed server-time token verification attempts, by outcome",
+  labelNames: ["outcome"],
+  registers: [register],
+});
+
 export const diagnosticsRunsTotal = new Counter({
   name: "inversearena_transaction_diagnostics_runs_total",
   help: "Total transaction simulation diagnostics runs, by outcome",
