@@ -119,6 +119,13 @@ export const serverTimeVerifiedTotal = new Counter({
   registers: [register],
 });
 
+export const watchlistOperationsTotal = new Counter({
+  name: "inversearena_watchlist_operations_total",
+  help: "Total arena watchlist watch/unwatch operations, by operation and result",
+  labelNames: ["operation", "result"],
+  registers: [register],
+});
+
 export const diagnosticsRunsTotal = new Counter({
   name: "inversearena_transaction_diagnostics_runs_total",
   help: "Total transaction simulation diagnostics runs, by outcome",

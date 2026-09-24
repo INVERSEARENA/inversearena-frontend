@@ -15,6 +15,14 @@ export interface UserDocument extends Document {
   displayName?: string;
   /** Rotation history of public aliases. Wallet address is never stored here. */
   aliasHistory: AliasHistoryEntry[];
+  /**
+   * Arena watchlist (#1402): Prisma arena ids (Postgres `arenas.id`) the
+   * user has bookmarked. Stored as plain strings — this document has no
+   * foreign-key relationship to Postgres, so a watched arena that is
+   * later deleted upstream just becomes a dangling id, resolved (or
+   * dropped) by the caller when reading arena details, not by this model.
+   */
+  watchedArenaIds: string[];
   joinedAt: Date;
   lastLoginAt: Date;
 }
@@ -33,6 +41,7 @@ const UserSchema = new Schema<UserDocument>(
     walletAddress: { type: String, required: true, unique: true },
     displayName:   { type: String, default: undefined },
     aliasHistory:  { type: [AliasHistoryEntrySchema], default: [] },
+    watchedArenaIds: { type: [String], default: [] },
     joinedAt:      { type: Date, required: true },
     lastLoginAt:   { type: Date, required: true },
   },

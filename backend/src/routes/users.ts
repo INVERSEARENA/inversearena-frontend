@@ -5,6 +5,7 @@ import type { RequestHandler } from "express";
 import { prisma } from "../db/prisma";
 import { ActiveStakeLimitsService, MAX_ACTIVE_STAKE_USDC } from "../services/activeStakeLimitsService";
 import { AliasService } from "../services/aliasService";
+import { createWatchlistRouter } from "./watchlist";
 import { apiError } from "../utils/apiError";
 import { z } from "zod";
 
@@ -107,6 +108,13 @@ export function createUsersRouter(
       res.json(profile);
     }),
   );
+
+  // Issue #1402 — Arena watchlist, mounted from its own module (see
+  // routes/watchlist.ts for why: this router already imports
+  // ActiveStakeLimitsService, which has a pre-existing broken metrics
+  // import unrelated to this change and blocks any test that imports
+  // this file).
+  router.use(createWatchlistRouter(prisma, authMiddleware));
 
   return router;
 }
