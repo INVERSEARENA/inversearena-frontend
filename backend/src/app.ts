@@ -33,6 +33,7 @@ import type { TransactionRepository } from "./repositories/transactionRepository
 import type { AdminService } from "./services/adminService";
 import type { AuthService } from "./services/authService";
 import type { RoundService } from "./services/roundService";
+import type { RoundProofBundleService } from "./services/roundProofBundleService";
 import { prisma } from "./db/prisma";
 
 export interface AppDependencies {
@@ -44,6 +45,7 @@ export interface AppDependencies {
   roundService: RoundService;
   queueSnapshotSource?: QueueSnapshotSource;
   queueCapacity?: number;
+  roundProofBundleService: RoundProofBundleService;
 }
 
 export function createApp(deps: AppDependencies): express.Application {
@@ -184,6 +186,7 @@ export function createApp(deps: AppDependencies): express.Application {
       adminAuthMiddleware,
       userAuthMiddleware,
       deps.authService,
+      deps.roundProofBundleService,
     ),
   );
   app.use("/api/admin", createWalletRoleRouter());

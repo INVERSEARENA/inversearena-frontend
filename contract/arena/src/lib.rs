@@ -79,6 +79,10 @@ struct RoundResolution {
     survivors: u32,
     winner: Option<Address>,
     tied: bool,
+    /// Revealed-choice tally for the round, carried through so
+    /// `resolve_round` can emit it in `round_resolved_v2` (#1394) without
+    /// re-scanning storage that `resolve_players` already cleared.
+    tally: eliminations::Tally,
 }
 
 #[contractimpl]
@@ -724,6 +728,17 @@ impl ArenaContract {
         ArenaStorage::save_config(&env, &config);
 
         ArenaEvents::round_resolved(&env, round, resolution.eliminated, resolution.survivors);
+        // #1394: enriched event carrying the full tally so a client can
+        // independently recompute survivor membership (proof-bundle
+        // verification) instead of trusting the backend's derived counts.
+        ArenaEvents::round_resolved_v2(
+            &env,
+            round,
+            resolution.tally.heads,
+            resolution.tally.tails,
+            resolution.eliminated,
+            resolution.survivors,
+        );
         if resolution.tied {
             ArenaEvents::round_tied(&env, round, resolution.survivors);
         }
@@ -1177,6 +1192,7 @@ impl ArenaContract {
                 survivors,
                 winner,
                 tied,
+                tally,
             }
         } else {
             RoundResolution {
@@ -1184,6 +1200,7 @@ impl ArenaContract {
                 survivors,
                 winner: None,
                 tied,
+                tally,
             }
         }
     }

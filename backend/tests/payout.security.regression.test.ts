@@ -95,6 +95,7 @@ describe("payout route authorization", () => {
         requireAdmin(new ApiKeyAuthProvider()),
         requireAuth(authService),
         authService,
+        {} as never,
       ),
     );
     app.use(errorHandler);

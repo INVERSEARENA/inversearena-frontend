@@ -12,6 +12,7 @@ import { PaymentWorker } from "./workers/paymentWorker";
 import { AdminService } from "./services/adminService";
 import { AuthService } from "./services/authService";
 import { RoundService } from "./services/roundService";
+import { RoundProofBundleService } from "./services/roundProofBundleService";
 import { createTxQueue } from "./queues/txQueue";
 import { startTxReconcilerWorker } from "./workers/txReconciler";
 import { createApp } from "./app";
@@ -44,14 +45,16 @@ async function main() {
   const adminService = new AdminService();
   const authService = new AuthService();
   const roundService = new RoundService(prisma);
+  const roundProofBundleService = new RoundProofBundleService(prisma);
 
-  const app = createApp({ 
-    paymentService, 
-    paymentWorker, 
-    transactions, 
-    adminService, 
+  const app = createApp({
+    paymentService,
+    paymentWorker,
+    transactions,
+    adminService,
     authService,
-    roundService 
+    roundService,
+    roundProofBundleService,
   });
 
   const httpServer = app.listen(PORT, () => {

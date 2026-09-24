@@ -177,6 +177,10 @@ export class RoundService {
         oracleYield: input.oracleYield,
         randomSeed: input.randomSeed,
         resolution: result,
+        // #1394: persisted verbatim (not re-derived later) so the proof
+        // bundle can distinguish non-revealers from "never existed" — see
+        // RoundProofBundleService and docs/round-outcome-proof-bundle.md.
+        allActivePlayerIds: input.allActivePlayerIds,
       };
 
       await this.roundRepo.resolveAtomically(

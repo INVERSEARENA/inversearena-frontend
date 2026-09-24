@@ -58,6 +58,8 @@ export const cacheKeys = {
   arenaOnChainSnapshot: (arenaId: string) => `arena:onchain-snapshot:${arenaId}`,
   /** Persisted ledger continuity window and recovery state (#1490). */
   ledgerContinuity: (network: string) => `ledger:continuity:${network}`,
+  /** #1394: a resolved round's proof bundle is immutable for a given roundId. */
+  roundProofBundle: (roundId: string) => `round:proof-bundle:${roundId}`,
 };
 
 /**
@@ -70,9 +72,12 @@ export const arenaDerivedCachePatterns = ["arena:stats:*", "arena:onchain-snapsh
 /**
  * TTLs in seconds
  *
- * oracle:yield  → 60s  (yield rates change slowly)
- * arena:stats   → 15s  (arena state changes with game rounds)
- * leaderboard   → 30s  (updates after games end)
+ * oracle:yield        → 60s   (yield rates change slowly)
+ * arena:stats         → 15s   (arena state changes with game rounds)
+ * leaderboard         → 30s   (updates after games end)
+ * round:proof-bundle  → 300s  (immutable once resolved — see cacheKeys.roundProofBundle;
+ *                               bounded rather than infinite so a corrected redeploy can
+ *                               still self-heal a bad cached entry within 5 minutes)
  */
 export const cacheTTL = {
   ORACLE_YIELD: 60,
@@ -88,6 +93,7 @@ export const cacheTTL = {
   // Continuity state must outlive a restart during recovery, but not linger
   // forever if the deployment is retired.
   LEDGER_CONTINUITY: 60 * 60 * 24 * 7,
+  ROUND_PROOF_BUNDLE: 300,
 } as const;
 
 /**

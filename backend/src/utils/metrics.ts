@@ -458,6 +458,34 @@ export async function refreshQueueMetrics(
   }
 }
 
+// Round proof bundle metrics (#1394)
+export const proofBundleAssemblyTotal = new Counter({
+  name: 'inversearena_proof_bundle_assembly_total',
+  help: 'Total round proof bundle assembly attempts',
+  labelNames: ['status'],
+  registers: [register],
+});
+
+export const proofBundleAssemblyDuration = new Histogram({
+  name: 'inversearena_proof_bundle_assembly_duration_seconds',
+  help: 'Round proof bundle assembly duration in seconds',
+  buckets: [0.005, 0.01, 0.05, 0.1, 0.5, 1, 2],
+  registers: [register],
+});
+
+export const proofBundleAssemblyRetriesTotal = new Counter({
+  name: 'inversearena_proof_bundle_assembly_retries_total',
+  help: 'Total retry attempts made while assembling a round proof bundle',
+  registers: [register],
+});
+
+export const proofBundleVerificationTotal = new Counter({
+  name: 'inversearena_proof_bundle_verification_total',
+  help: 'Total client-side (frontend-reported) proof bundle verification outcomes',
+  labelNames: ['status'],
+  registers: [register],
+});
+
 export async function refreshArenaMetrics(prisma: PrismaClient): Promise<void> {
   const activeRounds = await prisma.round.findMany({
     where: {
