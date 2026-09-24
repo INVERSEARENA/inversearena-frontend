@@ -16,6 +16,10 @@ import { getOnChainPlayers } from "../services/onChainReader";
 import { isAuthorizedAdminWallet } from "../services/walletRoleService";
 import { createRateLimitMiddleware, getSyncPlayersRateLimitConfig } from "../middleware/rateLimit";
 import { createSseConnectionLimitMiddleware } from "../middleware/sseConnectionLimit";
+// Issue #1411 — Responsible active stake limits
+import { ActiveStakeLimitsService, ActiveStakeLimitError } from "../services/activeStakeLimitsService";
+// Issue #1412 — Arena health summary
+import { ArenaHealthService } from "../services/arenaHealthService";
 
 const PaginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
@@ -122,6 +126,10 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   const arenaStatsService = new ArenaStatsService(prisma);
   const roundRepository = new RoundRepository(prisma);
   const sseConnectionLimiter = createSseConnectionLimitMiddleware();
+  // Issue #1411
+  const stakeService = new ActiveStakeLimitsService(prisma);
+  // Issue #1412
+  const healthService = new ArenaHealthService(prisma);
 
   /**
    * POST /api/arenas
@@ -134,9 +142,21 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
       const { txHash, ...rest } = CreateArenaSchema.parse(req.body);
       const input = rest as unknown as CreateArenaInput;
       const createdBy = req.user?.walletAddress;
+      const userId = req.user?.id;
 
-      if (!createdBy) {
+      if (!createdBy || !userId) {
         throw apiError(401, "UNAUTHORIZED", "Unauthorized");
+      }
+
+      // Issue #1411 — block if the creator would exceed their active stake cap.
+      // entryFee is the incoming stake amount for this arena join.
+      try {
+        await stakeService.assertBelowActiveStakeLimit(userId, input.entryFee ?? 0);
+      } catch (err) {
+        if (err instanceof ActiveStakeLimitError) {
+          throw apiError(409, err.code, err.message);
+        }
+        throw err;
       }
 
       const arena = await arenaService.confirmArenaDeployment(input, createdBy, txHash);
@@ -413,6 +433,36 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
         syncedPlayers: syncedCount,
         message: `Synced ${syncedCount} players from on-chain`,
       });
+    }),
+  );
+
+  /**
+   * GET /api/arenas/:id/health
+   * Returns a composite health summary for the arena combining chain lag,
+   * queue lag, and round state drift. (#1412)
+   *
+   * Response shape: ArenaHealthSummary
+   * Cache TTL: 10s (health is a near-real-time diagnostic signal)
+   */
+  router.get(
+    "/:id/health",
+    cacheMiddleware(
+      (req) => `arena:health:${req.params.id}`,
+      10, // 10 second TTL
+    ),
+    asyncHandler(async (req, res) => {
+      const id = req.params.id;
+      if (!id) {
+        throw apiError(400, "INVALID_ARENA_ID", "Arena id is required");
+      }
+
+      const arena = await prisma.arena.findUnique({ where: { id } });
+      if (!arena) {
+        throw apiError(404, "ARENA_NOT_FOUND", `Arena with ID ${id} not found`);
+      }
+
+      const health = await healthService.getArenaHealth(id);
+      res.json(health);
     }),
   );
 

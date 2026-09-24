@@ -9,8 +9,9 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { LayoutGrid, History } from "lucide-react";
 import { useProfile } from "@/shared-d/features/profile/hooks/useProfile";
 import { MyArenasFilter } from "@/shared-d/features/profile/types";
-
 import { useWallet } from "@/features/wallet/useWallet";
+// Issue #1414 — alias management
+import { AliasManager } from "./AliasManager";
 
 const truncateAddress = (address: string) => {
   if (!address) return "";
@@ -147,9 +148,16 @@ export default function ProfilePage() {
         </div>
       )}
 
+      {/* ── Issue #1414 — Privacy-preserving public alias ───────────────────── */}
+      <section>
+        <h3 className="text-sm font-bold tracking-[0.2em] text-zinc-400 uppercase mb-3">
+          PUBLIC_ALIAS.CFG
+        </h3>
+        <AliasManager currentAlias={profile?.identity?.displayName ?? null} />
+      </section>
+
       {/* Stats Row */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Games Played */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">        {/* Games Played */}
         <div className="p-6 border border-white/5 bg-black/20 backdrop-blur-sm space-y-6">
           <div className="flex justify-between items-start">
             <h4 className="text-[10px] font-bold tracking-[0.2em] text-zinc-500 uppercase">GAMES_PLAYED.SYS</h4>

@@ -22,6 +22,13 @@ export interface TransactionProgress {
     onSigned: () => void;
 }
 
+/** Fee sponsorship eligibility for winner claim (#1413). */
+export interface FeeSponsorshipEligibility {
+    tokenId: string;
+    status: "PENDING" | "CONSUMED" | "EXPIRED";
+    expiresAt: string;
+}
+
 interface TransactionModalProps {
     isOpen: boolean;
     onClose: () => void;
@@ -30,6 +37,8 @@ interface TransactionModalProps {
     details: TransactionDetail[];
     onConfirm: (progress: TransactionProgress) => Promise<void>;
     confirmLabel?: string;
+    /** If provided, the modal shows a fee-sponsorship badge (#1413). */
+    feeSponsorshipEligibility?: FeeSponsorshipEligibility | null;
 }
 
 export function TransactionModal({
@@ -40,6 +49,7 @@ export function TransactionModal({
     details,
     onConfirm,
     confirmLabel = "Approve Transaction",
+    feeSponsorshipEligibility,
 }: TransactionModalProps) {
     const [state, setState] = useState<TransactionState>("REVIEW");
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -78,6 +88,31 @@ export function TransactionModal({
             case "REVIEW":
                 return (
                     <>
+                        {/* ── Fee sponsorship badge (#1413) ───────────────────────── */}
+                        {feeSponsorshipEligibility?.status === "PENDING" && (
+                            <div
+                                className="flex items-center gap-2 mb-4 px-3 py-2 bg-green-900/40 border border-green-500/40 text-green-400"
+                                role="status"
+                                aria-label="Fee sponsorship active"
+                            >
+                                <span className="material-symbols-outlined text-base">verified</span>
+                                <span className="text-xs font-bold uppercase tracking-widest">
+                                    Network fee sponsored — no XLM required for this claim
+                                </span>
+                            </div>
+                        )}
+                        {feeSponsorshipEligibility?.status === "EXPIRED" && (
+                            <div
+                                className="flex items-center gap-2 mb-4 px-3 py-2 bg-yellow-900/40 border border-yellow-500/40 text-yellow-400"
+                                role="alert"
+                            >
+                                <span className="material-symbols-outlined text-base">warning</span>
+                                <span className="text-xs font-bold uppercase tracking-widest">
+                                    Fee sponsorship expired — standard network fee applies
+                                </span>
+                            </div>
+                        )}
+
                         <div className="space-y-4 mb-8">
                             {details.map((detail, index) => (
                                 <div key={index} className="flex justify-between items-center border-b border-white/10 pb-2">
