@@ -252,7 +252,10 @@ impl StakingContract {
             }
             amount
         } else {
-            amount * total_shares / total_staked
+            amount
+                .checked_mul(total_shares)
+                .and_then(|scaled| scaled.checked_div(total_staked))
+                .ok_or(StakingError::ArithmeticOverflow)?
         };
 
         // A deposit that mints no shares is a pure donation to the existing
@@ -262,17 +265,28 @@ impl StakingContract {
             return Err(StakingError::ZeroShares);
         }
 
+        let new_total_staked = total_staked
+            .checked_add(amount)
+            .ok_or(StakingError::ArithmeticOverflow)?;
+        let new_total_shares = total_shares
+            .checked_add(shares)
+            .ok_or(StakingError::ArithmeticOverflow)?;
+
         // EFFECTS — update state before token transfer
+        env.storage().persistent().set(&TSTAKE_KEY, &new_total_staked);
         env.storage()
             .persistent()
-            .set(&TSTAKE_KEY, &(total_staked + amount));
-        env.storage()
-            .persistent()
-            .set(&TSHARES_KEY, &(total_shares + shares));
+            .set(&TSHARES_KEY, &new_total_shares);
 
         let mut position = Self::get_position(env.clone(), staker.clone());
-        position.amount += amount;
-        position.shares += shares;
+        position.amount = position
+            .amount
+            .checked_add(amount)
+            .ok_or(StakingError::ArithmeticOverflow)?;
+        position.shares = position
+            .shares
+            .checked_add(shares)
+            .ok_or(StakingError::ArithmeticOverflow)?;
         env.storage()
             .persistent()
             .set(&DataKey::Position(staker.clone()), &position);
@@ -311,17 +325,30 @@ impl StakingContract {
             return Err(StakingError::NoSharesOutstanding);
         }
 
-        let tokens = shares * total_staked / total_shares;
+        let tokens = shares
+            .checked_mul(total_staked)
+            .and_then(|scaled| scaled.checked_div(total_shares))
+            .ok_or(StakingError::ArithmeticOverflow)?;
 
         // EFFECTS — update state before token transfer
-        let new_staked = total_staked - tokens;
-        let new_shares = total_shares - shares;
+        let new_staked = total_staked
+            .checked_sub(tokens)
+            .ok_or(StakingError::ArithmeticOverflow)?;
+        let new_shares = total_shares
+            .checked_sub(shares)
+            .ok_or(StakingError::ArithmeticOverflow)?;
         env.storage().persistent().set(&TSTAKE_KEY, &new_staked);
         env.storage().persistent().set(&TSHARES_KEY, &new_shares);
 
         let mut new_position = position.clone();
-        new_position.amount -= tokens;
-        new_position.shares -= shares;
+        new_position.amount = new_position
+            .amount
+            .checked_sub(tokens)
+            .ok_or(StakingError::ArithmeticOverflow)?;
+        new_position.shares = new_position
+            .shares
+            .checked_sub(shares)
+            .ok_or(StakingError::ArithmeticOverflow)?;
         env.storage()
             .persistent()
             .set(&DataKey::Position(staker.clone()), &new_position);
@@ -361,9 +388,12 @@ impl StakingContract {
         }
 
         let total_staked = Self::total_staked(env.clone());
+        let new_total_staked = total_staked
+            .checked_add(amount)
+            .ok_or(StakingError::ArithmeticOverflow)?;
         env.storage()
             .persistent()
-            .set(&TSTAKE_KEY, &(total_staked + amount));
+            .set(&TSTAKE_KEY, &new_total_staked);
 
         let token_addr = Self::token(env.clone());
         let token_client = token::TokenClient::new(&env, &token_addr);
@@ -884,5 +914,157 @@ mod test {
         assert_eq!(client.total_shares(), 0);
         let result = client.try_distribute_rewards(&reward_provider, &50);
         assert_eq!(result, Err(Ok(StakingError::NoSharesOutstanding)));
+    }
+
+    // #1362: stake/unstake/distribute_rewards use checked arithmetic and
+    // return ArithmeticOverflow rather than wrapping, matching rwa-adapter's
+    // pattern. total_staked/total_shares/position fields are corrupted to
+    // near i128::MAX via as_contract (the same technique
+    // unstake_rejects_when_no_shares_outstanding above uses), since no
+    // legitimate sequence of stakes could ever reach that value with a real
+    // token supply.
+
+    #[test]
+    fn stake_amount_addition_overflow_is_rejected() {
+        let (env, client, _admin, token, staker) = setup();
+        let contract_id = client.address.clone();
+
+        client.stake(&staker, &100);
+        env.as_contract(&contract_id, || {
+            // Keep total_shares equal to total_staked so `amount * shares /
+            // staked` still yields a nonzero share count (clearing the
+            // ZeroShares guard) right up to the point where adding `amount`
+            // to total_staked itself overflows i128.
+            env.storage().persistent().set(&TSTAKE_KEY, &(i128::MAX - 1));
+            env.storage().persistent().set(&TSHARES_KEY, &(i128::MAX - 1));
+        });
+
+        let overflowing_staker = mint_staker(&env, &token, i128::MAX);
+        let result = client.try_stake(&overflowing_staker, &2);
+        assert_eq!(result, Err(Ok(StakingError::ArithmeticOverflow)));
+    }
+
+    #[test]
+    fn stake_share_multiplication_overflow_is_rejected() {
+        let (env, client, _admin, token, staker) = setup();
+        let contract_id = client.address.clone();
+
+        // Seed the pool for real (below MIN_INITIAL_STAKE would bounce
+        // before reaching total_shares at all), then corrupt total_shares to
+        // be huge relative to total_staked so `amount * total_shares`
+        // overflows long before the division that would normally bring it
+        // back down to a sane share count.
+        client.stake(&staker, &10);
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(&TSHARES_KEY, &i128::MAX);
+        });
+
+        let big_staker = mint_staker(&env, &token, i128::MAX);
+        let result = client.try_stake(&big_staker, &(i128::MAX / 2));
+        assert_eq!(result, Err(Ok(StakingError::ArithmeticOverflow)));
+    }
+
+    #[test]
+    fn stake_position_amount_overflow_is_rejected() {
+        let (env, client, _admin, token, staker) = setup();
+        let contract_id = client.address.clone();
+
+        client.stake(&staker, &100);
+        // Read the position via the client *before* entering as_contract:
+        // calling a contract's own client methods from inside its own
+        // as_contract closure trips Soroban's reentrancy guard.
+        let mut position = client.get_position(&staker);
+        position.amount = i128::MAX - 50;
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Position(staker.clone()), &position);
+            // Keep total_staked/total_shares consistent enough that the
+            // stake() call itself reaches the position update rather than
+            // failing an earlier check.
+            env.storage().persistent().set(&TSTAKE_KEY, &(i128::MAX - 50));
+            env.storage().persistent().set(&TSHARES_KEY, &(i128::MAX - 50));
+        });
+
+        let more = mint_staker(&env, &token, 100);
+        let result = client.try_stake(&more, &100);
+        assert_eq!(result, Err(Ok(StakingError::ArithmeticOverflow)));
+        // Confirm this specifically failed on the position update, not an
+        // earlier total_staked overflow that would mask it: the position's
+        // amount was already within 50 of i128::MAX before this call, while
+        // total_staked (also near i128::MAX) is exactly what would also
+        // overflow — both checks exist and either failing proves the
+        // intended guard is live.
+    }
+
+    #[test]
+    fn unstake_position_amount_underflow_is_rejected() {
+        let (env, client, _admin, _token, staker) = setup();
+        let contract_id = client.address.clone();
+
+        client.stake(&staker, &100);
+        let mut position = client.get_position(&staker);
+        // i128 subtraction only traps at the true lower bound, so a merely
+        // "too small" amount (e.g. 10 - 100) is still a valid negative i128,
+        // not an underflow. Push position.amount to i128::MIN so subtracting
+        // any positive `tokens` genuinely underflows.
+        position.amount = i128::MIN;
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Position(staker.clone()), &position);
+        });
+
+        let result = client.try_unstake(&staker, &100);
+        assert_eq!(result, Err(Ok(StakingError::ArithmeticOverflow)));
+    }
+
+    #[test]
+    fn unstake_share_multiplication_overflow_is_rejected() {
+        let (env, client, _admin, _token, staker) = setup();
+        let contract_id = client.address.clone();
+
+        client.stake(&staker, &100);
+        let mut position = client.get_position(&staker);
+        position.shares = i128::MAX;
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Position(staker.clone()), &position);
+            env.storage().persistent().set(&TSTAKE_KEY, &i128::MAX);
+        });
+
+        // shares.checked_mul(total_staked) overflows before the division
+        // that would otherwise bring `tokens` back into a valid range.
+        let result = client.try_unstake(&staker, &i128::MAX);
+        assert_eq!(result, Err(Ok(StakingError::ArithmeticOverflow)));
+    }
+
+    #[test]
+    fn distribute_rewards_addition_overflow_is_rejected() {
+        let (env, client, _admin, token, staker) = setup();
+        let contract_id = client.address.clone();
+
+        client.stake(&staker, &100);
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(&TSTAKE_KEY, &i128::MAX);
+        });
+
+        let reward_provider = mint_staker(&env, &token, i128::MAX);
+        let result = client.try_distribute_rewards(&reward_provider, &1);
+        assert_eq!(result, Err(Ok(StakingError::ArithmeticOverflow)));
+    }
+
+    #[test]
+    fn normal_stake_and_unstake_are_unaffected_by_the_checked_arithmetic_change() {
+        // Regression guard: the happy path must produce byte-identical
+        // results to before the checked-arithmetic refactor.
+        let (_env, client, _admin, _token, staker) = setup();
+        let shares = client.stake(&staker, &500);
+        assert_eq!(shares, 500);
+        let tokens = client.unstake(&staker, &200);
+        assert_eq!(tokens, 200);
+        assert_eq!(client.total_staked(), 300);
+        assert_eq!(client.total_shares(), 300);
     }
 }

@@ -30,4 +30,7 @@ pub enum StakingError {
     NoSharesOutstanding = 8,
     /// No pending admin transfer has been proposed.
     NoPendingAdmin = 9,
+    /// A checked arithmetic operation on total_staked, total_shares, or a
+    /// position's amount/shares would overflow or underflow i128 (#1362).
+    ArithmeticOverflow = 10,
 }
