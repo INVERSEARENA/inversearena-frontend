@@ -240,10 +240,10 @@ export class RoundProofBundleService {
     // introducing a second limit to keep in sync.
     const playerChoices: ProofBundlePlayerChoice[] = [...round.playerChoices]
       .filter(
-        (entry): entry is ProofBundlePlayerChoice & { stake: number } =>
+        (entry): entry is typeof entry & { choice: 'heads' | 'tails' } =>
           (entry.choice === 'heads' || entry.choice === 'tails') && activePlayerSet.has(entry.userId),
       )
-      .map((entry) => ({ userId: entry.userId, choice: entry.choice as 'heads' | 'tails' }))
+      .map((entry) => ({ userId: entry.userId, choice: entry.choice }))
       .sort((a, b) => a.userId.localeCompare(b.userId));
 
     const tally: ProofBundleTally = playerChoices.reduce(

@@ -94,4 +94,16 @@ export class StellarRpcGateway {
     const response = await this.rpcServer.getLatestLedger();
     return { sequence: response.sequence, id: response.id };
   }
+
+  /**
+   * Raw Soroban `getEvents` passthrough (#1382 — the projection replay
+   * engine's paginated event fetch). Kept as a thin passthrough of the
+   * SDK's own request/response shapes, same as `simulateTransaction`/
+   * `sendTransaction`/`getTransaction` above, rather than reshaping the
+   * response here — callers own their own decoding (see
+   * `onChainReader.toArenaProjectionEvent`).
+   */
+  async getEvents(request: rpc.Api.GetEventsRequest): Promise<rpc.Api.GetEventsResponse> {
+    return this.rpcServer.getEvents(request);
+  }
 }

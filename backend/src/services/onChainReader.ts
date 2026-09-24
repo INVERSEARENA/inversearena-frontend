@@ -8,11 +8,20 @@
  * Key exports consumed by roundService:
  *  - getOnChainActivePlayerIds  — alive players after resolve_round (#1098)
  *  - getOnChainWinner           — single winner address for payouts (#1099)
+ *
+ * Key exports consumed by the projection replay engine (#1382):
+ *  - getArenaEvents             — paginated raw contract event fetch
+ *  - toArenaProjectionEvent     — typed boundary: raw RPC event → ArenaProjectionEvent
  */
 
 import { Contract, Keypair, nativeToScVal, scValToNative, xdr, rpc } from "@stellar/stellar-sdk";
 import { StellarRpcGateway } from "../../frontend/src/shared-d/services/stellarRpcGateway";
 import { getStellarConfig } from "../config/stellarConfig";
+import {
+  ARENA_EVENT_TOPICS,
+  isArenaEventTopic,
+  type ArenaProjectionEvent,
+} from "./projection/arenaEventTypes";
 
 let sourcePublicKey: string | null = null;
 /** On-chain game states — matches the contract's GameState enum. */
@@ -334,5 +343,172 @@ export function mapGameStateToStatus(
       return "cancelled";
     default:
       return "active";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Event log reading (#1382) — the typed boundary between raw Soroban RPC
+// event payloads and the projection fold. Nothing outside this module and
+// `services/projection/*` should touch `xdr.ScVal` or the raw RPC event
+// shape directly; everything downstream consumes `ArenaProjectionEvent`.
+// ---------------------------------------------------------------------------
+
+/** One page of raw contract events as returned by Soroban RPC `getEvents`. */
+export interface ArenaEventPage {
+  events: ArenaProjectionEvent[];
+  /** RPC's own view of the chain tip at the time of this call. */
+  latestLedger: number;
+  /**
+   * Opaque pagination token for the next page, or null if this page reached
+   * `latestLedger` (i.e. there is nothing further to fetch right now).
+   */
+  cursor: string | null;
+}
+
+/**
+ * Decode a single raw Soroban RPC contract event into a typed
+ * `ArenaProjectionEvent`. Never throws: an event whose topic is unrecognized,
+ * or whose payload fails to decode, becomes an `ArenaUnknownEvent` so the
+ * projection fold can record it as a skip rather than replay grinding to a
+ * halt on one malformed event (see docs/projection-checkpoint-replay.md,
+ * "Failure behavior").
+ */
+export function toArenaProjectionEvent(
+  raw: rpc.Api.EventResponse,
+): ArenaProjectionEvent {
+  const base = {
+    id: raw.id,
+    contractId: raw.contractId?.toString() ?? "",
+    ledgerSequence: raw.ledger,
+    ledgerClosedAt: raw.ledgerClosedAt,
+    txHash: raw.txHash,
+  };
+
+  const rawTopicSymbol = raw.topic[0];
+  let topicValue: unknown;
+  try {
+    topicValue = rawTopicSymbol !== undefined ? scValToNative(rawTopicSymbol) : undefined;
+  } catch (error) {
+    return {
+      ...base,
+      topic: "UNKNOWN",
+      rawTopic: null,
+      reason: `Failed to decode topic symbol: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  const topicString = typeof topicValue === "string" ? topicValue : String(topicValue ?? "");
+
+  if (!isArenaEventTopic(topicString)) {
+    return {
+      ...base,
+      topic: "UNKNOWN",
+      rawTopic: topicString || null,
+      reason: `Unrecognized event topic (expected one of ${ARENA_EVENT_TOPICS.join(", ")})`,
+    };
+  }
+
+  try {
+    const value = scValToNative(raw.value);
+
+    switch (topicString) {
+      case "INIT":
+        return { ...base, topic: "INIT", admin: String(value) };
+      case "CFGD":
+        return { ...base, topic: "CFGD" };
+      case "START":
+        return { ...base, topic: "START" };
+      case "FINISH":
+        return { ...base, topic: "FINISH" };
+      case "JOIN":
+        return { ...base, topic: "JOIN", player: String(value) };
+      case "CHOICE":
+        return { ...base, topic: "CHOICE", player: String(value) };
+      case "ELIM":
+        return { ...base, topic: "ELIM", player: String(value) };
+      case "CLAIMED":
+        return { ...base, topic: "CLAIMED", winner: String(value) };
+      case "RWAYLD":
+        // i128 decodes to a bigint via scValToNative; stringify to preserve
+        // precision (see ArenaProjectionState.totalYieldStroops).
+        return {
+          ...base,
+          topic: "RWAYLD",
+          amount: typeof value === "bigint" ? value.toString() : String(value),
+        };
+      default: {
+        // Exhaustiveness guard — isArenaEventTopic already narrowed
+        // topicString to ArenaEventTopic, so this is unreachable, but keeps
+        // the decoder from silently swallowing a future topic added to
+        // ARENA_EVENT_TOPICS without a case here.
+        const _exhaustive: never = topicString;
+        return {
+          ...base,
+          topic: "UNKNOWN",
+          rawTopic: _exhaustive,
+          reason: "Topic recognized by isArenaEventTopic but missing a decoder case",
+        };
+      }
+    }
+  } catch (error) {
+    return {
+      ...base,
+      topic: "UNKNOWN",
+      rawTopic: topicString,
+      reason: `Failed to decode event payload: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+/** Default page size for a single `getEvents` RPC call (#1382). */
+export const DEFAULT_ARENA_EVENT_PAGE_SIZE = 1000;
+
+/**
+ * Fetch a single page of on-chain events for an arena contract, starting
+ * either at `startLedger` (genesis/first page) or continuing from a prior
+ * page's `cursor`. Exactly one of `startLedger`/`cursor` should be provided,
+ * mirroring the underlying RPC contract (cursor-based pagination cannot be
+ * combined with a ledger start point).
+ *
+ * This performs exactly one RPC call — batching/looping across pages and
+ * retry policy belong to the replay engine
+ * (`services/projection/arenaProjectionReplay.ts`), not here, so this
+ * function stays a thin, testable I/O boundary.
+ *
+ * @throws OnChainReadError on any RPC failure — callers must not treat a
+ *   failed fetch as "no events" (that would silently truncate replay).
+ */
+export async function getArenaEvents(
+  contractId: string,
+  options: { startLedger: number; cursor?: undefined } | { cursor: string; startLedger?: undefined },
+  limit: number = DEFAULT_ARENA_EVENT_PAGE_SIZE,
+): Promise<ArenaEventPage> {
+  const stellarRpcGateway = new StellarRpcGateway();
+  try {
+    const paginationArg: { cursor: string } | { startLedger: number } =
+      "cursor" in options && options.cursor
+        ? { cursor: options.cursor }
+        : { startLedger: options.startLedger as number };
+
+    const response = await stellarRpcGateway.getEvents({
+      filters: [{ type: "contract", contractIds: [contractId] }],
+      ...paginationArg,
+      limit,
+    });
+
+    const events = response.events.map(toArenaProjectionEvent);
+    const lastRawEvent = response.events[response.events.length - 1];
+    const cursor =
+      events.length >= limit && lastRawEvent
+        ? lastRawEvent.pagingToken
+        : null;
+
+    return {
+      events,
+      latestLedger: response.latestLedger,
+      cursor,
+    };
+  } catch (error) {
+    throw new OnChainReadError("getEvents", contractId, error);
   }
 }
