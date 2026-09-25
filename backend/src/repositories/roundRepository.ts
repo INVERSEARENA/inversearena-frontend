@@ -189,6 +189,26 @@ export class RoundRepository {
     });
   }
 
+  /**
+   * Conditionally transition a round from `fromState` to `toState`, only
+   * if it is still in `fromState` (#1386). Mirrors resolveAtomically's
+   * optimistic-lock pattern: two concurrent closeRound calls can both pass
+   * the service-level state check at ReadCommitted isolation, but only one
+   * matches this conditional UPDATE — the loser sees zero updated rows and
+   * throws instead of silently double-transitioning (and double-counting
+   * arenaStateTransitionsTotal).
+   */
+  async closeAtomically(roundId: string, fromState: RoundState, toState: RoundState): Promise<void> {
+    const claimed = await this.prisma.round.updateMany({
+      where: { id: roundId, state: fromState },
+      data: { state: toState, updatedAt: new Date() },
+    });
+
+    if (claimed.count === 0) {
+      throw new Error(`Round ${roundId} was already closed by a concurrent request`);
+    }
+  }
+
   private parseState(state: string): RoundState {
     if (Object.values(RoundState).includes(state as RoundState)) {
       return state as RoundState;

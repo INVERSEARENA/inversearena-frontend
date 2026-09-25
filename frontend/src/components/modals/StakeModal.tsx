@@ -14,12 +14,14 @@ import {
   parseStellarError,
   STAKING_CONTRACT_ID,
   STELLAR_PLACEHOLDERS,
+  NETWORK_PASSPHRASE,
 } from "@/shared-d/utils/stellar-transactions";
 import {
   formatCurrencyInput,
   sanitizeNumericInput,
   type Currency,
 } from "@/shared-d/utils/form-validation";
+import { useTransactionIntent } from "@/shared-d/hooks/useTransactionIntent";
 
 // Stakes here are denominated in XLM (the modal validates against
 // balance.xlm), so the shared helpers use XLM's 7-decimal precision.
@@ -52,6 +54,7 @@ export default function StakeModal({
     balanceError,
     refreshBalance,
   } = useWallet();
+  const { runTrackedTransaction } = useTransactionIntent();
 
   const [amount, setAmount] = useState<string>("5000.00");
   const [txState, setTxState] = useState<TransactionState>("idle");
@@ -117,30 +120,40 @@ export default function StakeModal({
 
     try {
       setTxState("signing");
-      const tx = await buildStakeProtocolTransaction(address, numAmount);
+      let policyRejected = false;
+      await runTrackedTransaction({
+        kind: "stake",
+        actionKey: `stake:${numAmount}`,
+        publicKey: address,
+        buildTransaction: async () => {
+          const tx = await buildStakeProtocolTransaction(address, numAmount);
 
-      // Validate XDR against the signing policy before prompting the wallet.
-      // This distinct error is catchable so the UI can show a policy-rejection
-      // message rather than a wallet-rejection one.
-      let decoded: DecodedEnvelope;
-      try {
-        decoded = evaluateSigningRequest(tx.toXDR(), "STAKE");
-      } catch (error) {
-        if (error instanceof SigningPolicyError) {
-          setErrorMessage(error.message);
-          setTxState("error");
-          return;
-        }
-        throw error; // unexpected error
-      }
+          // Validate XDR against the signing policy before prompting the wallet.
+          // This distinct error is catchable so the UI can show a policy-rejection
+          // message rather than a wallet-rejection one.
+          try {
+            evaluateSigningRequest(tx.toXDR(), "STAKE");
+          } catch (error) {
+            if (error instanceof SigningPolicyError) {
+              policyRejected = true;
+              setErrorMessage(error.message);
+              setTxState("error");
+            }
+            throw error;
+          }
 
-      // Render confirmation UI details from the decoded envelope (not the raw XDR).
-      setErrorMessage(null);
-
-      const signedXdr = await signTransaction(tx.toXDR());
-
-      setTxState("submitting");
-      await submitSignedTransaction(signedXdr);
+          setErrorMessage(null);
+          return tx;
+        },
+        signTransaction,
+        submitSignedTransaction,
+        networkPassphrase: NETWORK_PASSPHRASE,
+        onSigned: () => setTxState("submitting"),
+      }).catch((error) => {
+        if (policyRejected) return;
+        throw error;
+      });
+      if (policyRejected) return;
 
       setTxState("success");
       setTimeout(() => {

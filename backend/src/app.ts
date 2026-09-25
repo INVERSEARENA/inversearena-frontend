@@ -23,6 +23,7 @@ import { AuthController } from "./controllers/auth.controller";
 import { UsersController } from "./controllers/users.controller";
 import { LeaderboardController } from "./controllers/leaderboard.controller";
 import { TransactionsController } from "./controllers/transactions.controller";
+import { TransactionIntentsController } from "./controllers/transactionIntents.controller";
 import { RoundController } from "./controllers/round.controller";
 import { refreshArenaMetrics, refreshQueueMetrics, register } from "./utils/metrics";
 import { redis } from "./cache/redisClient";
@@ -31,6 +32,7 @@ import type { PaymentService } from "./services/paymentService";
 import type { PaymentWorker } from "./workers/paymentWorker";
 import type { ArenaBackfillWorker } from "./workers/arenaBackfillWorker";
 import type { TransactionRepository } from "./repositories/transactionRepository";
+import type { TransactionIntentService } from "./services/transactionIntentService";
 import type { AdminService } from "./services/adminService";
 import type { AuthService } from "./services/authService";
 import type { RoundService } from "./services/roundService";
@@ -48,6 +50,7 @@ export interface AppDependencies {
   queueSnapshotSource?: QueueSnapshotSource;
   queueCapacity?: number;
   roundProofBundleService: RoundProofBundleService;
+  transactionIntentService: TransactionIntentService;
 }
 
 export function createApp(deps: AppDependencies): express.Application {
@@ -171,6 +174,7 @@ export function createApp(deps: AppDependencies): express.Application {
   const usersController = new UsersController(prisma);
   const leaderboardController = new LeaderboardController(prisma);
   const transactionsController = new TransactionsController(deps.transactions);
+  const transactionIntentsController = new TransactionIntentsController(deps.transactionIntentService);
   const roundController = new RoundController(deps.roundService);
 
   const adminAuthMiddleware = requireAdmin(new ApiKeyAuthProvider());
@@ -185,6 +189,7 @@ export function createApp(deps: AppDependencies): express.Application {
       usersController,
       leaderboardController,
       transactionsController,
+      transactionIntentsController,
       adminAuthMiddleware,
       userAuthMiddleware,
       deps.authService,

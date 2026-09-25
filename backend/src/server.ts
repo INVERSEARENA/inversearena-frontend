@@ -4,6 +4,7 @@ import { redis } from "./cache/redisClient";
 import { prisma } from "./db/prisma";
 import { connectDB } from "./db/connection";
 import { MongoTransactionRepository } from "./repositories/mongoTransactionRepository";
+import { MongoTransactionIntentRepository } from "./repositories/mongoTransactionIntentRepository";
 import { validateConfig } from "./config/validate";
 import { getPaymentConfig } from "./config/paymentConfig";
 
@@ -14,6 +15,7 @@ import { AdminService } from "./services/adminService";
 import { AuthService } from "./services/authService";
 import { RoundService } from "./services/roundService";
 import { RoundProofBundleService } from "./services/roundProofBundleService";
+import { TransactionIntentService } from "./services/transactionIntentService";
 import { createTxQueue } from "./queues/txQueue";
 import { startTxReconcilerWorker } from "./workers/txReconciler";
 import { createApp } from "./app";
@@ -48,6 +50,7 @@ async function main() {
   const authService = new AuthService();
   const roundService = new RoundService(prisma);
   const roundProofBundleService = new RoundProofBundleService(prisma);
+  const transactionIntentService = new TransactionIntentService(new MongoTransactionIntentRepository());
 
   // #1391: reconciles the Arena table against the factory contract's
   // authoritative get_arenas state. Same env var confirmArenaDeployment
@@ -69,6 +72,7 @@ async function main() {
     authService,
     roundService,
     roundProofBundleService,
+    transactionIntentService,
   });
 
   const httpServer = app.listen(PORT, () => {
