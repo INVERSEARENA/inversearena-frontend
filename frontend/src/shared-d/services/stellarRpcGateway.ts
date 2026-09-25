@@ -83,4 +83,15 @@ export class StellarRpcGateway {
     const response = await this.rpcServer.getHealth();
     return response.latestLedger;
   }
+
+  /**
+   * Latest ledger sequence together with its hash (`id`). The hash is the
+   * stable identity continuity checks compare across reads: the same
+   * sequence with a different hash means the ledger is no longer canonical
+   * (#1490).
+   */
+  async getLatestLedgerIdentity(): Promise<{ sequence: number; id: string }> {
+    const response = await this.rpcServer.getLatestLedger();
+    return { sequence: response.sequence, id: response.id };
+  }
 }

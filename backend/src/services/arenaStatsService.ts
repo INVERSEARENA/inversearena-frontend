@@ -6,6 +6,7 @@ import {
   type OnChainArenaSnapshot,
 } from "./onChainReader";
 import { getCurrentLedgerSequence } from "./ledgerClock";
+import { getRollbackGuard } from "./ledgerContinuity";
 import { getSorobanBreaker } from "../utils/circuitBreaker";
 import { cache, cacheKeys, cacheTTL } from "../cache/cacheService";
 import { logger } from "../utils/logger";
@@ -74,7 +75,10 @@ export class ArenaStatsService {
     let onChainOverlay: VerifiedOnChainSnapshot | null = null;
     let degraded = false;
 
-    if (contractAddress && vaultContractAddress) {
+    // While ledger rollback recovery is active (#1490) no on-chain read is
+    // trustworthy and none may be cached, so the live attempt is skipped and
+    // the response is flagged degraded without exposing RPC internals.
+    if (contractAddress && vaultContractAddress && !getRollbackGuard().isQuarantined()) {
       try {
         onChainOverlay = await this.fetchAndCacheOnChainSnapshot(
           arenaId,
@@ -101,6 +105,12 @@ export class ArenaStatsService {
         // No snapshot has ever been verified for this arena — fall through
         // to the DB-derived values below, matching pre-#1408 behavior.
       }
+    }
+
+    // A rollback may have been exposed while the live read was in flight.
+    if (getRollbackGuard().isQuarantined()) {
+      onChainOverlay = null;
+      degraded = true;
     }
 
     const playerCount = onChainOverlay
@@ -182,11 +192,14 @@ export class ArenaStatsService {
       verifiedAt: new Date().toISOString(),
     };
 
-    await cache.set(
-      cacheKeys.arenaOnChainSnapshot(arenaId),
-      verified,
-      cacheTTL.ARENA_ONCHAIN_SNAPSHOT,
-    );
+    // Never persist a read taken while a rollback is being recovered from.
+    if (!getRollbackGuard().isQuarantined()) {
+      await cache.set(
+        cacheKeys.arenaOnChainSnapshot(arenaId),
+        verified,
+        cacheTTL.ARENA_ONCHAIN_SNAPSHOT,
+      );
+    }
 
     return verified;
   }

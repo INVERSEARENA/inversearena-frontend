@@ -56,16 +56,16 @@ export const cacheKeys = {
    * on-chain read fails.
    */
   arenaOnChainSnapshot: (arenaId: string) => `arena:onchain-snapshot:${arenaId}`,
-  /**
-   * Semantic version metadata for the verified stream snapshot (#1500) —
-   * fingerprint, canonical payload, monotonic version and heartbeat. Kept
-   * separate from arenaOnChainSnapshot, which belongs to ArenaStatsService
-   * and holds a differently-shaped degraded-read fallback.
-   */
-  arenaSnapshotMeta: (arenaId: string) => `arena:snapshot-meta:${arenaId}`,
-  /** The last verified full snapshot plus its version metadata (#1500). */
-  arenaVerifiedSnapshot: (arenaId: string) => `arena:verified-snapshot:${arenaId}`,
+  /** Persisted ledger continuity window and recovery state (#1490). */
+  ledgerContinuity: (network: string) => `ledger:continuity:${network}`,
 };
+
+/**
+ * Key patterns for everything derived from ledger reads per arena (#1490).
+ * A ledger rollback invalidates exactly these; unrelated keys (leaderboard,
+ * oracle yield, sessions) are not derived from arena ledger state.
+ */
+export const arenaDerivedCachePatterns = ["arena:stats:*", "arena:onchain-snapshot:*"] as const;
 
 /**
  * TTLs in seconds
@@ -85,6 +85,9 @@ export const cacheTTL = {
   // TTL trades a longer possible staleness window for surviving a longer
   // Soroban outage without falling all the way back to unflagged DB data.
   ARENA_ONCHAIN_SNAPSHOT: 60 * 60 * 24,
+  // Continuity state must outlive a restart during recovery, but not linger
+  // forever if the deployment is retired.
+  LEDGER_CONTINUITY: 60 * 60 * 24 * 7,
 } as const;
 
 /**

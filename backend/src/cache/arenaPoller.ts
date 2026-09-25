@@ -17,18 +17,8 @@
 import { randomUUID } from "crypto";
 import type { ArenaService } from "../services/arenaService";
 import { getSorobanBreaker } from "../utils/circuitBreaker";
-import { cache, cacheKeys } from "./cacheService";
-import {
-  createArenaPollStages,
-  runArenaPollStages,
-  type ArenaSnapshot,
-  type ArenaSnapshotMeta,
-} from "./arenaPollPipeline";
-import {
-  arenaPollsTotal,
-  arenaSemanticChangesTotal,
-  arenaSuppressedPublishesTotal,
-} from "../utils/metrics";
+import { refreshLedgerIdentity } from "../services/ledgerClock";
+import { getRollbackGuard } from "../services/ledgerContinuity";
 
 interface Subscriber {
   /** Send an SSE event to this client. */
@@ -52,14 +42,8 @@ interface ArenaPollerState {
   history: Array<{ event: string; payload: unknown; sequence: number }>;
   lastSnapshot: { payload: unknown; sequence: number } | null;
   consecutiveFailures: number;
-  /** Semantic version metadata of the last verified snapshot (#1500). */
-  snapshotMeta: ArenaSnapshotMeta | null;
-  /**
-   * Identity of this poller process's stream. Attached to every envelope so
-   * clients can tell a server restart (versions/sequences reset) from a gap
-   * in an otherwise continuous stream.
-   */
-  instanceId: string;
+  /** Rollback epoch this poller last published under (#1490). */
+  rollbackEpoch: number;
 }
 
 const pollers = new Map<string, ArenaPollerState>();
@@ -129,8 +113,7 @@ export function subscribeArena(
       history: [],
       lastSnapshot: null,
       consecutiveFailures: 0,
-      snapshotMeta: null,
-      instanceId: randomUUID(),
+      rollbackEpoch: getRollbackGuard().getEpoch(),
     };
     pollers.set(arenaId, state);
   }
@@ -270,17 +253,31 @@ function startPollLoop(
     if (state.subscribers.size === 0) return;
 
     try {
-      const stages = createArenaPollStages(arenaId, arenaService, publishSnapshot, {
-        fetch: () => getSorobanBreaker().fire(() => arenaService.getSnapshot(arenaId)),
-        load: async () => {
-          // In-process metadata survives cache eviction; the cache resumes
-          // versions across a process restart. Whichever is newer wins.
-          const cached = state.snapshotMeta ? null : await cache.get<ArenaSnapshotMeta>(cacheKeys.arenaSnapshotMeta(arenaId));
-          const candidates = [state.snapshotMeta, cached].filter((m): m is ArenaSnapshotMeta => m !== null);
-          if (candidates.length === 0) return null;
-          return candidates.reduce((newest, candidate) => (candidate.version > newest.version ? candidate : newest));
-        },
-      });
+      // While ledger rollback recovery is active nothing newer may be
+      // published (#1490). The ledger is refreshed first so the detector has
+      // seen the latest identity, and the guard is re-checked after the
+      // snapshot read in case the rollback was exposed while it ran.
+      await refreshLedgerIdentity();
+      if (getRollbackGuard().isQuarantined()) return;
+      const snapshot = await getSorobanBreaker().fire(() =>
+        arenaService.getSnapshot(arenaId),
+      );
+      if (getRollbackGuard().isQuarantined()) return;
+      const epoch = getRollbackGuard().getEpoch();
+      if (state.rollbackEpoch !== epoch) {
+        // A rollback happened since the last publish: drop baselines, seen
+        // eliminations and replay history so a fresh snapshot goes out. The
+        // sequence counter is kept so client cursors stay monotonic.
+        state.rollbackEpoch = epoch;
+        state.lastRoundState = null;
+        state.lastStatus = null;
+        state.lastSurvivorCount = null;
+        state.seenEliminations.clear();
+        state.history.length = 0;
+        state.lastSnapshot = null;
+      }
+      state.consecutiveFailures = 0;
+      const isFirstPoll = state.lastRoundState === null && state.lastStatus === null;
 
       const outcome = await runArenaPollStages(stages);
       arenaPollsTotal.inc({ outcome: "ok" });

@@ -406,6 +406,28 @@ export const capabilityCacheHitsTotal = new Counter({
   registers: [register],
 });
 
+// #1490: ledger rollback detection and recovery
+export const ledgerRollbackDepth = new Histogram({
+  name: 'inversearena_ledger_rollback_depth_ledgers',
+  help: 'Depth of a detected ledger rollback, in ledgers',
+  buckets: [1, 2, 5, 10, 25, 50, 100, 500, 1000],
+  registers: [register],
+});
+
+export const ledgerRollbackRecoveryDuration = new Histogram({
+  name: 'inversearena_ledger_rollback_recovery_duration_seconds',
+  help: 'Time from rollback detection until continuity was re-verified',
+  buckets: [1, 5, 15, 30, 60, 120, 300, 900, 3600],
+  registers: [register],
+});
+
+export const ledgerRollbackAffectedConsumersTotal = new Counter({
+  name: 'inversearena_ledger_rollback_affected_consumers_total',
+  help: 'Consumers notified of a ledger rollback or gap, or deferred by one',
+  labelNames: ['consumer'],
+  registers: [register],
+});
+
 export interface QueueMetricsRefreshResult {
   available: boolean;
   snapshot?: QueueSnapshot;

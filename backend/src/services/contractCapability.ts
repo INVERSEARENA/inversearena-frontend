@@ -67,6 +67,19 @@ export function setCapabilityMapForTest(
   capabilityMap = map ?? { arena: {}, factory: {}, payout: {}, staking: {} };
 }
 
+/**
+ * Lowest on-chain contract version that exposes `entrypoint`, or undefined
+ * when it has no capability map entry (available since version 1). Lets the
+ * compatibility manifest (#1491) evaluate support from versions it already
+ * negotiated instead of negotiating again per entrypoint.
+ */
+export function getRequiredCapabilityVersion(
+  kind: ContractKind,
+  entrypoint: string,
+): number | undefined {
+  return capabilityMap[kind][entrypoint];
+}
+
 const CACHE_TTL_MS = 5 * 60_000;
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 100;
