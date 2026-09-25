@@ -11,6 +11,11 @@ import {
   buildJoinArenaTransaction,
   submitSignedTransaction,
 } from "@/shared-d/utils/stellar-transactions";
+import {
+  evaluateSigningRequest,
+  type DecodedEnvelope,
+  type SigningPolicyError,
+} from "@/shared-d/security/policy";
 
 const arenaParticipantSchema = z.object({
   id: z.string(),
@@ -117,6 +122,8 @@ export function ArenaLobbyClient({
   const [loadingParticipants, setLoadingParticipants] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showJoinModal, setShowJoinModal] = useState(false);
+  const [joinConfirmation, setJoinConfirmation] = useState<DecodedEnvelope | null>(null);
+  const [joinError, setJoinError] = useState<string | null>(null);
 
   const isOpen = stats?.status === "open";
   const walletConnected = wallet.isConnected && !!wallet.publicKey;
@@ -300,6 +307,25 @@ export function ArenaLobbyClient({
       wallet.publicKey,
       arenaId,
     );
+
+    // Validate XDR against the signing policy before prompting the wallet.
+    // This distinct error is catchable so the UI can show a policy-rejection
+    // message rather than a wallet-rejection one.
+    let decoded: DecodedEnvelope;
+    try {
+      decoded = evaluateSigningRequest(unsignedTx.toXDR(), "JOIN");
+    } catch (error) {
+      if (error instanceof SigningPolicyError) {
+        // Policy rejection — show error and do NOT call wallet.signTransaction.
+        setJoinError(error.message);
+        return;
+      }
+      throw error; // unexpected error
+    }
+
+    // Render confirmation UI details from the decoded envelope (not the raw XDR).
+    setJoinConfirmation(decoded);
+
     const signedXdr = await wallet.signTransaction(unsignedTx.toXDR());
     onSigned();
     await submitSignedTransaction(signedXdr);
@@ -569,6 +595,11 @@ export function ArenaLobbyClient({
         confirmLabel="Sign & Join"
         onConfirm={handleConfirmJoin}
       />
+      {joinError && (
+        <div className="mt-3 rounded-2xl border border-red-500/30 bg-red-900/60 p-4 text-sm text-red-300">
+          <p className="font-semibold uppercase tracking-[0.2em]">{joinError}</p>
+        </div>
+      )}
     </div>
   );
 }

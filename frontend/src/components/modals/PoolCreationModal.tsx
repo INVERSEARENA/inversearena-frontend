@@ -4,6 +4,11 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Modal } from "@/components/ui/Modal";
 import { useWallet } from "@/features/wallet/useWallet";
 import { TransactionModal } from "@/components/modals/TransactionModal";
+import {
+  evaluateSigningRequest,
+  type DecodedEnvelope,
+  type SigningPolicyError,
+} from "@/shared-d/security/policy";
 import { buildCreatePoolTransaction, submitSignedTransaction } from "@/shared-d/utils/stellar-transactions";
 import {
   formatCurrencyInput,
@@ -53,6 +58,7 @@ export function PoolCreationModal({
 
   const [stakeError, setStakeError] = useState<string>("");
   const [capacityError, setCapacityError] = useState<string>("");
+  const [errorMessage, setErrorMessage] = useState<string>("");
   const [isFormValid, setIsFormValid] = useState(false);
   const [isDeploying, setIsDeploying] = useState(false);
 
@@ -479,27 +485,53 @@ export function PoolCreationModal({
         description="Review transaction details"
         details={txDetails}
         onConfirm={async ({ onSigned }) => {
-          if (!address) throw new Error("Wallet disconnected. Please reconnect and try again.");
-          const tx = await buildCreatePoolTransaction(address, {
-            stakeAmount,
-            currency,
-            roundSpeed,
-            arenaCapacity,
-          });
-          const signedXdr = await signTransaction(tx.toXDR());
-          onSigned();
-          await submitSignedTransaction(signedXdr);
-          onInitialize?.({
-            stakeAmount,
-            currency,
-            roundSpeed,
-            arenaCapacity,
-          });
-          setShowTxModal(false);
-          onClose();
-        }}
+      if (!address) throw new Error("Wallet disconnected. Please reconnect and try again.");
+
+      const tx = await buildCreatePoolTransaction(address, {
+        stakeAmount,
+        currency,
+        roundSpeed,
+        arenaCapacity,
+      });
+
+      // Validate XDR against the signing policy before prompting the wallet.
+      // This distinct error is catchable so the UI can show a policy-rejection
+      // message rather than a wallet-rejection one.
+      let decoded: DecodedEnvelope;
+      try {
+        decoded = evaluateSigningRequest(tx.toXDR(), "CREATE");
+      } catch (error) {
+        if (error instanceof SigningPolicyError) {
+          setErrorMessage(error.message);
+          return;
+        }
+        throw error; // unexpected error
+      }
+
+      // Render confirmation UI details from the decoded envelope (not the raw XDR).
+      setErrorMessage(null);
+
+      const signedXdr = await signTransaction(tx.toXDR());
+      onSigned();
+      await submitSignedTransaction(signedXdr);
+      onInitialize?.({
+        stakeAmount,
+        currency,
+        roundSpeed,
+        arenaCapacity,
+      });
+      setShowTxModal(false);
+      onClose();
+    }}
         confirmLabel="Sign & Deploy"
       />
     </>
   );
+  if (errorMessage) {
+    return (
+      <div className="mt-3 rounded-2xl border border-red-500/30 bg-red-900/60 p-4 text-sm text-red-300">
+        <p className="font-semibold uppercase tracking-[0.2em]">{errorMessage}</p>
+      </div>
+    );
+  }
 }

@@ -66,4 +66,10 @@ export interface ArenaStreamEvent {
   payload: Record<string, unknown>;
   sequence: number;
   createdAt: string;
+  /** Semantic snapshot version (#1500). Monotonic per arena; present on snapshot envelopes. */
+  version?: number;
+  /** The version this snapshot replaced (#1500); null for the first published snapshot. */
+  previousVersion?: number | null;
+  /** Per-process stream identity (#1500). A change means the server restarted and sequences/versions reset. */
+  instanceId?: string;
 }

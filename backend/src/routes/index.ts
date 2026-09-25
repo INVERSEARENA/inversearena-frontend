@@ -15,6 +15,7 @@ import { createPortfolioExposureRouter } from "./portfolioExposure";
 import { createCancellationRecoveryRouter } from "./cancellationRecovery";
 import { createConfigRouter } from "./config";
 import { createInvitationsRouter } from "./invitations";
+import { createDashboardRouter } from "./dashboard";
 import type { PayoutsController } from "../controllers/payouts.controller";
 import type { WorkerController } from "../controllers/worker.controller";
 import type { AuthController } from "../controllers/auth.controller";
@@ -59,6 +60,7 @@ export function createApiRouter(
     "/leaderboard",
     createLeaderboardRouter(leaderboardController, requireAuth),
   );
+  router.use("/dashboard", createDashboardRouter(requireAuth));
 
   return router;
 }

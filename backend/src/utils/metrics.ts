@@ -241,6 +241,85 @@ export const playersEliminatedTotal = new Counter({
   registers: [register],
 });
 
+// #1500: publish arena stream updates only when verified state changes
+export const arenaPollsTotal = new Counter({
+  name: 'inversearena_arena_polls_total',
+  help: 'Arena poller fetch+verify attempts, by outcome (ok/error)',
+  labelNames: ['outcome'],
+  registers: [register],
+});
+
+export const arenaSemanticChangesTotal = new Counter({
+  name: 'inversearena_arena_semantic_changes_total',
+  help: 'Arena polls whose canonical snapshot fingerprint changed and were published',
+  registers: [register],
+});
+
+export const arenaSuppressedPublishesTotal = new Counter({
+  name: 'inversearena_arena_suppressed_publishes_total',
+  help: 'Arena polls with unchanged verified state where publication was suppressed',
+  registers: [register],
+});
+
+export const arenaStreamResyncsTotal = new Counter({
+  name: 'inversearena_arena_stream_resyncs_total',
+  help: 'Client-requested arena stream full-snapshot resynchronisations, by reason',
+  labelNames: ['reason'],
+  registers: [register],
+});
+
+// #1501: dashboard bootstrap composition
+export const dashboardBootstrapTotal = new Counter({
+  name: 'inversearena_dashboard_bootstrap_total',
+  help: 'Dashboard bootstrap requests, by outcome (ok/partial/error)',
+  labelNames: ['outcome'],
+  registers: [register],
+});
+
+export const dashboardBootstrapSectionDuration = new Histogram({
+  name: 'inversearena_dashboard_bootstrap_section_duration_seconds',
+  help: 'Per-section latency of the dashboard bootstrap composition, by section and state',
+  labelNames: ['section', 'state'],
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+  registers: [register],
+});
+
+export const dashboardBootstrapSectionFailures = new Counter({
+  name: 'inversearena_dashboard_bootstrap_section_failures_total',
+  help: 'Dashboard bootstrap sections that failed or timed out, by section and reason',
+  labelNames: ['section', 'reason'],
+  registers: [register],
+});
+
+// #1503: tamper-evident administrative audit chain
+export const auditAppendsTotal = new Counter({
+  name: 'inversearena_audit_appends_total',
+  help: 'Chained audit record appends, by outcome (ok/conflict/error)',
+  labelNames: ['outcome'],
+  registers: [register],
+});
+
+export const auditChainVerificationTotal = new Counter({
+  name: 'inversearena_audit_chain_verification_total',
+  help: 'Audit chain verification runs, by outcome (valid/invalid/error)',
+  labelNames: ['outcome'],
+  registers: [register],
+});
+
+export const auditCheckpointsTotal = new Counter({
+  name: 'inversearena_audit_checkpoints_total',
+  help: 'Signed audit chain checkpoints persisted, by outcome (ok/error)',
+  labelNames: ['outcome'],
+  registers: [register],
+});
+
+/** 1 = the checkpoint store is reachable and signing keys are configured, 0 = degraded (never silent). */
+export const auditChainProtectionGauge = new Gauge({
+  name: 'inversearena_audit_chain_protection_available',
+  help: 'Audit chain protection availability: 1=fully protected, 0=degraded (checkpoint store or key unavailable)',
+  registers: [register],
+});
+
 export const payoutsSuccessTotal = new Counter({
   name: 'inversearena_payouts_success_total',
   help: 'Total successful prize payouts',

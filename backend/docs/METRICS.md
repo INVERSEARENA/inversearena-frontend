@@ -83,6 +83,91 @@ The backend exposes Prometheus-compatible metrics at `/metrics` for monitoring:
 
 A sustained rise in the `failure` outcome, or negotiation duration approaching the RPC circuit breaker's timeout, indicates a contract instance's `version()` entrypoint is unreachable or the deployment is genuinely running a version older than any TypeScript-callable entrypoint expects — see `backend/src/services/contractCapability.ts`.
 
+### Arena Stream Publication Metrics (#1500)
+
+**`inversearena_arena_polls_total`** (Counter)
+- Arena poller fetch+verify attempts
+- Labels: `outcome` (ok, error)
+- Polls/minute ≈ (active arenas with subscribers × 60 / 2.5s); an `error` ratio above a few percent means Soroban RPC reads are failing (correlate with the circuit breaker gauge)
+
+**`inversearena_arena_semantic_changes_total`** (Counter)
+- Polls whose canonical snapshot fingerprint changed and were therefore published
+
+**`inversearena_arena_suppressed_publishes_total`** (Counter)
+- Polls with unchanged verified state where publication was suppressed (heartbeat metadata only)
+- For an idle arena this is ~24/min; `semantic_changes` should stay near 0 in the same window
+
+**`inversearena_arena_stream_resyncs_total`** (Counter)
+- Client-requested full-snapshot resynchronisations after a detected version gap
+- Labels: `reason` (gap)
+- A sustained rise means clients are missing versions (short replay history, process restarts, or network loss between polls)
+
+### Dashboard Bootstrap Metrics (#1501)
+
+**`inversearena_dashboard_bootstrap_total`** (Counter)
+- Dashboard bootstrap requests
+- Labels: `outcome` (ok = all sections live, partial = some unavailable/stale, error = request rejected)
+
+**`inversearena_dashboard_bootstrap_section_duration_seconds`** (Histogram)
+- Per-section composition latency
+- Labels: `section` (profile, watchlist, portfolio, notifications, activity, platform), `state` (ok, unavailable, stale)
+- Buckets: 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5 seconds
+
+**`inversearena_dashboard_bootstrap_section_failures_total`** (Counter)
+- Sections that failed or hit their per-section timeout
+- Labels: `section`, `reason` (timeout, error)
+
+No arena id, user id, or wallet address is ever used as a label — see "Metric Cardinality" below.
+
+### Administrative Audit Chain Metrics (#1503)
+
+**`inversearena_audit_appends_total`** (Counter)
+- Chained audit record appends
+- Labels: `outcome` (ok, conflict, error)
+- A rising `conflict` rate means concurrent writers are contending on the chain head (expected under bursty admin traffic; the append retries). A rising `error` rate means appends are being rejected — alert, audit coverage is at risk
+
+**`inversearena_audit_chain_verification_total`** (Counter)
+- Verification runs of the audit chain
+- Labels: `outcome` (valid, invalid, error)
+- Any `invalid` result must page: it means a record was modified, deleted, inserted, reordered, or the chain forked — the report names the first invalid sequence
+
+**`inversearena_audit_checkpoints_total`** (Counter)
+- Signed audit chain checkpoints persisted to the relational store
+- Labels: `outcome` (ok, error)
+- Alert when no successful checkpoint appears for the checkpoint interval × 3
+
+**`inversearena_audit_chain_protection_available`** (Gauge)
+- 1 = checkpoint store reachable and signing key configured, 0 = degraded
+- Degraded state is also logged (`audit_chain_degraded`) — protection is never disabled silently
+
+Suggested alerting additions:
+
+```yaml
+- alert: AuditChainVerificationFailed
+  expr: increase(inversearena_audit_chain_verification_total{outcome="invalid"}[5m]) > 0
+  for: 1m
+  labels:
+    severity: critical
+  annotations:
+    summary: Audit chain verification detected tampering — inspect the first invalid sequence immediately
+
+- alert: AuditChainProtectionDegraded
+  expr: inversearena_audit_chain_protection_available == 0
+  for: 10m
+  labels:
+    severity: warning
+  annotations:
+    summary: Audit chain protection is degraded (checkpoint store or signing key unavailable)
+
+- alert: ArenaStreamResyncStorm
+  expr: increase(inversearena_arena_stream_resyncs_total[10m]) > 50
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: Arena stream clients are frequently detecting version gaps — check poller restarts and replay history sizing
+```
+
 ## Quick Start
 
 ### 1. Start Backend

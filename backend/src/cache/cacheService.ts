@@ -56,6 +56,15 @@ export const cacheKeys = {
    * on-chain read fails.
    */
   arenaOnChainSnapshot: (arenaId: string) => `arena:onchain-snapshot:${arenaId}`,
+  /**
+   * Semantic version metadata for the verified stream snapshot (#1500) —
+   * fingerprint, canonical payload, monotonic version and heartbeat. Kept
+   * separate from arenaOnChainSnapshot, which belongs to ArenaStatsService
+   * and holds a differently-shaped degraded-read fallback.
+   */
+  arenaSnapshotMeta: (arenaId: string) => `arena:snapshot-meta:${arenaId}`,
+  /** The last verified full snapshot plus its version metadata (#1500). */
+  arenaVerifiedSnapshot: (arenaId: string) => `arena:verified-snapshot:${arenaId}`,
 };
 
 /**
