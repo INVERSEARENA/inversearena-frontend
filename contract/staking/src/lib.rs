@@ -21,6 +21,10 @@ const PENDING_ADMIN_KEY: soroban_sdk::Symbol = symbol_short!("P_ADMIN");
 const PERSISTENT_TTL_THRESHOLD: u32 = 100;
 const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
 
+/// Staking contract ABI/storage version, for client-side capability
+/// negotiation across mixed deployment versions.
+const CONTRACT_VERSION: u32 = 1;
+
 /// Minimum deposit accepted when the pool holds no shares, in token base units.
 ///
 /// # Share-inflation ("donation") attack
@@ -100,6 +104,11 @@ impl StakingContract {
             .publish((symbol_short!("INIT"),), (admin, token));
 
         Ok(())
+    }
+
+    /// Return the staking contract ABI/storage version.
+    pub fn version(_env: Env) -> u32 {
+        CONTRACT_VERSION
     }
 
     pub fn admin(env: Env) -> Address {
@@ -445,6 +454,12 @@ mod test {
         let (_env, client, admin, token, _staker) = setup();
         assert_eq!(client.admin(), admin);
         assert_eq!(client.token(), token);
+    }
+
+    #[test]
+    fn version_returns_the_current_contract_version() {
+        let (_env, client, _admin, _token, _staker) = setup();
+        assert_eq!(client.version(), CONTRACT_VERSION);
     }
 
     // #1012: initialize emits an INIT event.

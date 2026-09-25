@@ -9,6 +9,9 @@ use types::PayoutError;
 
 /// Maximum recipients per `distribute_batch` call (Soroban compute budget guard).
 pub const MAX_BATCH_SIZE: u32 = 50;
+/// Payout contract ABI/storage version, for client-side capability
+/// negotiation across mixed deployment versions.
+const CONTRACT_VERSION: u32 = 1;
 
 /// Payout contract — distributes winnings to the surviving player(s) of an
 /// arena (#660).
@@ -33,6 +36,11 @@ impl PayoutContract {
         PayoutStorage::set_admin(&env, &admin);
         PayoutStorage::set_token(&env, &token);
         Ok(())
+    }
+
+    /// Return the payout contract ABI/storage version.
+    pub fn version(_env: Env) -> u32 {
+        CONTRACT_VERSION
     }
 
     /// Upgrade this payout contract to `new_wasm_hash`.
@@ -204,6 +212,12 @@ mod test {
 
         let token = token::TokenClient::new(&env, &token_addr);
         Fixture { env, client, token }
+    }
+
+    #[test]
+    fn version_returns_the_current_contract_version() {
+        let fx = setup(0);
+        assert_eq!(fx.client.version(), CONTRACT_VERSION);
     }
 
     #[test]

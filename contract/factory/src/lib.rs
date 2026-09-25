@@ -53,6 +53,10 @@ pub trait ArenaInterface {
 const MIN_ROUND_DURATION: u64 = 60;
 const MAX_ROUND_DURATION: u64 = 604_800;
 const MIN_PLAYERS: u32 = 2;
+/// Factory contract ABI/storage version, for client-side capability
+/// negotiation across mixed deployment versions (see arena::CONTRACT_VERSION
+/// for the sibling contract's own counter — these are independent).
+const CONTRACT_VERSION: u32 = 1;
 
 /// Factory contract — deploys arena instances and enforces protocol-level rules.
 ///
@@ -76,6 +80,11 @@ impl FactoryContract {
         env.events()
             .publish((symbol_short!("INIT"),), (admin, min_stake));
         Ok(())
+    }
+
+    /// Return the factory contract ABI/storage version.
+    pub fn version(_env: Env) -> u32 {
+        CONTRACT_VERSION
     }
 
     /// Upgrade the factory contract's code to `new_wasm_hash`.
@@ -490,6 +499,12 @@ mod test {
             max_players: 10,
             round_duration: 60,
         }
+    }
+
+    #[test]
+    fn version_returns_the_current_contract_version() {
+        let (_env, client, _admin, _host) = setup();
+        assert_eq!(client.version(), CONTRACT_VERSION);
     }
 
     #[test]
