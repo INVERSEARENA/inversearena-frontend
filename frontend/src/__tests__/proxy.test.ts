@@ -68,3 +68,71 @@ describe("proxy() CSP hardening (#1296)", () => {
     expect(csp).toMatch(/connect-src [^;]*stellar\.org/);
   });
 });
+
+describe("proxy() CSP hardening — #1451 additions", () => {
+  it("style-src carries a per-request nonce (#1451)", () => {
+    const { res, csp } = run();
+    // The nonce forwarded on the request headers should appear in style-src.
+    const styleSrc = csp
+      .split(";")
+      .map((d) => d.trim())
+      .find((d) => d.startsWith("style-src "));
+    expect(styleSrc).toBeDefined();
+    expect(styleSrc).toMatch(/'nonce-[A-Za-z0-9+/=]+'/);
+    void res;
+  });
+
+  it("style-src retains 'unsafe-inline' as a pre-CSP3 fallback (#1451)", () => {
+    const { csp } = run();
+    const styleSrc = csp
+      .split(";")
+      .map((d) => d.trim())
+      .find((d) => d.startsWith("style-src "));
+    expect(styleSrc).toContain("'unsafe-inline'");
+  });
+
+  it("img-src does not contain the broad 'https:' wildcard (#1451)", () => {
+    const { csp } = run();
+    const imgSrc = csp
+      .split(";")
+      .map((d) => d.trim())
+      .find((d) => d.startsWith("img-src "));
+    expect(imgSrc).toBeDefined();
+    // 'https:' as a standalone token (wildcard) must be absent.
+    expect(imgSrc).not.toMatch(/\bhttps:\s/);
+    expect(imgSrc).not.toMatch(/\bhttps:$/);
+  });
+
+  it("img-src still allows 'self', data: and blob: (#1451)", () => {
+    const { csp } = run();
+    const imgSrc = csp
+      .split(";")
+      .map((d) => d.trim())
+      .find((d) => d.startsWith("img-src "));
+    expect(imgSrc).toContain("'self'");
+    expect(imgSrc).toContain("data:");
+    expect(imgSrc).toContain("blob:");
+  });
+
+  it("CSP includes worker-src directive (#1451)", () => {
+    const { csp } = run();
+    const workerSrc = csp
+      .split(";")
+      .map((d) => d.trim())
+      .find((d) => d.startsWith("worker-src "));
+    expect(workerSrc).toBeDefined();
+    expect(workerSrc).toContain("'self'");
+    // blob: is needed for SDK-created dynamic workers.
+    expect(workerSrc).toContain("blob:");
+  });
+
+  it("CSP includes manifest-src directive (#1451)", () => {
+    const { csp } = run();
+    const manifestSrc = csp
+      .split(";")
+      .map((d) => d.trim())
+      .find((d) => d.startsWith("manifest-src "));
+    expect(manifestSrc).toBeDefined();
+    expect(manifestSrc).toContain("'self'");
+  });
+});

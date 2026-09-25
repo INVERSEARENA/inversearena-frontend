@@ -54,8 +54,49 @@ impl PayoutContract {
         Ok(())
     }
 
+    /// Pre-register the authorised destination address for `payout_id`.
+    ///
+    /// Must be called by the admin **before** `distribute_winnings`. The binding
+    /// is permanent — once a destination is registered for a given `payout_id` it
+    /// cannot be changed, so the admin must ensure correctness at registration
+    /// time. `distribute_winnings` will reject any call whose `winner` argument
+    /// does not match the stored binding.
+    ///
+    /// Idempotent: calling twice with the same `(payout_id, destination)` is
+    /// safe; a second call with a *different* destination is silently ignored
+    /// (the first binding wins).
+    ///
+    /// # Parameters
+    /// - `payout_id`: The unique identifier of the payout being registered.
+    /// - `destination`: The Stellar address that is the sole permitted recipient.
+    ///
+    /// # Errors
+    /// - `PayoutError::NotInitialised` if the contract has not been initialised.
+    ///
+    /// Issue #1450 — payout destination binding.
+    pub fn register_destination(
+        env: Env,
+        payout_id: u64,
+        destination: Address,
+    ) -> Result<(), PayoutError> {
+        let admin = PayoutStorage::get_admin(&env)?;
+        admin.require_auth();
+        PayoutStorage::register_destination(&env, payout_id, &destination);
+        env.events().publish(
+            (symbol_short!("dst_reg"), payout_id),
+            destination,
+        );
+        Ok(())
+    }
+
     /// Single-winner payout: transfer `amount` of the configured token from the
     /// contract's balance to `winner`. Idempotent on `payout_id`.
+    ///
+    /// # Destination binding (#1450)
+    /// If `register_destination` has been called for this `payout_id`, the
+    /// `winner` argument **must** match the pre-registered address. This prevents
+    /// a compromised admin key from redirecting a payout to an arbitrary address
+    /// after the destination was locked in by the operator.
     pub fn distribute_winnings(
         env: Env,
         payout_id: u64,
@@ -70,6 +111,19 @@ impl PayoutContract {
         }
         if PayoutStorage::is_paid(&env, payout_id) {
             return Err(PayoutError::AlreadyPaid);
+        }
+
+        // Issue #1450 — enforce destination binding.
+        // A registered destination must match the caller-supplied winner; if no
+        // destination has been registered the call is rejected, requiring the
+        // admin to explicitly register before distributing.
+        match PayoutStorage::get_destination(&env, payout_id) {
+            None => return Err(PayoutError::DestinationNotRegistered),
+            Some(registered) => {
+                if registered != winner {
+                    return Err(PayoutError::DestinationMismatch);
+                }
+            }
         }
 
         // Mark paid before transferring — idempotency + reentrancy guard.
@@ -151,6 +205,12 @@ impl PayoutContract {
         PayoutStorage::is_paid(&env, payout_id)
     }
 
+    /// Return the pre-registered destination for `payout_id`, or `None`.
+    /// Issue #1450 — payout destination binding.
+    pub fn get_destination(env: Env, payout_id: u64) -> Option<Address> {
+        PayoutStorage::get_destination(&env, payout_id)
+    }
+
     pub fn admin(env: Env) -> Option<Address> {
         PayoutStorage::get_admin(&env).ok()
     }
@@ -225,6 +285,8 @@ mod test {
         let fx = setup(1_000);
         let winner = Address::generate(&fx.env);
 
+        // #1450 — register destination before distributing.
+        fx.client.register_destination(&1, &winner);
         fx.client.distribute_winnings(&1, &winner, &600);
 
         assert_eq!(fx.token.balance(&winner), 600);
@@ -236,6 +298,8 @@ mod test {
         let fx = setup(1_000);
         let winner = Address::generate(&fx.env);
 
+        // #1450 — register destination before distributing.
+        fx.client.register_destination(&7, &winner);
         fx.client.distribute_winnings(&7, &winner, &100);
         let again = fx.client.try_distribute_winnings(&7, &winner, &100);
         assert!(again.is_err());
@@ -247,6 +311,7 @@ mod test {
     fn rejects_non_positive_amount() {
         let fx = setup(1_000);
         let winner = Address::generate(&fx.env);
+        // #1450 — amount is checked before destination binding, so this stays as-is.
         assert!(fx.client.try_distribute_winnings(&1, &winner, &0).is_err());
     }
 
@@ -686,5 +751,101 @@ mod test {
         fx.client.accept_admin();
 
         assert_eq!(fx.client.admin(), Some(addr_b));
+    }
+
+    // ── Issue #1450 — payout destination binding ─────────────────────────────
+
+    /// Normal path: register then distribute to the registered address succeeds.
+    #[test]
+    fn distribute_winnings_succeeds_with_registered_destination() {
+        let fx = setup(1_000);
+        let winner = Address::generate(&fx.env);
+
+        fx.client.register_destination(&10, &winner);
+        assert_eq!(fx.client.get_destination(&10), Some(winner.clone()));
+
+        fx.client.distribute_winnings(&10, &winner, &500);
+        assert_eq!(fx.token.balance(&winner), 500);
+        assert!(fx.client.is_paid(&10));
+    }
+
+    /// Distributing without a prior registration must be rejected.
+    #[test]
+    fn distribute_winnings_rejected_without_registration() {
+        let fx = setup(1_000);
+        let winner = Address::generate(&fx.env);
+
+        let err = fx
+            .client
+            .try_distribute_winnings(&20, &winner, &100)
+            .err()
+            .expect("must error without registration")
+            .expect("must be a contract error");
+        assert_eq!(err, PayoutError::DestinationNotRegistered);
+        // No funds must have moved.
+        assert_eq!(fx.token.balance(&winner), 0);
+        assert!(!fx.client.is_paid(&20));
+    }
+
+    /// Distributing to an address that differs from the registered one must be rejected.
+    #[test]
+    fn distribute_winnings_rejected_on_destination_mismatch() {
+        let fx = setup(1_000);
+        let real_winner = Address::generate(&fx.env);
+        let attacker = Address::generate(&fx.env);
+
+        // Register the legitimate winner.
+        fx.client.register_destination(&30, &real_winner);
+
+        // Attempt to redirect the payout to the attacker.
+        let err = fx
+            .client
+            .try_distribute_winnings(&30, &attacker, &100)
+            .err()
+            .expect("mismatch must error")
+            .expect("must be a contract error");
+        assert_eq!(err, PayoutError::DestinationMismatch);
+        assert_eq!(fx.token.balance(&attacker), 0);
+        assert_eq!(fx.token.balance(&real_winner), 0);
+        assert!(!fx.client.is_paid(&30));
+    }
+
+    /// A second `register_destination` call for the same payout_id with a
+    /// different address must be a no-op — the first binding wins.
+    #[test]
+    fn second_register_destination_does_not_overwrite_first() {
+        let fx = setup(1_000);
+        let first = Address::generate(&fx.env);
+        let second = Address::generate(&fx.env);
+
+        fx.client.register_destination(&40, &first);
+        // Attempt to overwrite — must be silently ignored.
+        fx.client.register_destination(&40, &second);
+
+        assert_eq!(
+            fx.client.get_destination(&40),
+            Some(first.clone()),
+            "first binding must survive a second registration attempt"
+        );
+
+        // Distributing to the first (correct) address must succeed.
+        fx.client.distribute_winnings(&40, &first, &100);
+        assert_eq!(fx.token.balance(&first), 100);
+    }
+
+    /// `get_destination` returns None before any registration.
+    #[test]
+    fn get_destination_returns_none_before_registration() {
+        let fx = setup(0);
+        assert_eq!(fx.client.get_destination(&99), None);
+    }
+
+    /// `register_destination` requires admin auth.
+    #[test]
+    fn register_destination_requires_admin_auth() {
+        let fx = setup(0);
+        let winner = Address::generate(&fx.env);
+        fx.env.set_auths(&[]);
+        assert!(fx.client.try_register_destination(&50, &winner).is_err());
     }
 }
