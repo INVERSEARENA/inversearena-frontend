@@ -1,6 +1,12 @@
 use crate::types::Choice;
 use soroban_sdk::{Address, BytesN, Env, Symbol, symbol_short};
 
+/// Schema version for the `round_resolved_v2` (`rslvd2`) event payload
+/// (#1394). Bump this and document the change in `docs/event-schema.md` if
+/// the payload shape changes; consumers should ignore unknown versions
+/// rather than fail parsing.
+pub const ROUND_PROOF_EVENT_VERSION: u32 = 1;
+
 pub struct ArenaEvents;
 
 impl ArenaEvents {
@@ -54,6 +60,38 @@ impl ArenaEvents {
     pub fn round_resolved(env: &Env, round: u32, eliminated: u32, survivors: u32) {
         env.events()
             .publish((symbol_short!("resolved"),), (round, eliminated, survivors));
+    }
+
+    /// Emitted alongside `round_resolved` (#1394) with enough data for a
+    /// client to independently recompute survivor membership: the full
+    /// heads/tails tally and the surviving choice (if any). Additive —
+    /// `round_resolved` keeps firing unchanged for existing consumers; this
+    /// is a *new* topic, not a payload change to an existing one, so no
+    /// existing indexer breaks by ignoring it.
+    ///
+    /// `surviving_choice` is `None` encoded as `heads_count == tails_count`
+    /// when both are nonzero (a tie — nobody eliminated); callers should use
+    /// `crate::eliminations::surviving_choice` on the tally rather than
+    /// inferring it from a sentinel, since Soroban events cannot carry
+    /// `Option<Choice>` as a topic-friendly primitive here.
+    pub fn round_resolved_v2(
+        env: &Env,
+        round: u32,
+        heads_count: u32,
+        tails_count: u32,
+        eliminated: u32,
+        survivors: u32,
+    ) {
+        env.events().publish(
+            (symbol_short!("rslvd2"), round),
+            (
+                heads_count,
+                tails_count,
+                eliminated,
+                survivors,
+                ROUND_PROOF_EVENT_VERSION,
+            ),
+        );
     }
 
     pub fn round_tied(env: &Env, round: u32, survivors: u32) {

@@ -255,6 +255,21 @@ export const payoutsDeadLetterTotal = new Counter({
   registers: [register],
 });
 
+// Commit receipt status endpoint (#1383)
+export const commitReceiptLookupsTotal = new Counter({
+  name: 'inversearena_commit_receipt_lookups_total',
+  help: 'Total commit-status lookups, by resulting status and outcome',
+  labelNames: ['status', 'outcome'],
+  registers: [register],
+});
+
+export const commitReceiptLookupDuration = new Histogram({
+  name: 'inversearena_commit_receipt_lookup_duration_seconds',
+  help: 'Commit-status lookup duration in seconds',
+  buckets: [0.005, 0.01, 0.05, 0.1, 0.5, 1, 2],
+  registers: [register],
+});
+
 // 0 = closed (healthy), 1 = half-open (probing), 2 = open (failing)
 export const sorobanCircuitBreakerState = new Gauge({
   name: 'inversearena_soroban_circuit_breaker_state',
@@ -457,6 +472,67 @@ export async function refreshQueueMetrics(
     queueRefreshDuration.observe(QUEUE_LABELS, Math.max(0, elapsed));
   }
 }
+
+// Round proof bundle metrics (#1394)
+export const proofBundleAssemblyTotal = new Counter({
+  name: 'inversearena_proof_bundle_assembly_total',
+  help: 'Total round proof bundle assembly attempts',
+  labelNames: ['status'],
+  registers: [register],
+});
+
+export const proofBundleAssemblyDuration = new Histogram({
+  name: 'inversearena_proof_bundle_assembly_duration_seconds',
+  help: 'Round proof bundle assembly duration in seconds',
+  buckets: [0.005, 0.01, 0.05, 0.1, 0.5, 1, 2],
+  registers: [register],
+});
+
+export const proofBundleAssemblyRetriesTotal = new Counter({
+  name: 'inversearena_proof_bundle_assembly_retries_total',
+  help: 'Total retry attempts made while assembling a round proof bundle',
+  registers: [register],
+});
+
+export const proofBundleVerificationTotal = new Counter({
+  name: 'inversearena_proof_bundle_verification_total',
+  help: 'Total client-side (frontend-reported) proof bundle verification outcomes',
+  labelNames: ['status'],
+  registers: [register],
+});
+
+// Arena Discovery Backfill Metrics (#1391)
+export const backfillRunsTotal = new Counter({
+  name: 'inversearena_backfill_runs_total',
+  help: 'Total arena discovery backfill runs',
+  labelNames: ['status'],
+  registers: [register],
+});
+
+export const backfillArenasDiscoveredTotal = new Counter({
+  name: 'inversearena_backfill_arenas_discovered_total',
+  help: 'Total arenas successfully upserted by the backfill job',
+  registers: [register],
+});
+
+export const backfillArenasFailedTotal = new Counter({
+  name: 'inversearena_backfill_arenas_failed_total',
+  help: 'Total arenas whose backfill upsert failed and will be retried next run',
+  registers: [register],
+});
+
+export const backfillRunDurationSeconds = new Histogram({
+  name: 'inversearena_backfill_run_duration_seconds',
+  help: 'Arena discovery backfill run duration in seconds',
+  buckets: [0.5, 1, 2, 5, 10, 30, 60],
+  registers: [register],
+});
+
+export const backfillCursorPosition = new Gauge({
+  name: 'inversearena_backfill_cursor_position',
+  help: 'Last pool_id fully processed by the arena discovery backfill cursor',
+  registers: [register],
+});
 
 export async function refreshArenaMetrics(prisma: PrismaClient): Promise<void> {
   const activeRounds = await prisma.round.findMany({

@@ -81,6 +81,18 @@ model Transaction {
   @@map("transactions")
 }
 
+// Resumable cursor state for background reconciliation/backfill jobs.
+// One row per job (keyed by `id`, e.g. "arena_discovery"), so a job resumes
+// from where it left off across restarts instead of rescanning from scratch
+// or losing progress (see docs/arena-discovery-backfill.md, #1391).
+model BackfillCursor {
+  id            String   @id // job name, e.g. "arena_discovery"
+  lastProcessed Int      @default(0) @map("last_processed")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("backfill_cursors")
+}
+
 model EliminationLog {
   id          String   @id @default(uuid())
   roundId     String   @map("round_id")
@@ -94,4 +106,35 @@ model EliminationLog {
   @@index([roundId])
   @@index([userId])
   @@map("elimination_logs")
+}
+
+// Checkpointed on-chain arena projection state (#1382).
+//
+// One row per (network, arenaId): the canonical resume point for the
+// projection replay engine. `lastLedgerSequence` is the highest ledger
+// whose events have been folded into `projectionState`. Checkpoints are
+// scoped per network so testnet and mainnet replays never share state
+// (see docs/projection-checkpoint-replay.md).
+model ArenaProjectionCheckpoint {
+  id                 String    @id @default(uuid())
+  arenaId            String    @map("arena_id")
+  network            String    // networkPassphrase-derived key; keeps testnet/mainnet checkpoints isolated
+  lastLedgerSequence Int       @map("last_ledger_sequence")
+  // Full folded ArenaProjectionState (see arenaProjectionFold.ts), stored as
+  // JSON so the replay engine can resume without re-deriving state from
+  // genesis. This is the "projection snapshot" referenced in the design note.
+  projectionState    Json      @map("projection_state")
+  status             String    @default("idle") // idle | replaying | caught_up | failed
+  lastError          String?   @map("last_error")
+  // Advisory lease to guard against two replay processes running
+  // concurrently for the same (arenaId, network) after an ungraceful
+  // restart. Null/expired lease means no active replayer.
+  leaseOwner         String?   @map("lease_owner")
+  leaseExpiresAt     DateTime? @map("lease_expires_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  @@unique([arenaId, network])
+  @@index([status])
+  @@map("arena_projection_checkpoints")
 }

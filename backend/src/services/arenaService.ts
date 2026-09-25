@@ -17,6 +17,9 @@ import type {
 import { getStellarConfig } from "../config/stellarConfig";
 import { ArenaStatsService } from "./arenaStatsService";
 import { enforcePayloadLimits } from "../validation/payloadLimits";
+import { ArenaProjectionCheckpointStore } from "./projection/arenaProjectionCheckpointStore";
+import { initialArenaProjection, type ArenaProjectionState } from "./projection/arenaProjectionFold";
+import { replayArenaProjection, type ArenaReplayOptions } from "./projection/arenaProjectionReplay";
 
 const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
 const TX_HASH_REGEX = /^[0-9a-f]{64}$/i;
@@ -113,12 +116,30 @@ interface ArenaSnapshot {
   lastRoundState: string | null;
 }
 
+/**
+ * Response shape for the canonical checkpointed projection (#1382). This is
+ * additive — it does not change `ArenaSnapshot`/`getSnapshot()`, which
+ * remains the existing REST/SSE contract untouched by this feature.
+ */
+export interface ArenaProjectionResponse {
+  arenaId: string;
+  network: string;
+  /** "not_started" means no checkpoint row exists yet — replay has never run for this arena/network. */
+  status: "not_started" | "idle" | "replaying" | "caught_up" | "failed";
+  lastLedgerSequence: number | null;
+  projection: ArenaProjectionState;
+}
+
 export class ArenaService {
+  private readonly projectionCheckpoints: ArenaProjectionCheckpointStore;
+
   constructor(
     private readonly prisma: PrismaClient,
     private readonly statsService = new ArenaStatsService(prisma),
     private readonly stellarRpcGateway = new StellarRpcGateway(),
-  ) {}
+  ) {
+    this.projectionCheckpoints = new ArenaProjectionCheckpointStore(prisma);
+  }
 
   /**
    * Confirms an arena deployment and persists it under its real contract address.
@@ -146,7 +167,6 @@ export class ArenaService {
       );
     }
 
-    const server = getRpcServer();
     const tx = await this.stellarRpcGateway.getTransaction(txHash);
 
     if (tx.status !== "SUCCESS") {
@@ -245,6 +265,53 @@ export class ArenaService {
       recentEliminations,
       lastRoundState: lastRound?.state ?? null,
     };
+  }
+
+  /**
+   * Read the canonical checkpointed projection for an arena (#1382). Reads
+   * whatever checkpoint row currently exists without triggering a replay —
+   * callers that need a fresh/complete projection should call
+   * `triggerProjectionReplay` first (or rely on a scheduled replay job; see
+   * docs/projection-checkpoint-replay.md, "Open questions").
+   *
+   * `status: "not_started"` (a status value that does not appear in the DB
+   * — it's synthesized here) distinguishes "replay has never run for this
+   * arena" from a checkpoint row that genuinely reflects an in-progress or
+   * completed replay, so callers can tell "no data yet" apart from "stale
+   * but real data" (see design note, "Stale reads").
+   */
+  async getProjection(arenaId: string): Promise<ArenaProjectionResponse> {
+    const network = getStellarConfig().networkPassphrase;
+    const checkpoint = await this.projectionCheckpoints.load(arenaId, network);
+
+    if (!checkpoint) {
+      return {
+        arenaId,
+        network,
+        status: "not_started",
+        lastLedgerSequence: null,
+        projection: initialArenaProjection(arenaId),
+      };
+    }
+
+    return {
+      arenaId,
+      network,
+      status: checkpoint.status,
+      lastLedgerSequence: checkpoint.lastLedgerSequence,
+      projection: checkpoint.projectionState,
+    };
+  }
+
+  /**
+   * Trigger a checkpointed replay for an arena, resuming from its last
+   * checkpoint (or from `options.genesisLedger` if this is the first
+   * replay). This is the write path backing `getProjection`; kept as a
+   * separate method so read-only callers (e.g. a status endpoint) don't
+   * accidentally kick off a replay just by reading.
+   */
+  async triggerProjectionReplay(arenaId: string, options?: ArenaReplayOptions) {
+    return replayArenaProjection(this.prisma, arenaId, options);
   }
 
   buildStreamEvent(
