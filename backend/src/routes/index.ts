@@ -16,6 +16,7 @@ import { createCancellationRecoveryRouter } from "./cancellationRecovery";
 import { createConfigRouter } from "./config";
 import { createInvitationsRouter } from "./invitations";
 import { createRoundProofBundleRouter } from "./roundProofBundle";
+import { createLobbyReservationRouter } from "./lobbyReservation";
 import type { PayoutsController } from "../controllers/payouts.controller";
 import type { WorkerController } from "../controllers/worker.controller";
 import type { AuthController } from "../controllers/auth.controller";
@@ -55,6 +56,7 @@ export function createApiRouter(
   router.use("/arenas", createArenaReplayRouter(requireAuth));
   router.use("/arenas", createCancellationRecoveryRouter(requireAuth));
   router.use("/arenas", createInvitationsRouter(requireAuth));
+  router.use("/arenas", createLobbyReservationRouter(requireAuth));
   router.use("/pools", createPoolsRouter(requireAuth));
   router.use("/rounds", createRoundProofBundleRouter(requireAuth, roundProofBundleService));
   router.use("/users", createNotificationPreferencesRouter(requireAuth));

@@ -157,9 +157,41 @@ class ProfileApiRepository implements ProfileRepository {
   }
 
   async getHistory(address?: string): Promise<HistoryEntry[]> {
-    // Placeholder: history endpoint doesn't exist yet, return empty or mock
-    // return [];
-    return profileRepositoryMock.getHistory(address);
+    // GET /api/users/me/activity (#1403) is cursor-paginated; this repository
+    // interface returns a flat array with no cursor of its own, so this
+    // reads the first page only. A dedicated paginated history view can
+    // thread `cursor`/`hasMore` through once one exists — until then, one
+    // page is strictly more real data than the mock this replaces.
+    try {
+      const response = await fetch('/api/users/me/activity?limit=25', {
+        headers: this.getAuthHeaders(),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      const items: Array<{
+        id: string;
+        type: string;
+        timestamp: string;
+        arenaId: string;
+        roundNumber: number;
+        reason: string | null;
+      }> = data.items ?? [];
+
+      return items.map((item) => ({
+        id: item.id,
+        action: 'arena_eliminated' as const,
+        description: `Eliminated in round ${item.roundNumber}${item.reason ? ` (${item.reason})` : ''}`,
+        timestamp: new Date(item.timestamp),
+        arenaId: item.arenaId,
+      }));
+    } catch (error) {
+      console.warn('Failed to fetch real activity history, falling back to mock', error);
+      return profileRepositoryMock.getHistory(address);
+    }
   }
 }
 
