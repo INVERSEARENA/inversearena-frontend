@@ -66,6 +66,23 @@ The backend exposes Prometheus-compatible metrics at `/metrics` for monitoring:
 - Round resolution duration in seconds
 - Buckets: 0.1, 0.5, 1, 2, 5, 10 seconds
 
+### Contract Capability Negotiation Metrics (#1409)
+
+**`inversearena_capability_negotiations_total`** (Counter)
+- Contract capability negotiation attempts
+- Labels: `contract` (arena, factory, payout, staking), `outcome` (success, failure, retry)
+
+**`inversearena_capability_negotiation_duration_seconds`** (Histogram)
+- Time to resolve a contract's negotiated capability set, including retries
+- Labels: `contract`
+- Buckets: 0.01, 0.05, 0.1, 0.5, 1, 2, 5 seconds
+
+**`inversearena_capability_cache_hits_total`** (Counter)
+- Negotiation results served from the in-memory version cache instead of a fresh on-chain read
+- Labels: `contract`
+
+A sustained rise in the `failure` outcome, or negotiation duration approaching the RPC circuit breaker's timeout, indicates a contract instance's `version()` entrypoint is unreachable or the deployment is genuinely running a version older than any TypeScript-callable entrypoint expects — see `backend/src/services/contractCapability.ts`.
+
 ## Quick Start
 
 ### 1. Start Backend

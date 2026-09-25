@@ -304,6 +304,29 @@ export const secretKeyVerificationsTotal = new Counter({
   registers: [register],
 });
 
+// #1409: contract capability negotiation across mixed deployment versions
+export const capabilityNegotiationsTotal = new Counter({
+  name: 'inversearena_capability_negotiations_total',
+  help: 'Contract capability negotiation attempts, by contract kind and outcome (success/failure/retry)',
+  labelNames: ['contract', 'outcome'],
+  registers: [register],
+});
+
+export const capabilityNegotiationDuration = new Histogram({
+  name: 'inversearena_capability_negotiation_duration_seconds',
+  help: 'Time to resolve a contract\'s negotiated capability set, including retries',
+  labelNames: ['contract'],
+  buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5],
+  registers: [register],
+});
+
+export const capabilityCacheHitsTotal = new Counter({
+  name: 'inversearena_capability_cache_hits_total',
+  help: 'Capability negotiation results served from the in-memory version cache instead of a fresh on-chain read',
+  labelNames: ['contract'],
+  registers: [register],
+});
+
 export interface QueueMetricsRefreshResult {
   available: boolean;
   snapshot?: QueueSnapshot;
