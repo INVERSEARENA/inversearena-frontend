@@ -10,7 +10,7 @@
  *  - getOnChainWinner           — single winner address for payouts (#1099)
  */
 
-import { Contract, Keypair, nativeToScVal, scValToNative, xdr } from "@stellar/stellar-sdk";
+import { Contract, Keypair, nativeToScVal, scValToNative, xdr, rpc } from "@stellar/stellar-sdk";
 import { StellarRpcGateway } from "../../frontend/src/shared-d/services/stellarRpcGateway";
 import { getStellarConfig } from "../config/stellarConfig";
 
@@ -42,12 +42,16 @@ export class OnChainReadError extends Error {
 }
 
 
+/**
+ * Test seam — mirrors the pattern used in arenaService.ts / ledgerClock.ts.
+ * When set, simulateViewCall bypasses the real StellarRpcGateway and talks
+ * directly to this stub server instead.
+ */
+let rpcServerOverride: rpc.Server | null = null;
 
-
-
-/** Test seam — mirrors the pattern used in arenaService.ts / ledgerClock.ts. */
-
-
+export function setRpcServerForTest(server: rpc.Server | null): void {
+  rpcServerOverride = server;
+}
 /**
  * A dummy public key used as the simulation source for read-only calls.
  * Does not need funds — Soroban simulates without submitting.
@@ -76,7 +80,9 @@ async function simulateViewCall(
   stellarRpcGateway: StellarRpcGateway,
   args: xdr.ScVal[] = [],
 ): Promise<unknown> {
-  const sourceAccount = await stellarRpcGateway.getAccount(getSourcePublicKey(), `simulateViewCall.${functionName}`);
+  const sourceAccount = rpcServerOverride
+    ? await rpcServerOverride.getAccount(getSourcePublicKey())
+    : await stellarRpcGateway.getAccount(getSourcePublicKey(), `simulateViewCall.${functionName}`);
 
   const contract = new Contract(contractId);
   const tx = new (await import("@stellar/stellar-sdk")).TransactionBuilder(sourceAccount, {
@@ -87,7 +93,9 @@ async function simulateViewCall(
     .setTimeout(60)
     .build();
 
-  const result = await stellarRpcGateway.simulateTransaction(tx);
+  const result = rpcServerOverride
+    ? await rpcServerOverride.simulateTransaction(tx)
+    : await stellarRpcGateway.simulateTransaction(tx);
 
   if ("error" in result) {
     throw new Error(`Simulation error for ${functionName}: ${result.error}`);
@@ -115,6 +123,26 @@ export async function getOnChainGameState(contractId: string): Promise<OnChainGa
     // If the contract call fails (e.g. not deployed yet), return "Open"
     // as a safe default that won't incorrectly mark arenas as finished.
     return "Open";
+  }
+}
+
+/**
+ * Read a deployed contract's `version()` return value.
+ *
+ * Unlike getOnChainGameState/getOnChainPlayerCount above, this propagates
+ * failures instead of defaulting — contractCapability.ts (#1409) needs to
+ * know definitively whether a version read succeeded, since a silently
+ * defaulted version would let capability negotiation treat an
+ * unreachable/pre-version-endpoint deployment as if it were running a
+ * known version.
+ */
+export async function getOnChainContractVersion(contractId: string): Promise<number> {
+  const stellarRpcGateway = new StellarRpcGateway();
+  try {
+    const result = await simulateViewCall(contractId, "version", stellarRpcGateway);
+    return Number(result as bigint | number);
+  } catch (error) {
+    throw new OnChainReadError("version", contractId, error);
   }
 }
 
