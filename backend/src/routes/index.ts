@@ -15,6 +15,7 @@ import { createPortfolioExposureRouter } from "./portfolioExposure";
 import { createCancellationRecoveryRouter } from "./cancellationRecovery";
 import { createConfigRouter } from "./config";
 import { createInvitationsRouter } from "./invitations";
+import { createLobbyReservationRouter } from "./lobbyReservation";
 import type { PayoutsController } from "../controllers/payouts.controller";
 import type { WorkerController } from "../controllers/worker.controller";
 import type { AuthController } from "../controllers/auth.controller";
@@ -52,6 +53,7 @@ export function createApiRouter(
   router.use("/arenas", createArenaReplayRouter(requireAuth));
   router.use("/arenas", createCancellationRecoveryRouter(requireAuth));
   router.use("/arenas", createInvitationsRouter(requireAuth));
+  router.use("/arenas", createLobbyReservationRouter(requireAuth));
   router.use("/pools", createPoolsRouter(requireAuth));
   router.use("/users", createNotificationPreferencesRouter(requireAuth));
   router.use("/users", createPortfolioExposureRouter(requireAuth));

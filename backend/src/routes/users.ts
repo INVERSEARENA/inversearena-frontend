@@ -31,6 +31,7 @@ export function createUsersRouter(
 
   // Protected — requires valid JWT
   router.get("/me", authMiddleware, asyncHandler(controller.me));
+  router.get("/me/activity", authMiddleware, asyncHandler(controller.activity));
 
   // ── Issue #1411 — Active stake limit ────────────────────────────────────────
   /**
