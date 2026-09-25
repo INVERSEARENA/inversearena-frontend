@@ -1,5 +1,8 @@
 name: Backend CI
 
+# TODO(#1506): Add seeded repetition and timing artifact collection.
+# TODO(#1506): Classify deterministic failures, flakes, and slow tests.
+
 on:
   push:
     branches: ["main"]
