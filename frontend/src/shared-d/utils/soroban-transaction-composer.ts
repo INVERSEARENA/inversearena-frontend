@@ -15,6 +15,9 @@ import { stellarConfig } from "@/lib/stellarConfig";
 
 type SorobanOperation = ReturnType<Contract["call"]>;
 
+// TODO(#1529): Bind prepared transactions to config revision and ledger bounds.
+// TODO(#1529): Reject stale preparations before wallet submission.
+
 /**
  * Assembles an unsigned {@link Transaction} with a single operation (Soroban / classic).
  * This is the transaction *assembly* layer — distinct from {@link TransactionBuilder} naming in the issue ticket.

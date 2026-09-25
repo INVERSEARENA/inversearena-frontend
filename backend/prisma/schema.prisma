@@ -10,6 +10,9 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// TODO(#1444): Add production-plan-validated indexes for arena stats queries.
+// TODO(#1444): Store the supporting EXPLAIN fixtures.
+
 model User {
   id             String           @id @default(uuid())
   walletAddress  String           @unique @map("wallet_address")
