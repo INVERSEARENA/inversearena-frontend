@@ -5,8 +5,16 @@
  * per interval), a single background poller per arena fetches the snapshot and
  * fans it out to all connected subscribers. This keeps DB load constant at
  * 1 query per arena per poll interval, regardless of spectator count.
+ *
+ * Publication is semantically versioned (#1500): each poll runs through
+ * arenaPollPipeline, and only a poll whose canonical fingerprint changed
+ * persists the full snapshot and fans out an updated `snapshot` envelope
+ * carrying a monotonic `version`, its `previousVersion`, and the per-process
+ * `instanceId`. Unchanged polls refresh heartbeat metadata only — no cache
+ * rewrite of the snapshot, no stream traffic.
  */
 
+import { randomUUID } from "crypto";
 import type { ArenaService } from "../services/arenaService";
 import { getSorobanBreaker } from "../utils/circuitBreaker";
 import { refreshLedgerIdentity } from "../services/ledgerClock";
@@ -43,6 +51,7 @@ const pollers = new Map<string, ArenaPollerState>();
 const POLL_INTERVAL_MS = 2_500;
 const POLL_RETRY_MAX_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 15_000;
+const HISTORY_LIMIT = 512;
 
 export function computePollDelay(consecutiveFailures: number): number {
   if (consecutiveFailures <= 0) return POLL_INTERVAL_MS;
@@ -52,13 +61,31 @@ export function computePollDelay(consecutiveFailures: number): number {
   );
 }
 
-function writeSseEvent(
-  res: { write: (chunk: string) => void },
-  event: string,
-  data: unknown,
-): void {
-  res.write(`event: ${event}\n`);
-  res.write(`data: ${JSON.stringify(data)}\n\n`);
+/**
+ * Reconnect plan for a client resuming with `afterSequence` (#1500).
+ *
+ * - no cursor → send the latest full snapshot;
+ * - cursor equal to the current sequence → nothing to replay;
+ * - cursor covered by the bounded history → replay the missed events in order;
+ * - stale cursor (fell out of history) → fall back to the latest full snapshot
+ *   so a client that missed several versions recovers instead of stalling.
+ */
+export function planReplay(
+  lastSnapshot: { payload: unknown; sequence: number } | null,
+  history: Array<{ event: string; payload: unknown; sequence: number }>,
+  currentSequence: number,
+  afterSequence: number | undefined,
+): { kind: "snapshot"; payload: unknown; sequence: number } | { kind: "replay"; items: Array<{ event: string; payload: unknown; sequence: number }> } | { kind: "none" } {
+  if (!lastSnapshot) return { kind: "none" };
+  if (afterSequence === undefined) {
+    return { kind: "snapshot", payload: lastSnapshot.payload, sequence: lastSnapshot.sequence };
+  }
+  const items = history.filter((item) => item.sequence > afterSequence);
+  if (items.length > 0) return { kind: "replay", items };
+  if (afterSequence !== currentSequence) {
+    return { kind: "snapshot", payload: lastSnapshot.payload, sequence: lastSnapshot.sequence };
+  }
+  return { kind: "none" };
 }
 
 /**
@@ -93,14 +120,12 @@ export function subscribeArena(
 
   state.subscribers.add(subscriber);
 
-  if (state.lastSnapshot) {
-    const replay = afterSequence === undefined ? [] : state.history.filter((item) => item.sequence > afterSequence);
-    if (afterSequence !== undefined && replay.length > 0) {
-      replay.forEach((item) => subscriber.sendEvent(item.event, item.payload, item.sequence));
-      console.info(JSON.stringify({ event: "arena_stream_replay_success", arenaId, afterSequence, replayed: replay.length }));
-    } else if (afterSequence === undefined || afterSequence !== state.sequence) {
-      subscriber.sendSnapshot(state.lastSnapshot.payload, state.lastSnapshot.sequence);
-    }
+  const plan = planReplay(state.lastSnapshot, state.history, state.sequence, afterSequence);
+  if (plan.kind === "replay") {
+    plan.items.forEach((item) => subscriber.sendEvent(item.event, item.payload, item.sequence));
+    console.info(JSON.stringify({ event: "arena_stream_replay_success", arenaId, afterSequence, replayed: plan.items.length }));
+  } else if (plan.kind === "snapshot") {
+    subscriber.sendSnapshot(plan.payload, plan.sequence);
   }
 
   // If this is the first subscriber, start the poll loop
@@ -121,21 +146,107 @@ export function subscribeArena(
   };
 }
 
+/** Reset all poller state. Test seam only. */
+export function resetPollersForTest(): void {
+  for (const state of pollers.values()) stopPollLoop(state);
+  pollers.clear();
+}
+
 function startPollLoop(
   arenaId: string,
   state: ArenaPollerState,
   arenaService: ArenaService,
 ): void {
-  // Heartbeat to keep connections alive
+  // Heartbeat to keep connections alive. Retained even while publication is
+  // suppressed so freshness signals continue for unchanged arenas (#1500).
   state.heartbeatTimer = setInterval(() => {
     for (const sub of state.subscribers) {
       try {
-        sub.sendEvent("__heartbeat", { ts: Date.now() });
+        sub.sendEvent("__heartbeat", { ts: Date.now(), instanceId: state.instanceId });
       } catch {
         // Client may have disconnected — cleanup will remove it
       }
     }
   }, HEARTBEAT_INTERVAL_MS);
+
+  const fanoutEvent = (event: string, envelope: Record<string, unknown>): void => {
+    state.history.push({ event, payload: envelope, sequence: envelope.sequence as number });
+    if (state.history.length > HISTORY_LIMIT) {
+      state.history.splice(0, state.history.length - HISTORY_LIMIT);
+    }
+    for (const sub of state.subscribers) {
+      try {
+        sub.sendEvent(event, envelope, envelope.sequence as number);
+      } catch {
+        // Client disconnected
+      }
+    }
+  };
+
+  /**
+   * Called by the pipeline only when the canonical snapshot fingerprint
+   * changed: emits any delta events first (they are superseded by the
+   * authoritative full snapshot that follows), then the versioned snapshot.
+   */
+  const publishSnapshot = async (snapshot: ArenaSnapshot, meta: ArenaSnapshotMeta): Promise<void> => {
+    const isFirstPublish = meta.previousVersion === null;
+
+    if (!isFirstPublish) {
+      const enqueue = (event: string, payload: unknown): void => {
+        fanoutEvent(event, {
+          type: event,
+          sequence: ++state.sequence,
+          arenaId,
+          payload,
+          createdAt: new Date().toISOString(),
+          instanceId: state.instanceId,
+        });
+      };
+
+      for (const elimination of snapshot.recentEliminations) {
+        if (!state.seenEliminations.has(elimination.id)) {
+          state.seenEliminations.add(elimination.id);
+          enqueue("player_eliminated", elimination);
+        }
+      }
+      if (snapshot.lastRoundState === "RESOLVED" && state.lastRoundState !== "RESOLVED") {
+        enqueue("round_resolved", { arenaId: snapshot.arenaId, roundNumber: snapshot.currentRound, playerCount: snapshot.playerCount, survivorCount: snapshot.survivorCount, status: snapshot.status });
+      }
+      const isTerminal = snapshot.status === "settled" || snapshot.survivorCount <= 1;
+      const wasTerminal = state.lastStatus === "settled" || (state.lastSurvivorCount !== null && state.lastSurvivorCount <= 1);
+      if (isTerminal && !wasTerminal) {
+        enqueue("game_finished", { arenaId: snapshot.arenaId, roundNumber: snapshot.currentRound, survivorCount: snapshot.survivorCount, status: snapshot.status });
+      }
+    }
+
+    const envelope = {
+      type: "snapshot",
+      sequence: ++state.sequence,
+      arenaId,
+      payload: snapshot,
+      createdAt: new Date().toISOString(),
+      version: meta.version,
+      previousVersion: meta.previousVersion,
+      instanceId: state.instanceId,
+    };
+    state.lastSnapshot = { payload: envelope, sequence: envelope.sequence };
+    state.history.push({ event: "snapshot", payload: envelope, sequence: envelope.sequence });
+    if (state.history.length > HISTORY_LIMIT) {
+      state.history.splice(0, state.history.length - HISTORY_LIMIT);
+    }
+    for (const sub of state.subscribers) {
+      try {
+        sub.sendSnapshot(envelope, envelope.sequence);
+      } catch {
+        // Client disconnected
+      }
+    }
+
+    state.lastRoundState = snapshot.lastRoundState;
+    state.lastStatus = snapshot.status;
+    state.lastSurvivorCount = snapshot.survivorCount;
+    snapshot.recentEliminations.forEach((entry) => state.seenEliminations.add(entry.id));
+  };
 
   // Main poll loop
   const poll = async (): Promise<void> => {
@@ -168,63 +279,24 @@ function startPollLoop(
       state.consecutiveFailures = 0;
       const isFirstPoll = state.lastRoundState === null && state.lastStatus === null;
 
-      if (isFirstPoll) {
-        // First poll: send initial snapshot to all subscribers
-        state.lastRoundState = snapshot.lastRoundState;
-        state.lastStatus = snapshot.status;
-        state.lastSurvivorCount = snapshot.survivorCount;
-        snapshot.recentEliminations.forEach((entry) => state!.seenEliminations.add(entry.id));
+      const outcome = await runArenaPollStages(stages);
+      arenaPollsTotal.inc({ outcome: "ok" });
+      state.consecutiveFailures = 0;
+      state.snapshotMeta = outcome.meta;
 
-        const snapshotEvent = {
-          type: "snapshot",
-          sequence: ++state.sequence,
+      if (outcome.kind === "suppressed") {
+        arenaSuppressedPublishesTotal.inc();
+        console.info(JSON.stringify({
+          event: "arena_snapshot_suppressed",
           arenaId,
-          payload: snapshot,
-          createdAt: new Date().toISOString(),
-        };
-        state.lastSnapshot = { payload: snapshotEvent, sequence: snapshotEvent.sequence };
-        state.history.push({ event: "snapshot", payload: snapshotEvent, sequence: snapshotEvent.sequence });
-        for (const sub of state.subscribers) {
-          try {
-            sub.sendSnapshot(snapshotEvent, snapshotEvent.sequence);
-          } catch {
-            // Client disconnected
-          }
-        }
+          version: outcome.meta.version,
+          heartbeatAt: outcome.meta.heartbeatAt,
+        }));
       } else {
-        // Subsequent polls: create each event once, then fan out the same cursor.
-        const pending: Array<{ event: string; payload: { type: string; sequence: number; arenaId: string; payload: unknown; createdAt: string } }> = [];
-        const enqueue = (event: string, payload: unknown): void => {
-          const envelope = { type: event, sequence: ++state.sequence, arenaId, payload, createdAt: new Date().toISOString() };
-          pending.push({ event, payload: envelope });
-          state.history.push({ event, payload: envelope, sequence: envelope.sequence });
-          if (state.history.length > 512) state.history.splice(0, state.history.length - 512);
-        };
-        for (const elimination of snapshot.recentEliminations) {
-          if (!state.seenEliminations.has(elimination.id)) {
-            state.seenEliminations.add(elimination.id);
-            enqueue("player_eliminated", elimination);
-          }
-        }
-        if (snapshot.lastRoundState === "RESOLVED" && state.lastRoundState !== "RESOLVED") {
-          enqueue("round_resolved", { arenaId: snapshot.arenaId, roundNumber: snapshot.currentRound, playerCount: snapshot.playerCount, survivorCount: snapshot.survivorCount, status: snapshot.status });
-        }
-        const isTerminal = snapshot.status === "settled" || snapshot.survivorCount <= 1;
-        const wasTerminal = state.lastStatus === "settled" || (state.lastSurvivorCount !== null && state.lastSurvivorCount <= 1);
-        if (isTerminal && !wasTerminal) {
-          enqueue("game_finished", { arenaId: snapshot.arenaId, roundNumber: snapshot.currentRound, survivorCount: snapshot.survivorCount, status: snapshot.status });
-        }
-        for (const item of pending) {
-          for (const sub of state.subscribers) {
-            try { sub.sendEvent(item.event, item.payload, item.payload.sequence); } catch { /* disconnected */ }
-          }
-        }
-
-        state.lastRoundState = snapshot.lastRoundState;
-        state.lastStatus = snapshot.status;
-        state.lastSurvivorCount = snapshot.survivorCount;
+        arenaSemanticChangesTotal.inc();
       }
     } catch (error) {
+      arenaPollsTotal.inc({ outcome: "error" });
       state.consecutiveFailures += 1;
       // Broadcast error to all subscribers
       for (const sub of state.subscribers) {
@@ -240,6 +312,7 @@ function startPollLoop(
                   : "Failed to stream arena updates",
             },
             createdAt: new Date().toISOString(),
+            instanceId: state.instanceId,
           });
         } catch {
           // Client disconnected

@@ -4,6 +4,11 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Modal } from "@/components/ui/Modal";
 import { useWallet } from "@/features/wallet/useWallet";
 import { TransactionModal } from "@/components/modals/TransactionModal";
+import {
+  evaluateSigningRequest,
+  type DecodedEnvelope,
+  type SigningPolicyError,
+} from "@/shared-d/security/policy";
 import { buildCreatePoolTransaction, submitSignedTransaction } from "@/shared-d/utils/stellar-transactions";
 import {
   formatCurrencyInput,
@@ -58,6 +63,7 @@ export function PoolCreationModal({
 
   const [stakeError, setStakeError] = useState<string>("");
   const [capacityError, setCapacityError] = useState<string>("");
+  const [errorMessage, setErrorMessage] = useState<string>("");
   const [isFormValid, setIsFormValid] = useState(false);
   const [isDeploying, setIsDeploying] = useState(false);
   const [draftRestored, setDraftRestored] = useState(false);
@@ -577,4 +583,11 @@ export function PoolCreationModal({
       />
     </>
   );
+  if (errorMessage) {
+    return (
+      <div className="mt-3 rounded-2xl border border-red-500/30 bg-red-900/60 p-4 text-sm text-red-300">
+        <p className="font-semibold uppercase tracking-[0.2em]">{errorMessage}</p>
+      </div>
+    );
+  }
 }

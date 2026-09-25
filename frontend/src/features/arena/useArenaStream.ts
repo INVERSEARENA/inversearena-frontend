@@ -14,6 +14,15 @@ export interface ArenaStreamEvent<TPayload = Record<string, unknown>> {
   payload: TPayload;
   sequence: number;
   createdAt: string;
+  /**
+   * Semantic snapshot version (#1500). Monotonic per arena; present on
+   * snapshot envelopes. Deltas are ordered by `sequence` alone.
+   */
+  version?: number;
+  /** The version this snapshot replaced (#1500); null on the first snapshot. */
+  previousVersion?: number | null;
+  /** Per-process stream identity (#1500). A change means the server restarted. */
+  instanceId?: string;
 }
 
 export interface ArenaEliminationFeedItem {
@@ -45,6 +54,8 @@ export interface UseArenaStreamReturn {
   snapshot: ArenaStreamSnapshot | null;
   feed: ArenaEliminationFeedItem[];
   latestEvent: ArenaStreamEvent | null;
+  /** Number of full-snapshot resyncs this hook has requested after a detected version gap (#1500). */
+  resyncCount: number;
 }
 
 function formatFeedLabel(userId: string): string {
@@ -90,6 +101,22 @@ function isValidArenaStreamEvent(data: unknown): data is ArenaStreamEvent {
     return false;
   }
 
+  // Optional semantic-version fields (#1500) — validated when present so a
+  // malformed version can never crash the ordering logic below.
+  if (obj.version !== undefined && (!Number.isSafeInteger(obj.version) || (obj.version as number) < 0)) {
+    return false;
+  }
+  if (
+    obj.previousVersion !== undefined &&
+    obj.previousVersion !== null &&
+    (!Number.isSafeInteger(obj.previousVersion) || (obj.previousVersion as number) < 0)
+  ) {
+    return false;
+  }
+  if (obj.instanceId !== undefined && typeof obj.instanceId !== "string") {
+    return false;
+  }
+
   return true;
 }
 
@@ -130,6 +157,11 @@ export function useArenaStream(arenaId: string): UseArenaStreamReturn {
   const lastMessageAtRef = useRef(0);
   const watchdogRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cursorRef = useRef(0);
+  // #1500 — semantic ordering state.
+  const instanceIdRef = useRef<string | null>(null);
+  const appliedVersionRef = useRef<number | null>(null);
+  const awaitingResyncRef = useRef(false);
+  const [resyncCount, setResyncCount] = useState(0);
 
   useEffect(() => {
     if (!arenaId) {
@@ -137,8 +169,15 @@ export function useArenaStream(arenaId: string): UseArenaStreamReturn {
       setSnapshot(null);
       setFeed([]);
       setLatestEvent(null);
+      setResyncCount(0);
       return;
     }
+
+    // Fresh arena: ordering state belongs to the previous stream, if any.
+    cursorRef.current = 0;
+    instanceIdRef.current = null;
+    appliedVersionRef.current = null;
+    awaitingResyncRef.current = false;
 
     shouldReconnectRef.current = true;
 
@@ -147,6 +186,21 @@ export function useArenaStream(arenaId: string): UseArenaStreamReturn {
         sourceRef.current.close();
         sourceRef.current = null;
       }
+    };
+
+    /**
+     * A version gap was detected (#1500): the next snapshot's previousVersion
+     * doesn't link to the version we applied, so at least one version was
+     * missed. Request a full snapshot — the `resync=1` flag makes the server
+     * ignore any cursor (including the browser's Last-Event-ID header) and
+     * answer with its latest state.
+     */
+    const requestFullSnapshot = (): void => {
+      awaitingResyncRef.current = true;
+      cursorRef.current = 0;
+      setResyncCount((count) => count + 1);
+      clearConnection();
+      connect();
     };
 
     const scheduleReconnect = (): void => {
@@ -193,7 +247,43 @@ export function useArenaStream(arenaId: string): UseArenaStreamReturn {
         // Schema validation failure; similar to JSON parse error, stay connected.
         return;
       }
+
+      // #1500 — a different instanceId means the server restarted: sequences
+      // and semantic versions reset with it, so adopt the new epoch instead
+      // of treating the fresh stream as a duplicate or a gap.
+      if (parsed.instanceId !== undefined && parsed.instanceId !== instanceIdRef.current) {
+        instanceIdRef.current = parsed.instanceId;
+        cursorRef.current = 0;
+        appliedVersionRef.current = null;
+        awaitingResyncRef.current = false;
+      }
+
+      // Reject duplicates and out-of-order frames by sequence.
       if (!Number.isSafeInteger(parsed.sequence) || parsed.sequence <= cursorRef.current) return;
+
+      // #1500 — reject duplicate/out-of-order snapshots by semantic version
+      // and recover via a full-snapshot request when a gap is detected.
+      if (parsed.type === "snapshot" && typeof parsed.version === "number") {
+        if (awaitingResyncRef.current) {
+          // The resync snapshot is authoritative regardless of linkage.
+          awaitingResyncRef.current = false;
+          appliedVersionRef.current = Math.max(appliedVersionRef.current ?? 0, parsed.version);
+        } else if (appliedVersionRef.current === null) {
+          appliedVersionRef.current = parsed.version;
+        } else {
+          if (parsed.version <= appliedVersionRef.current) return; // duplicate / out-of-order
+          const links =
+            parsed.previousVersion === null ||
+            parsed.previousVersion === undefined ||
+            parsed.previousVersion === appliedVersionRef.current;
+          if (!links) {
+            requestFullSnapshot();
+            return;
+          }
+          appliedVersionRef.current = parsed.version;
+        }
+      }
+
       cursorRef.current = parsed.sequence;
 
       try {
@@ -293,7 +383,11 @@ export function useArenaStream(arenaId: string): UseArenaStreamReturn {
       lastMessageAtRef.current = Date.now();
 
       try {
-        const source = new EventSource(`/api/arenas/${arenaId}/stream${cursorRef.current > 0 ? `?cursor=${cursorRef.current}` : ""}`);
+        const params = new URLSearchParams();
+        if (cursorRef.current > 0) params.set("cursor", String(cursorRef.current));
+        if (awaitingResyncRef.current) params.set("resync", "1");
+        const query = params.toString();
+        const source = new EventSource(`/api/arenas/${arenaId}/stream${query ? `?${query}` : ""}`);
         sourceRef.current = source;
 
         source.onopen = () => {
@@ -346,5 +440,6 @@ export function useArenaStream(arenaId: string): UseArenaStreamReturn {
     snapshot,
     feed,
     latestEvent,
+    resyncCount,
   };
 }

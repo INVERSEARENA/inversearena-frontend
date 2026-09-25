@@ -65,6 +65,7 @@ export function createApiRouter(
     "/leaderboard",
     createLeaderboardRouter(leaderboardController, requireAuth),
   );
+  router.use("/dashboard", createDashboardRouter(requireAuth));
 
   return router;
 }

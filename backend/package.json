@@ -15,7 +15,8 @@
     "typecheck": "tsc --noEmit",
     "migrate": "prisma migrate deploy",
     "migrate:dev": "prisma migrate dev",
-    "simulate": "tsx scripts/simulate-game.ts"
+    "simulate": "tsx scripts/simulate-game.ts",
+    "bench:arena-polling": "tsx scripts/benchmark-arena-publish.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

@@ -29,28 +29,23 @@ export class UsersController {
    *  - gamesWon     — arenas where the user was never eliminated
    *  - totalYieldEarned — sum of payouts from resolved rounds (USDC string)
    *  - currentRank  — 1-based position on the all-time yield leaderboard (null if unranked)
+   *
+   * The read itself lives in `userProfileService.getUserProfileSummary` so
+   * the dashboard bootstrap composer (#1501) returns byte-identical profile
+   * data without duplicating the query.
    */
   me = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const { id, walletAddress } = req.user!;
+    const { id } = req.user!;
 
-    // ── Identity (MongoDB) ──────────────────────────────────────────
-    const user = await UserModel.findById(id).lean();
-    if (!user) {
-      next(apiError(404, "USER_NOT_FOUND", "User not found"));
-      return;
+    try {
+      res.json(await getUserProfileSummary(this.prisma, id));
+    } catch (error) {
+      if (error instanceof ProfileNotFoundError) {
+        next(apiError(404, "USER_NOT_FOUND", "User not found"));
+        return;
+      }
+      next(error);
     }
-
-    // ── Game stats (PostgreSQL / Prisma) ────────────────────────────
-    const stats = await this.aggregateStats(id);
-
-    res.json({
-      id: user._id.toString(),
-      walletAddress: user.walletAddress,
-      displayName: user.displayName ?? null,
-      joinedAt: user.joinedAt,
-      lastLoginAt: user.lastLoginAt,
-      ...stats,
-    });
   };
 
   /**

@@ -4,6 +4,11 @@ import React, { useState, useEffect } from "react";
 import { TrendingUp, CheckSquare, Zap, Info, Loader2, TerminalSquare, ShieldCheck, AlertTriangle } from "lucide-react";
 import { useWallet } from "@/features/wallet/useWallet";
 import {
+  evaluateSigningRequest,
+  type DecodedEnvelope,
+  type SigningPolicyError,
+} from "@/shared-d/security/policy";
+import {
   buildStakeProtocolTransaction,
   submitSignedTransaction,
   parseStellarError,
@@ -113,6 +118,25 @@ export default function StakeModal({
     try {
       setTxState("signing");
       const tx = await buildStakeProtocolTransaction(address, numAmount);
+
+      // Validate XDR against the signing policy before prompting the wallet.
+      // This distinct error is catchable so the UI can show a policy-rejection
+      // message rather than a wallet-rejection one.
+      let decoded: DecodedEnvelope;
+      try {
+        decoded = evaluateSigningRequest(tx.toXDR(), "STAKE");
+      } catch (error) {
+        if (error instanceof SigningPolicyError) {
+          setErrorMessage(error.message);
+          setTxState("error");
+          return;
+        }
+        throw error; // unexpected error
+      }
+
+      // Render confirmation UI details from the decoded envelope (not the raw XDR).
+      setErrorMessage(null);
+
       const signedXdr = await signTransaction(tx.toXDR());
 
       setTxState("submitting");

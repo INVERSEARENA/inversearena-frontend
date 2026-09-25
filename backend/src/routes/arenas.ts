@@ -18,6 +18,7 @@ import { getOnChainPlayers } from "../services/onChainReader";
 import { isAuthorizedAdminWallet } from "../services/walletRoleService";
 import { createRateLimitMiddleware, getSyncPlayersRateLimitConfig } from "../middleware/rateLimit";
 import { createSseConnectionLimitMiddleware } from "../middleware/sseConnectionLimit";
+import { arenaStreamResyncsTotal } from "../utils/metrics";
 // Issue #1411 — Responsible active stake limits
 import { ActiveStakeLimitsService, ActiveStakeLimitError } from "../services/activeStakeLimitsService";
 // Issue #1412 — Arena health summary
@@ -464,6 +465,15 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
         { sendEvent, sendSnapshot },
         arenaService,
         (() => {
+          // #1500 — a client that detected a version gap reconnects with
+          // `?resync=1` to explicitly request the latest full snapshot; the
+          // resync overrides any cursor (including the browser-supplied
+          // Last-Event-ID header) so the server always answers with current
+          // state instead of replaying the gap.
+          if (req.query.resync === "1") {
+            arenaStreamResyncsTotal.inc({ reason: "gap" });
+            return undefined;
+          }
           const raw = req.get("Last-Event-ID") ?? (typeof req.query.cursor === "string" ? req.query.cursor : undefined);
           if (raw === undefined) return undefined;
           const cursor = Number(raw);
