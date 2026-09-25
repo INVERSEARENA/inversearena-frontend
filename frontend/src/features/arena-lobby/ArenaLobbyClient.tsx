@@ -122,8 +122,8 @@ export function ArenaLobbyClient({
   const [loadingParticipants, setLoadingParticipants] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showJoinModal, setShowJoinModal] = useState(false);
-  const [joinConfirmation, setJoinConfirmation] = useState<DecodedEnvelope | null>(null);
-  const [joinError, setJoinError] = useState<string | null>(null);
+  const [isReserving, setIsReserving] = useState(false);
+  const [reservationError, setReservationError] = useState<string | null>(null);
 
   const isOpen = stats?.status === "open";
   const walletConnected = wallet.isConnected && !!wallet.publicKey;
@@ -217,6 +217,70 @@ export function ArenaLobbyClient({
     } finally {
       setLoadingParticipants(false);
     }
+  };
+
+  function authHeaders(): HeadersInit {
+    const token =
+      typeof window !== "undefined"
+        ? window.localStorage.getItem("access_token")
+        : null;
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }
+
+  // Backend-authoritative lobby capacity reservation (#1406): holds this
+  // player's slot for RESERVATION_TTL seconds before they open the sign
+  // modal, so two players racing for the arena's last slot can't both start
+  // signing only to have one fail on-chain after paying a network fee.
+  // Returns true if a slot was actually reserved.
+  const reserveJoinSlot = async (): Promise<boolean> => {
+    setIsReserving(true);
+    setReservationError(null);
+    try {
+      const response = await fetch(
+        `${API_BASE}/api/arenas/${arenaId}/reservation`,
+        { method: "POST", headers: authHeaders() },
+      );
+
+      if (response.status === 409) {
+        setReservationError("This arena has no open slots right now.");
+        return false;
+      }
+      if (!response.ok) {
+        throw new Error(`Reservation request failed (${response.status})`);
+      }
+      return true;
+    } catch (reserveError) {
+      setReservationError(
+        reserveError instanceof Error
+          ? reserveError.message
+          : "Failed to reserve a slot in this arena.",
+      );
+      return false;
+    } finally {
+      setIsReserving(false);
+    }
+  };
+
+  // Best-effort: releasing early just frees the slot sooner for someone
+  // else. If it fails, the reservation's own TTL still expires it (see
+  // lobbyReservationStore) — the user is never charged for the delay.
+  const releaseJoinSlot = () => {
+    void fetch(`${API_BASE}/api/arenas/${arenaId}/reservation`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    }).catch(() => undefined);
+  };
+
+  const handleJoinClick = async () => {
+    const reserved = await reserveJoinSlot();
+    if (reserved) {
+      setShowJoinModal(true);
+    }
+  };
+
+  const handleCloseJoinModal = () => {
+    setShowJoinModal(false);
+    releaseJoinSlot();
   };
 
   useEffect(() => {
@@ -425,13 +489,18 @@ export function ArenaLobbyClient({
 
             <button
               type="button"
-              disabled={joinDisabled}
-              onClick={() => setShowJoinModal(true)}
+              disabled={joinDisabled || isReserving}
+              onClick={() => void handleJoinClick()}
               className="rounded-full border border-[#3CFF1A]/40 bg-[#3CFF1A] px-6 py-3 text-sm font-black uppercase tracking-[0.2em] text-black transition hover:brightness-95 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/10 disabled:text-white/40"
             >
-              {joinLabel}
+              {isReserving ? "Reserving..." : joinLabel}
             </button>
           </div>
+          {reservationError && (
+            <p role="alert" className="mt-3 text-sm font-semibold text-red-400">
+              {reservationError}
+            </p>
+          )}
         </section>
 
         <section className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
@@ -585,7 +654,7 @@ export function ArenaLobbyClient({
 
       <TransactionModal
         isOpen={showJoinModal}
-        onClose={() => setShowJoinModal(false)}
+        onClose={handleCloseJoinModal}
         title="Join Arena"
         description="Confirm your entry to this arena"
         details={[

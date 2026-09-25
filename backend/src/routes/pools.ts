@@ -8,6 +8,7 @@ import { createRateLimitMiddleware, getPoolsRateLimitConfig } from "../middlewar
 import type { RequestHandler } from "express";
 import { apiError } from "../utils/apiError";
 import { getAssetMetadata, formatAmount } from "../types/asset";
+import { lobbyReservationStore } from "../cache/lobbyReservationStore";
 
 const PaginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
@@ -93,6 +94,17 @@ export function createPoolsRouter(authMiddleware: RequestHandler): Router {
       const pool = await prisma.pool.create({
         data: { arenaId, stakeAmount },
       });
+
+      // The stake is confirmed, so this player now counts as a real
+      // (confirmed) player rather than a reservation holder (#1406). Release
+      // is best-effort: a missing/already-expired reservation (e.g. the
+      // reservation endpoint was never called, or the TTL lapsed just
+      // before this request landed) must not block a successful join.
+      if (req.user?.id) {
+        await lobbyReservationStore
+          .releaseSlot(arenaId, req.user.id)
+          .catch(() => undefined);
+      }
 
       const displayAmount = formatAmount(
         (stakeAmount * Math.pow(10, assetMetadata.decimals)).toString(),

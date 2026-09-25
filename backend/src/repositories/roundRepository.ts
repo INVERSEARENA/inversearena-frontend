@@ -176,6 +176,7 @@ export class RoundRepository {
       randomSeed: metadata?.randomSeed,
       resolution: metadata?.resolution,
       metadata: metadata ?? undefined,
+      allActivePlayerIds: metadata?.allActivePlayerIds,
       createdAt: round.createdAt,
       updatedAt: round.updatedAt,
     };

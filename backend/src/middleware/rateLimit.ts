@@ -53,6 +53,19 @@ export function getSyncPlayersRateLimitConfig(): RateLimitConfig {
   };
 }
 
+/**
+ * Limiter for POST /api/arenas/:id/reservation (#1406). A generous budget:
+ * legitimate use re-reserves on every render of the join modal's
+ * confirmation step, not just once per join attempt.
+ */
+export function getLobbyReservationRateLimitConfig(): RateLimitConfig {
+  return {
+    keyPrefix: process.env.RATE_LIMIT_RESERVATION_PREFIX ?? "rl:arenas:reservation",
+    points: readPositiveInt("RATE_LIMIT_RESERVATION_POINTS", 10),
+    durationSeconds: readPositiveInt("RATE_LIMIT_RESERVATION_WINDOW_SECONDS", 60),
+  };
+}
+
 export function getVerifyRateLimitConfig(): RateLimitConfig {
   return {
     keyPrefix: process.env.RATE_LIMIT_VERIFY_PREFIX ?? "rl:auth:verify",

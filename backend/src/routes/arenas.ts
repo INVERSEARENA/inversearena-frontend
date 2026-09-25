@@ -9,6 +9,7 @@ import { prisma } from "../db/prisma";
 import type { CreateArenaInput } from "../types/arena";
 import { ArenaService } from "../services/arenaService";
 import { ArenaStatsService } from "../services/arenaStatsService";
+import { RoundService } from "../services/roundService";
 import { RoundRepository } from "../repositories/roundRepository";
 import { ParticipantEligibilityService } from "../services/participantEligibilityService";
 import { apiError } from "../utils/apiError";
@@ -85,6 +86,11 @@ const ParticipantsQuerySchema = z.object({
   cursor: z.coerce.number().int().min(0).default(0),
 });
 
+const CommitStatusParamsSchema = z.object({
+  id: z.string().trim().min(1).max(200),
+  roundNumber: z.coerce.number().int().min(1).max(1_000_000),
+});
+
 function normalizeRoundMetadata(metadata: unknown): {
   playerChoices?: Array<{ userId: string; choice: "heads" | "tails"; stake: number }>;
 } {
@@ -144,6 +150,21 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   // both `tsc --noEmit` and ts-jest module loading whenever anything in
   // this router file is imported.
   router.use(arenaTimeRouter);
+
+  // Constructed lazily (on first use) rather than eagerly here: RoundService's
+  // constructor resolves getStellarConfig() immediately, which throws outside
+  // NODE_ENV=test when SOROBAN_RPC_URL/STELLAR_NETWORK_PASSPHRASE aren't set.
+  // Building this router is a pure, side-effect-free operation that many
+  // lightweight route tests rely on (they mount just this router without a
+  // full server.ts boot / dotenv load), so router construction must not
+  // require Stellar config to be present.
+  let roundService: RoundService | undefined;
+  function getRoundService(): RoundService {
+    if (!roundService) {
+      roundService = new RoundService(prisma);
+    }
+    return roundService;
+  }
 
   /**
    * POST /api/arenas
@@ -363,6 +384,44 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
         metadata: eligibility.metadata,
         requestId: randomUUID(),
       });
+    }),
+  );
+
+  /**
+   * GET /api/arenas/:id/rounds/:roundNumber/commit-status
+   *
+   * Round-scoped commit receipt (#1383): lets the authenticated caller check
+   * their own submit_commitment status for a specific round — one of
+   * accepted / pending / expired / missing. See
+   * backend/docs/COMMIT_RECEIPT_DESIGN.md for the full state machine.
+   *
+   * Scoped to the caller's own wallet (from the auth token) rather than an
+   * arbitrary wallet in the query string — this is a per-player status
+   * check, not a public participant listing, and requiring auth avoids
+   * letting any caller probe an arbitrary wallet's status for a round that
+   * hasn't resolved yet.
+   *
+   * Not cached: this is a per-player, low-latency indexed lookup, and a
+   * shared cache would risk serving one player's status to another.
+   */
+  router.get(
+    "/:id/rounds/:roundNumber/commit-status",
+    authMiddleware,
+    asyncHandler(async (req, res) => {
+      const { id: arenaId, roundNumber } = CommitStatusParamsSchema.parse(req.params);
+      const callerWallet = req.user?.walletAddress;
+
+      if (!callerWallet) {
+        throw apiError(401, "UNAUTHORIZED", "Unauthorized");
+      }
+
+      const arena = await prisma.arena.findUnique({ where: { id: arenaId } });
+      if (!arena) {
+        throw apiError(404, "ARENA_NOT_FOUND", `Arena with ID ${arenaId} not found`);
+      }
+
+      const receipt = await getRoundService().getCommitStatus(arenaId, roundNumber, callerWallet);
+      res.json(receipt);
     }),
   );
 

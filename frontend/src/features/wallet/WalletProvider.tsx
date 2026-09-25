@@ -26,9 +26,11 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
     isConnected: extensionIsConnected,
     status: extensionStatus,
     error: extensionError,
+    walletNetworkName: extensionWalletNetworkName,
     connectWallet,
     disconnectWallet,
     signTransaction: signWithExtension,
+    recheckNetwork: recheckExtensionNetwork,
   } = useStellarWallet(network);
   const passkey = usePasskeyWallet();
 
@@ -41,9 +43,17 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
   const passkeyActive = passkey.isRegistered && passkey.address !== null;
   const publicKey = passkeyActive ? passkey.address : extensionPublicKey;
   const isConnected = passkeyActive ? true : extensionIsConnected;
+  // Passkeys sign through the app's own backend/relayer rather than a
+  // browser extension with its own independently-selectable network, so a
+  // passkey session can never be in a 'network-mismatch' state (#1404).
   const status = passkeyActive ? 'connected' : extensionStatus;
   const error = passkeyActive ? null : extensionError;
+  const walletNetworkName = passkeyActive ? null : extensionWalletNetworkName;
   const signTransaction = passkeyActive ? passkey.sign : signWithExtension;
+  const recheckNetwork = useCallback(async () => {
+    if (passkeyActive) return;
+    await recheckExtensionNetwork();
+  }, [passkeyActive, recheckExtensionNetwork]);
 
   const [balance, setBalance] = useState<Balance>({ xlm: 0, usdc: 0 });
   const [isLoadingBalance, setIsLoadingBalance] = useState(false);
@@ -106,6 +116,8 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
       disconnect,
       signTransaction,
       refreshBalance,
+      walletNetworkName,
+      recheckNetwork,
     }),
     [
       status,
@@ -120,6 +132,8 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
       disconnect,
       signTransaction,
       refreshBalance,
+      walletNetworkName,
+      recheckNetwork,
     ]
   );
 

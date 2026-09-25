@@ -1,6 +1,9 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { apiError } from "../utils/apiError";
+
+// TODO(#1449): Reject stale, future-dated, and replayed webhooks before verification.
+// TODO(#1449): Add freshness and body-mutation coverage.
 import {
   fingerprintKid,
   recordVerification,

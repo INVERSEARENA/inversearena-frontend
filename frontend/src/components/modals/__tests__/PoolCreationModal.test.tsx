@@ -3,6 +3,9 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { PoolCreationModal } from "../PoolCreationModal";
 import { useWallet } from "@/features/wallet/useWallet";
 import { buildCreatePoolTransaction, submitSignedTransaction } from "@/shared-d/utils/stellar-transactions";
+import { loadPoolDraft, savePoolDraft } from "@/shared-d/utils/pool-draft";
+import { StorageKey } from "@/shared-d/utils/localStorage";
+import { POOL_DRAFT_VERSION } from "@/shared-d/utils/pool-schema";
 
 jest.mock("@/features/wallet/useWallet", () => ({
   useWallet: jest.fn(),
@@ -28,11 +31,17 @@ const defaultWalletState = {
   disconnect: jest.fn(),
   signTransaction: jest.fn().mockResolvedValue("signed-xdr"),
   refreshBalance: jest.fn(),
+  walletNetworkName: null,
+  recheckNetwork: jest.fn(),
 };
 
 describe("PoolCreationModal XLM fee validation (#1332)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // The modal persists a draft to localStorage on every field change
+    // (#1405); without clearing it between tests, a draft saved by one
+    // test can be restored into the next one's freshly-mounted modal.
+    window.localStorage.clear();
     mockUseWallet.mockReturnValue(defaultWalletState);
     (buildCreatePoolTransaction as jest.Mock).mockResolvedValue({
       toXDR: () => "unsigned-xdr",
@@ -262,6 +271,7 @@ describe("PoolCreationModal XLM fee validation (#1332)", () => {
 describe("PoolCreationModal form validation", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    window.localStorage.clear();
     mockUseWallet.mockReturnValue(defaultWalletState);
   });
 
@@ -303,5 +313,132 @@ describe("PoolCreationModal form validation", () => {
 
     expect(decreaseButton).toBeInTheDocument();
     expect(increaseButton).toBeInTheDocument();
+  });
+});
+
+describe("PoolCreationModal draft persistence (#1405)", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    window.localStorage.clear();
+    mockUseWallet.mockReturnValue(defaultWalletState);
+    (buildCreatePoolTransaction as jest.Mock).mockResolvedValue({
+      toXDR: () => "unsigned-xdr",
+    });
+    (submitSignedTransaction as jest.Mock).mockResolvedValue(undefined);
+  });
+
+  it("persists field edits to localStorage while open", async () => {
+    render(<PoolCreationModal isOpen={true} onClose={jest.fn()} />);
+
+    const stakeInput = screen.getByLabelText("Stake amount");
+    fireEvent.change(stakeInput, { target: { value: "321" } });
+
+    await waitFor(() => {
+      const draft = loadPoolDraft();
+      expect(draft?.stakeAmountInput).toBe("321");
+    });
+  });
+
+  it("restores a valid saved draft on open and shows the restored notice", async () => {
+    savePoolDraft({
+      stakeAmountInput: "777",
+      currency: "XLM",
+      roundSpeed: "30S",
+      arenaCapacity: 300,
+    });
+
+    render(<PoolCreationModal isOpen={true} onClose={jest.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Stake amount")).toHaveValue("777");
+    });
+    expect(screen.getByLabelText("Currency selection")).toHaveValue("XLM");
+    await waitFor(() => {
+      expect(screen.getByText(/restored your unsaved draft/i)).toBeInTheDocument();
+    });
+  });
+
+  it("does not show the restored notice when there is no saved draft", async () => {
+    render(<PoolCreationModal isOpen={true} onClose={jest.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Stake amount")).toHaveValue("100");
+    });
+    expect(
+      screen.queryByText(/restored your unsaved draft/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("discarding the draft clears storage and resets the form to defaults", async () => {
+    savePoolDraft({
+      stakeAmountInput: "777",
+      currency: "XLM",
+      roundSpeed: "30S",
+      arenaCapacity: 300,
+    });
+
+    render(<PoolCreationModal isOpen={true} onClose={jest.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Stake amount")).toHaveValue("777");
+    });
+    const discardButton = await waitFor(() =>
+      screen.getByText(/discard draft/i),
+    );
+
+    fireEvent.click(discardButton);
+
+    expect(screen.getByLabelText("Stake amount")).toHaveValue("100");
+    expect(
+      screen.queryByText(/restored your unsaved draft/i),
+    ).not.toBeInTheDocument();
+    expect(loadPoolDraft()).toBeNull();
+  });
+
+  it("ignores an incompatible (old-version) draft and starts from defaults", () => {
+    window.localStorage.setItem(
+      StorageKey.ARENA_POOL_DRAFT,
+      JSON.stringify({
+        version: POOL_DRAFT_VERSION - 1,
+        stakeAmountInput: "777",
+        currency: "XLM",
+        roundSpeed: "30S",
+        arenaCapacity: 300,
+        savedAt: Date.now(),
+      }),
+    );
+
+    render(<PoolCreationModal isOpen={true} onClose={jest.fn()} />);
+
+    expect(screen.getByLabelText("Stake amount")).toHaveValue("100");
+    expect(
+      screen.queryByText(/restored your unsaved draft/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("clears the draft after a successful pool creation", async () => {
+    savePoolDraft({
+      stakeAmountInput: "150",
+      currency: "USDC",
+      roundSpeed: "1M",
+      arenaCapacity: 50,
+    });
+
+    render(<PoolCreationModal isOpen={true} onClose={jest.fn()} />);
+
+    await waitFor(() => {
+      const initButton = screen.getByLabelText("Initialize arena");
+      expect(initButton).not.toBeDisabled();
+    });
+
+    fireEvent.click(screen.getByLabelText("Initialize arena"));
+
+    const signButton = await waitFor(() => screen.getByText(/sign & deploy/i));
+    fireEvent.click(signButton);
+
+    await waitFor(() => {
+      expect(submitSignedTransaction).toHaveBeenCalled();
+    });
+    expect(loadPoolDraft()).toBeNull();
   });
 });

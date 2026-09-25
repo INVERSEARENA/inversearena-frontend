@@ -11,6 +11,11 @@ export function createWorkerRouter(
 
   router.use(auditLogMiddleware());
   router.post("/run", adminAuthMiddleware, asyncHandler(controller.runBatch));
+  router.post(
+    "/arena-backfill/run",
+    adminAuthMiddleware,
+    asyncHandler(controller.runArenaBackfill),
+  );
 
   return router;
 }

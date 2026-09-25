@@ -15,7 +15,8 @@ import { createPortfolioExposureRouter } from "./portfolioExposure";
 import { createCancellationRecoveryRouter } from "./cancellationRecovery";
 import { createConfigRouter } from "./config";
 import { createInvitationsRouter } from "./invitations";
-import { createDashboardRouter } from "./dashboard";
+import { createRoundProofBundleRouter } from "./roundProofBundle";
+import { createLobbyReservationRouter } from "./lobbyReservation";
 import type { PayoutsController } from "../controllers/payouts.controller";
 import type { WorkerController } from "../controllers/worker.controller";
 import type { AuthController } from "../controllers/auth.controller";
@@ -23,6 +24,7 @@ import type { UsersController } from "../controllers/users.controller";
 import type { LeaderboardController } from "../controllers/leaderboard.controller";
 import type { TransactionsController } from "../controllers/transactions.controller";
 import type { AuthService } from "../services/authService";
+import type { RoundProofBundleService } from "../services/roundProofBundleService";
 
 export function createApiRouter(
   payoutsController: PayoutsController,
@@ -34,6 +36,7 @@ export function createApiRouter(
   adminAuthMiddleware: RequestHandler,
   requireAuth: RequestHandler,
   authService: AuthService,
+  roundProofBundleService: RoundProofBundleService,
 ): Router {
   const router = Router();
 
@@ -53,7 +56,9 @@ export function createApiRouter(
   router.use("/arenas", createArenaReplayRouter(requireAuth));
   router.use("/arenas", createCancellationRecoveryRouter(requireAuth));
   router.use("/arenas", createInvitationsRouter(requireAuth));
+  router.use("/arenas", createLobbyReservationRouter(requireAuth));
   router.use("/pools", createPoolsRouter(requireAuth));
+  router.use("/rounds", createRoundProofBundleRouter(requireAuth, roundProofBundleService));
   router.use("/users", createNotificationPreferencesRouter(requireAuth));
   router.use("/users", createPortfolioExposureRouter(requireAuth));
   router.use(
