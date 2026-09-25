@@ -1,9 +1,11 @@
-import { Worker, type Job } from "bullmq";
+import { DelayedError, Worker, type Job } from "bullmq";
 import type { PaymentService } from "../services/paymentService";
 import { TX_CONFIRM_QUEUE, type ConfirmJobData } from "../queues/txQueue";
 import { logger } from "../utils/logger";
 import type { TransactionStateMachine } from "../services/transactionStateMachine";
 import { TransactionState } from "../domain/transactionState";
+import { refreshLedgerIdentity } from "../services/ledgerClock";
+import { getRollbackGuard } from "../services/ledgerContinuity";
 import {
   workerActiveJobsGauge,
   workerJobAttemptsTotal,
@@ -12,11 +14,15 @@ import {
   workerJobsSuccessTotal,
   workerLifecycleEventsTotal,
   workerTerminalFailuresTotal,
+  ledgerRollbackAffectedConsumersTotal,
 } from "../utils/metrics";
 
 const QUEUE_LABELS = { queue: TX_CONFIRM_QUEUE } as const;
 const WORKER_LABELS = { worker: "tx-reconciler" } as const;
 const processingStartedAt = new WeakMap<object, number>();
+
+/** How long a confirmation job waits before re-checking while ledger rollback recovery is active (#1490). */
+export const ROLLBACK_RECOVERY_RETRY_DELAY_MS = 15_000;
 
 export interface TxReconcilerWorkerOptions {
   concurrency?: number;
@@ -31,7 +37,26 @@ export async function reconcileSubmittedTransaction(
   job: Job<ConfirmJobData>,
   paymentService: PaymentService,
   transactionStateMachine: TxReconcilerStateMachine,
+  token?: string,
 ): Promise<void> {
+  // A confirmation read during rollback recovery could observe a ledger that
+  // is no longer canonical (#1490), so the job is deferred instead of
+  // confirming. moveToDelayed + DelayedError keeps the deferral from
+  // consuming one of the job's retry attempts.
+  await refreshLedgerIdentity();
+  if (getRollbackGuard().isQuarantined()) {
+    ledgerRollbackAffectedConsumersTotal.inc({ consumer: "tx-reconciler" });
+    logger.warn(
+      { event: "tx_reconciler_deferred", transactionId: job.data.transactionId },
+      "Transaction confirmation deferred during ledger rollback recovery",
+    );
+    if (token !== undefined && typeof job.moveToDelayed === "function") {
+      await job.moveToDelayed(Date.now() + ROLLBACK_RECOVERY_RETRY_DELAY_MS, token);
+      throw new DelayedError();
+    }
+    throw new Error("Ledger rollback recovery is active; confirmation deferred");
+  }
+
   const txStatus = await transactionStateMachine.confirmSubmitted(job.data.transactionId);
 
   if (txStatus === TransactionState.SUBMITTED) {
@@ -123,7 +148,8 @@ export function startTxReconcilerWorker(
 
   const worker = new Worker<ConfirmJobData>(
     TX_CONFIRM_QUEUE,
-    async (job: Job<ConfirmJobData>) => reconcileSubmittedTransaction(job, paymentService, transactionStateMachine),
+    async (job: Job<ConfirmJobData>, token?: string) =>
+      reconcileSubmittedTransaction(job, paymentService, transactionStateMachine, token),
     {
       connection: { url: process.env.REDIS_URL ?? "redis://localhost:6379" },
       concurrency,

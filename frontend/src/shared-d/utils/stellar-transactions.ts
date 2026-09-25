@@ -54,6 +54,7 @@ import {
   parseUserStateFromScVal,
   buildArenaDisplayState,
 } from "@/shared-d/utils/contract-state-parsers";
+import { assertCapability } from "@/shared-d/utils/compatibility-store";
 import {
   clearCommitment,
   computeCommitment,
@@ -245,6 +246,8 @@ export async function buildJoinArenaTransaction(
   try {
     const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
     const validatedPoolId = StellarContractIdSchema.parse(poolId);
+    // Compatibility gate (#1491): refuse before any transaction exists.
+    assertCapability("join", validatedPoolId, FN);
 
     const account = await getAccount(validatedPublicKey, FN);
     const poolContract = new ContractClientFactory(SOROBAN_RPC_URL).createContract(validatedPoolId);
@@ -280,6 +283,8 @@ export async function buildSubmitCommitmentTransaction(
     const validatedPoolId = StellarContractIdSchema.parse(poolId);
     const validatedChoice = RoundChoiceSchema.parse(choice);
     const validatedRoundNumber = RoundNumberSchema.parse(roundNumber);
+    // Gate before the salt is generated or stored so a refused commit leaves no local state (#1491).
+    assertCapability("commit", validatedPoolId, FN);
 
     const salt = generateSalt();
     const commitment = await computeCommitment(validatedChoice, salt);
@@ -328,6 +333,7 @@ export async function buildRevealChoiceTransaction(
     const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
     const validatedPoolId = StellarContractIdSchema.parse(poolId);
     const validatedRoundNumber = RoundNumberSchema.parse(roundNumber);
+    assertCapability("reveal", validatedPoolId, FN);
 
     const stored = loadCommitment(validatedPoolId, validatedRoundNumber, validatedPublicKey);
     if (!stored) {
@@ -380,6 +386,7 @@ export async function buildClaimWinningsTransaction(
   try {
     const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
     const validatedPoolId = StellarContractIdSchema.parse(poolId);
+    assertCapability("claim", validatedPoolId, FN);
 
     const arenaState = await fetchArenaState(validatedPoolId, validatedPublicKey);
     if (!arenaState.contractUserState.won) {

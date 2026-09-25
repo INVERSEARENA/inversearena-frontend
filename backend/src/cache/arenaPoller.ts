@@ -9,6 +9,8 @@
 
 import type { ArenaService } from "../services/arenaService";
 import { getSorobanBreaker } from "../utils/circuitBreaker";
+import { refreshLedgerIdentity } from "../services/ledgerClock";
+import { getRollbackGuard } from "../services/ledgerContinuity";
 
 interface Subscriber {
   /** Send an SSE event to this client. */
@@ -32,6 +34,8 @@ interface ArenaPollerState {
   history: Array<{ event: string; payload: unknown; sequence: number }>;
   lastSnapshot: { payload: unknown; sequence: number } | null;
   consecutiveFailures: number;
+  /** Rollback epoch this poller last published under (#1490). */
+  rollbackEpoch: number;
 }
 
 const pollers = new Map<string, ArenaPollerState>();
@@ -82,6 +86,7 @@ export function subscribeArena(
       history: [],
       lastSnapshot: null,
       consecutiveFailures: 0,
+      rollbackEpoch: getRollbackGuard().getEpoch(),
     };
     pollers.set(arenaId, state);
   }
@@ -137,9 +142,29 @@ function startPollLoop(
     if (state.subscribers.size === 0) return;
 
     try {
+      // While ledger rollback recovery is active nothing newer may be
+      // published (#1490). The ledger is refreshed first so the detector has
+      // seen the latest identity, and the guard is re-checked after the
+      // snapshot read in case the rollback was exposed while it ran.
+      await refreshLedgerIdentity();
+      if (getRollbackGuard().isQuarantined()) return;
       const snapshot = await getSorobanBreaker().fire(() =>
         arenaService.getSnapshot(arenaId),
       );
+      if (getRollbackGuard().isQuarantined()) return;
+      const epoch = getRollbackGuard().getEpoch();
+      if (state.rollbackEpoch !== epoch) {
+        // A rollback happened since the last publish: drop baselines, seen
+        // eliminations and replay history so a fresh snapshot goes out. The
+        // sequence counter is kept so client cursors stay monotonic.
+        state.rollbackEpoch = epoch;
+        state.lastRoundState = null;
+        state.lastStatus = null;
+        state.lastSurvivorCount = null;
+        state.seenEliminations.clear();
+        state.history.length = 0;
+        state.lastSnapshot = null;
+      }
       state.consecutiveFailures = 0;
       const isFirstPoll = state.lastRoundState === null && state.lastStatus === null;
 

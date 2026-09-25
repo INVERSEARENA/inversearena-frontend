@@ -16,6 +16,7 @@ import { createTxQueue } from "./queues/txQueue";
 import { startTxReconcilerWorker } from "./workers/txReconciler";
 import { createApp } from "./app";
 import { shutdownApplication } from "./appLifecycle";
+import { initLedgerContinuity } from "./services/ledgerContinuity";
 
 import { initSentry } from "./utils/sentry";
 import { logger } from "./utils/logger";
@@ -27,7 +28,8 @@ async function main() {
   initSentry();
   await connectDB();
    await redis.connect();
-
+  // Restores any in-progress rollback recovery before workers/pollers publish (#1490).
+  await initLedgerContinuity();
 
   const transactions = new MongoTransactionRepository();
 
