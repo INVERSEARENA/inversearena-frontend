@@ -75,6 +75,11 @@ export function getVerifyRateLimitConfig(): RateLimitConfig {
   };
 }
 
+/** Expensive simulations (#1448): independent per-IP and per-wallet budgets. */
+export function getSimulationRateLimitConfig(): RateLimitConfig {
+  return { keyPrefix: process.env.RATE_LIMIT_SIMULATION_PREFIX ?? "rl:simulations", points: readPositiveInt("RATE_LIMIT_SIMULATION_POINTS", 5), durationSeconds: readPositiveInt("RATE_LIMIT_SIMULATION_WINDOW_SECONDS", 60), dualScope: true };
+}
+
 export function getRefreshRateLimitConfig(): RateLimitConfig {
   return {
     keyPrefix: process.env.RATE_LIMIT_REFRESH_PREFIX ?? "rl:auth:refresh",

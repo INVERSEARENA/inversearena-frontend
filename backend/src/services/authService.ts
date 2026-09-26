@@ -8,6 +8,7 @@ import { RefreshTokenModel, generateFamilyId } from "../db/models/refreshToken.m
 import { SessionStore, sessionStore as defaultSessionStore } from "../cache/sessionStore";
 import type { AuthUser, DeviceMetadata, JwtPayload, SessionView, TokenPair } from "../types/auth";
 import { getKeyring, recordVerification, verificationCandidates, type SecretKeyring } from "../config/secretKeyring";
+import { getStellarConfig } from "../config/stellarConfig";
 
 const NONCE_PREFIX = "Sign this message to authenticate with InverseArena:\n";
 
@@ -86,8 +87,11 @@ export class AuthService {
     validateWalletAddress(walletAddress);
 
     const rawHex = randomBytes(32).toString("hex");
-    const nonce = `${NONCE_PREFIX}${rawHex}`;
     const expiresAt = new Date(Date.now() + nonceTtlSeconds() * 1000);
+    // Signature is bound to origin, network, nonce and expiry (#1445): a
+    // capture from another origin/network no longer verifies here.
+    const origin = process.env.PUBLIC_WEB_ORIGIN ?? "https://app.inversearena.com";
+    const nonce = `${NONCE_PREFIX}origin=${origin}\nnetwork=${getStellarConfig().networkPassphrase}\nnonce=${rawHex}\nexpires=${expiresAt.toISOString()}`;
 
     await NonceModel.updateMany(
       { walletAddress, used: false, expiresAt: { $gt: new Date() } },

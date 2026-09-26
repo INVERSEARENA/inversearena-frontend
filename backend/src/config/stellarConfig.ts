@@ -19,6 +19,13 @@ const StellarEnvSchema = z.object({
     .pipe(z.number().int().positive()),
 });
 
+/** Outbound RPC allowlist + response cap (#1447). Empty allowlist = allow all. */
+export const RPC_MAX_RESPONSE_BYTES = Number(process.env.RPC_MAX_RESPONSE_BYTES ?? 1_048_576);
+export function assertAllowedRpcUrl(url: string): boolean {
+  const hosts = (process.env.RPC_URL_ALLOWLIST ?? "").split(",").map((h) => h.trim()).filter(Boolean);
+  return hosts.length === 0 || hosts.includes(new URL(url).hostname);
+}
+
 export type StellarConfig = {
   sorobanRpcUrl: string;
   networkPassphrase: string;

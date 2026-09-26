@@ -16,7 +16,7 @@
 
 import { Contract, Keypair, nativeToScVal, scValToNative, xdr, rpc } from "@stellar/stellar-sdk";
 import { StellarRpcGateway } from "../../frontend/src/shared-d/services/stellarRpcGateway";
-import { getStellarConfig } from "../config/stellarConfig";
+import { getStellarConfig, assertAllowedRpcUrl, RPC_MAX_RESPONSE_BYTES } from "../config/stellarConfig";
 import {
   ARENA_EVENT_TOPICS,
   isArenaEventTopic,
@@ -124,6 +124,10 @@ async function simulateViewCall(
   if (!result.result) {
     throw new Error(`Simulation returned no result for ${functionName}`);
   }
+
+  const rpcConfig = getStellarConfig();
+  if (!assertAllowedRpcUrl(rpcConfig.sorobanRpcUrl)) throw new OnChainReadError(functionName, contractId, "RPC_URL_NOT_ALLOWED");
+  if (JSON.stringify(result ?? null).length > RPC_MAX_RESPONSE_BYTES) throw new OnChainReadError(functionName, contractId, "RPC_RESPONSE_TOO_LARGE");
 
   return scValToNative(result.result.retval);
 }
