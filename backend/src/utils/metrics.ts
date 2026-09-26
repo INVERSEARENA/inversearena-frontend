@@ -268,6 +268,42 @@ export const arenaStreamResyncsTotal = new Counter({
   registers: [register],
 });
 
+// #1433: Bounded concurrency & backpressure metrics for arena poller
+export const arenaPollerActivePollsGauge = new Gauge({
+  name: 'inversearena_arena_poller_active_polls',
+  help: 'Number of active in-flight arena poll operations',
+  registers: [register],
+});
+
+export const arenaPollerQueueDepthGauge = new Gauge({
+  name: 'inversearena_arena_poller_queue_depth',
+  help: 'Number of pending arena poll requests queued under backpressure',
+  registers: [register],
+});
+
+export const arenaPollerBackpressureShedTotal = new Counter({
+  name: 'inversearena_arena_poller_backpressure_shed_total',
+  help: 'Total arena polls shed or dropped due to queue saturation backpressure',
+  labelNames: ['reason'],
+  registers: [register],
+});
+
+export const arenaPollerPollDurationSeconds = new Histogram({
+  name: 'inversearena_arena_poller_poll_duration_seconds',
+  help: 'Duration of arena poll operations in seconds',
+  labelNames: ['outcome'],
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+  registers: [register],
+});
+
+export const arenaPollerRetriesTotal = new Counter({
+  name: 'inversearena_arena_poller_retries_total',
+  help: 'Total poller retry attempts following execution errors, by reason',
+  labelNames: ['reason'],
+  registers: [register],
+});
+
+
 // #1501: dashboard bootstrap composition
 export const dashboardBootstrapTotal = new Counter({
   name: 'inversearena_dashboard_bootstrap_total',

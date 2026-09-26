@@ -23,6 +23,12 @@ import {
   arenaPollsTotal,
   arenaSuppressedPublishesTotal,
   arenaSemanticChangesTotal,
+  arenaPollerActivePollsGauge,
+  arenaPollerQueueDepthGauge,
+  arenaPollerBackpressureShedTotal,
+  arenaPollerPollDurationSeconds,
+  arenaPollerRetriesTotal,
+  arenaPollerSkippedTotal,
 } from "../utils/metrics";
 import {
   createArenaPollStages,
@@ -35,6 +41,224 @@ import {
   type ArenaLifecycleState,
   type WakeReason,
 } from "./arenaPollScheduler";
+
+export type PollerExecutionState = "IDLE" | "QUEUED" | "POLLING" | "BACKOFF";
+
+export interface PollerConcurrencyConfig {
+  /** Maximum concurrent in-flight arena poll operations across all arenas. */
+  maxConcurrency: number;
+  /** Maximum queued poll requests allowed before applying backpressure shedding. */
+  maxQueueDepth: number;
+  /** Timeout for individual poll operation in milliseconds. */
+  pollTimeoutMs: number;
+}
+
+export interface PollerConcurrencyStats {
+  activePolls: number;
+  queueDepth: number;
+  maxConcurrency: number;
+  maxQueueDepth: number;
+  totalShed: number;
+  totalProcessed: number;
+}
+
+interface QueuedPollTask {
+  arenaId: string;
+  pollFn: () => Promise<void>;
+  resolve: (executed: boolean) => void;
+  reject: (err: unknown) => void;
+  queuedAt: number;
+}
+
+export class ArenaPollConcurrencyLimiter {
+  private config: PollerConcurrencyConfig;
+  private activePolls = 0;
+  private queue: QueuedPollTask[] = [];
+  private executionStates = new Map<string, PollerExecutionState>();
+  private totalShed = 0;
+  private totalProcessed = 0;
+
+  constructor(config: Partial<PollerConcurrencyConfig> = {}) {
+    this.config = {
+      maxConcurrency: config.maxConcurrency ?? 20,
+      maxQueueDepth: config.maxQueueDepth ?? 50,
+      pollTimeoutMs: config.pollTimeoutMs ?? 10_000,
+    };
+  }
+
+  public updateConfig(config: Partial<PollerConcurrencyConfig>): void {
+    if (config.maxConcurrency !== undefined && config.maxConcurrency > 0) {
+      this.config.maxConcurrency = config.maxConcurrency;
+    }
+    if (config.maxQueueDepth !== undefined && config.maxQueueDepth >= 0) {
+      this.config.maxQueueDepth = config.maxQueueDepth;
+    }
+    if (config.pollTimeoutMs !== undefined && config.pollTimeoutMs > 0) {
+      this.config.pollTimeoutMs = config.pollTimeoutMs;
+    }
+  }
+
+  public getConfig(): Readonly<PollerConcurrencyConfig> {
+    return { ...this.config };
+  }
+
+  public getExecutionState(arenaId: string): PollerExecutionState {
+    return this.executionStates.get(arenaId) ?? "IDLE";
+  }
+
+  public getStats(): PollerConcurrencyStats {
+    return {
+      activePolls: this.activePolls,
+      queueDepth: this.queue.length,
+      maxConcurrency: this.config.maxConcurrency,
+      maxQueueDepth: this.config.maxQueueDepth,
+      totalShed: this.totalShed,
+      totalProcessed: this.totalProcessed,
+    };
+  }
+
+  public resetForTest(): void {
+    this.activePolls = 0;
+    this.queue = [];
+    this.executionStates.clear();
+    this.totalShed = 0;
+    this.totalProcessed = 0;
+    arenaPollerActivePollsGauge.set(0);
+    arenaPollerQueueDepthGauge.set(0);
+  }
+
+  public async executeBounded(
+    arenaId: string,
+    pollFn: () => Promise<void>,
+  ): Promise<boolean> {
+    const currentState = this.getExecutionState(arenaId);
+
+    // Single-flight deduplication: if already polling or queued, skip duplicate trigger
+    if (currentState === "POLLING" || currentState === "QUEUED") {
+      return false;
+    }
+
+    if (this.activePolls < this.config.maxConcurrency) {
+      return this.runTask(arenaId, pollFn);
+    }
+
+    // Active limit reached -> check backpressure queue capacity
+    if (this.queue.length >= this.config.maxQueueDepth) {
+      this.totalShed += 1;
+      this.executionStates.set(arenaId, "BACKOFF");
+      arenaPollerBackpressureShedTotal.inc({ reason: "queue_full" });
+      arenaPollerSkippedTotal.inc({ reason: "backpressure" });
+      console.warn(
+        JSON.stringify({
+          event: "arena_poller_backpressure_shed",
+          arenaId,
+          activePolls: this.activePolls,
+          queueDepth: this.queue.length,
+          maxQueueDepth: this.config.maxQueueDepth,
+        }),
+      );
+      return false;
+    }
+
+    // Queue task under backpressure
+    this.executionStates.set(arenaId, "QUEUED");
+    return new Promise<boolean>((resolve, reject) => {
+      this.queue.push({
+        arenaId,
+        pollFn,
+        resolve,
+        reject,
+        queuedAt: Date.now(),
+      });
+      arenaPollerQueueDepthGauge.set(this.queue.length);
+    });
+  }
+
+  private async runTask(
+    arenaId: string,
+    pollFn: () => Promise<void>,
+  ): Promise<boolean> {
+    this.activePolls += 1;
+    this.executionStates.set(arenaId, "POLLING");
+    arenaPollerActivePollsGauge.set(this.activePolls);
+    const startHighRes = process.hrtime.bigint();
+
+    let outcome: "ok" | "error" = "ok";
+    try {
+      await this.withTimeout(pollFn(), this.config.pollTimeoutMs, arenaId);
+      this.totalProcessed += 1;
+      this.executionStates.set(arenaId, "IDLE");
+      return true;
+    } catch (err) {
+      outcome = "error";
+      this.executionStates.set(arenaId, "BACKOFF");
+      throw err;
+    } finally {
+      const elapsedNs = process.hrtime.bigint() - startHighRes;
+      const durationSec = Number(elapsedNs) / 1_000_000_000;
+      arenaPollerPollDurationSeconds.observe({ outcome }, durationSec);
+
+      this.activePolls = Math.max(0, this.activePolls - 1);
+      arenaPollerActivePollsGauge.set(this.activePolls);
+
+      this.processNext();
+    }
+  }
+
+  private processNext(): void {
+    if (this.queue.length === 0 || this.activePolls >= this.config.maxConcurrency) {
+      return;
+    }
+
+    const nextTask = this.queue.shift();
+    arenaPollerQueueDepthGauge.set(this.queue.length);
+
+    if (nextTask) {
+      this.runTask(nextTask.arenaId, nextTask.pollFn)
+        .then(nextTask.resolve)
+        .catch(nextTask.reject);
+    }
+  }
+
+  private async withTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+    arenaId: string,
+  ): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(
+          new Error(
+            `Arena poll execution timed out after ${timeoutMs}ms for arena ${arenaId}`,
+          ),
+        );
+      }, timeoutMs);
+    });
+
+    try {
+      return await Promise.race([promise, timeoutPromise]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+}
+
+export const pollerConcurrencyLimiter = new ArenaPollConcurrencyLimiter();
+
+export function setPollerConcurrencyConfig(
+  config: Partial<PollerConcurrencyConfig>,
+): void {
+  pollerConcurrencyLimiter.updateConfig(config);
+}
+
+export function getPollerConcurrencyStats(): PollerConcurrencyStats {
+  return pollerConcurrencyLimiter.getStats();
+}
+
+export function resetPollerConcurrencyLimiterForTest(): void {
+  pollerConcurrencyLimiter.resetForTest();
+}
 
 interface Subscriber {
   /** Send an SSE event to this client. */
@@ -223,6 +447,8 @@ export function subscribeArena(
 export function resetPollersForTest(): void {
   for (const state of pollers.values()) stopPollLoop(state);
   pollers.clear();
+  arenaPollScheduler.stop();
+  pollerConcurrencyLimiter.resetForTest();
 }
 
 function startPollLoop(
@@ -324,8 +550,7 @@ function startPollLoop(
   const stages = createArenaPollStages(arenaId, arenaService, publishSnapshot);
   state.instanceId = randomUUID();
 
-  // Main poll loop
-  const poll = async (): Promise<void> => {
+  const runPollTask = async (): Promise<void> => {
     if (state.subscribers.size === 0) return;
 
     try {
@@ -372,6 +597,7 @@ function startPollLoop(
       }
     } catch (error) {
       arenaPollsTotal.inc({ outcome: "error" });
+      arenaPollerRetriesTotal.inc({ reason: "poll_error" });
       state.consecutiveFailures += 1;
       // Broadcast error to all subscribers
       for (const sub of state.subscribers) {
@@ -393,6 +619,15 @@ function startPollLoop(
           // Client disconnected
         }
       }
+    }
+  };
+
+  // Main poll loop with bounded concurrency & backpressure (#1433)
+  const poll = async (): Promise<void> => {
+    if (state.subscribers.size === 0) return;
+
+    try {
+      await pollerConcurrencyLimiter.executeBounded(arenaId, runPollTask);
     } finally {
       if (state.subscribers.size > 0) {
         state.pollTimer = setTimeout(() => {
@@ -424,4 +659,5 @@ function stopPollLoop(state: ArenaPollerState): void {
     state.heartbeatTimer = null;
   }
 }
+
 

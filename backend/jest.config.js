@@ -33,6 +33,10 @@ module.exports = {
     "<rootDir>/tests/onChainReader\\.factoryArenaPage\\.unit\\.test\\.ts",
     "<rootDir>/tests/arenaBackfillWorker\\.unit\\.test\\.ts",
     "<rootDir>/tests/arenaBackfill\\.integration\\.unit\\.test\\.ts",
+    "<rootDir>/tests/arenaPoller\\.unit\\.test\\.ts",
+    "<rootDir>/tests/arenaPollerConcurrency\\.unit\\.test\\.ts",
+    "<rootDir>/tests/arenaPollerConcurrency\\.load\\.test\\.ts",
+    "<rootDir>/tests/arenaPollerConcurrency\\.integration\\.test\\.ts",
     // Legacy script-style runners (no Jest `describe`/`it`)
     "<rootDir>/tests/leaderboard\\.test\\.ts",
     "<rootDir>/tests/security-headers\\.test\\.ts",
