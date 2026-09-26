@@ -363,6 +363,31 @@ export const sorobanCircuitTransitionsTotal = new Counter({
   registers: [register],
 });
 
+export const sorobanSimulationHitsTotal = new Counter({
+  name: 'inversearena_soroban_simulation_cache_hits_total',
+  help: 'Soroban read simulation single-flight cache hits',
+  registers: [register],
+});
+
+export const sorobanSimulationMissesTotal = new Counter({
+  name: 'inversearena_soroban_simulation_cache_misses_total',
+  help: 'Soroban read simulation single-flight cache misses',
+  labelNames: ['reason'],
+  registers: [register],
+});
+
+export const sorobanSimulationCoalescedWaitersTotal = new Counter({
+  name: 'inversearena_soroban_simulation_coalesced_waiters_total',
+  help: 'Concurrent identical Soroban simulations that shared one in-flight RPC',
+  registers: [register],
+});
+
+export const sorobanSimulationCacheEvictionsTotal = new Counter({
+  name: 'inversearena_soroban_simulation_cache_evictions_total',
+  help: 'Evictions from the bounded Soroban simulation result cache',
+  registers: [register],
+});
+
 export const maintenanceMutationsBlockedTotal = new Counter({
   name: 'inversearena_maintenance_mutations_blocked_total',
   help: 'Total mutating requests rejected because a maintenance window was active',

@@ -11,6 +11,7 @@ mod fuzz_tests;
 mod oracle;
 mod rwa_client;
 mod snapshot_test;
+mod storage_layout_fixture;
 mod state_machine;
 mod storage;
 pub mod types;

@@ -18,6 +18,10 @@ import { Contract, Keypair, nativeToScVal, scValToNative, xdr, rpc } from "@stel
 import { StellarRpcGateway } from "../../frontend/src/shared-d/services/stellarRpcGateway";
 import { getStellarConfig, assertAllowedRpcUrl, RPC_MAX_RESPONSE_BYTES } from "../config/stellarConfig";
 import {
+  getSorobanSimulationSingleFlight,
+  SorobanSimulationSingleFlight,
+} from "../utils/sorobanSimulationSingleFlight";
+import {
   ARENA_EVENT_TOPICS,
   isArenaEventTopic,
   type ArenaProjectionEvent,
@@ -100,36 +104,61 @@ async function simulateViewCall(
   // not the `StellarRpcGateway` wrapper (two-arg `getAccount(publicKey, fn)`,
   // Horizon-backed) — the two call shapes differ, so this branches on which
   // client is active rather than trying to unify them behind one type.
-  const sourceAccount = rpcServerOverride
-    ? await rpcServerOverride.getAccount(getSourcePublicKey())
-    : await stellarRpcGateway.getAccount(getSourcePublicKey(), `simulateViewCall.${functionName}`);
-
-  const contract = new Contract(contractId);
-  const tx = new (await import("@stellar/stellar-sdk")).TransactionBuilder(sourceAccount, {
-    fee: "100",
-    networkPassphrase: getStellarConfig().networkPassphrase,
-  })
-    .addOperation(contract.call(functionName, ...args))
-    .setTimeout(60)
-    .build();
-
-  const result = rpcServerOverride
-    ? await rpcServerOverride.simulateTransaction(tx)
-    : await stellarRpcGateway.simulateTransaction(tx);
-
-  if ("error" in result) {
-    throw new Error(`Simulation error for ${functionName}: ${result.error}`);
-  }
-
-  if (!result.result) {
-    throw new Error(`Simulation returned no result for ${functionName}`);
-  }
-
   const rpcConfig = getStellarConfig();
-  if (!assertAllowedRpcUrl(rpcConfig.sorobanRpcUrl)) throw new OnChainReadError(functionName, contractId, "RPC_URL_NOT_ALLOWED");
-  if (JSON.stringify(result ?? null).length > RPC_MAX_RESPONSE_BYTES) throw new OnChainReadError(functionName, contractId, "RPC_RESPONSE_TOO_LARGE");
+  if (!assertAllowedRpcUrl(rpcConfig.sorobanRpcUrl)) {
+    throw new OnChainReadError(functionName, contractId, "RPC_URL_NOT_ALLOWED");
+  }
 
-  return scValToNative(result.result.retval);
+  const runSimulation = async (): Promise<unknown> => {
+    const sourceAccount = rpcServerOverride
+      ? await rpcServerOverride.getAccount(getSourcePublicKey())
+      : await stellarRpcGateway.getAccount(
+          getSourcePublicKey(),
+          `simulateViewCall.${functionName}`,
+        );
+
+    const contract = new Contract(contractId);
+    const tx = new (await import("@stellar/stellar-sdk")).TransactionBuilder(sourceAccount, {
+      fee: "100",
+      networkPassphrase: rpcConfig.networkPassphrase,
+    })
+      .addOperation(contract.call(functionName, ...args))
+      .setTimeout(60)
+      .build();
+
+    const result = rpcServerOverride
+      ? await rpcServerOverride.simulateTransaction(tx)
+      : await stellarRpcGateway.simulateTransaction(tx);
+
+    if ("error" in result) {
+      throw new Error(`Simulation error for ${functionName}: ${result.error}`);
+    }
+
+    if (!result.result) {
+      throw new Error(`Simulation returned no result for ${functionName}`);
+    }
+
+    if (JSON.stringify(result ?? null).length > RPC_MAX_RESPONSE_BYTES) {
+      throw new OnChainReadError(functionName, contractId, "RPC_RESPONSE_TOO_LARGE");
+    }
+
+    return scValToNative(result.result.retval);
+  };
+
+  if (rpcServerOverride) {
+    return runSimulation();
+  }
+
+  const ledgerSequence = await stellarRpcGateway.getLatestLedger();
+  const cacheKey = SorobanSimulationSingleFlight.buildKey({
+    network: rpcConfig.networkPassphrase,
+    ledgerSequence,
+    contractId,
+    functionName,
+    args,
+  });
+
+  return getSorobanSimulationSingleFlight().run(cacheKey, runSimulation);
 }
 
 /**

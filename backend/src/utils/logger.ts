@@ -1,6 +1,7 @@
 import pino from "pino";
 // @ts-ignore
 import * as Sentry from "@sentry/node";
+import { redactSecrets } from "../../../frontend/src/shared-d/security/redaction";
 import { getRequestId } from "./requestContext";
 
 const redactPaths = [
@@ -17,6 +18,11 @@ export const maskWalletAddress = (address?: string) => {
     return `${address.slice(0, 8)}...${address.slice(-4)}`;
 };
 
+const configuredSecrets = [
+    process.env.JWT_SECRET,
+    process.env.ADMIN_API_KEY,
+].filter(Boolean) as string[];
+
 export const logger = pino({
     level: process.env.LOG_LEVEL || "info",
     redact: {
@@ -27,6 +33,8 @@ export const logger = pino({
         level: (label) => {
             return { level: label };
         },
+        log: (object) =>
+            redactSecrets(object, { configuredSecrets }) as Record<string, unknown>,
     },
     timestamp: pino.stdTimeFunctions.isoTime,
 });

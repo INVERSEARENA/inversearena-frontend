@@ -14,6 +14,7 @@
 import * as Sentry from "@sentry/nextjs";
 import type { ErrorInfo } from "react";
 import type { Event as SentryEvent } from "@sentry/nextjs";
+import { redactSecrets } from "@/shared-d/security/redaction";
 
 // Matches any Stellar public key (G + 55 base32 chars) anywhere in a string.
 const STELLAR_PUBLIC_KEY_REGEX = /G[A-Z2-7]{55}/g;
@@ -43,9 +44,11 @@ export function scrubStellarAddresses<T extends SentryEvent>(event: T): T | null
     return null;
   }
 
+  const scrubbed = redactSecrets(event) as T;
+
   // Scrub exception values (error messages / descriptions).
-  if (event.exception?.values) {
-    for (const ex of event.exception.values) {
+  if (scrubbed.exception?.values) {
+    for (const ex of scrubbed.exception.values) {
       if (ex.value) {
         ex.value = redactPublicKeys(ex.value);
       }
@@ -53,8 +56,8 @@ export function scrubStellarAddresses<T extends SentryEvent>(event: T): T | null
   }
 
   // Scrub breadcrumb messages and navigation URLs.
-  if (event.breadcrumbs) {
-    for (const breadcrumb of event.breadcrumbs) {
+  if (scrubbed.breadcrumbs) {
+    for (const breadcrumb of scrubbed.breadcrumbs) {
       if (breadcrumb.message) {
         breadcrumb.message = redactPublicKeys(breadcrumb.message);
       }
@@ -67,11 +70,11 @@ export function scrubStellarAddresses<T extends SentryEvent>(event: T): T | null
   // Scrub the current page URL Sentry auto-populates on event.request — a
   // page like arena-v2/withdrawal-success puts the destination address
   // directly in its query string, so this must be redacted too.
-  if (event.request?.url) {
-    event.request.url = redactPublicKeys(event.request.url);
+  if (scrubbed.request?.url) {
+    scrubbed.request.url = redactPublicKeys(scrubbed.request.url);
   }
 
-  return event;
+  return scrubbed;
 }
 
 const SENTRY_ENABLED =
