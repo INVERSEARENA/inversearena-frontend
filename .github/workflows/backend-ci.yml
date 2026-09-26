@@ -59,6 +59,9 @@ jobs:
         working-directory: ./backend
         run: npm ci
 
+      - name: Verify redaction policy (#1531)
+        run: node scripts/verify-redaction.mjs
+
       - name: Run Prisma Migrations
         working-directory: ./backend
         env:

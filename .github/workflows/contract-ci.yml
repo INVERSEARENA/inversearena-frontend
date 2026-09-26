@@ -62,6 +62,10 @@ jobs:
         working-directory: ./contract
         run: cargo test --workspace
 
+      - name: Storage layout fixture smoke (#1532)
+        working-directory: ./contract
+        run: cargo test -p arena storage_layout_
+
       - name: Install Stellar CLI
         run: cargo install --locked stellar-cli
 

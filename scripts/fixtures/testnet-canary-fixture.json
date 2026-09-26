@@ -1,0 +1,59 @@
+{
+  "runId": "fixture",
+  "mode": "fixture",
+  "network": "Test SDF Network ; September 2015",
+  "startedAt": "2026-01-01T00:00:00.000Z",
+  "finishedAt": "2026-01-01T00:00:01.000Z",
+  "preflight": {
+    "ok": true,
+    "checks": [
+      "network_not_mainnet",
+      "balances_skipped_fixture",
+      "manifest_fixture",
+      "contract_versions_fixture",
+      "trustlines_fixture",
+      "destructive_scope_guardrails"
+    ]
+  },
+  "scenarios": [
+    {
+      "name": "minimum_arena_happy_path",
+      "status": "pass",
+      "steps": [
+        {
+          "name": "create_arena",
+          "txHash": "fixture-tx-create",
+          "ledger": 100,
+          "expectedEvent": "arena_created",
+          "observedState": "indexed",
+          "latencyMs": 12,
+          "balanceDelta": "-0.5 XLM"
+        },
+        {
+          "name": "terminal_settlement",
+          "txHash": "fixture-tx-settle",
+          "ledger": 120,
+          "expectedEvent": "arena_settled",
+          "observedState": "claimable",
+          "latencyMs": 18,
+          "balanceDelta": "+1.0 XLM"
+        }
+      ]
+    },
+    {
+      "name": "non_reveal_refund_recoverable",
+      "status": "pass",
+      "steps": [
+        {
+          "name": "timeout_refund",
+          "txHash": "fixture-tx-refund",
+          "ledger": 130,
+          "expectedEvent": "refund_available",
+          "observedState": "refunded",
+          "latencyMs": 15,
+          "balanceDelta": "+0.25 XLM"
+        }
+      ]
+    }
+  ]
+}
