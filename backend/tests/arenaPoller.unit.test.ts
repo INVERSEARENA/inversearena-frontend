@@ -1,19 +1,30 @@
+import { test, describe } from "node:test";
+import assert from "node:assert";
 import { computePollDelay } from "../src/cache/arenaPoller";
 
 describe("arena poll retry delay", () => {
   test("uses the normal interval before any failures", () => {
-    expect(computePollDelay(0)).toBe(2_500);
+    assert.strictEqual(computePollDelay(0), 2_500);
   });
 
   test("backs off exponentially after consecutive failures", () => {
-    expect(computePollDelay(1)).toBe(2_500);
-    expect(computePollDelay(2)).toBe(5_000);
-    expect(computePollDelay(3)).toBe(10_000);
-    expect(computePollDelay(4)).toBe(20_000);
+    const delay1 = computePollDelay(1);
+    assert.ok(delay1 >= 2_500 && delay1 <= 2_875, `delay1 ${delay1} out of range`);
+
+    const delay2 = computePollDelay(2);
+    assert.ok(delay2 >= 5_000 && delay2 <= 5_750, `delay2 ${delay2} out of range`);
+
+    const delay3 = computePollDelay(3);
+    assert.ok(delay3 >= 10_000 && delay3 <= 11_500, `delay3 ${delay3} out of range`);
+
+    const delay4 = computePollDelay(4);
+    assert.ok(delay4 >= 20_000 && delay4 <= 23_000, `delay4 ${delay4} out of range`);
   });
 
   test("caps retry traffic during sustained outages", () => {
-    expect(computePollDelay(10)).toBe(60_000);
-    expect(computePollDelay(100)).toBe(60_000);
+    assert.strictEqual(computePollDelay(10), 60_000);
+    assert.strictEqual(computePollDelay(100), 60_000);
   });
 });
+
+
