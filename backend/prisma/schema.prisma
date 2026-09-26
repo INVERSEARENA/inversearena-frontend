@@ -51,16 +51,21 @@ model Pool {
 }
 
 model Round {
-  id          String   @id @default(uuid())
-  arenaId     String   @map("arena_id")
-  roundNumber Int      @map("round_number")
-  state       String   @default("OPEN") // OPEN, CLOSED, RESOLVED, SETTLED
-  metadata    Json?    // Stores player choices, oracle yield, random seed
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id                 String   @id @default(uuid())
+  arenaId            String   @map("arena_id")
+  roundNumber        Int      @map("round_number")
+  state              String   @default("OPEN") // OPEN, CLOSED, RESOLVED, SETTLED
+  metadata           Json?    // Legacy extensible metadata JSON document
+  oracleYield        Float?   @map("oracle_yield")
+  randomSeed         String?  @map("random_seed")
+  playerChoices      Json?    @map("player_choices")
+  allActivePlayerIds String[] @default([]) @map("all_active_player_ids")
+  resolution         Json?    @map("resolution")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
 
-  arena       Arena    @relation(fields: [arenaId], references: [id])
-  eliminationLogs EliminationLog[]
+  arena              Arena    @relation(fields: [arenaId], references: [id])
+  eliminationLogs    EliminationLog[]
 
   @@unique([arenaId, roundNumber]) // Each round is unique per arena
   @@index([arenaId])

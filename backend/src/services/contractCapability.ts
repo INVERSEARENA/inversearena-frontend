@@ -36,6 +36,7 @@ import {
   capabilityNegotiationDuration,
   capabilityCacheHitsTotal,
 } from "../utils/metrics";
+import { contractMetadataCache, type InvalidationReason } from "./contractMetadataCache";
 
 export type ContractKind = "arena" | "factory" | "payout" | "staking";
 
@@ -136,6 +137,17 @@ export function setCircuitBreakerForTest(breaker: CircuitBreaker | null): void {
 
 export function resetCapabilityCacheForTest(): void {
   cache.clear();
+  contractMetadataCache.clear();
+}
+
+export function invalidateContractCapability(
+  contractId: string,
+  reason: InvalidationReason = "upgrade_detected",
+): void {
+  for (const kind of ["arena", "factory", "payout", "staking"] as const) {
+    cache.delete(cacheKey(kind, contractId));
+  }
+  contractMetadataCache.invalidateContract(contractId, reason);
 }
 
 function cacheKey(kind: ContractKind, contractId: string): string {

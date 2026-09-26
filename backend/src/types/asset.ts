@@ -1,12 +1,12 @@
 export interface AssetMetadata {
   code: string;
-  issuer?: string;
+  issuer?: string | undefined;
   decimals: number;
   displayDecimals: number;
   minimumAmount: number;
   maximumAmount: number;
   symbol: string;
-  description?: string;
+  description?: string | undefined;
 }
 
 
@@ -54,8 +54,8 @@ function getAssetDescription(code: string): string {
   return descriptions[code] ?? `${code} asset`;
 }
 
-export function formatAmount(atomicAmount: string | number, decimals: number, displayDecimals: number): string {
-  const numericAmount = typeof atomicAmount === "string" ? BigInt(atomicAmount) : BigInt(atomicAmount);
+export function formatAmount(atomicAmount: bigint | string | number, decimals: number, displayDecimals: number): string {
+  const numericAmount = typeof atomicAmount === "bigint" ? atomicAmount : BigInt(atomicAmount);
   const divisor = BigInt(10 ** decimals);
   const wholePart = numericAmount / divisor;
   const fractionalPart = numericAmount % divisor;
@@ -73,7 +73,9 @@ export function formatAmount(atomicAmount: string | number, decimals: number, di
 }
 
 export function parseAmount(displayAmount: string, decimals: number): string {
-  const [wholePart, fractionalPart = ""] = displayAmount.split(".");
+  const parts = displayAmount.split(".");
+  const wholePart = parts[0] ?? "0";
+  const fractionalPart = parts[1] ?? "";
   const fractionalStr = fractionalPart.padEnd(decimals, "0").slice(0, decimals);
   const atomicAmount = BigInt(wholePart) * BigInt(10 ** decimals) + BigInt(fractionalStr);
   return atomicAmount.toString();
