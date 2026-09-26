@@ -112,27 +112,11 @@ export function usePasskeyWallet() {
     return { address, keyId };
   }, [isAvailable]);
 
-  const sign = useCallback(async (txXdr: string): Promise<string> => {
-    if (!state.keyId) throw new Error('No passkey registered. Call register() first.');
-    if (!isAvailable()) throw new Error('WebAuthn is not available.');
-
-    const challenge = new TextEncoder().encode(txXdr).buffer as ArrayBuffer;
-
-    const assertion = await navigator.credentials.get({
-      publicKey: {
-        challenge,
-        userVerification: 'required',
-        timeout: 60000,
-      },
-    }) as PublicKeyCredential | null;
-
-    if (!assertion) throw new Error('Passkey signing was cancelled.');
-
-    const response = assertion.response as AuthenticatorAssertionResponse;
-    // Return the signature as base64 — the Soroban smart wallet contract
-    // verifies the secp256r1 signature on-chain.
-    return btoa(String.fromCharCode(...new Uint8Array(response.signature)));
-  }, [state.keyId, isAvailable]);
+  const sign = useCallback(async (_txXdr: string): Promise<string> => {
+    throw new Error(
+      'Passkeys authenticate access to a wallet-bound account; they cannot sign Stellar transactions.',
+    );
+  }, []);
 
   const disconnect = useCallback(() => {
     localStorage.removeItem(STORAGE_KEY);
