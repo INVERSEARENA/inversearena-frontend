@@ -626,3 +626,110 @@ export async function refreshArenaMetrics(prisma: PrismaClient): Promise<void> {
 
   arenasActiveGauge.set(activeRounds.length);
 }
+
+// ─── #1523: Typed Round Metadata Persistence & Dual-Read Mismatch Metrics ───
+export const roundMetadataMismatchesTotal = new Counter({
+  name: 'inversearena_round_metadata_mismatches_total',
+  help: 'Total round metadata dual-read mismatches detected between typed columns and legacy json',
+  labelNames: ['field'],
+  registers: [register],
+});
+
+export const roundMetadataBackfillTotal = new Counter({
+  name: 'inversearena_round_metadata_backfill_total',
+  help: 'Total rounds processed by metadata normalization backfill, by status',
+  labelNames: ['status'],
+  registers: [register],
+});
+
+// ─── #1524: Adaptive Arena Polling Cadence & Priority Metrics ─────────────────
+export const arenaPollerCadenceSeconds = new Histogram({
+  name: 'inversearena_arena_poller_cadence_seconds',
+  help: 'Observed or scheduled polling interval cadence in seconds by arena state',
+  labelNames: ['state'],
+  buckets: [0.1, 0.5, 1, 2.5, 5, 10, 15, 30, 60],
+  registers: [register],
+});
+
+export const arenaPollerWakeTotal = new Counter({
+  name: 'inversearena_arena_poller_wake_total',
+  help: 'Total poller wake triggers by reason',
+  labelNames: ['reason'],
+  registers: [register],
+});
+
+export const arenaPollerLatenessMs = new Histogram({
+  name: 'inversearena_arena_poller_lateness_ms',
+  help: 'Lateness of scheduled poll execution against deadline in milliseconds',
+  buckets: [5, 10, 25, 50, 100, 250, 500, 1000, 5000],
+  registers: [register],
+});
+
+export const arenaPollerSkippedTotal = new Counter({
+  name: 'inversearena_arena_poller_skipped_total',
+  help: 'Total polls skipped due to circuit breaker, concurrency limit or maintenance',
+  labelNames: ['reason'],
+  registers: [register],
+});
+
+export const arenaPollerActiveArenasGauge = new Gauge({
+  name: 'inversearena_arena_poller_active_arenas',
+  help: 'Active arenas tracked by adaptive scheduler by lifecycle state',
+  labelNames: ['lifecycle_state'],
+  registers: [register],
+});
+
+// ─── #1525: Database Query Budgets & Slow Query Attribution Metrics ──────────
+export const dbQueryBudgetViolationsTotal = new Counter({
+  name: 'inversearena_db_query_budget_violations_total',
+  help: 'Total database query budget violations by route, datastore, and violation type',
+  labelNames: ['route', 'datastore', 'violation_type'],
+  registers: [register],
+});
+
+export const dbQueryDurationSeconds = new Histogram({
+  name: 'inversearena_db_query_duration_seconds',
+  help: 'Normalized database query execution duration in seconds',
+  labelNames: ['datastore'],
+  buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+  registers: [register],
+});
+
+export const dbQueryCountPerRequest = new Histogram({
+  name: 'inversearena_db_query_count_per_request',
+  help: 'Total database queries executed per HTTP request/job by route',
+  labelNames: ['route'],
+  buckets: [1, 2, 5, 10, 20, 50, 100],
+  registers: [register],
+});
+
+// ─── #1526: Immutable Contract Metadata Cache by WASM Identity Metrics ───────
+export const contractMetadataCacheHitsTotal = new Counter({
+  name: 'inversearena_contract_metadata_cache_hits_total',
+  help: 'Contract metadata cache hits by metadata class (immutable/version_scoped)',
+  labelNames: ['metadata_class'],
+  registers: [register],
+});
+
+export const contractMetadataCacheMissesTotal = new Counter({
+  name: 'inversearena_contract_metadata_cache_misses_total',
+  help: 'Contract metadata cache misses by metadata class (immutable/version_scoped)',
+  labelNames: ['metadata_class'],
+  registers: [register],
+});
+
+export const contractMetadataCacheInvalidationsTotal = new Counter({
+  name: 'inversearena_contract_metadata_cache_invalidations_total',
+  help: 'Contract metadata cache invalidations by reason (upgrade/manual/corrupted/ttl)',
+  labelNames: ['reason'],
+  registers: [register],
+});
+
+export const contractMetadataLookupDuration = new Histogram({
+  name: 'inversearena_contract_metadata_lookup_duration_seconds',
+  help: 'Contract metadata resolution duration in seconds',
+  labelNames: ['status'],
+  buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1],
+  registers: [register],
+});
+

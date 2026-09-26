@@ -19,6 +19,22 @@ import type { ArenaService } from "../services/arenaService";
 import { getSorobanBreaker } from "../utils/circuitBreaker";
 import { refreshLedgerIdentity } from "../services/ledgerClock";
 import { getRollbackGuard } from "../services/ledgerContinuity";
+import {
+  arenaPollsTotal,
+  arenaSuppressedPublishesTotal,
+  arenaSemanticChangesTotal,
+} from "../utils/metrics";
+import {
+  createArenaPollStages,
+  runArenaPollStages,
+  type ArenaSnapshot,
+  type ArenaSnapshotMeta,
+} from "./arenaPollPipeline";
+import {
+  arenaPollScheduler,
+  type ArenaLifecycleState,
+  type WakeReason,
+} from "./arenaPollScheduler";
 
 interface Subscriber {
   /** Send an SSE event to this client. */
@@ -30,6 +46,7 @@ interface Subscriber {
 }
 
 interface ArenaPollerState {
+  instanceId?: string | undefined;
   subscribers: Set<Subscriber>;
   pollTimer: NodeJS.Timeout | null;
   heartbeatTimer: NodeJS.Timeout | null;
@@ -44,6 +61,10 @@ interface ArenaPollerState {
   consecutiveFailures: number;
   /** Rollback epoch this poller last published under (#1490). */
   rollbackEpoch: number;
+  snapshotMeta?: ArenaSnapshotMeta | undefined;
+  commitDeadline?: number | undefined;
+  revealDeadline?: number | undefined;
+  pollNow?: (() => void) | undefined;
 }
 
 const pollers = new Map<string, ArenaPollerState>();
@@ -53,13 +74,65 @@ const POLL_RETRY_MAX_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const HISTORY_LIMIT = 512;
 
-export function computePollDelay(consecutiveFailures: number): number {
-  if (consecutiveFailures <= 0) return POLL_INTERVAL_MS;
-  return Math.min(
-    POLL_INTERVAL_MS * 2 ** (consecutiveFailures - 1),
-    POLL_RETRY_MAX_MS,
-  );
+export function computePollDelay(
+  consecutiveFailures: number,
+  state?: {
+    roundState?: string | null | undefined;
+    subscribersCount?: number | undefined;
+    commitDeadline?: number | undefined;
+    revealDeadline?: number | undefined;
+  } | undefined,
+  now = Date.now(),
+): number {
+  if (consecutiveFailures > 0) {
+    const base = Math.min(POLL_RETRY_MAX_MS, POLL_INTERVAL_MS * 2 ** (consecutiveFailures - 1));
+    const jitter = Math.floor(Math.random() * (base * 0.15));
+    return Math.min(POLL_RETRY_MAX_MS, base + jitter);
+  }
+
+  if (state) {
+    const roundState = state.roundState ?? "OPEN";
+    const subscribers = state.subscribersCount ?? 0;
+
+    if (roundState === "RESOLVED" || roundState === "SETTLED") {
+      return subscribers > 0 ? 10_000 : 30_000;
+    }
+
+    if (roundState === "ACTIVE_COMMIT" || roundState === "ACTIVE_REVEAL" || roundState === "OPEN") {
+      const deadline = state.commitDeadline ?? state.revealDeadline;
+      if (deadline && deadline > now) {
+        const remaining = deadline - now;
+        if (remaining <= 5_000) return 500;
+        if (remaining <= 10_000) return 1_000;
+      }
+      return subscribers > 0 ? 2_000 : 5_000;
+    }
+  }
+
+  return POLL_INTERVAL_MS;
 }
+
+export function wakePoller(
+  arenaId: string,
+  reason: WakeReason = "manual",
+): boolean {
+  arenaPollScheduler.wake(arenaId, reason);
+  const state = pollers.get(arenaId);
+  if (state && state.pollNow) {
+    if (state.pollTimer) {
+      clearTimeout(state.pollTimer);
+      state.pollTimer = null;
+    }
+    state.pollNow();
+    return true;
+  }
+  return false;
+}
+
+export function wakeArena(arenaId: string, reason: WakeReason = "manual"): boolean {
+  return wakePoller(arenaId, reason);
+}
+
 
 /**
  * Reconnect plan for a client resuming with `afterSequence` (#1500).
@@ -248,6 +321,9 @@ function startPollLoop(
     snapshot.recentEliminations.forEach((entry) => state.seenEliminations.add(entry.id));
   };
 
+  const stages = createArenaPollStages(arenaId, arenaService, publishSnapshot);
+  state.instanceId = randomUUID();
+
   // Main poll loop
   const poll = async (): Promise<void> => {
     if (state.subscribers.size === 0) return;
@@ -277,7 +353,6 @@ function startPollLoop(
         state.lastSnapshot = null;
       }
       state.consecutiveFailures = 0;
-      const isFirstPoll = state.lastRoundState === null && state.lastStatus === null;
 
       const outcome = await runArenaPollStages(stages);
       arenaPollsTotal.inc({ outcome: "ok" });
@@ -322,9 +397,18 @@ function startPollLoop(
       if (state.subscribers.size > 0) {
         state.pollTimer = setTimeout(() => {
           void poll();
-        }, computePollDelay(state.consecutiveFailures));
+        }, computePollDelay(state.consecutiveFailures, {
+          roundState: state.lastRoundState,
+          subscribersCount: state.subscribers.size,
+          commitDeadline: state.commitDeadline,
+          revealDeadline: state.revealDeadline,
+        }));
       }
     }
+  };
+
+  state.pollNow = () => {
+    void poll();
   };
 
   void poll();
@@ -340,3 +424,4 @@ function stopPollLoop(state: ArenaPollerState): void {
     state.heartbeatTimer = null;
   }
 }
+

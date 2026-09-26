@@ -60,6 +60,10 @@ export const cacheKeys = {
   ledgerContinuity: (network: string) => `ledger:continuity:${network}`,
   /** #1394: a resolved round's proof bundle is immutable for a given roundId. */
   roundProofBundle: (roundId: string) => `round:proof-bundle:${roundId}`,
+  /** #1500: canonical snapshot metadata for semantic change detection. */
+  arenaSnapshotMeta: (arenaId: string) => `arena:snapshot:meta:${arenaId}`,
+  /** #1500: verified full snapshot payload with version generation. */
+  arenaVerifiedSnapshot: (arenaId: string) => `arena:snapshot:verified:${arenaId}`,
 };
 
 /**

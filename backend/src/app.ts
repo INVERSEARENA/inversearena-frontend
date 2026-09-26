@@ -9,6 +9,7 @@ import { errorHandler } from "./middleware/errorHandler";
 import { requestLogger } from "./middleware/logger";
 import { requestContextMiddleware } from "./middleware/requestContext";
 import { metricsMiddleware } from "./middleware/metrics";
+import { queryBudgetMiddleware } from "./middleware/queryBudgetMiddleware";
 import { maintenanceGuard } from "./middleware/maintenance";
 import {
   ApiKeyAuthProvider,
@@ -109,6 +110,7 @@ export function createApp(deps: AppDependencies): express.Application {
   app.use(requestLogger);
   app.use(requestContextMiddleware);
   app.use(metricsMiddleware);
+  app.use(queryBudgetMiddleware);
 
   const maintenanceService = new MaintenanceService();
   app.use(maintenanceGuard(maintenanceService));
