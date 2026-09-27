@@ -1,21 +1,43 @@
 import { z } from "zod";
+import {
+  parseStellarAccountId,
+  parseSorobanContractId,
+  parseStellarTransactionHash,
+  parseNetworkPassphrase,
+  IdentityValidationError,
+} from "@/shared-d/utils/identity-value-objects";
 
 const STELLAR_BASE32 = "[A-Z2-7]";
 
 export const StellarPublicKeySchema = z
   .string()
   .trim()
-  .regex(new RegExp(`^G${STELLAR_BASE32}{55}$`), "Invalid Stellar public key");
+  .transform((v, ctx) => {
+    try {
+      return parseStellarAccountId(v);
+    } catch (e) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: e instanceof IdentityValidationError ? e.reason : "Invalid Stellar public key",
+      });
+      return z.NEVER;
+    }
+  });
 
 export const StellarContractIdSchema = z
   .string()
   .trim()
-  .refine(
-    (value) =>
-      new RegExp(`^C${STELLAR_BASE32}{55}$`).test(value) ||
-      /^C\.{3}[A-Z0-9_-]+$/.test(value),
-    "Invalid Soroban contract id"
-  );
+  .transform((v, ctx) => {
+    try {
+      return parseSorobanContractId(v, { allowPlaceholder: true });
+    } catch (e) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: e instanceof IdentityValidationError ? e.reason : "Invalid Soroban contract id",
+      });
+      return z.NEVER;
+    }
+  });
 
 export const PoolCurrencySchema = z.enum(["USDC", "XLM"]);
 export const RoundSpeedSchema = z.enum(["30S", "1M", "5M"]);
@@ -48,9 +70,17 @@ export const SignedXdrSchema = z
 export const NetworkPassphraseSchema = z
   .string()
   .trim()
-  .min(3)
-  .max(100)
-  .regex(/^[\w\s;:(),.-]+$/, "Invalid network passphrase format");
+  .transform((v, ctx) => {
+    try {
+      return parseNetworkPassphrase(v);
+    } catch (e) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: e instanceof IdentityValidationError ? e.reason : "Invalid network passphrase format",
+      });
+      return z.NEVER;
+    }
+  });
 
 export const AssetCodeSchema = z.enum(["XLM", "USDC"]);
 
