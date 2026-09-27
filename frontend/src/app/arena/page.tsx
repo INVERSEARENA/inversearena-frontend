@@ -13,6 +13,15 @@ import {
 } from "@/components/arena/core";
 import { useWallet } from "@/features/wallet/useWallet";
 import { TransactionModal } from "@/components/modals/TransactionModal";
+import { AssetTrustlinePrompt } from "@/components/modals/AssetTrustlinePrompt";
+import { useAssetReadinessGate } from "@/features/asset-readiness/useAssetReadinessGate";
+import { displayAmountToStroops } from "@/shared-d/utils/stellar-asset-reader";
+import {
+  evaluateSigningRequest,
+  // A value import, not a type: `instanceof` narrows to `any` under a
+  // type-only import and the rejection branch becomes dead code.
+  SigningPolicyError,
+} from "@/shared-d/security/policy";
 import { ArenaStatsSkeleton } from "@/components/arena/ArenaStatsSkeleton";
 import { ArenaStateSummary } from "@/components/arena/ArenaStateSummary";
 import {
@@ -100,6 +109,38 @@ function ArenaGameView() {
   // Transaction Modal State
   const [showTxModal, setShowTxModal] = useState(false);
   const [txType, setTxType] = useState<"JOIN" | "COMMIT" | "REVEAL" | "CLAIM" | null>(null);
+  const [showTrustline, setShowTrustline] = useState(false);
+  /**
+   * Shown when a transaction is refused before the wallet prompt (#1487).
+   *
+   * A signing-policy rejection is not a request failure, so it needs its own
+   * surface: swallowing it into a generic "something went wrong" would hide the
+   * specific rule that fired, which is the only useful information the user has
+   * about why they cannot proceed.
+   */
+  const [policyNotice, setPolicyNotice] = useState<string | null>(null);
+
+  /**
+   * Asset-readiness gate for the claim (#1487).
+   *
+   * A payout is a *receipt*, so this is the case where a missing trustline
+   * costs the user money they have already won: without the line, the claim
+   * transaction cannot settle. Checking it here rather than only at join time
+   * means an account that added a line and then had it revoked is caught
+   * before the claim button is pressed.
+   */
+  const claimAssetGate = useAssetReadinessGate({
+    assetCode: "USDC",
+    amountStroops: (() => {
+      try {
+        return displayAmountToStroops(potentialPayout);
+      } catch {
+        return 0n;
+      }
+    })(),
+    entryPoint: "claim",
+    enabled: isConnected && hasWon && !!address,
+  });
   const [txDetails, setTxDetails] = useState<{ label: string; value: string | number }[]>([]);
 
   // Demo arena identifier; when unset the page falls back to the static mock view.
@@ -477,10 +518,53 @@ function ArenaGameView() {
                   <span>CURRENT STAKE</span>
                   <span className="font-bold">${currentStake.toLocaleString()}</span>
                 </div>
+                {policyNotice && (
+                  <div
+                    role="alert"
+                    className="mt-4 border-2 border-red-500 bg-red-50 p-3 text-left text-xs text-red-800"
+                  >
+                    <p className="font-bold uppercase tracking-widest">Cannot proceed</p>
+                    <p className="mt-1">{policyNotice}</p>
+                  </div>
+                )}
+                {hasWon && claimReady && !claimAssetGate.canProceed && (
+                  <div className="mt-4 border-2 border-amber-500 bg-amber-50 p-3 text-left text-xs text-amber-900">
+                    <p className="font-bold uppercase tracking-widest">Asset readiness</p>
+                    <p className="mt-1">{claimAssetGate.message}</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {claimAssetGate.phase === "remediation_offered" && (
+                        <button
+                          type="button"
+                          onClick={() => setShowTrustline(true)}
+                          className="border-2 border-zinc-800 px-3 py-1 text-[10px] font-bold uppercase tracking-wider"
+                        >
+                          Set up trustline
+                        </button>
+                      )}
+                      {claimAssetGate.canRetry && (
+                        <button
+                          type="button"
+                          onClick={() => void claimAssetGate.check()}
+                          className="border-2 border-zinc-800 px-3 py-1 text-[10px] font-bold uppercase tracking-wider"
+                        >
+                          Check again
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {hasWon && claimReady ? (
                   <button
                     onClick={() => {
                       if (!ARENA_ID) return;
+                      // Claim is a receipt: refuse to open a confirm modal the
+                      // account cannot settle, and offer the trustline instead.
+                      if (!claimAssetGate.canProceed) {
+                        if (claimAssetGate.phase === "remediation_offered") {
+                          setShowTrustline(true);
+                        }
+                        return;
+                      }
                       setTxType("CLAIM");
                       setTxDetails([
                         { label: "Action", value: "Claim Winnings" },
@@ -530,6 +614,26 @@ function ArenaGameView() {
         </div>
       </div>
 
+      <AssetTrustlinePrompt
+        isOpen={showTrustline}
+        onClose={() => setShowTrustline(false)}
+        remediation={claimAssetGate.remediation}
+        message={claimAssetGate.message}
+        phase={
+          claimAssetGate.phase === "remediating"
+            ? "remediating"
+            : claimAssetGate.phase === "blocked"
+              ? "blocked"
+              : "remediation_offered"
+        }
+        onConfirm={async () => {
+          await claimAssetGate.remediate();
+          if (claimAssetGate.canProceed) setShowTrustline(false);
+        }}
+        onRetry={() => void claimAssetGate.check()}
+        actionLabel="claim your winnings"
+      />
+
       <TransactionModal
         isOpen={showTxModal}
         onClose={() => setShowTxModal(false)}
@@ -576,6 +680,22 @@ function ArenaGameView() {
               tx = await buildClaimWinningsTransaction(address, ARENA_ID);
             } else {
               return;
+            }
+
+            // Firewall every protected flow from this page (#1487). This view
+            // builds JOIN, COMMIT, REVEAL and CLAIM envelopes; without the
+            // check they would be the one place a user is asked to sign
+            // something the rest of the app has already refused to sign.
+            // Validate before the wallet prompt, never after.
+            try {
+              evaluateSigningRequest(tx.toXDR(), txType);
+            } catch (error) {
+              if (error instanceof SigningPolicyError) {
+                setPolicyNotice(error.message);
+                setShowTxModal(false);
+                return;
+              }
+              throw error;
             }
 
             const signedXdr = await signTransaction(tx.toXDR());

@@ -150,7 +150,8 @@ export type AssetReadFailureReason =
   | "rate_limited"
   | "network_error"
   | "malformed_response"
-  | "invalid_ledger_response";
+  | "invalid_ledger_response"
+  | "invalid_amount";
 
 /**
  * Raised when an account or ledger read could not be completed.
@@ -236,6 +237,26 @@ export function stroopsToAmount(stroops: bigint): string {
  */
 export function ceilingStroops(stroops: bigint): bigint {
   return stroops > 0n ? stroops : 0n;
+}
+
+/**
+ * Convert a display-unit amount from the API to stroops.
+ *
+ * Floors, deliberately, because this is the same conversion the transaction
+ * builders in `stellar-transactions.ts` apply. A preflight that rounded
+ * differently from the builder it gates would either block accounts that
+ * could in fact transact, or wave through ones that cannot — so the rounding
+ * direction has to match, and the network's own rule is to discard
+ * precision.
+ */
+export function displayAmountToStroops(amount: number): bigint {
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new StellarAssetReadError(
+      "invalid_amount",
+      `Cannot convert non-finite or negative display amount: ${String(amount)}`,
+    );
+  }
+  return BigInt(Math.floor(amount * Number(STROOPS_PER_UNIT)));
 }
 
 /* -------------------------------------------------------------------------- */

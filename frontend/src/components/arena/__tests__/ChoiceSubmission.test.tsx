@@ -11,6 +11,25 @@ jest.mock("@/shared-d/utils/stellar-transactions", () => ({
   submitSignedTransaction: jest.fn(),
 }));
 
+/**
+ * The signing firewall is stubbed in this suite, and that is deliberate.
+ *
+ * The flow fixtures here use a placeholder envelope ("unsigned-xdr") because
+ * these tests are about click → validate → sign → submit ordering, not about
+ * XDR. The real policy rejects a placeholder as malformed, which is correct:
+ * it cannot tell a placeholder from a tampered envelope. The firewall's own
+ * behaviour is covered directly in `src/shared-d/security/__tests__/policy.test.ts`,
+ * against real signed envelopes. Do not "fix" a failure here by loosening the
+ * policy — fix the fixture, or test the real envelope.
+ */
+jest.mock("@/shared-d/security/policy", () => ({
+  evaluateSigningRequest: jest.fn(() => ({
+    type: "COMMIT",
+    operations: [{ type: "invokeHostFunction" }],
+  })),
+  SigningPolicyError: class SigningPolicyError extends Error {},
+}));
+
 const WALLET_ADDRESS = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
 
 const mockWallet = {
