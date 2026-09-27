@@ -21,6 +21,7 @@ jest.mock("../src/db/models/user.model", () => ({
 
 import { UsersController } from "../src/controllers/users.controller";
 import { createUsersRouter } from "../src/routes/users";
+import { InMemoryTransactionRepository } from "../src/repositories/inMemoryTransactionRepository";
 
 function buildApp(user?: { id: string; walletAddress: string }) {
   const app = express();
@@ -40,7 +41,7 @@ function buildApp(user?: { id: string; walletAddress: string }) {
     req.user = { ...user, jti: "jti-1" };
     next();
   };
-  app.use("/api/users", createUsersRouter(controller, authMiddleware));
+  app.use("/api/users", createUsersRouter(controller, authMiddleware, new InMemoryTransactionRepository()));
   app.use(errorHandler);
   return app;
 }

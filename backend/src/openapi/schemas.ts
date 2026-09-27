@@ -10,6 +10,7 @@ import {
 } from "../validation/authSchemas";
 import { SignPayoutBodySchema, TransactionIdParamSchema, YieldUpdateSchema } from "../validation/requestValidation";
 import { RoundInputSchema } from "../types/round";
+import { ClaimInboxPageSchema } from "../types/claimInbox";
 import { z } from "./zodOpenApi";
 
 const ApiErrorSchema = z.object({
@@ -90,4 +91,5 @@ export {
   RoundInputSchema,
   ApiErrorSchema,
   YieldUpdateSchema,
+  ClaimInboxPageSchema,
 };

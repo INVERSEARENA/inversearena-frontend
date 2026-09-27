@@ -52,6 +52,8 @@ export function setupTestApp() {
         networkPassphrase: TEST_PAYMENT_CONFIG.networkPassphrase,
         roundConfirmPollMs: 1,
         roundConfirmMaxPolls: 3,
+        // No credit-asset issuers in tests; XLM is native and needs none.
+        assetIssuers: {},
     });
 
     const app = createApp({

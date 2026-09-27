@@ -8,6 +8,7 @@ import {
   ArenaParticipantsResponseSchema,
   ArenaStatsSchema,
   AuthUserResponseSchema,
+  ClaimInboxPageSchema,
   CreatePayoutBodySchema,
   LeaderboardQuerySchema,
   LeaderboardResponseSchema,
@@ -302,67 +303,6 @@ function registerAdminPaths(registry: OpenAPIRegistry): void {
   });
 }
 
-function registerAdminPaths(registry: OpenAPIRegistry): void {
-  const RoundResolutionSchema = z.object({
-    roundId: z.string().uuid(),
-    state: z.string(),
-    resolution: z.record(z.unknown()).optional(),
-  });
-
-  registry.registerPath({
-    method: "post",
-    path: "/api/admin/rounds/resolve",
-    summary: "Resolve a round (admin)",
-    security: [{ adminApiKey: [] }],
-    request: {
-      body: {
-        content: { "application/json": { schema: RoundInputSchema } },
-      },
-    },
-    responses: {
-      200: {
-        description: "Round resolved",
-        content: { "application/json": { schema: RoundResolutionSchema } },
-      },
-      400: {
-        description: "Validation error",
-        content: { "application/json": { schema: ApiErrorSchema } },
-      },
-      401: {
-        description: "Unauthorized",
-        content: { "application/json": { schema: ApiErrorSchema } },
-      },
-    },
-  });
-
-  registry.registerPath({
-    method: "post",
-    path: "/api/payouts/{id}/sign",
-    summary: "Queue a signed payout XDR (admin)",
-    security: [{ adminApiKey: [] }],
-    request: {
-      params: TransactionIdParamSchema,
-      body: {
-        content: { "application/json": { schema: SignPayoutBodySchema } },
-      },
-    },
-    responses: {
-      200: {
-        description: "Signed transaction queued",
-        content: { "application/json": { schema: TransactionRecordSchema } },
-      },
-      401: {
-        description: "Unauthorized — admin API key required",
-        content: { "application/json": { schema: ApiErrorSchema } },
-      },
-      404: {
-        description: "Transaction not found or not owned by requester",
-        content: { "application/json": { schema: ApiErrorSchema } },
-      },
-    },
-  });
-}
-
 function registerOraclePaths(registry: OpenAPIRegistry): void {
   registry.registerPath({
     method: "post",
@@ -383,6 +323,48 @@ function registerOraclePaths(registry: OpenAPIRegistry): void {
   });
 }
 
+/**
+ * Wallet-scoped claim and refund inbox (#1489).
+ *
+ * Registered in its own function because the response is the one place the
+ * service's full state machine is published: clients branch on `state` and
+ * `reason` rather than inferring them, and a `unavailable` item must be
+ * rendered as an explicit unknown rather than an absence.
+ */
+function registerClaimInboxPaths(registry: OpenAPIRegistry): void {
+  registry.registerPath({
+    method: "get",
+    path: "/api/users/me/claim-inbox",
+    summary: "Wallet-scoped claim and refund inbox",
+    description:
+      "One item per arena, aggregating payout records, cancellation recovery and " +
+      "on-chain arena state. Ownership comes from the bearer token; there is no " +
+      "wallet parameter. A failed on-chain read yields state `unavailable`, never " +
+      "an empty result and never a zeroed amount.",
+    security: [{ bearerAuth: [] }],
+    request: {
+      query: z.object({
+        limit: z.coerce.number().int().min(1).max(50).optional(),
+        cursor: z.string().min(1).max(512).optional(),
+      }),
+    },
+    responses: {
+      200: {
+        description: "Inbox page",
+        content: { "application/json": { schema: ClaimInboxPageSchema } },
+      },
+      400: {
+        description: "Invalid limit or cursor",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+      401: {
+        description: "Missing or invalid session",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+    },
+  });
+}
+
 export function generateOpenApiDocument() {
   const registry = new OpenAPIRegistry();
 
@@ -394,6 +376,7 @@ export function generateOpenApiDocument() {
   registerPublicApiPaths(registry);
   registerAdminPaths(registry);
   registerOraclePaths(registry);
+  registerClaimInboxPaths(registry);
 
   const generator = new OpenApiGeneratorV31(registry.definitions);
   return generator.generateDocument({

@@ -6,6 +6,8 @@ import { prisma } from "../db/prisma";
 import { ActiveStakeLimitsService, MAX_ACTIVE_STAKE_USDC } from "../services/activeStakeLimitsService";
 import { AliasService } from "../services/aliasService";
 import { createWatchlistRouter } from "./watchlist";
+import { createClaimInboxRouter } from "./claimInbox";
+import type { TransactionRepository } from "../repositories/transactionRepository";
 import { apiError } from "../utils/apiError";
 import { z } from "zod";
 
@@ -24,6 +26,15 @@ const AliasUpdateSchema = z.object({
 export function createUsersRouter(
   controller: UsersController,
   authMiddleware: RequestHandler,
+  /**
+   * Required, not optional.
+   *
+   * The claim inbox reads payouts from here. An omitted repository would fall
+   * back to an empty in-memory store and serve every wallet a permanently
+   * empty inbox — a silent failure that looks exactly like "you have nothing
+   * to claim" while money is outstanding.
+   */
+  transactions: TransactionRepository,
 ): Router {
   const router = Router();
   const stakeService = new ActiveStakeLimitsService(prisma);
@@ -116,6 +127,11 @@ export function createUsersRouter(
   // import unrelated to this change and blocks any test that imports
   // this file).
   router.use(createWatchlistRouter(prisma, authMiddleware));
+
+  // Issue #1489 — wallet-scoped claim and refund inbox. In its own module for
+  // the same reason as the watchlist above: routes/claimInbox.ts must stay
+  // importable without pulling in services whose metric imports are broken.
+  router.use(createClaimInboxRouter(prisma, authMiddleware, transactions));
 
   return router;
 }
