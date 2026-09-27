@@ -28,6 +28,8 @@
  * @module
  */
 
+import { StrKey } from "@stellar/stellar-sdk";
+import { StellarAssetCodeSchema } from "@/shared-d/utils/security-validation";
 import {
   StellarAssetReadError,
   amountToStroops,
@@ -75,10 +77,15 @@ export const MINIMUM_BASE_FEE_STROOPS = 100n;
 export interface AssetRequirement {
   asset: AssetDescriptor;
   /**
-   * Amount the action needs to *receive*, in display units. Omit or pass `0`
-   * to only ask "can this account hold this asset at all?".
+   * Amount the action needs to *receive*, in stroops.
+   *
+   * Stroops and `bigint` rather than display units and `number`, matching the
+   * rest of this module: a `number` cannot hold a full-size trustline limit
+   * plus a balance without losing stroops, and a float like `0.1` is not
+   * exactly representable at all. Pass `0n` to only ask "can this account hold
+   * this asset at all?".
    */
-  amount?: number;
+  amountStroops: bigint;
 }
 
 /** Fields present on every terminal readiness state. */
@@ -280,25 +287,20 @@ function snapshotMeta(
   };
 }
 
-function toStroopsOrNull(amount: number | undefined): bigint | null {
-  if (amount === undefined || amount === null) return null;
-  if (!Number.isFinite(amount) || amount < 0) return null;
-  // Round up: an under-estimate would claim readiness the account lacks.
-  const scaled = BigInt(Math.ceil(amount * 1e7));
-  return scaled;
-}
-
 function validateAsset(asset: AssetDescriptor): string | null {
   if (asset.kind === "native") return null;
-  const code = asset.code?.trim() ?? "";
-  if (code.length < 1 || code.length > 12) {
-    return "Asset code must be between 1 and 12 characters";
+
+  // Deliberately the same schema the `changeTrust` builder validates with, so
+  // there is exactly one definition of a legal asset code. Duplicating the
+  // rule here is how a code like `1USDC` (alphanumeric, but must not start
+  // with a digit) would pass the preflight and be rejected by the network
+  // after the user had already signed.
+  const code = StellarAssetCodeSchema.safeParse(asset.code);
+  if (!code.success) {
+    return "Asset code must be 1-12 uppercase letters/digits starting with a letter";
   }
-  if (!/^[A-Za-z0-9]+$/.test(code)) {
-    return "Asset code must be alphanumeric";
-  }
-  if (!asset.issuer) {
-    return "Asset issuer is required";
+  if (!StrKey.isValidEd25519PublicKey(asset.issuer ?? "")) {
+    return "Asset issuer must be a valid Stellar public key";
   }
   return null;
 }
@@ -366,6 +368,23 @@ export function classifyAssetReadiness(
     assetCode,
     snapshot: snapshot_,
   };
+
+  // Validation lives here rather than only in `preflightAssetReadiness`, so
+  // that an injected snapshot (the recheck path, and every unit test) cannot
+  // bypass it. `preflightAssetReadiness` still short-circuits before the
+  // network read so an unusable descriptor costs no request.
+  const invalid: AssetReadiness = {
+    ...base,
+    state: "invalid_asset",
+    canProceed: false,
+    remediation: null,
+  };
+  if (validateAsset(asset) !== null) return invalid;
+  if (asset.kind === "credit" && asset.issuer === snapshot.publicKey) {
+    // A `changeTrust` whose source is also the issuer is rejected by the
+    // network (`CHANGE_TRUST_SELF_NOT_ALLOWED`).
+    return invalid;
+  }
 
   if (asset.kind === "native") {
     return {
@@ -519,8 +538,8 @@ export async function preflightAssetReadiness(
     canProceed: false,
   };
 
-  const requiredStroops = toStroopsOrNull(requirement.amount);
-  if (requiredStroops === null) return invalid;
+  const requiredStroops = requirement.amountStroops;
+  if (typeof requiredStroops !== "bigint" || requiredStroops < 0n) return invalid;
   if (validateAsset(asset) !== null) return invalid;
 
   if (deps.snapshot && asset.kind === "credit" && asset.issuer === deps.snapshot.publicKey) {
@@ -612,9 +631,13 @@ export function describeAssetReadiness(readiness: AssetReadiness): string {
     case "ready":
       return `A ${code} trustline is active and has room for this transaction.`;
     case "missing_trustline":
-      return `No ${code} trustline exists yet. Adding one is required before this transaction can settle.`;
+      // Names the limit that will be requested, because the number the user
+      // signs is the one that has to be explained to them.
+      return `No ${code} trustline exists yet. A limit of ${readiness.remediation.limit} ${
+        readiness.remediation.issuer
+      } must be set before this transaction can settle.`;
     case "insufficient_limit":
-      return `The ${code} trustline limit is too low for this amount. It must be raised before this transaction can settle.`;
+      return `The ${code} trustline limit is too low for this amount. It must be raised to at least ${readiness.remediation.limit} before this transaction can settle.`;
     case "insufficient_reserve":
       return `The account cannot cover the ${stroopsToAmount(
         readiness.remediation?.reserveImpactStroops ?? 0n,
