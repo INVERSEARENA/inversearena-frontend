@@ -5,8 +5,11 @@ import { TrendingUp, CheckSquare, Zap, Info, Loader2, TerminalSquare, ShieldChec
 import { useWallet } from "@/features/wallet/useWallet";
 import {
   evaluateSigningRequest,
+  // Imported as a value, not a type: these call sites narrow policy
+  // rejections with `instanceof SigningPolicyError`, which a type-only import
+  // erases to `any` and silently turns into a dead branch.
+  SigningPolicyError,
   type DecodedEnvelope,
-  type SigningPolicyError,
 } from "@/shared-d/security/policy";
 import {
   buildStakeProtocolTransaction,
@@ -135,7 +138,7 @@ export default function StakeModal({
       }
 
       // Render confirmation UI details from the decoded envelope (not the raw XDR).
-      setErrorMessage(null);
+      setErrorMessage("");
 
       const signedXdr = await signTransaction(tx.toXDR());
 

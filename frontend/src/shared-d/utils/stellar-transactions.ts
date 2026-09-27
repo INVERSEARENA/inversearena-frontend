@@ -4,12 +4,20 @@
  * Split per #245: `contract-client-factory`, `horizon-account-loader`,
  * `stellar-fee-estimator`, and `soroban-transaction-composer`.
  */
-import { Account, TransactionBuilder } from "@stellar/stellar-sdk";
+import {
+  Account,
+  Asset,
+  BASE_FEE,
+  Operation,
+  TransactionBuilder,
+} from "@stellar/stellar-sdk";
 import {
   PositiveAmountSchema,
   RoundChoiceSchema,
   RoundNumberSchema,
   SignedXdrSchema,
+  StellarAmountSchema,
+  StellarAssetCodeSchema,
   StellarContractIdSchema,
   StellarPublicKeySchema,
 } from "@/shared-d/utils/security-validation";
@@ -78,6 +86,7 @@ export const STAKING_CONTRACT_ID =
 export const NETWORK_PASSPHRASE = stellarConfig.passphrase;
 export const HORIZON_URL = stellarConfig.horizonUrl;
 export const SOROBAN_RPC_URL = stellarConfig.sorobanRpcUrl;
+export const ASSET_ISSUERS = stellarConfig.assetIssuers;
 
 export const DEFAULT_DEPLOYMENT_MANIFEST = {
   network: process.env.NEXT_PUBLIC_STELLAR_NETWORK ?? "unknown",
@@ -179,6 +188,67 @@ export async function buildStakeProtocolTransaction(
     return stellarRpcGateway.prepareTransaction(
       builtTx as SorobanRpcTransaction,
     );
+  } catch (error) {
+    throw parseContractError(error, FN);
+  }
+}
+
+/**
+ * Build an unsigned `changeTrust` for a classic credit asset (#1487).
+ *
+ * This is the guided-remediation counterpart to the Soroban business
+ * transactions above: it is the only *classic* transaction this app builds,
+ * and the only one the `TRUSTLINE` signing policy admits.
+ *
+ * Deliberately not routed through `stellarRpcGateway.prepareTransaction`:
+ * `prepareTransaction` is for Soroban invocations and would compute a
+ * resource/footprint fee for an operation that has none. A `changeTrust` is
+ * priced with the classic per-operation fee, so it is composed directly.
+ *
+ * `limit` is required rather than defaulted to "unlimited". An unlimited
+ * trustline means accepting the issuer's full supply of that asset, which is a
+ * decision the confirmation UI must show explicitly — see
+ * `buildRemediation` in `asset-readiness.ts`, which is what supplies it.
+ */
+export async function buildChangeTrustTransaction(
+  publicKey: string,
+  asset: { code: string; issuer: string },
+  limit: string,
+) {
+  const FN = "buildChangeTrustTransaction";
+  try {
+    const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
+    const validatedCode = StellarAssetCodeSchema.parse(asset.code);
+    const validatedIssuer = StellarPublicKeySchema.parse(asset.issuer);
+    const validatedLimit = StellarAmountSchema.parse(limit);
+
+    if (validatedIssuer === validatedPublicKey) {
+      // A self-issued trustline is a no-op that can never reach `authorized`,
+      // and it still costs a base-reserve subentry. The preflight rejects this
+      // as `invalid_asset`; refuse it here too so the builder is safe to call
+      // directly.
+      throw new ContractError({
+        code: ContractErrorCode.VALIDATION_FAILED,
+        message:
+          "Cannot create a trustline to an asset issued by the connected account.",
+        fn: FN,
+      });
+    }
+
+    const account = await getAccount(validatedPublicKey, FN);
+
+    return new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .setTimeout(getShortTxTimeoutSeconds())
+      .addOperation(
+        Operation.changeTrust({
+          asset: new Asset(validatedCode, validatedIssuer),
+          limit: validatedLimit,
+        }),
+      )
+      .build();
   } catch (error) {
     throw parseContractError(error, FN);
   }

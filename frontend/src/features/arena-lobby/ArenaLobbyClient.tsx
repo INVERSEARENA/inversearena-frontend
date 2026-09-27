@@ -13,8 +13,11 @@ import {
 } from "@/shared-d/utils/stellar-transactions";
 import {
   evaluateSigningRequest,
+  // Imported as a value, not a type: these call sites narrow policy
+  // rejections with `instanceof SigningPolicyError`, which a type-only import
+  // erases to `any` and silently turns into a dead branch.
+  SigningPolicyError,
   type DecodedEnvelope,
-  type SigningPolicyError,
 } from "@/shared-d/security/policy";
 
 const arenaParticipantSchema = z.object({

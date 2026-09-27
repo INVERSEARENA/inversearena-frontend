@@ -1,219 +1,368 @@
 /**
- * Centralized XDR signing policy firewall (#1502).
+ * Centralized XDR signing policy firewall (#1502, extended for the
+ * asset-readiness preflight in #1487).
  *
- * Validates every wallet sign request against a decoded envelope before the
- * prompt is shown.  Only ops that pass all checks reach the wallet.signTransaction
- * call site.  Rejection is never a "wallet rejection" — it is a policy rejection
- * with a distinct error class that the UI can distinguish.
+ * Every wallet sign request is validated against the decoded envelope *before*
+ * the wallet prompt is shown. Only requests that pass every check reach
+ * `wallet.signTransaction`. A rejection here is a **policy rejection**, not a
+ * wallet rejection: the wallet was never asked, so the UI must not render it
+ * as "the user cancelled".
  *
- * Policy checks (per operation):
- *   - op must be a known Stellar operation id (no unknown/extra ops)
- *   - source network must match stellarConfig.networkPassphrase
- *   - XDR must decode without errors (malformed XDR)
- *   - timebounds must be valid and not expired
- *   - fee must be above the minimum (configurable via stellarConfig)
- *   - sequence must be > account seq and not too far ahead
- *   - source must match the wallet's connected address
+ * Checks, in order:
+ *   1. the policy is not being evaluated against a foreign network
+ *   2. the XDR decodes into a plain (non-fee-bump) `Transaction`
+ *   3. the source is a syntactically valid Stellar public key
+ *   4. timebounds are present, ordered, and not already expired
+ *   5. the fee is at least the protocol minimum
+ *   6. the sequence number is a positive integer
+ *   7. the operation list is exactly what the requested op permits
+ *   8. each decoded operation carries only the fields that op exposes
  *
- * Each protected op has a list of "allowed fields" that the decoded envelope
- * must contain; extra fields cause rejection.  This prevents future-proofing
- * attacks where a new field is injected into an XDR that the UI does not
- * understand.
+ * Step 7 is what makes the firewall meaningful for `TRUSTLINE`: a
+ * `changeTrust` is a classic operation carrying a spend of the account's base
+ * reserve, and it must be the *only* operation in the envelope. A batched
+ * "increase my limit and also do X" envelope is rejected outright rather than
+ * being shown to the user as a trustline change.
  *
- * The confirmation UI (TransactionModal, ArenaLobbyClient, etc.) must render
- * details exclusively from the validated decoded envelope — never from the raw
- * XDR passed by the caller.
+ * SDK notes (verified against `@stellar/stellar-sdk` 14.5.0 / `stellar-base`
+ * 14.0.4):
+ *   - `TransactionEnvelope` and `Fee` are **not** root exports in v14. Decode
+ *     with `TransactionBuilder.fromXDR(xdr, passphrase)`, which returns
+ *     `Transaction | FeeBumpTransaction`.
+ *   - `Transaction` exposes `sequence` as a property (not `sequenceNumber()`)
+ *     and `timeBounds` as a getter returning `{ minTime, maxTime }` as strings.
+ *   - A decoded `changeTrust` `Operation` exposes `line` (an `Asset`) and
+ *     `limit` (a decimal amount string) as own properties. That shape is read
+ *     defensively — any deviation is treated as `malformed_xdr`, because a
+ *     firewall must fail closed when it cannot understand the envelope.
+ *
+ * @module
  */
 
-import { Account, Fee, Operation, TransactionBuilder, TransactionEnvelope, Validator, Networks } from "@stellar/stellar-sdk";
+import {
+  BASE_FEE,
+  FeeBumpTransaction,
+  StrKey,
+  Transaction,
+  TransactionBuilder,
+} from "@stellar/stellar-sdk";
 import { stellarConfig } from "@/lib/stellarConfig";
-import type { DecodedEnvelope, OperationType, SigningPolicyError, ValidationResult } from "./types";
+import {
+  SigningPolicyError,
+  opLabels,
+  type DecodedEnvelope,
+  type DecodedOperationSummary,
+  type ProtectedOpKey,
+  type SigningPolicyErrorReason,
+  type ValidationResult,
+} from "./types";
 
-/** Operation identifiers that this firewall protects. */
-export const ProtectedOp = {
-  JOIN: 0,        // JoinableArenaTransaction (custom op)
-  CREATE: 1,      // CreatePoolTransaction (custom op)
-  COMMIT: 2,      // CommitChoiceTransaction (custom op)
-  REVEAL: 3,      // RevealChoiceTransaction (custom op)
-  CLAIM: 4,       // ClaimRewardTransaction (custom op)
-  REFUND: 5,      // RefundTransaction (custom op)
-  STAKE: 6,       // StakeTransaction (custom op)
-  TRUSTLINE: 7,   // TrustlineSetupOp (native)
-} as const;
+/** `changeTrust` is the only operation the TRUSTLINE policy accepts. */
+const CHANGE_TRUST_OPERATION = "changeTrust";
 
-type ProtectedOpKey = keyof typeof ProtectedOp;
-
-/** Result of validating a decoded envelope against the policy for a given op. */
-export type ValidationResult =
-  | { ok: true; decoded: DecodedEnvelope }
-  | { ok: false; error: SigningPolicyError; reason: "unknown_op" | "malformed_xdr" | "network_mismatch" | "timebound_anomaly" | "fee_anomaly" | "sequence_anomaly" | "source_mismatch" | "extra_fields" };
-
-/** Error class for policy rejections — distinct from wallet-rejection. */
-export class SigningPolicyError extends Error {
-  constructor(
-    public readonly reason: ValidationResult["ok" extends true ? never : keyof ValidationResult["ok"]],
-    public readonly operation: ProtectedOpKey,
-    public readonly message: string,
-  ) {
-    super(message);
-    this.name = "SigningPolicyError";
-  }
-}
-
-/** Minimal decoded envelope shape — only the fields the confirmation UI needs. */
-export interface DecodedEnvelope {
-  type: ProtectedOpKey;
-  source: string;
-  fee: string;
-  seq: number;
-  network: string;
-  operations: Operation[];
-  timebounds: { minTime: number; maxTime: number };
-}
-
-/** Map operation id → human-readable name for UI display. */
-const opLabels: Record<ProtectedOpKey, string> = {
-  [ProtectedOp.JOIN]: "join arena",
-  [ProtectedOp.CREATE]: "create pool",
-  [ProtectedOp.COMMIT]: "commit choice",
-  [ProtectedOp.REVEAL]: "reveal choice",
-  [ProtectedOp.CLAIM]: "claim reward",
-  [ProtectedOp.REFUND]: "refund",
-  [ProtectedOp.STAKE]: "stake",
-  [ProtectedOp.TRUSTLINE]: "add trustline",
+/**
+ * SDK operation names each protected flow is allowed to carry.
+ *
+ * A single-entry set per op: the app builds every one of these transactions
+ * with exactly one operation, so an envelope carrying more is not "a superset"
+ * the UI could describe — it is an envelope nobody in this codebase produced,
+ * which is the definition of a suspicious one.
+ */
+const ALLOWED_OPERATIONS: Record<ProtectedOpKey, ReadonlySet<string>> = {
+  JOIN: new Set(["invokeHostFunction"]),
+  CREATE: new Set(["invokeHostFunction"]),
+  COMMIT: new Set(["invokeHostFunction"]),
+  REVEAL: new Set(["invokeHostFunction"]),
+  CLAIM: new Set(["invokeHostFunction"]),
+  REFUND: new Set(["invokeHostFunction"]),
+  STAKE: new Set(["invokeHostFunction"]),
+  TRUSTLINE: new Set([CHANGE_TRUST_OPERATION]),
 };
 
-/** Validate a TransactionEnvelope against the policy for a given operation type.
- *  Returns a ValidationResult that is either ok with the decoded envelope,
- *  or ok: false with a SigningPolicyError describing the first failure.
+/** Human label for the single operation each protected flow permits. */
+const EXPECTED_OPERATION_LABEL: Record<ProtectedOpKey, string> = {
+  JOIN: "an arena contract call",
+  CREATE: "a pool contract call",
+  COMMIT: "a commitment contract call",
+  REVEAL: "a reveal contract call",
+  CLAIM: "a claim contract call",
+  REFUND: "a refund contract call",
+  STAKE: "a staking contract call",
+  TRUSTLINE: "a changeTrust operation",
+};
+
+/**
+ * A start time more than a day out is treated as a clock anomaly rather than
+ * a scheduled transaction: no flow in this app schedules anything.
  */
-export function validateEnvelope(envelope: TransactionEnvelope, opType: ProtectedOpKey): ValidationResult {
-  // 1. Decode the envelope; any failure is a malformed XDR rejection.
-  let decoded: DecodedEnvelope;
-  try {
-    const tx = envelope.transaction;
-    // Build a minimal DecodedEnvelope from the decoded transaction.
-    // We only expose fields the UI needs; anything else is an "extra field"
-    // that will be caught by the extra-fields check below.
-    const ops = tx.operations.map((op: Operation) => ({
-      type: op.type,
-      // Keep only fields the UI explicitly allows per op type.
-      ...sanitizeOperation(op, opType),
-    }));
+const MAX_FUTURE_START_SECONDS = 24 * 60 * 60;
 
-    decoded = {
-      type: opType,
-      source: tx.source,
-      fee: tx.fee,
-      seq: tx.seq,
-      network: tx.networkPassphrase,
-      operations: ops,
-      timebounds: {
-        minTime: tx.minTime,
-        maxTime: tx.maxTime,
-      },
-    };
-  } catch {
-    return { ok: false, error: new SigningPolicyError("malformed_xdr", opType, "Failed to decode XDR envelope"); }
-  }
-
-  // 2. Op must be a known id — the stellar-sdk may expose ops we don't protect.
-  //    (This is a safety net; the caller should only pass protected op types.)
-  // 3. Source network must match configured network passphrase.
-  if (decoded.network !== stellarConfig.networkPassphrase) {
-    return { ok: false, error: new SigningPolicyError("network_mismatch", opType, `Network mismatch: expected "${stellarConfig.networkPassphrase}", got "${decoded.network}"`); }
-  }
-
-  // 4. Source must match the wallet's connected address — checked later at the
-  //    call site; here we only validate that the envelope source field is a
-    // valid address format (prevents absurd values).
-  try {
-    new Account(decoded.source); // throws if not a valid Keypair public key
-  } catch {
-    return { ok: false, error: new SigningPolicyError("source_mismatch", opType, "Envelope source is not a valid address"); }
-  }
-
-  // 5. Timebounds must be valid and not expired.
-  const now = Math.floor(Date.now() / 1000);
-  if (decoded.timebounds.minTime > now && decoded.timebounds.minTime - now > 60 * 60 * 24 * 365) {
-    // minTime more than a year in the future is likely a clock anomaly.
-    return { ok: false, error: new SigningPolicyError("timebound_anomaly", opType, `Min time ${new Date(decoded.timebounds.minTime * 1000).toISOString()} is far in the future`); }
-  }
-  if (decoded.timebounds.maxTime < now) {
-    return { ok: false, error: new SigningPolicyError("timebound_anomaly", opType, `Max time ${new Date(decoded.timebounds.maxTime * 1000).toISOString()} is already expired`); }
-  }
-
-  // 6. Fee must be above the minimum configured fee.
-  const minFee = Fee.fromXDR(stellarConfig.minimumFee || "100"); // fallback 100 stroops
-  const fee = Fee.fromXDR(decoded.fee);
-  if (fee.isBelow(minFee)) {
-    return { ok: false, error: new SigningPolicyError("fee_anomaly", opType, `Fee ${decoded.fee} is below minimum ${minFee}`); }
-  }
-
-  // 7. Sequence must be > account sequence and not too far ahead.
-  //    We can't know the account's current seq without an RPC call, so we
-  //    only check the envelope seq is positive and not absurdly large.
-  if (decoded.seq <= 0) {
-    return { ok: false, error: new SigningPolicyError("sequence_anomaly", opType, `Sequence ${decoded.seq} is not positive`); }
-  }
-  if (decoded.seq > 2 ** 31 - 1) {
-    return { ok: false, error: new SigningPolicyError("sequence_anomaly", opType, `Sequence ${decoded.seq} is absurdly large`); }
-  }
-
-  // 8. Extra fields check — the decoded envelope must not contain fields beyond
-  //    what the policy explicitly allows for this op type.  The stellar-sdk may
-  //    include fields we don't expect; any extra cause rejection to enforce
-  //    forward-compatibility.
-  if (!hasOnlyAllowedFields(decoded, opType)) {
-    return { ok: false, error: new SigningPolicyError("extra_fields", opType, `Envelope contains unexpected fields for ${opLabels[opType]}`); }
-  }
-
-  return { ok: true, decoded };
+function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000);
 }
 
-/** Each op type lists the exact Operation fields the UI is allowed to see. */
-function sanitizeOperation(op: Operation, opType: ProtectedOpKey): Record<string, unknown> {
-  // The stellar SDK Operation type has a discriminant; we keep only the fields
-  // relevant to the protected operation.  Extra properties are stripped.
-  const base: Record<string, unknown> = {
-    type: op.type,
+function reject(
+  reason: SigningPolicyErrorReason,
+  opType: ProtectedOpKey,
+  message: string,
+): ValidationResult {
+  return { ok: false, error: new SigningPolicyError(reason, opType, message) };
+}
+
+/**
+ * Read a decoded operation down to the fields the confirmation UI may show.
+ *
+ * Returns `null` for any operation whose shape is not recognised, which the
+ * caller turns into `extra_fields`. A `changeTrust` missing a usable asset or
+ * limit is likewise `null`: an envelope the UI cannot describe is an envelope
+ * the UI must not ask the user to approve.
+ */
+function summarizeOperation(opType: ProtectedOpKey, op: unknown): DecodedOperationSummary | null {
+  if (typeof op !== "object" || op === null) return null;
+  const candidate = op as { type?: unknown; line?: unknown; limit?: unknown };
+  if (typeof candidate.type !== "string") return null;
+
+  const base: DecodedOperationSummary = {
+    type: candidate.type,
+    assetCode: null,
+    assetIssuer: null,
+    limit: null,
   };
 
-  // Remove fee_meta, fee_changes, etc. that the SDK attaches but we don't
-  // expose in the policy UI.
-  delete (base as any).fee_meta;
-  delete (base as any).fee_changes;
+  if (candidate.type !== CHANGE_TRUST_OPERATION) return base;
 
-  return base;
+  // Only TRUSTLINE is permitted to carry a changeTrust, and only TRUSTLINE is
+  // allowed to read these fields off it.
+  if (opType !== "TRUSTLINE") return null;
+
+  const line = candidate.line as { code?: unknown; issuer?: unknown } | undefined;
+  if (
+    typeof line !== "object" ||
+    line === null ||
+    typeof line.code !== "string" ||
+    typeof line.issuer !== "string" ||
+    line.code.length === 0 ||
+    line.issuer.length === 0
+  ) {
+    return null;
+  }
+  const limit = candidate.limit;
+  if (typeof limit !== "string" || !/^\d+(\.\d{1,7})?$/.test(limit)) return null;
+
+  return {
+    ...base,
+    assetCode: line.code,
+    assetIssuer: line.issuer,
+    limit,
+  };
 }
 
-/** Ensure the decoded envelope contains ONLY fields allowed for this op type. */
-function hasOnlyAllowedFields(decoded: DecodedEnvelope, opType: ProtectedOpKey): boolean {
-  // Currently we allow any fields the SDK decodes; the real protection comes from
-  // the per-op validation in the call sites (e.g. ArenaLobbyClient checks specific
-  // fields).  This stub returns true so existing sign flows aren't broken until
-  // the call sites are wired up.
-  return true;
-}
-
-/** Validate before every wallet prompt.
- *  Callers must pass the raw XDR string and the operation type.
- *  On ok: proceed with wallet.signTransaction(decoded.envelopeXdr) — the UI
- *  should render confirmation details from decoded, NOT the original xdr.
- *  On policy error: throw SigningPolicyError (not a wallet rejection).
+/**
+ * Validate a raw XDR envelope against the policy for a given op type.
+ *
+ * Never throws: every failure is a typed {@link SigningPolicyError} in the
+ * returned result.
  */
-export function evaluateSigningRequest(xdr: string, opType: ProtectedOpKey): DecodedEnvelope {
-  const result = validateEnvelope(TransactionEnvelope.fromXDR(xdr), opType);
-
-  if (result.ok) {
-    // Return the decoded envelope; callers should use this to build the
-    // confirmation UI, not the raw xdr.
-    return result.decoded;
+export function validateEnvelope(
+  xdr: string,
+  opType: ProtectedOpKey,
+  options: { passphrase?: string } = {},
+): ValidationResult {
+  if (typeof xdr !== "string" || xdr.length === 0) {
+    return reject("malformed_xdr", opType, "No transaction envelope was provided");
   }
 
-  // Policy rejection — throw a distinct error class the UI can catch and
-  // display differently from a wallet rejection.
+  // 2. Network.
+  //
+  //    An unsigned envelope does not carry its network anywhere in its
+  //    contents — the passphrase is only mixed into the *signature* hash. So
+  //    the firewall cannot read the envelope's network and compare it; asking
+  //    the decoder for it would be worse than useless, because
+  //    `TransactionBuilder.fromXDR` overwrites the decoded passphrase with the
+  //    one it was handed, so the check would compare the caller's argument
+  //    against itself and never fire.
+  //
+  //    What *is* checkable is the mistake that would cause a real
+  //    cross-network signature: a call site that hands this function a
+  //    passphrase other than the configured one. That is caught here. The
+  //    residual risk (an envelope built for another network and signed with the
+  //    right passphrase) is caught by the network at submission, not here.
+  const passphrase = options.passphrase ?? stellarConfig.passphrase;
+  if (passphrase !== stellarConfig.passphrase) {
+    return reject(
+      "network_mismatch",
+      opType,
+      "Signing policy was evaluated against a network other than the configured one",
+    );
+  }
+
+  // 1. Decode. A fee-bump envelope wraps an inner transaction and is never
+  //    something this app builds, so it is rejected rather than unwrapped.
+  let transaction: Transaction;
+  try {
+    const decoded = TransactionBuilder.fromXDR(
+      xdr,
+      passphrase,
+    ) as Transaction | FeeBumpTransaction;
+    if (decoded instanceof FeeBumpTransaction) {
+      return reject(
+        "malformed_xdr",
+        opType,
+        "Fee-bump envelopes are not accepted for this operation",
+      );
+    }
+    transaction = decoded as Transaction;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "unknown decode error";
+    return reject(
+      "malformed_xdr",
+      opType,
+      `Transaction envelope could not be decoded: ${detail}`,
+    );
+  }
+
+  // 3. Source must at least be a well-formed account. Whether it equals the
+  //    connected wallet is the call site's check — the policy cannot know
+  //    which wallet is connected.
+  if (!StrKey.isValidEd25519PublicKey(transaction.source)) {
+    return reject(
+      "source_mismatch",
+      opType,
+      "Transaction source is not a valid Stellar account",
+    );
+  }
+
+  // 4. Timebounds. `setTimeout(0)` means "expire immediately" and
+  //    `setTimeout(TimeoutInfinite)` means "never expire"; both are anomalies
+  //    for a flow whose transaction must be actionable within a few seconds.
+  const rawTimeBounds: { minTime: string; maxTime: string } | null | undefined =
+    transaction.timeBounds;
+  if (rawTimeBounds === null || rawTimeBounds === undefined) {
+    return reject(
+      "timebound_anomaly",
+      opType,
+      "Transaction has no expiry; refusing to sign a transaction that never expires",
+    );
+  }
+  const minTime = Number(rawTimeBounds.minTime);
+  const maxTime = Number(rawTimeBounds.maxTime);
+  if (!Number.isFinite(minTime) || !Number.isFinite(maxTime)) {
+    return reject("timebound_anomaly", opType, "Transaction timebounds are not numeric");
+  }
+  // `setTimeout(TimeoutInfinite)` round-trips through XDR as `maxTime: 0`
+  // rather than as absent timebounds, so it needs its own branch to produce
+  // an accurate message instead of falling into the ordering check below.
+  if (maxTime === 0) {
+    return reject(
+      "timebound_anomaly",
+      opType,
+      "Transaction never expires; refusing to sign a transaction with no expiry",
+    );
+  }
+  if (minTime > 0 && minTime - nowSeconds() > MAX_FUTURE_START_SECONDS) {
+    return reject(
+      "timebound_anomaly",
+      opType,
+      "Transaction start time is implausibly far in the future",
+    );
+  }
+  if (maxTime <= minTime) {
+    return reject(
+      "timebound_anomaly",
+      opType,
+      "Transaction expiry is not after its start time",
+    );
+  }
+  if (maxTime < nowSeconds()) {
+    return reject("timebound_anomaly", opType, "Transaction has already expired");
+  }
+
+  // 5. Fee floor. The protocol minimum is the floor for a 1-op transaction;
+  //    a fee below it is rejected at submission, after the user has signed.
+  const minimumFee = Number(BASE_FEE);
+  const fee = Number(transaction.fee);
+  if (!Number.isFinite(fee)) {
+    return reject("fee_anomaly", opType, "Transaction fee is not numeric");
+  }
+  if (fee < minimumFee) {
+    return reject(
+      "fee_anomaly",
+      opType,
+      `Transaction fee is below the protocol minimum of ${BASE_FEE} stroops`,
+    );
+  }
+
+  // 6. Sequence. A real account sequence is a positive int64.
+  const sequence = Number(transaction.sequence);
+  if (!Number.isInteger(sequence) || sequence <= 0) {
+    return reject(
+      "sequence_anomaly",
+      opType,
+      "Transaction sequence number is not a positive integer",
+    );
+  }
+
+  // 7. Operation set. Exactly one operation, of the permitted name.
+  const operations = Array.isArray(transaction.operations) ? transaction.operations : [];
+  const allowed = ALLOWED_OPERATIONS[opType];
+  if (operations.length !== 1) {
+    return reject(
+      "unexpected_operation",
+      opType,
+      `Expected exactly one ${EXPECTED_OPERATION_LABEL[opType]} but found ${operations.length} operations`,
+    );
+  }
+  const operationName = operations[0]?.type;
+  if (typeof operationName !== "string" || !allowed.has(operationName)) {
+    return reject(
+      "unexpected_operation",
+      opType,
+      `Expected ${EXPECTED_OPERATION_LABEL[opType]} but found "${String(operationName)}"`,
+    );
+  }
+
+  // 8. Field allow-list.
+  const summary = summarizeOperation(opType, operations[0]);
+  if (summary === null) {
+    return reject(
+      "extra_fields",
+      opType,
+      `Transaction contains fields the ${opLabels[opType]} policy does not expose`,
+    );
+  }
+
+  return {
+    ok: true,
+    decoded: {
+      type: opType,
+      source: transaction.source,
+      fee: transaction.fee,
+      seq: sequence,
+      network: passphrase,
+      operations: [summary],
+      timebounds: { minTime, maxTime },
+    },
+  };
+}
+
+/**
+ * Validate before every wallet prompt.
+ *
+ * @throws {SigningPolicyError} on policy rejection. Callers catch this to show
+ * a policy-specific message instead of a wallet-rejection one.
+ */
+export function evaluateSigningRequest(xdr: string, opType: ProtectedOpKey): DecodedEnvelope {
+  const result = validateEnvelope(xdr, opType);
+  if (result.ok) return result.decoded;
   throw result.error;
 }
 
-export { ProtectedOp, opLabels };
+export {
+  SigningPolicyError,
+  opLabels,
+  type DecodedEnvelope,
+  type DecodedOperationSummary,
+  type ProtectedOpKey,
+  type SigningPolicyErrorReason,
+  type ValidationResult,
+};
