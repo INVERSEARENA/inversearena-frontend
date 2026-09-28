@@ -25,6 +25,15 @@ import { ActiveStakeLimitsService, ActiveStakeLimitError } from "../services/act
 import { ArenaHealthService } from "../services/arenaHealthService";
 // Issue #1401 — Signed server-time synchronization
 import { arenaTimeRouter } from "./arenaTime";
+// Issue #1517 — Player dispute evidence packages
+import {
+  DisputeEvidenceService,
+  EvidenceArenaNotFoundError,
+  EvidenceRoundNotFoundError,
+  EvidenceNotParticipantError,
+} from "../services/disputeEvidenceService";
+import { EvidenceParamsSchema } from "../types/evidence";
+import { CancellationRecoveryService } from "../services/cancellationRecoveryService";
 
 const PaginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
@@ -164,6 +173,21 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
       roundService = new RoundService(prisma);
     }
     return roundService;
+  }
+
+  // Same lazy-construction reasoning as getRoundService() above — this
+  // service's dependencies (RoundProofBundleService) also resolve
+  // getStellarConfig() at construction time.
+  let disputeEvidenceService: DisputeEvidenceService | undefined;
+  function getDisputeEvidenceService(): DisputeEvidenceService {
+    if (!disputeEvidenceService) {
+      disputeEvidenceService = new DisputeEvidenceService(
+        prisma,
+        getRoundService(),
+        new CancellationRecoveryService(prisma),
+      );
+    }
+    return disputeEvidenceService;
   }
 
   /**
@@ -422,6 +446,66 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
 
       const receipt = await getRoundService().getCommitStatus(arenaId, roundNumber, callerWallet);
       res.json(receipt);
+    }),
+  );
+
+  /**
+   * GET /api/arenas/:id/rounds/:roundNumber/evidence
+   *
+   * Player dispute evidence package (#1517): a read-only, privacy-scoped
+   * bundle of canonical identifiers, the caller's own commit/reveal/
+   * elimination/payout/refund status, config/contract versions and
+   * freshness provenance for one arena/round, with a checksum and schema
+   * version for offline integrity validation. See
+   * backend/docs/DISPUTE_EVIDENCE_PACKAGE_DESIGN.md.
+   *
+   * Scoped to the caller's own wallet (from the auth token) — same
+   * reasoning as commit-status above, plus an explicit rejection of any
+   * caller-supplied wallet/user identifier in the query string, so this
+   * endpoint can never be used to probe another wallet's private evidence.
+   *
+   * Not cached: per-player private data, and each package is checksummed
+   * against its own generation time — serving a stale cached copy under a
+   * fresh checksum would be actively misleading.
+   */
+  router.get(
+    "/:id/rounds/:roundNumber/evidence",
+    authMiddleware,
+    asyncHandler(async (req, res) => {
+      if (req.query.walletAddress !== undefined || req.query.userId !== undefined) {
+        throw apiError(
+          400,
+          "EVIDENCE_SCOPE_NOT_OVERRIDABLE",
+          "Evidence is always scoped to the authenticated caller's own wallet; walletAddress/userId query parameters are not accepted",
+        );
+      }
+
+      const { id: arenaId, roundNumber } = EvidenceParamsSchema.parse(req.params);
+      const userId = req.user?.id;
+      const walletAddress = req.user?.walletAddress;
+
+      if (!userId || !walletAddress) {
+        throw apiError(401, "UNAUTHORIZED", "Unauthorized");
+      }
+
+      try {
+        const evidence = await getDisputeEvidenceService().generatePackage(arenaId, roundNumber, {
+          userId,
+          walletAddress,
+        });
+        res.json({ success: true, data: evidence });
+      } catch (error) {
+        if (error instanceof EvidenceArenaNotFoundError) {
+          throw apiError(404, "ARENA_NOT_FOUND", error.message);
+        }
+        if (error instanceof EvidenceRoundNotFoundError) {
+          throw apiError(404, "ROUND_NOT_FOUND", error.message);
+        }
+        if (error instanceof EvidenceNotParticipantError) {
+          throw apiError(403, "EVIDENCE_NOT_PARTICIPANT", error.message);
+        }
+        throw error;
+      }
     }),
   );
 
