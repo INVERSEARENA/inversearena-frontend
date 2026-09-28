@@ -8,6 +8,10 @@ import { useStellarWallet } from './useStellarWallet';
 import { usePasskeyWallet } from './usePasskeyWallet';
 import { isStellarConfigured, stellarConfig } from '@/lib/stellarConfig';
 import { Balance, fetchWalletBalance } from '@/shared-d/utils/stellar-balance';
+// Side-effect import: installs the single asset-readiness telemetry sink for
+// the whole app. Every gate the provider renders — join, stake, claim — reports
+// through it, so there is one place to change or disable the destination.
+import '@/shared-d/telemetry/install-asset-readiness-sink';
 
 export const WalletContext = createContext<WalletContextType | null>(null);
 

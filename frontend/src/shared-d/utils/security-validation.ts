@@ -21,6 +21,39 @@ export const PoolCurrencySchema = z.enum(["USDC", "XLM"]);
 export const RoundSpeedSchema = z.enum(["30S", "1M", "5M"]);
 export const RoundChoiceSchema = z.enum(["Heads", "Tails"]);
 
+/**
+ * Classic credit asset code (#1487).
+ *
+ * `changeTrust` is keyed by `(code, issuer)`, so a code that is even slightly
+ * off addresses a *different* trustline than the one the user was shown. The
+ * protocol's own rule — 1-12 characters, uppercase alphanumeric, first
+ * character a letter — is enforced here rather than trimmed or upper-cased
+ * downstream, so a code that arrived in the wrong case is rejected instead of
+ * being silently rewritten to something the user never confirmed.
+ */
+export const StellarAssetCodeSchema = z
+  .string()
+  .trim()
+  .regex(
+    /^[A-Z][A-Z0-9]{0,11}$/,
+    "Asset code must be 1-12 uppercase letters/digits starting with a letter",
+  );
+
+/**
+ * A non-negative decimal amount with at most 7 decimal places (#1487).
+ *
+ * Seven places is Stellar's fixed asset precision; anything finer cannot be
+ * represented on chain and is silently rounded by the SDK, which would make the
+ * limit in the confirmation UI differ from the limit that gets submitted.
+ */
+export const StellarAmountSchema = z
+  .string()
+  .trim()
+  .regex(
+    /^\d+(\.\d{1,7})?$/,
+    "Amount must be a non-negative number with at most 7 decimal places",
+  );
+
 export const PositiveAmountSchema = z
   .number()
   .finite()

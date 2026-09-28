@@ -77,7 +77,12 @@ export function scrubStellarAddresses<T extends SentryEvent>(event: T): T | null
   return scrubbed;
 }
 
-const SENTRY_ENABLED =
+/**
+ * Whether Sentry is actually configured. Exported so the asset-readiness
+ * telemetry sink can install itself only when reporting would go somewhere,
+ * rather than accumulating breadcrumbs that are discarded at the boundary.
+ */
+export const SENTRY_ENABLED =
   typeof process !== "undefined" &&
   process.env.NODE_ENV === "production" &&
   Boolean(process.env.NEXT_PUBLIC_SENTRY_DSN);

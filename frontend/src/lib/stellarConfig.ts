@@ -19,6 +19,21 @@ const StellarEnvSchema = z.object({
   NEXT_PUBLIC_STELLAR_NETWORK_PASSPHRASE: z.string().trim().min(3).optional(),
   NEXT_PUBLIC_RWA_VAULT_CONTRACT_ID: z.string().trim().min(3).optional(),
   NEXT_PUBLIC_ORACLE_CONTRACT_ID: z.string().trim().min(3).optional(),
+  /**
+   * Classic credit-asset issuers (#1487), by asset code.
+   *
+   * A `changeTrust` is keyed by the *exact* `(code, issuer)` pair, so there is
+   * no way to derive an issuer from a contract id and no safe default: a wrong
+   * issuer produces a trustline to an asset the user does not hold and burns a
+   * signature. #1487 rules "automatically choosing asset issuers" out of scope,
+   * so each issuer is declared explicitly here and deployment-specific.
+   *
+   * Deliberately optional: importing this module must stay non-throwing (#1134),
+   * and an unset issuer must degrade to a clear "unconfigured" preflight state
+   * rather than crashing the app or silently allowing an ungated signature.
+   */
+  NEXT_PUBLIC_USDC_ISSUER: z.string().trim().min(1).optional(),
+  NEXT_PUBLIC_EURC_ISSUER: z.string().trim().min(1).optional(),
 });
 
 export interface StellarConfig {
@@ -33,6 +48,11 @@ export interface StellarConfig {
   stakingContractId: string | undefined;
   rwaVaultContractId: string | undefined;
   oracleContractId: string | undefined;
+  /**
+   * Classic credit-asset issuers keyed by asset code, e.g. `{ USDC: "G..." }`.
+   * Codes with no entry here have no known issuer on this network.
+   */
+  assetIssuers: Readonly<Record<string, string>>;
 }
 
 function buildStellarConfig():
@@ -55,6 +75,8 @@ function buildStellarConfig():
       process.env.NEXT_PUBLIC_RWA_VAULT_CONTRACT_ID,
     NEXT_PUBLIC_ORACLE_CONTRACT_ID:
       process.env.NEXT_PUBLIC_ORACLE_CONTRACT_ID,
+    NEXT_PUBLIC_USDC_ISSUER: process.env.NEXT_PUBLIC_USDC_ISSUER,
+    NEXT_PUBLIC_EURC_ISSUER: process.env.NEXT_PUBLIC_EURC_ISSUER,
   });
 
   if (!result.success) {
@@ -69,6 +91,12 @@ function buildStellarConfig():
 
   const env = result.data;
   const isMainnet = env.NEXT_PUBLIC_STELLAR_NETWORK === "mainnet";
+
+  // Only set keys for issuers that were actually provided, so
+  // `assetIssuers["USDC"]` is `undefined` (not `""`) when unconfigured.
+  const assetIssuers: Record<string, string> = {};
+  if (env.NEXT_PUBLIC_USDC_ISSUER) assetIssuers.USDC = env.NEXT_PUBLIC_USDC_ISSUER;
+  if (env.NEXT_PUBLIC_EURC_ISSUER) assetIssuers.EURC = env.NEXT_PUBLIC_EURC_ISSUER;
 
   return {
     config: {
@@ -85,6 +113,7 @@ function buildStellarConfig():
       stakingContractId: env.NEXT_PUBLIC_STAKING_CONTRACT_ID,
       rwaVaultContractId: env.NEXT_PUBLIC_RWA_VAULT_CONTRACT_ID,
       oracleContractId: env.NEXT_PUBLIC_ORACLE_CONTRACT_ID,
+      assetIssuers,
     },
     error: null,
   };

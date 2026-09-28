@@ -641,6 +641,21 @@ export const proofBundleVerificationTotal = new Counter({
   registers: [register],
 });
 
+// Dispute evidence package metrics (#1517)
+export const evidencePackageGenerationTotal = new Counter({
+  name: 'inversearena_evidence_package_generation_total',
+  help: 'Total dispute evidence package generation attempts',
+  labelNames: ['status'],
+  registers: [register],
+});
+
+export const evidencePackageGenerationDuration = new Histogram({
+  name: 'inversearena_evidence_package_generation_duration_seconds',
+  help: 'Dispute evidence package generation duration in seconds',
+  buckets: [0.005, 0.01, 0.05, 0.1, 0.5, 1, 2],
+  registers: [register],
+});
+
 // Arena Discovery Backfill Metrics (#1391)
 export const backfillRunsTotal = new Counter({
   name: 'inversearena_backfill_runs_total',
@@ -814,5 +829,64 @@ export const yieldDependentActionsBlockedTotal = new Counter({
   name: 'inversearena_yield_dependent_actions_blocked_total',
   help: 'Yield-dependent mutations rejected for stale/unavailable oracle data, by action and reason',
   labelNames: ['action', 'reason'],
+  registers: [register],
+});
+
+// ── Claim and refund inbox (#1489) ───────────────────────────────────────────
+//
+// `claim_inbox_item_count` is a Counter rather than a Gauge on purpose: it is
+// incremented per item as the page is built, so the rate is "actionable items
+// served per second". A Gauge sampled at scrape time would be a count of one
+// request and would miss the backlog that actually matters — how many
+// positions are sitting unclaimed across all users.
+
+export const claimInboxScanDuration = new Histogram({
+  name: "claim_inbox_scan_duration_seconds",
+  help: "Wall-clock time to assemble one claim-inbox page, including the bounded on-chain read",
+  labelNames: ["result"],
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
+  registers: [register],
+});
+
+export const claimInboxVerificationFailures = new Counter({
+  name: "claim_inbox_verification_failures_total",
+  help: "On-chain verification failures during a claim-inbox scan, by reason",
+  labelNames: ["reason"],
+  registers: [register],
+});
+
+export const claimInboxItemCount = new Counter({
+  name: "claim_inbox_items_total",
+  help: "Claim-inbox items served, by state",
+  labelNames: ["state"],
+  registers: [register],
+});
+
+export const claimInboxSourceCount = new Counter({
+  name: "claim_inbox_source_records_total",
+  help: "Records read per claim-inbox scan, by source",
+  labelNames: ["source"],
+  registers: [register],
+});
+
+/**
+ * Asset codes returned without a configured issuer.
+ *
+ * A credit asset cannot be described honestly without one, so this counter is
+ * how a missing `ASSET_ISSUERS` entry becomes visible in production instead of
+ * silently shipping null issuers to clients.
+ */
+export const claimInboxUnconfiguredAssets = new Counter({
+  name: "claim_inbox_unconfigured_asset_total",
+  help: "Claim-inbox components whose asset code has no configured issuer",
+  labelNames: ["code"],
+  registers: [register],
+});
+
+/** Convenience view used by the dashboard to compute its own summary. */
+export const claimInboxActionableItems = new Gauge({
+  name: "claim_inbox_actionable_items",
+  help: "Actionable claim-inbox items in the most recently served page",
+  labelNames: [],
   registers: [register],
 });

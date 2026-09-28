@@ -96,6 +96,7 @@ describe("payout route authorization", () => {
         requireAuth(authService),
         authService,
         {} as never,
+        {} as never,
       ),
     );
     app.use(errorHandler);
