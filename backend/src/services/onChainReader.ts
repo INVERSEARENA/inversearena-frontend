@@ -15,6 +15,9 @@
  */
 
 import { Contract, Keypair, nativeToScVal, scValToNative, xdr, rpc } from "@stellar/stellar-sdk";
+// TODO(#1495): replace with a backend-owned Stellar gateway behind a typed
+// interface; this frontend import crosses package ownership and blocks
+// independent backend typecheck/build.
 import { StellarRpcGateway } from "../../frontend/src/shared-d/services/stellarRpcGateway";
 import { getStellarConfig, assertAllowedRpcUrl, RPC_MAX_RESPONSE_BYTES } from "../config/stellarConfig";
 import {
