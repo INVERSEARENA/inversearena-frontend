@@ -1,4 +1,5 @@
 import { checkRotationReadiness, type RotationReadiness, type SecretPurpose } from "./secretKeyring";
+import { getTreasuryConfig } from "./treasuryConfig";
 import { logger } from "../utils/logger";
 
 export function validateConfig(): void {
@@ -24,6 +25,10 @@ export function validateConfig(): void {
   }
 
   assertSecretRotationReadiness();
+
+  // #1511: fail fast on a malformed treasury/reconciliation config rather
+  // than discovering it the first time a reconciliation run tries to use it.
+  getTreasuryConfig();
 }
 
 /**
