@@ -1,6 +1,7 @@
-use soroban_sdk::{Address, Env, contractclient};
+use soroban_sdk::{Address, Env, contractclient, contracttype};
 
 use crate::events::ArenaEvents;
+use crate::types::OracleFreshnessPolicy;
 
 #[allow(dead_code)]
 /// Minimal cross-contract client for the yield-rate oracle.
@@ -9,6 +10,106 @@ use crate::events::ArenaEvents;
 #[contractclient(name = "OracleContractClient")]
 pub trait OracleInterface {
     fn get_current_yield_bps(env: Env) -> u32;
+    /// Additive (#1512): mirrors `contract/oracle/src/lib.rs`'s
+    /// `OracleReading` field-for-field. A pre-#1512 oracle deployment has no
+    /// such entrypoint — `fetch_oracle_reading` treats that call failure as
+    /// "no freshness metadata available," not as a hard error (mixed
+    /// deployment version compatibility).
+    fn get_oracle_reading(env: Env) -> OracleReading;
+}
+
+/// Local mirror of `contract/oracle/src/lib.rs`'s `OracleReading`. Duplicated
+/// (not imported) for the same "avoid linking the oracle crate" reason as
+/// `OracleInterface` above — Soroban structs decode by field name, so this
+/// must stay field-for-field identical to the real type.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleReading {
+    pub rate_bps: u32,
+    pub observed_at: u64,
+    pub source_version: u32,
+}
+
+/// How stale an oracle reading is relative to an `OracleFreshnessPolicy`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OracleFreshness {
+    /// Strictly younger than `warn_age_secs`.
+    Fresh,
+    /// At or above `warn_age_secs` but strictly younger than `max_age_secs` —
+    /// still usable, surfaced for alerting.
+    Warning,
+    /// At or above `max_age_secs`, or no observation was ever recorded
+    /// (`observed_at == 0`) — `resolve_round` must refuse to use it.
+    Stale,
+    /// The oracle instance could not be reached, or does not expose
+    /// `get_oracle_reading` at all (pre-#1512 deployment). Freshness cannot
+    /// be classified; existing liveness-first behavior applies (see
+    /// `fetch_yield_bps`'s doc comment) rather than blocking resolution.
+    Unavailable,
+}
+
+impl OracleFreshness {
+    /// Stable numeric code for event payloads (Soroban events favor small
+    /// primitives over enums for indexer-friendliness).
+    pub fn as_code(self) -> u32 {
+        match self {
+            OracleFreshness::Fresh => 0,
+            OracleFreshness::Warning => 1,
+            OracleFreshness::Stale => 2,
+            OracleFreshness::Unavailable => 3,
+        }
+    }
+}
+
+/// Classify an oracle reading's age against a freshness policy.
+///
+/// `reading = None` (oracle unreachable, or a pre-#1512 deployment with no
+/// `get_oracle_reading`) classifies as `Unavailable`, never `Stale` — those
+/// are deliberately distinct outcomes (see `OracleFreshness::Unavailable`'s
+/// doc comment) so a caller can choose different handling for "can't tell"
+/// versus "know it's too old."
+///
+/// A reading whose `observed_at` is in the future relative to `now` (clock/
+/// ledger divergence) is treated as `Stale`, not `Fresh` — a future
+/// timestamp is evidence the observation cannot be trusted, the same
+/// conclusion as one that is too old, so it must not silently pass as fresh.
+pub fn classify_freshness(
+    now: u64,
+    reading: Option<&OracleReading>,
+    policy: &OracleFreshnessPolicy,
+) -> OracleFreshness {
+    let Some(reading) = reading else {
+        return OracleFreshness::Unavailable;
+    };
+    if reading.observed_at == 0 {
+        // No observation has ever been recorded on this oracle instance.
+        return OracleFreshness::Stale;
+    }
+    if reading.observed_at > now {
+        return OracleFreshness::Stale;
+    }
+    let age = now - reading.observed_at;
+    if age >= policy.max_age_secs {
+        OracleFreshness::Stale
+    } else if age >= policy.warn_age_secs {
+        OracleFreshness::Warning
+    } else {
+        OracleFreshness::Fresh
+    }
+}
+
+/// Fetch the oracle's rate + observation metadata (#1512).
+///
+/// Returns `None` on any failure layer — unreachable contract, host error,
+/// or an oracle deployment that predates `get_oracle_reading` — never
+/// panics. Callers must not conflate `None` with a real `Stale` reading;
+/// `classify_freshness` keeps them as separate outcomes.
+pub fn fetch_oracle_reading(env: &Env, oracle_contract: &Address) -> Option<OracleReading> {
+    let client = OracleContractClient::new(env, oracle_contract);
+    match client.try_get_oracle_reading() {
+        Ok(Ok(reading)) => Some(reading),
+        _ => None,
+    }
 }
 
 /// Fetch the current yield rate in basis points from the on-chain oracle.

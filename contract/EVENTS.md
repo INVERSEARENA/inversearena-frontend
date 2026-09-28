@@ -22,6 +22,13 @@ Current payload version: **1**
 | `RSLVD`       | `resolve_round()`      | `(round_number: u32, heads_count: u32, tails_count: u32, outcome: Symbol, eliminated_count: u32, survivor_count: u32, v)` |
 | `WIN_SET`     | `set_winner()`         | `(player: Address, stake: i128, yield_comp: i128, v)` |
 | `CLAIM`       | `claim()`              | `(winner: Address, prize: i128, v)`      |
+| `frsh_pol`    | `set_oracle_freshness_policy()` (#1512) | `(admin: Address, max_age_secs: u64, warn_age_secs: u64)` |
+| `oracle_freshness_observed` | `resolve_round()` (#1512) | `(round: u32, classification_code: u32, age_secs: u64)` — emitted on every attempt, success or rejection; `classification_code`: 0=Fresh, 1=Warning, 2=Stale, 3=Unavailable |
+| `oracle_stale_rejected` | `resolve_round()` (#1512) | `(round: u32, age_secs: u64)` — emitted only when resolution is refused for staleness |
+
+> Note (#1512): several rows in this table (e.g. `fee_upd`, `vault_oracle_failed`)
+> predate this table and were never added to it — pre-existing drift, not
+> introduced here. `contract/arena/src/events.rs` is the source of truth.
 
 ## Factory Contract
 

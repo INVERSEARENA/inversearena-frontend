@@ -20,8 +20,8 @@ use events::ArenaEvents;
 use rwa_client::RwaAdapterClient;
 use storage::ArenaStorage;
 use types::{
-    ArenaConfig, ArenaError, ArenaStatus, Choice, GameState, LeaderboardEntry, PendingAdmin,
-    PendingUpgrade, PlayerState, RoundResult, YieldSnapshot,
+    ArenaConfig, ArenaError, ArenaStatus, Choice, GameState, LeaderboardEntry,
+    OracleFreshnessPolicy, PendingAdmin, PendingUpgrade, PlayerState, RoundResult, YieldSnapshot,
 };
 
 #[soroban_sdk::contractclient(name = "FactoryClient")]
@@ -34,7 +34,14 @@ pub trait FactoryInterface {
 pub(crate) const PAGE_SIZE: u32 = 50;
 pub(crate) const MIN_PLAYERS_TO_START: u32 = 2;
 pub const MAX_PLAYERS_ALLOWED: u32 = 100;
-const CONTRACT_VERSION: u32 = 2;
+/// Bumped to 3 for #1512: adds `set_oracle_freshness_policy`,
+/// `get_oracle_freshness_policy`, and `get_oracle_contract`.
+/// `resolve_round`'s signature is unchanged —
+/// its new staleness check is a behavior change, not a new entrypoint — but
+/// the version still moves so `contractCapability.ts`'s negotiation can
+/// gate UI/tooling that specifically wants the new freshness-policy
+/// entrypoints on older, already-deployed arena instances.
+const CONTRACT_VERSION: u32 = 3;
 const UPGRADE_TIMELOCK_SECONDS: u64 = 86_400; // 1 day
 /// Maximum allowed platform fee: 1000 bps (10%). Enforced by `update_platform_fee`.
 const MAX_PLATFORM_FEE_BPS: u32 = 1000;
@@ -651,10 +658,17 @@ impl ArenaContract {
     /// - `ArenaError::RoundNotActive` if the arena is not in the `Active` state.
     /// - `ArenaError::RoundNotStarted` if no round start timestamp is recorded.
     /// - `ArenaError::GracePeriodNotElapsed` if the round duration has not yet passed.
+    /// - `ArenaError::StaleOracleData` if the oracle's latest observation is older than
+    ///   this arena's configured `max_age_secs` (#1512), or was never recorded. Recoverable:
+    ///   retry once the oracle has published a fresh observation. Does not apply when the
+    ///   oracle is merely unreachable or predates freshness metadata — that case keeps the
+    ///   existing liveness-first 0-bps fallback (see `oracle::fetch_yield_bps`).
     ///
     /// # Events
     /// Emits `round_resolved` with the round number, eliminated count, and survivor count.
     /// Emits `game_finished` with the winner address and round number if exactly one survivor remains.
+    /// Emits `oracle_freshness_observed` with this round's oracle freshness classification and age (#1512).
+    /// Emits `oracle_stale_rejected` instead of the above when the resolution is rejected for staleness.
     pub fn resolve_round(env: Env) -> Result<(), ArenaError> {
         ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
@@ -674,6 +688,26 @@ impl ArenaContract {
 
         let round = config.round_count.saturating_add(1);
         let yield_bps = oracle::fetch_yield_bps(&env, &config.oracle_contract);
+
+        // ── #1512: reject a yield-dependent resolution against stale oracle
+        // data. `fetch_yield_bps` above (kept unchanged, liveness-first) is
+        // what actually feeds the payout snapshot; this is a *separate*,
+        // additive freshness check that can reject before any state mutation
+        // below, without changing what a live oracle read returns.
+        let now = env.ledger().timestamp();
+        let policy = ArenaStorage::load_oracle_freshness_policy(&env);
+        let reading = oracle::fetch_oracle_reading(&env, &config.oracle_contract);
+        let freshness = oracle::classify_freshness(now, reading.as_ref(), &policy);
+        let age_secs = reading
+            .as_ref()
+            .map(|r| now.saturating_sub(r.observed_at))
+            .unwrap_or(u64::MAX);
+        ArenaEvents::oracle_freshness_observed(&env, round, freshness.as_code(), age_secs);
+        if freshness == oracle::OracleFreshness::Stale {
+            ArenaEvents::oracle_stale_rejected(&env, round, age_secs);
+            return Err(ArenaError::StaleOracleData);
+        }
+
         let arena_addr = env.current_contract_address();
         let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
         let previous_balance = ArenaStorage::load_last_vault_balance(&env);
@@ -1065,6 +1099,56 @@ impl ArenaContract {
         ArenaStorage::load_platform_fee_bps(&env)
     }
 
+    /// Configure this arena instance's oracle freshness policy (#1512). Admin only.
+    ///
+    /// `max_age_secs`: an oracle observation older than this makes
+    /// `resolve_round` refuse with `ArenaError::StaleOracleData`.
+    /// `warn_age_secs`: an observation older than this (but younger than
+    /// `max_age_secs`) still resolves, but is surfaced via
+    /// `oracle_freshness_observed` as `Warning` for alerting.
+    ///
+    /// Like `update_platform_fee`, this only affects *this* arena instance
+    /// going forward — each arena has independent storage.
+    pub fn set_oracle_freshness_policy(
+        env: Env,
+        max_age_secs: u64,
+        warn_age_secs: u64,
+    ) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+
+        let policy = OracleFreshnessPolicy {
+            max_age_secs,
+            warn_age_secs,
+            version: types::FRESHNESS_POLICY_VERSION,
+        };
+        types::validate_freshness_policy(&policy)?;
+
+        ArenaStorage::save_oracle_freshness_policy(&env, &policy);
+        ArenaEvents::oracle_freshness_policy_updated(
+            &env,
+            &config.admin,
+            max_age_secs,
+            warn_age_secs,
+        );
+        Ok(())
+    }
+
+    /// Return this arena instance's current oracle freshness policy (#1512).
+    pub fn get_oracle_freshness_policy(env: Env) -> OracleFreshnessPolicy {
+        ArenaStorage::load_oracle_freshness_policy(&env)
+    }
+
+    /// Return the oracle contract this arena instance reads its yield rate
+    /// from (#1512). Previously only stored inside `ArenaConfig` with no
+    /// dedicated getter — an off-chain reader (the backend's own
+    /// independent freshness check, or any other tooling) had no way to
+    /// discover which oracle instance a given arena actually uses.
+    pub fn get_oracle_contract(env: Env) -> Result<Address, ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        Ok(config.oracle_contract)
+    }
+
     /// Return the cumulative yield earned across all resolved rounds.
     ///
     /// Summed from vault balance deltas recorded during each `resolve_round`
@@ -1273,6 +1357,66 @@ mod test {
             500
         }
     }
+
+    /// Oracle mock that also implements `get_oracle_reading` (#1512), with a
+    /// caller-settable `observed_at`/`source_version` so freshness tests can
+    /// control exactly how old (or how far in the future) an observation is.
+    /// A plain `MockOracle` above deliberately keeps *not* implementing this
+    /// method, standing in for a pre-#1512 oracle deployment.
+    ///
+    /// Nested in its own module: Soroban's `#[contractimpl]` macro generates
+    /// module-scoped helper items named after the method, not the struct, so
+    /// this contract's `get_current_yield_bps` would otherwise collide with
+    /// `MockOracle`'s identically-named method in the same enclosing module.
+    mod fresh_oracle_mock {
+        use super::*;
+
+        #[contract]
+        pub struct MockOracleWithReading;
+
+        #[contractimpl]
+        impl MockOracleWithReading {
+            pub fn set_reading(env: Env, rate_bps: u32, observed_at: u64, source_version: u32) {
+                env.storage()
+                    .persistent()
+                    .set(&symbol_short!("rate"), &rate_bps);
+                env.storage()
+                    .persistent()
+                    .set(&symbol_short!("obs_at"), &observed_at);
+                env.storage()
+                    .persistent()
+                    .set(&symbol_short!("ver"), &source_version);
+            }
+
+            pub fn get_current_yield_bps(env: Env) -> u32 {
+                env.storage()
+                    .persistent()
+                    .get(&symbol_short!("rate"))
+                    .unwrap_or(0)
+            }
+
+            pub fn get_oracle_reading(env: Env) -> oracle::OracleReading {
+                oracle::OracleReading {
+                    rate_bps: env
+                        .storage()
+                        .persistent()
+                        .get(&symbol_short!("rate"))
+                        .unwrap_or(0),
+                    observed_at: env
+                        .storage()
+                        .persistent()
+                        .get(&symbol_short!("obs_at"))
+                        .unwrap_or(0),
+                    source_version: env
+                        .storage()
+                        .persistent()
+                        .get(&symbol_short!("ver"))
+                        .unwrap_or(0),
+                }
+            }
+        }
+    }
+    use fresh_oracle_mock::{MockOracleWithReading, MockOracleWithReadingClient};
 
     #[contract]
     struct MockVault;
@@ -1745,9 +1889,21 @@ mod test {
     /// helper is ever touched again.
     fn setup_started(duration: u64, start_ts: u64) -> (Env, ArenaContractClient<'static>) {
         let env = Env::default();
+        let oracle_id = env.register(MockOracle, ());
+        setup_started_with_oracle(env, duration, start_ts, oracle_id)
+    }
+
+    /// Same as `setup_started`, but lets the caller supply the oracle
+    /// contract instance — used by the #1512 freshness tests to swap in
+    /// `MockOracleWithReading` instead of the plain `MockOracle`.
+    fn setup_started_with_oracle(
+        env: Env,
+        duration: u64,
+        start_ts: u64,
+        oracle_id: Address,
+    ) -> (Env, ArenaContractClient<'static>) {
         env.mock_all_auths();
         let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
         env.as_contract(&contract_id, || {
             let config = ArenaConfig {
                 admin: Address::generate(&env),
@@ -1944,6 +2100,154 @@ mod test {
         env.ledger().with_mut(|li| li.timestamp = 1_061);
         client.resolve_round();
         assert_eq!(state_of(&env, &client), GameState::Cancelled);
+    }
+
+    // ── Coverage added for issue #1512 (oracle freshness policy) ──────────
+
+    /// Builds a started arena wired to `MockOracleWithReading`, with the
+    /// observation set to be exactly `age_secs` old at the moment
+    /// `resolve_round` is called (grace period already elapsed).
+    fn setup_started_with_oracle_age(
+        age_secs: u64,
+    ) -> (Env, ArenaContractClient<'static>, u64) {
+        let env = Env::default();
+        let oracle_id = env.register(MockOracleWithReading, ());
+        let start_ts = 100_000u64;
+        let duration = 60u64;
+        let resolve_ts = start_ts + duration + 1;
+        let observed_at = resolve_ts - age_secs;
+
+        MockOracleWithReadingClient::new(&env, &oracle_id).set_reading(&500, &observed_at, &1);
+
+        let (env, client) = setup_started_with_oracle(env, duration, start_ts, oracle_id);
+        env.ledger().with_mut(|li| li.timestamp = resolve_ts);
+        (env, client, resolve_ts)
+    }
+
+    #[test]
+    fn resolve_round_accepts_oracle_reading_one_second_below_max_age() {
+        // Default policy: max_age_secs = 3_600.
+        let (env, client, _resolve_ts) = setup_started_with_oracle_age(3_599);
+        client.resolve_round();
+        assert_eq!(state_of(&env, &client), GameState::Cancelled);
+    }
+
+    #[test]
+    fn resolve_round_rejects_oracle_reading_at_exact_max_age() {
+        // Exact threshold: age == max_age_secs must already be Stale.
+        let (env, client, _resolve_ts) = setup_started_with_oracle_age(3_600);
+        let result = client.try_resolve_round();
+        assert_eq!(result, Err(Ok(ArenaError::StaleOracleData)));
+        // Rejected before any state mutation — round must still be Active.
+        assert_eq!(state_of(&env, &client), GameState::Active);
+    }
+
+    #[test]
+    fn resolve_round_rejects_oracle_reading_far_older_than_max_age() {
+        let (env, client, _resolve_ts) = setup_started_with_oracle_age(100_000);
+        let result = client.try_resolve_round();
+        assert_eq!(result, Err(Ok(ArenaError::StaleOracleData)));
+        assert_eq!(state_of(&env, &client), GameState::Active);
+    }
+
+    #[test]
+    fn resolve_round_accepts_oracle_reading_at_exact_warn_threshold() {
+        // Exact threshold: age == warn_age_secs (1_800) is Warning, not Stale — still proceeds.
+        let (env, client, _resolve_ts) = setup_started_with_oracle_age(1_800);
+        client.resolve_round();
+        assert_eq!(state_of(&env, &client), GameState::Cancelled);
+    }
+
+    #[test]
+    fn resolve_round_rejects_future_dated_oracle_observation() {
+        // Clock/ledger divergence: observed_at is after `now` — must not be
+        // silently treated as maximally fresh.
+        let env = Env::default();
+        let oracle_id = env.register(MockOracleWithReading, ());
+        let start_ts = 100_000u64;
+        let duration = 60u64;
+        let resolve_ts = start_ts + duration + 1;
+        let future_observed_at = resolve_ts + 10_000;
+
+        MockOracleWithReadingClient::new(&env, &oracle_id).set_reading(&500, &future_observed_at, &1);
+
+        let (env, client) = setup_started_with_oracle(env, duration, start_ts, oracle_id);
+        env.ledger().with_mut(|li| li.timestamp = resolve_ts);
+
+        let result = client.try_resolve_round();
+        assert_eq!(result, Err(Ok(ArenaError::StaleOracleData)));
+        assert_eq!(state_of(&env, &client), GameState::Active);
+    }
+
+    #[test]
+    fn resolve_round_rejects_when_oracle_has_no_observation_ever() {
+        // Missing metadata: get_oracle_reading is implemented but no
+        // set_reading call has ever landed (observed_at defaults to 0).
+        let env = Env::default();
+        let oracle_id = env.register(MockOracleWithReading, ());
+        let (env, client) = setup_started_with_oracle(env, 60, 100_000, oracle_id);
+        env.ledger().with_mut(|li| li.timestamp = 100_061);
+
+        let result = client.try_resolve_round();
+        assert_eq!(result, Err(Ok(ArenaError::StaleOracleData)));
+    }
+
+    #[test]
+    fn resolve_round_proceeds_when_oracle_predates_freshness_metadata() {
+        // Mixed deployment version: a pre-#1512 oracle with no
+        // get_oracle_reading at all must not block resolution — this is the
+        // existing liveness-first `fetch_yield_bps` fallback, unchanged.
+        let (env, client) = setup_started(60, 1_000);
+        env.ledger().with_mut(|li| li.timestamp = 1_061);
+        let result = client.try_resolve_round();
+        assert!(result.is_ok(), "an oracle with no freshness metadata must not block resolution");
+        assert_eq!(state_of(&env, &client), GameState::Cancelled);
+    }
+
+    #[test]
+    fn resolve_round_proceeds_with_mismatched_oracle_source_version() {
+        // Oracle upgrade: a different source_version (e.g. a newer/older
+        // oracle deployment) must not by itself gate freshness — only age does.
+        let env = Env::default();
+        let oracle_id = env.register(MockOracleWithReading, ());
+        let start_ts = 100_000u64;
+        let duration = 60u64;
+        let resolve_ts = start_ts + duration + 1;
+
+        MockOracleWithReadingClient::new(&env, &oracle_id).set_reading(&500, &resolve_ts, &99);
+
+        let (env, client) = setup_started_with_oracle(env, duration, start_ts, oracle_id);
+        env.ledger().with_mut(|li| li.timestamp = resolve_ts);
+
+        client.resolve_round();
+        assert_eq!(state_of(&env, &client), GameState::Cancelled);
+    }
+
+    #[test]
+    fn resolve_round_emits_oracle_freshness_observed_event() {
+        let (env, client, _resolve_ts) = setup_started_with_oracle_age(0);
+        client.resolve_round();
+        let events = env.events().all();
+        let has_freshness_event = events
+            .iter()
+            .any(|(contract, topics, _data)| {
+                contract == client.address
+                    && topics
+                        == (Symbol::new(&env, "oracle_freshness_observed"),).into_val(&env)
+            });
+        assert!(has_freshness_event, "must emit oracle_freshness_observed on every resolve_round attempt");
+    }
+
+    #[test]
+    fn resolve_round_emits_oracle_stale_rejected_event_on_rejection() {
+        let (env, client, _resolve_ts) = setup_started_with_oracle_age(3_600);
+        let _ = client.try_resolve_round();
+        let events = env.events().all();
+        let has_rejection_event = events.iter().any(|(contract, topics, _data)| {
+            contract == client.address
+                && topics == (Symbol::new(&env, "oracle_stale_rejected"),).into_val(&env)
+        });
+        assert!(has_rejection_event, "must emit oracle_stale_rejected when resolution is refused for staleness");
     }
 
     #[test]
@@ -3591,6 +3895,91 @@ mod test {
         env.as_contract(&client.address, || {
             assert_eq!(ArenaStorage::load_platform_fee_bps(&env), 250);
         });
+    }
+
+    // ── Coverage added for issue #1512 (freshness policy config) ──────────
+
+    #[test]
+    fn get_oracle_contract_returns_configured_oracle() {
+        let (env, client) = setup(0);
+        let expected = env.as_contract(&client.address, || {
+            ArenaStorage::load_config(&env).unwrap().oracle_contract
+        });
+        assert_eq!(client.get_oracle_contract(), expected);
+    }
+
+    #[test]
+    fn get_oracle_freshness_policy_defaults_before_configuration() {
+        let (_env, client) = setup(0);
+        let policy = client.get_oracle_freshness_policy();
+        assert_eq!(policy.max_age_secs, types::DEFAULT_ORACLE_MAX_AGE_SECS);
+        assert_eq!(policy.warn_age_secs, types::DEFAULT_ORACLE_WARN_AGE_SECS);
+        assert_eq!(policy.version, types::FRESHNESS_POLICY_VERSION);
+    }
+
+    #[test]
+    fn set_oracle_freshness_policy_updates_stored_value_and_emits_event() {
+        let (env, client) = setup(0);
+        let admin = env.as_contract(&client.address, || {
+            ArenaStorage::load_config(&env).unwrap().admin
+        });
+
+        client.set_oracle_freshness_policy(&7_200, &3_600);
+
+        let events = env.events().all();
+        let expected_topic: soroban_sdk::Vec<Val> =
+            (symbol_short!("frsh_pol"), admin).into_val(&env);
+        let has_event = events
+            .iter()
+            .any(|(contract, topics, _data)| contract == client.address && topics == expected_topic);
+        assert!(has_event, "must emit frsh_pol event");
+
+        let policy = client.get_oracle_freshness_policy();
+        assert_eq!(policy.max_age_secs, 7_200);
+        assert_eq!(policy.warn_age_secs, 3_600);
+    }
+
+    #[test]
+    fn set_oracle_freshness_policy_rejects_warn_greater_than_max() {
+        let (_env, client) = setup(0);
+        let result = client.try_set_oracle_freshness_policy(&100, &200);
+        assert_eq!(result, Err(Ok(ArenaError::InvalidFreshnessPolicy)));
+    }
+
+    #[test]
+    fn set_oracle_freshness_policy_rejects_zero_max_age() {
+        let (_env, client) = setup(0);
+        let result = client.try_set_oracle_freshness_policy(&0, &0);
+        assert_eq!(result, Err(Ok(ArenaError::InvalidFreshnessPolicy)));
+    }
+
+    #[test]
+    fn set_oracle_freshness_policy_rejects_above_hard_ceiling() {
+        let (_env, client) = setup(0);
+        let result = client.try_set_oracle_freshness_policy(
+            &(types::MAX_ORACLE_MAX_AGE_SECS + 1),
+            &100,
+        );
+        assert_eq!(result, Err(Ok(ArenaError::InvalidFreshnessPolicy)));
+    }
+
+    #[test]
+    fn set_oracle_freshness_policy_accepts_equal_warn_and_max() {
+        let (_env, client) = setup(0);
+        client.set_oracle_freshness_policy(&1_000, &1_000);
+        let policy = client.get_oracle_freshness_policy();
+        assert_eq!(policy.max_age_secs, 1_000);
+        assert_eq!(policy.warn_age_secs, 1_000);
+    }
+
+    #[test]
+    fn set_oracle_freshness_policy_at_hard_ceiling_is_accepted() {
+        let (_env, client) = setup(0);
+        client.set_oracle_freshness_policy(&types::MAX_ORACLE_MAX_AGE_SECS, &100);
+        assert_eq!(
+            client.get_oracle_freshness_policy().max_age_secs,
+            types::MAX_ORACLE_MAX_AGE_SECS
+        );
     }
 
     #[test]

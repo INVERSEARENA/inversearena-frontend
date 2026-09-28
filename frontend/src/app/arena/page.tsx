@@ -82,6 +82,12 @@ function ArenaGameView() {
   const [playerCount, setPlayerCount] = useState<number | null>(null);
   const [oracleYield, setOracleYield] = useState<number | null>(null);
   const [isLoadingYield, setIsLoadingYield] = useState(true);
+  // #1512: last-verified freshness classification/age for the oracle rate —
+  // shown alongside the rate so a stale reading is never presented as current.
+  const [oracleFreshness, setOracleFreshness] = useState<
+    "fresh" | "warning" | "stale" | "unavailable" | undefined
+  >(undefined);
+  const [oracleAgeSeconds, setOracleAgeSeconds] = useState<number | null>(null);
 
   // Round Resolution State
   const [isRoundResolved, setIsRoundResolved] = useState(false);
@@ -116,6 +122,8 @@ function ArenaGameView() {
         const response = await fetch(`${API_BASE}/api/oracle/yield`);
         const data = await response.json();
         setOracleYield(data.currentAPY);
+        setOracleFreshness(data.freshness);
+        setOracleAgeSeconds(typeof data.ageSeconds === "number" ? data.ageSeconds : null);
       } catch (err) {
         console.error("Failed to fetch oracle yield", err);
       } finally {
@@ -416,7 +424,12 @@ function ArenaGameView() {
               <ArenaStatsSkeleton />
             ) : (
             <>
-            <TotalYieldPot amount={entryFee * playerCount} apr={oracleYield ?? 12.4} />
+            <TotalYieldPot
+              amount={entryFee * playerCount}
+              apr={oracleYield ?? 12.4}
+              freshness={oracleFreshness}
+              ageSeconds={oracleAgeSeconds}
+            />
 
             {/* Survivors placeholder */}
             <div className="bg-card-bg border border-neon-green p-4">

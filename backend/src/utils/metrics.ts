@@ -794,3 +794,25 @@ export const contractMetadataLookupDuration = new Histogram({
   registers: [register],
 });
 
+// ─── #1512: Oracle freshness policy enforcement ──────────────────────────────
+
+export const oracleFreshnessClassificationTotal = new Counter({
+  name: 'inversearena_oracle_freshness_classification_total',
+  help: 'Oracle reading freshness classifications (fresh/warning/stale/unavailable)',
+  labelNames: ['classification'],
+  registers: [register],
+});
+
+export const oracleStalenessSecondsGauge = new Gauge({
+  name: 'inversearena_oracle_staleness_seconds',
+  help: 'Age in seconds of the most recently classified oracle observation, per oracle contract',
+  labelNames: ['oracle_contract'],
+  registers: [register],
+});
+
+export const yieldDependentActionsBlockedTotal = new Counter({
+  name: 'inversearena_yield_dependent_actions_blocked_total',
+  help: 'Yield-dependent mutations rejected for stale/unavailable oracle data, by action and reason',
+  labelNames: ['action', 'reason'],
+  registers: [register],
+});

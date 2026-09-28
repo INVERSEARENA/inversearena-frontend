@@ -133,6 +133,16 @@ The arena pool contract uses `#[contracterror]` with **explicit** `repr(u32)` va
 
 **ABI snapshot:** `contract/arena/abi_snapshot.json` guards these ordinals in CI (`abi_guard` tests).
 
+> Note: the table above does not match the current `ArenaError` enum in
+> `contract/arena/src/types.rs` (pre-existing drift, not introduced by
+> #1512) — treat `types.rs` as the source of truth. Two codes added by
+> #1512, current as of that enum:
+>
+> | Code | Variant | Meaning |
+> |------|---------|---------|
+> | 39 | `InvalidFreshnessPolicy` | `set_oracle_freshness_policy` called with `warn_age_secs > max_age_secs`, either `0`, or `max_age_secs` above `MAX_ORACLE_MAX_AGE_SECS` (86,400s) |
+> | 40 | `StaleOracleData` | `resolve_round` refused because the oracle's latest observation is older than the arena's configured `max_age_secs`, or was never recorded. Recoverable — retry once the oracle publishes a fresh observation. |
+
 > **Required process — every new `ArenaError` variant must be added in the same PR to all three places:**
 > 1. `contract/arena/src/lib.rs` — add the variant with its explicit `repr(u32)` value.
 > 2. `contract/arena/abi_snapshot.json` — add `"VariantName": N` to the `arena_error` object.

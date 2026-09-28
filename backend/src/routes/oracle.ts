@@ -1,11 +1,11 @@
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
 import { z } from "zod";
 import { asyncHandler, validateBody } from "../middleware/validate";
-import { cacheMiddleware } from "../middleware/cache";
-import { cache, cacheKeys, cacheTTL } from "../cache/cacheService";
-import { redis } from "../cache/redisClient";
+import { cache, cacheKeys } from "../cache/cacheService";
 import { verifyWebhookSignature } from "../middleware/verifyWebhook";
 import { getKeyring } from "../config/secretKeyring";
+import { getOracleFreshnessConfig } from "../config/oracleFreshnessConfig";
+import { classifyFreshness, toKeeperStatus, type OracleReading } from "../services/oracleFreshnessService";
 
 interface YieldData {
   protocol: string;
@@ -29,15 +29,50 @@ const DEFAULT_YIELD: YieldData = {
   network: "stellar",
 };
 
-export function createOracleRouter(): Router {
+/** This webhook-fed feed's schema version — see #1512's OracleReading.sourceVersion. */
+const YIELD_FEED_SOURCE_VERSION = 1;
+
+/**
+ * Reinterprets a `YieldData.lastUpdated` ISO timestamp as an `OracleReading`
+ * so this off-chain, webhook-pushed feed can share the same classification
+ * logic (#1512) as the on-chain oracle contract, rather than a second,
+ * bespoke staleness implementation.
+ */
+function toOracleReading(yieldData: YieldData): OracleReading {
+  const observedAt = Math.floor(new Date(yieldData.lastUpdated).getTime() / 1000);
+  return {
+    rateBps: Math.round(yieldData.currentAPY * 100),
+    observedAt: Number.isFinite(observedAt) ? observedAt : 0,
+    sourceVersion: YIELD_FEED_SOURCE_VERSION,
+  };
+}
+
+export function createOracleRouter(adminAuthMiddleware: RequestHandler): Router {
   const router = Router();
 
   router.get(
     "/yield",
-    cacheMiddleware(() => cacheKeys.oracleYield(), cacheTTL.ORACLE_YIELD),
+    // Not wrapped in cacheMiddleware (#1512): it would key on the same
+    // "oracle:yield" entry the handler itself reads/writes and cache the
+    // *response* (including freshness/ageSeconds) for cacheTTL.ORACLE_YIELD
+    // seconds — silently freezing the age this endpoint exists to report
+    // accurately. The underlying read below is already a single indexed
+    // Redis GET; there is no expensive computation left to cache.
     asyncHandler(async (_req, res) => {
-      const yieldData = await cache.get<YieldData>(cacheKeys.oracleYield());
-      res.json(yieldData ?? DEFAULT_YIELD);
+      const yieldData = (await cache.get<YieldData>(cacheKeys.oracleYield())) ?? DEFAULT_YIELD;
+      const config = getOracleFreshnessConfig();
+      const classification = classifyFreshness(
+        Math.floor(Date.now() / 1000),
+        toOracleReading(yieldData),
+        config,
+      );
+      // Additive fields (#1512) — existing consumers reading only the
+      // original YieldData shape are unaffected.
+      res.json({
+        ...yieldData,
+        freshness: classification.freshness,
+        ageSeconds: classification.ageSeconds,
+      });
     }),
   );
 
@@ -67,8 +102,35 @@ export function createOracleRouter(): Router {
         network: DEFAULT_YIELD.network,
       };
 
-      await redis.set(cacheKeys.oracleYield(), JSON.stringify(updatedYield));
+      // #1512: bounded by the freshness policy's own max age — a pushed
+      // value that's never followed by another update now ages out of the
+      // cache instead of being served indefinitely under an ever-growing
+      // "true" age once it's gone stale (the GET route's classification
+      // already marks it stale well before this expiry; this is a backstop,
+      // not the primary staleness signal).
+      const { maxAgeSeconds } = getOracleFreshnessConfig();
+      await cache.set(cacheKeys.oracleYield(), updatedYield, maxAgeSeconds);
       res.status(200).json(updatedYield);
+    }),
+  );
+
+  /**
+   * GET /api/oracle/keeper-status (#1512)
+   *
+   * Keeper/operator-facing: identifies an overdue oracle update using only
+   * the already-cached feed value — never fetches from Ondo/Band/etc.
+   * itself. Admin-authenticated, matching this codebase's other
+   * operator-only endpoints (e.g. /api/worker, /api/payouts admin actions).
+   */
+  router.get(
+    "/keeper-status",
+    adminAuthMiddleware,
+    asyncHandler(async (_req, res) => {
+      const yieldData = await cache.get<YieldData>(cacheKeys.oracleYield());
+      const config = getOracleFreshnessConfig();
+      const now = Math.floor(Date.now() / 1000);
+      const classification = classifyFreshness(now, yieldData ? toOracleReading(yieldData) : null, config);
+      res.json(toKeeperStatus(cacheKeys.oracleYield(), classification, config));
     }),
   );
 

@@ -17,6 +17,7 @@ import { createConfigRouter } from "./config";
 import { createInvitationsRouter } from "./invitations";
 import { createRoundProofBundleRouter } from "./roundProofBundle";
 import { createLobbyReservationRouter } from "./lobbyReservation";
+import { createDashboardRouter } from "./dashboard";
 import type { PayoutsController } from "../controllers/payouts.controller";
 import type { WorkerController } from "../controllers/worker.controller";
 import type { AuthController } from "../controllers/auth.controller";
@@ -51,7 +52,7 @@ export function createApiRouter(
     requireAuth,
     createTransactionsRouter(transactionsController),
   );
-  router.use("/oracle", createOracleRouter());
+  router.use("/oracle", createOracleRouter(adminAuthMiddleware));
   router.use("/arenas", createArenasRouter(requireAuth));
   router.use("/arenas", createArenaReplayRouter(requireAuth));
   router.use("/arenas", createCancellationRecoveryRouter(requireAuth));
