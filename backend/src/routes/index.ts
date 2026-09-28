@@ -25,6 +25,7 @@ import type { LeaderboardController } from "../controllers/leaderboard.controlle
 import type { TransactionsController } from "../controllers/transactions.controller";
 import type { AuthService } from "../services/authService";
 import type { RoundProofBundleService } from "../services/roundProofBundleService";
+import type { TransactionRepository } from "../repositories/transactionRepository";
 
 export function createApiRouter(
   payoutsController: PayoutsController,
@@ -37,13 +38,14 @@ export function createApiRouter(
   requireAuth: RequestHandler,
   authService: AuthService,
   roundProofBundleService: RoundProofBundleService,
+  transactions: TransactionRepository,
 ): Router {
   const router = Router();
 
   router.use(createDocsRouter());
   router.use("/config", createConfigRouter());
   router.use("/auth", createAuthRouter(authController, requireAuth));
-  router.use("/users", createUsersRouter(usersController, requireAuth));
+  router.use("/users", createUsersRouter(usersController, requireAuth, transactions));
   router.use("/payouts", createPayoutsRouter(payoutsController, authService, adminAuthMiddleware));
   router.use("/worker", createWorkerRouter(workerController, adminAuthMiddleware));
   router.use(

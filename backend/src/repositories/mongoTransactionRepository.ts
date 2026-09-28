@@ -115,4 +115,37 @@ export class MongoTransactionRepository implements TransactionRepository {
       .limit(limit);
     return docs.map(docToRecord);
   }
+
+  /**
+   * Owner-scoped, keyset-paginated payout list for the claim inbox (#1489).
+   *
+   * Paged in the application rather than with `skip`, because an inbox grows
+   * while it is being read: `skip` would make a row shift between pages and
+   * return it twice or skip it entirely. The `(updatedAt, id)` keyset is
+   * stable against concurrent inserts, which land ahead of an in-flight
+   * cursor because they are newer.
+   *
+   * Requires an index on `{ destinationAccount: 1, updatedAt: -1, _id: -1 }`
+   * — without it this is a collection scan of every payout in the database.
+   * See the index note in docs/CLAIM_INBOX.md.
+   */
+  async listByDestination(
+    destinationAccount: string,
+    limit: number,
+    cursor?: { updatedAt: Date; id: string } | null,
+  ): Promise<TransactionRecord[]> {
+    if (limit <= 0) return [];
+    const after = cursor
+      ? {
+          $or: [
+            { updatedAt: { $lt: cursor.updatedAt } },
+            { updatedAt: cursor.updatedAt, _id: { $lt: cursor.id } },
+          ],
+        }
+      : {};
+    const docs = await TransactionModel.find({ destinationAccount, ...after })
+      .sort({ updatedAt: -1, _id: -1 })
+      .limit(limit);
+    return docs.map(docToRecord);
+  }
 }

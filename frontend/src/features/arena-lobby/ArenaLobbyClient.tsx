@@ -13,9 +13,15 @@ import {
 } from "@/shared-d/utils/stellar-transactions";
 import {
   evaluateSigningRequest,
+  // Imported as a value, not a type: these call sites narrow policy
+  // rejections with `instanceof SigningPolicyError`, which a type-only import
+  // erases to `any` and silently turns into a dead branch.
+  SigningPolicyError,
   type DecodedEnvelope,
-  type SigningPolicyError,
 } from "@/shared-d/security/policy";
+import { useAssetReadinessGate } from "@/features/asset-readiness/useAssetReadinessGate";
+import { displayAmountToStroops } from "@/shared-d/utils/stellar-asset-reader";
+import { AssetTrustlinePrompt } from "@/components/modals/AssetTrustlinePrompt";
 
 const arenaParticipantSchema = z.object({
   id: z.string(),
@@ -124,6 +130,39 @@ export function ArenaLobbyClient({
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [isReserving, setIsReserving] = useState(false);
   const [reservationError, setReservationError] = useState<string | null>(null);
+  /**
+   * Set when the signing firewall rejects the envelope we built (#1487).
+   *
+   * Distinct from `error`: a policy rejection is not a request failure, and
+   * the user should see the specific rule that fired rather than a generic
+   * banner. Kept separate so it cannot be clobbered by an unrelated fetch
+   * that happens to fail at the same time.
+   */
+  const [joinError, setJoinError] = useState<string | null>(null);
+  /**
+   * The decoded envelope, rendered into the confirmation modal. Holding the
+   * decode rather than the XDR is the point of the firewall: nothing reaches
+   * the confirmation screen that has not been parsed and checked.
+   */
+  const [joinConfirmation, setJoinConfirmation] = useState<DecodedEnvelope | null>(null);
+
+  /**
+   * Asset-readiness gate for the entry fee (#1487).
+   *
+   * The stake is received by this account, so the account needs a trustline and
+   * limit headroom for `stakeToken` before the join transaction is built.
+   */
+  const entryFeeStroops = useMemo(
+    () => (stats ? displayAmountToStroops(stats.entryFee) : 0n),
+    [stats],
+  );
+  const assetGate = useAssetReadinessGate({
+    assetCode: stats?.stakeToken,
+    amountStroops: entryFeeStroops,
+    entryPoint: "join",
+    enabled: Boolean(stats?.stakeToken),
+  });
+  const [showTrustline, setShowTrustline] = useState(false);
 
   const isOpen = stats?.status === "open";
   const walletConnected = wallet.isConnected && !!wallet.publicKey;
@@ -272,6 +311,12 @@ export function ArenaLobbyClient({
   };
 
   const handleJoinClick = async () => {
+    // Asset readiness first (#1487). Taking a join slot and only then telling
+    // the user their account cannot receive the stake wastes both.
+    if (!assetGate.canProceed) {
+      if (assetGate.phase === "remediation_offered") setShowTrustline(true);
+      return;
+    }
     const reserved = await reserveJoinSlot();
     if (reserved) {
       setShowJoinModal(true);
@@ -375,6 +420,13 @@ export function ArenaLobbyClient({
     // Validate XDR against the signing policy before prompting the wallet.
     // This distinct error is catchable so the UI can show a policy-rejection
     // message rather than a wallet-rejection one.
+    if (!assetGate.canProceed) {
+      setJoinError(assetGate.message);
+      if (assetGate.phase === "remediation_offered") setShowTrustline(true);
+      return;
+    }
+
+    setJoinError(null);
     let decoded: DecodedEnvelope;
     try {
       decoded = evaluateSigningRequest(unsignedTx.toXDR(), "JOIN");
@@ -500,6 +552,34 @@ export function ArenaLobbyClient({
             <p role="alert" className="mt-3 text-sm font-semibold text-red-400">
               {reservationError}
             </p>
+          )}
+          {assetGate.phase !== "ready" && assetGate.phase !== "idle" && (
+            <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-4 text-sm text-white/70">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/40">
+                Asset readiness
+              </p>
+              <p className="mt-2 text-left">{assetGate.message}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {assetGate.phase === "remediation_offered" && (
+                  <button
+                    type="button"
+                    onClick={() => setShowTrustline(true)}
+                    className="rounded-full border border-white/20 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white"
+                  >
+                    Set up trustline
+                  </button>
+                )}
+                {assetGate.canRetry && (
+                  <button
+                    type="button"
+                    onClick={() => void assetGate.check()}
+                    className="rounded-full border border-white/20 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white/70"
+                  >
+                    Check again
+                  </button>
+                )}
+              </div>
+            </div>
           )}
         </section>
 
@@ -669,6 +749,26 @@ export function ArenaLobbyClient({
           <p className="font-semibold uppercase tracking-[0.2em]">{joinError}</p>
         </div>
       )}
+
+      <AssetTrustlinePrompt
+        isOpen={showTrustline}
+        onClose={() => setShowTrustline(false)}
+        remediation={assetGate.remediation}
+        message={assetGate.message}
+        phase={
+          assetGate.phase === "remediating"
+            ? "remediating"
+            : assetGate.phase === "blocked"
+              ? "blocked"
+              : "remediation_offered"
+        }
+        onConfirm={async () => {
+          await assetGate.remediate();
+          if (assetGate.canProceed) setShowTrustline(false);
+        }}
+        onRetry={() => void assetGate.check()}
+        actionLabel="join this arena"
+      />
     </div>
   );
 }

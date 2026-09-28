@@ -72,5 +72,33 @@ export class InMemoryTransactionRepository implements TransactionRepository {
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
     return rows.slice(0, limit);
   }
+
+  /**
+   * Owner-scoped, keyset-paginated payout list for the claim inbox (#1489).
+   * Mirrors MongoTransactionRepository.listByDestination, including the
+   * descending `(updatedAt, id)` ordering, so the inbox behaves identically
+   * under the in-memory repository used by tests.
+   */
+  async listByDestination(
+    destinationAccount: string,
+    limit: number,
+    cursor?: { updatedAt: Date; id: string } | null,
+  ): Promise<TransactionRecord[]> {
+    if (limit <= 0) return [];
+    const rows = Array.from(this.records.values())
+      .filter((record) => record.destinationAccount === destinationAccount)
+      .filter((record) => {
+        if (!cursor) return true;
+        const at = record.updatedAt.getTime();
+        const cursorAt = cursor.updatedAt.getTime();
+        if (at !== cursorAt) return at < cursorAt;
+        return record.id < cursor.id;
+      })
+      .sort((a, b) => {
+        const at = b.updatedAt.getTime() - a.updatedAt.getTime();
+        return at !== 0 ? at : b.id.localeCompare(a.id);
+      });
+    return rows.slice(0, limit);
+  }
 }
 

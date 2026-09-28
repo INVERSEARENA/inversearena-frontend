@@ -12,6 +12,7 @@ const FAKE_STELLAR_CONFIG: StellarConfig = {
   networkPassphrase: 'Test SDF Network ; September 2015',
   roundConfirmPollMs: 1,
   roundConfirmMaxPolls: 1,
+  assetIssuers: {},
 };
 
 const ARENA_CONTRACT_ID = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM';

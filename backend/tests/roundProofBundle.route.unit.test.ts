@@ -28,6 +28,7 @@ const FAKE_STELLAR_CONFIG = {
   networkPassphrase: "Test SDF Network ; September 2015",
   roundConfirmPollMs: 1,
   roundConfirmMaxPolls: 1,
+  assetIssuers: {},
 };
 
 function buildProofBundleService(): RoundProofBundleService {

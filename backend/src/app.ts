@@ -191,6 +191,7 @@ export function createApp(deps: AppDependencies): express.Application {
       userAuthMiddleware,
       deps.authService,
       deps.roundProofBundleService,
+      deps.transactions,
     ),
   );
   app.use("/api/admin", createWalletRoleRouter());
