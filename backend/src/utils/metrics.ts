@@ -641,6 +641,21 @@ export const proofBundleVerificationTotal = new Counter({
   registers: [register],
 });
 
+// Dispute evidence package metrics (#1517)
+export const evidencePackageGenerationTotal = new Counter({
+  name: 'inversearena_evidence_package_generation_total',
+  help: 'Total dispute evidence package generation attempts',
+  labelNames: ['status'],
+  registers: [register],
+});
+
+export const evidencePackageGenerationDuration = new Histogram({
+  name: 'inversearena_evidence_package_generation_duration_seconds',
+  help: 'Dispute evidence package generation duration in seconds',
+  buckets: [0.005, 0.01, 0.05, 0.1, 0.5, 1, 2],
+  registers: [register],
+});
+
 // Arena Discovery Backfill Metrics (#1391)
 export const backfillRunsTotal = new Counter({
   name: 'inversearena_backfill_runs_total',

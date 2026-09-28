@@ -14,6 +14,7 @@ module.exports = {
     "<rootDir>/tests/auth-middleware\\.unit\\.test\\.ts",
     "<rootDir>/tests/arenas\\.route\\.unit\\.test\\.ts",
     "<rootDir>/tests/commitStatus\\.route\\.unit\\.test\\.ts",
+    "<rootDir>/tests/evidence\\.route\\.unit\\.test\\.ts",
     "<rootDir>/tests/arenaService\\.deployment\\.unit\\.test\\.ts",
     "<rootDir>/tests/worker\\.route\\.unit\\.test\\.ts",
     "<rootDir>/tests/paymentWorker\\.test\\.ts",
