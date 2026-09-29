@@ -298,6 +298,25 @@ export async function getOnChainWinner(
   return String(result);
 }
 
+/**
+ * Read which oracle contract a given arena instance queries for its yield
+ * rate (#1512). Previously undiscoverable off-chain — `oracle_contract` was
+ * only stored inside the arena's own `ArenaConfig`, with no getter — so an
+ * independent backend freshness check had no way to find the right oracle
+ * to read. Throws on failure (mirrors `getOnChainWinner`): an
+ * unreadable/uninitialized arena is a real error here, not a legitimate
+ * "no value yet" case.
+ */
+export async function getArenaOracleContract(arenaContractId: string): Promise<string> {
+  const stellarRpcGateway = new StellarRpcGateway();
+  try {
+    const result = await simulateViewCall(arenaContractId, "get_oracle_contract", stellarRpcGateway);
+    return String(result);
+  } catch (error) {
+    throw new OnChainReadError("get_oracle_contract", arenaContractId, error);
+  }
+}
+
 /** Combined result of a single successful live-on-chain read (#1408). */
 export interface OnChainArenaSnapshot {
   playerCount: number;
@@ -495,6 +514,40 @@ export async function getOnChainTotalYield(contractId: string): Promise<number> 
   } catch {
     // If the contract call fails, fall back to 0.
     return 0;
+  }
+}
+
+/** Rate plus observation provenance, mirrors `contract/oracle/src/lib.rs`'s `OracleReading` (#1512). */
+export interface OnChainOracleReading {
+  rateBps: number;
+  /** Ledger timestamp (seconds) of the observation. `0` means never observed. */
+  observedAt: number;
+  sourceVersion: number;
+}
+
+/**
+ * Read the oracle contract's rate + freshness metadata (#1512).
+ *
+ * Returns `null` — never throws — on any failure layer: unreachable oracle,
+ * simulation error, or (deliberately) an oracle deployment that predates
+ * `get_oracle_reading` (mixed deployment version compatibility, same
+ * contract-side principle as `contract/arena/src/oracle.rs`'s
+ * `fetch_oracle_reading`). Callers must treat `null` as "freshness unknown,"
+ * not as evidence the rate is stale — `oracleFreshnessService.ts` keeps those
+ * as distinct classifications.
+ */
+export async function getOracleReading(oracleContractId: string): Promise<OnChainOracleReading | null> {
+  const stellarRpcGateway = new StellarRpcGateway();
+  try {
+    const result = await simulateViewCall(oracleContractId, "get_oracle_reading", stellarRpcGateway);
+    const reading = result as { rate_bps: number | bigint; observed_at: number | bigint; source_version: number | bigint };
+    return {
+      rateBps: Number(reading.rate_bps),
+      observedAt: Number(reading.observed_at),
+      sourceVersion: Number(reading.source_version),
+    };
+  } catch {
+    return null;
   }
 }
 

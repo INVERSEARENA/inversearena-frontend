@@ -1,4 +1,5 @@
 import { checkRotationReadiness, type RotationReadiness, type SecretPurpose } from "./secretKeyring";
+import { getOracleFreshnessConfig } from "./oracleFreshnessConfig";
 import { logger } from "../utils/logger";
 
 export function validateConfig(): void {
@@ -24,6 +25,11 @@ export function validateConfig(): void {
   }
 
   assertSecretRotationReadiness();
+
+  // #1512: fail fast on an invalid oracle freshness policy (warn threshold
+  // above max age, or either non-positive) rather than discovering it the
+  // first time a yield-dependent mutation tries to use it.
+  getOracleFreshnessConfig();
 }
 
 /**

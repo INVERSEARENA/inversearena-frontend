@@ -3,6 +3,7 @@ import { RoundService } from '../services/roundService';
 import { RoundInputSchema, RoundState } from '../types/round';
 import type { RoundInput } from '../types/round';
 import { apiError, HttpError } from '../utils/apiError';
+import { StaleOracleDataError } from '../services/oracleFreshnessService';
 
 export class RoundController {
   constructor(private roundService: RoundService) { }
@@ -20,6 +21,11 @@ export class RoundController {
     } catch (error) {
       // Typed client errors (e.g. PayloadLimitError, 413) keep their status.
       if (error instanceof HttpError) { next(error); return; }
+      // #1512: recoverable — retry once the oracle publishes a fresh observation.
+      if (error instanceof StaleOracleDataError) {
+        next(apiError(409, 'STALE_ORACLE_DATA', error.message));
+        return;
+      }
       const message = error instanceof Error ? error.message : 'Failed to resolve round';
       const status = message.includes('not found') ? 404 : message.includes('already in state') ? 409 : 500;
       const code = status === 404
