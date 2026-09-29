@@ -152,6 +152,40 @@ impl ArenaEvents {
             .publish((Symbol::new(env, "vault_oracle_failed"),), oracle.clone());
     }
 
+    /// Emitted by `set_oracle_freshness_policy` (#1512).
+    pub fn oracle_freshness_policy_updated(
+        env: &Env,
+        admin: &Address,
+        max_age_secs: u64,
+        warn_age_secs: u64,
+    ) {
+        env.events().publish(
+            (symbol_short!("frsh_pol"), admin.clone()),
+            (max_age_secs, warn_age_secs),
+        );
+    }
+
+    /// Emitted on every `resolve_round` attempt that reaches the oracle
+    /// freshness check (#1512), success or rejection — `classification_code`
+    /// is `OracleFreshness::as_code()`'s value. This is the signal a
+    /// keeper-facing status / alerting pipeline watches for staleness, since
+    /// it fires even when `age_secs` doesn't cross the `Stale` threshold.
+    pub fn oracle_freshness_observed(env: &Env, round: u32, classification_code: u32, age_secs: u64) {
+        env.events().publish(
+            (Symbol::new(env, "oracle_freshness_observed"),),
+            (round, classification_code, age_secs),
+        );
+    }
+
+    /// Emitted when `resolve_round` refuses to proceed because the oracle's
+    /// observation is `Stale` (#1512).
+    pub fn oracle_stale_rejected(env: &Env, round: u32, age_secs: u64) {
+        env.events().publish(
+            (Symbol::new(env, "oracle_stale_rejected"),),
+            (round, age_secs),
+        );
+    }
+
     pub fn arena_cancelled(env: &Env, admin: &Address) {
         env.events()
             .publish((symbol_short!("cancel"), admin.clone()), ());

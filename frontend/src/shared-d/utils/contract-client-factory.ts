@@ -1,5 +1,11 @@
 import { Contract } from "@stellar/stellar-sdk";
 import { Server } from "@stellar/stellar-sdk/rpc";
+import {
+  parseSorobanContractId,
+  type NetworkBoundContractId,
+  type SorobanContractId,
+  type ParseContractIdOptions,
+} from "@/shared-d/utils/identity-value-objects";
 
 export type SorobanServerConstructor = new (serverUrl: string) => Server;
 
@@ -20,6 +26,10 @@ export type DeploymentManifest = {
  *
  * Implements singleton pattern for Server and contract cache to reduce
  * re-initialization overhead on hot paths.
+ *
+ * Contract ID validation (#1522): `createContract` and `createNamedContract`
+ * now validate the contract ID via `parseSorobanContractId` before constructing
+ * a `Contract` instance.  Pass `{ allowPlaceholder: true }` for test fixtures.
  */
 export class ContractClientFactory {
   private _rpcServer: Server | null = null;
@@ -50,21 +60,52 @@ export class ContractClientFactory {
     return this._rpcServer;
   }
 
-  createContract(contractId: string): Contract {
-    let contract = this._contractCache.get(contractId);
+  /**
+   * Create a {@link Contract} for the given contract ID string, validating it
+   * via {@link parseSorobanContractId} before construction (#1522).
+   *
+   * @param contractId - Raw contract address string.
+   * @param options    - Pass `{ allowPlaceholder: true }` for test/demo fixtures.
+   */
+  createContract(contractId: string, options: ParseContractIdOptions = {}): Contract {
+    const validated: SorobanContractId = parseSorobanContractId(contractId, options);
+    let contract = this._contractCache.get(validated);
     if (!contract) {
-      contract = new Contract(contractId);
-      this._contractCache.set(contractId, contract);
+      contract = new Contract(validated);
+      this._contractCache.set(validated, contract);
     }
     return contract;
   }
 
-  createNamedContract(name: string): Contract {
+  /**
+   * Create a {@link Contract} for a network-bound contract ID, validating that
+   * the contract's network matches this factory's deployment manifest (#1522).
+   *
+   * @throws {Error} when the network identity of `bound` does not match
+   *   the factory's deployment passphrase.
+   */
+  createNetworkBoundContract(bound: NetworkBoundContractId): Contract {
+    // The factory's own passphrase-derived identity (lazy, for factories
+    // constructed from a plain rpcUrl string that carry no passphrase).
+    if (this.manifest.passphrase) {
+      const { deriveNetworkIdentity, parseNetworkPassphrase } =
+        require("@/shared-d/utils/identity-value-objects") as typeof import("@/shared-d/utils/identity-value-objects");
+      const factoryNetwork = deriveNetworkIdentity(parseNetworkPassphrase(this.manifest.passphrase));
+      if (bound.network !== factoryNetwork) {
+        throw new Error(
+          `Contract ${bound.contractId} is bound to network "${bound.network}" but this factory is on "${factoryNetwork}"`,
+        );
+      }
+    }
+    return this.createContract(bound.contractId);
+  }
+
+  createNamedContract(name: string, options: ParseContractIdOptions = {}): Contract {
     const deployment = this.manifest.contracts[name];
     if (!deployment?.address) {
       throw new Error(`Contract "${name}" is not present in the ${this.manifest.network} deployment manifest`);
     }
-    return this.createContract(deployment.address);
+    return this.createContract(deployment.address, options);
   }
 
   clearCache(): void {

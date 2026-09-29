@@ -1,5 +1,6 @@
 import { checkRotationReadiness, type RotationReadiness, type SecretPurpose } from "./secretKeyring";
 import { getTreasuryConfig } from "./treasuryConfig";
+import { getOracleFreshnessConfig } from "./oracleFreshnessConfig";
 import { logger } from "../utils/logger";
 
 export function validateConfig(): void {
@@ -29,6 +30,10 @@ export function validateConfig(): void {
   // #1511: fail fast on a malformed treasury/reconciliation config rather
   // than discovering it the first time a reconciliation run tries to use it.
   getTreasuryConfig();
+  // #1512: fail fast on an invalid oracle freshness policy (warn threshold
+  // above max age, or either non-positive) rather than discovering it the
+  // first time a yield-dependent mutation tries to use it.
+  getOracleFreshnessConfig();
 }
 
 /**

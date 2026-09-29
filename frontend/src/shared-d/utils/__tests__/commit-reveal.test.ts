@@ -89,6 +89,28 @@ describe("saveCommitment / loadCommitment / clearCommitment", () => {
     expect(Buffer.from(loaded!.salt).equals(Buffer.from(salt))).toBe(true);
   });
 
+  it("returns the saved commitment from the return value", () => {
+    const salt = generateSalt();
+    const result = saveCommitment("arena-1", 3, PUBLIC_KEY, { choice: "Heads", salt });
+    expect(result.choice).toBe("Heads");
+    expect(Buffer.from(result.salt).equals(Buffer.from(salt))).toBe(true);
+  });
+
+  it("is idempotent — a second call returns the first-saved commitment (#1492)", () => {
+    const salt1 = generateSalt();
+    const salt2 = generateSalt();
+    saveCommitment("arena-1", 1, PUBLIC_KEY, { choice: "Heads", salt: salt1 });
+    const result = saveCommitment("arena-1", 1, PUBLIC_KEY, { choice: "Tails", salt: salt2 });
+
+    // The first commitment is preserved — the second write is a no-op.
+    expect(result.choice).toBe("Heads");
+    expect(Buffer.from(result.salt).equals(Buffer.from(salt1))).toBe(true);
+
+    // loadCommitment also returns the original.
+    const loaded = loadCommitment("arena-1", 1, PUBLIC_KEY);
+    expect(loaded!.choice).toBe("Heads");
+  });
+
   it("returns null when nothing was saved for that arena/round", () => {
     expect(loadCommitment("never-saved-arena", 1, PUBLIC_KEY)).toBeNull();
   });

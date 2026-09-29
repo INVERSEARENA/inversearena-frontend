@@ -15,6 +15,9 @@
  */
 
 import { randomUUID } from "crypto";
+// TODO(#1497): move exclusive ownership, checkpoints and bounded jittered
+// retries onto the shared lease/checkpoint primitive instead of poller-local
+// lifecycle handling.
 import type { ArenaService } from "../services/arenaService";
 import { getSorobanBreaker } from "../utils/circuitBreaker";
 import { refreshLedgerIdentity } from "../services/ledgerClock";

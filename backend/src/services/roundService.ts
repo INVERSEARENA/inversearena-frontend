@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { Contract, Keypair, TransactionBuilder, xdr } from "@stellar/stellar-sdk";
-import { StellarRpcGateway } from "../../frontend/src/shared-d/services/stellarRpcGateway";
+import { StellarRpcGateway } from "../../../frontend/src/shared-d/services/stellarRpcGateway";
 
 import { RoundRepository } from '../repositories/roundRepository';
 import type {
@@ -23,10 +23,13 @@ import { invalidateArenaStats } from '../cache/cacheService';
 import {
   getOnChainActivePlayerIds,
   getOnChainWinner,
+  getArenaOracleContract,
+  getOracleReading,
 } from './onChainReader';
 import { getStellarConfig, type StellarConfig } from '../config/stellarConfig';
 import { buildRoundResolution } from '../domain/roundResolution';
 import { contextLogger, maskWalletAddress } from '../utils/logger';
+import { OracleFreshnessService, StaleOracleDataError, type OracleReading } from './oracleFreshnessService';
 
 export interface OnChainRoundState {
   roundId: string;
@@ -40,6 +43,10 @@ export interface OnChainReader {
   getActivePlayers(contractId: string): Promise<string[]>;
   /** Returns the single on-chain winner address once the game is finished, or null. */
   getWinner(contractId: string): Promise<string | null>;
+  /** #1512: the oracle contract this arena instance reads its yield rate from. */
+  getOracleContract(arenaContractId: string): Promise<string>;
+  /** #1512: the oracle's rate + observation provenance, or null if unavailable. */
+  getOracleReading(oracleContractId: string): Promise<OracleReading | null>;
 }
 
 export class NoOpOnChainReader implements OnChainReader {
@@ -50,6 +57,12 @@ export class NoOpOnChainReader implements OnChainReader {
     return [];
   }
   async getWinner(_contractId: string): Promise<string | null> {
+    return null;
+  }
+  async getOracleContract(_arenaContractId: string): Promise<string> {
+    return '';
+  }
+  async getOracleReading(_oracleContractId: string): Promise<OracleReading | null> {
     return null;
   }
 }
@@ -65,11 +78,18 @@ export class SorobanOnChainReader implements OnChainReader {
   async getWinner(contractId: string): Promise<string | null> {
     return getOnChainWinner(contractId);
   }
+  async getOracleContract(arenaContractId: string): Promise<string> {
+    return getArenaOracleContract(arenaContractId);
+  }
+  async getOracleReading(oracleContractId: string): Promise<OracleReading | null> {
+    return getOracleReading(oracleContractId);
+  }
 }
 
 export class RoundService {
   private roundRepo: RoundRepository;
   private onChainReader: OnChainReader;
+  private oracleFreshnessService: OracleFreshnessService;
   private explicitStellarConfig: StellarConfig | undefined;
   private resolvedStellarConfig: StellarConfig | undefined;
 
@@ -81,6 +101,9 @@ export class RoundService {
   ) {
     this.roundRepo = new RoundRepository(prisma);
     this.onChainReader = onChainReader ?? new SorobanOnChainReader();
+    // The freshness service only needs `getOracleReading`, which
+    // `OnChainReader` already exposes — no separate wiring.
+    this.oracleFreshnessService = new OracleFreshnessService(this.onChainReader);
     this.explicitStellarConfig = stellarConfig;
   }
 
@@ -189,6 +212,19 @@ export class RoundService {
         throw new Error(`Round already in state: ${round.state}`);
       }
 
+      // ── #1512: reject resolution against stale oracle data ───────────────
+      // `input.oracleYield` is caller-supplied and feeds this round's actual
+      // settlement math (buildRoundResolution/computeSettlementBreakdown)
+      // with no independent re-verification of its own — the on-chain
+      // contract's own resolve_round has its own freshness guard (#1512,
+      // contract/arena/src/lib.rs), but that only protects the on-chain
+      // rate snapshot, not this backend's off-chain payout computation.
+      // Unavailable (oracle unreachable, or predates freshness metadata)
+      // does not block — see OracleFreshnessService.assertFresh's doc
+      // comment — only a reading known to be stale does.
+      const oracleContractId = await this.onChainReader.getOracleContract(input.arenaContractId);
+      await this.oracleFreshnessService.assertFresh(oracleContractId, 'resolve_round');
+
       // Submit on-chain resolve_round BEFORE computing eliminations so that
       // the contract's authoritative state is available to read back via
       // get_players. If this fails the DB is untouched, preventing desync.
@@ -225,7 +261,7 @@ export class RoundService {
         from_state: round.state,
         to_state: RoundState.RESOLVED,
       });
-      playersEliminatedTotal.inc(eliminatedPlayers.length);
+      playersEliminatedTotal.inc(result.eliminatedPlayers.length);
       await refreshArenaMetrics(this.prisma);
 
       // Drop the now-stale arena stats cache so watchers see the resolved round

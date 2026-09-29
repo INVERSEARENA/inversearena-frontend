@@ -1,7 +1,7 @@
 use crate::types::PendingUpgrade;
 use crate::types::{
-    ArenaConfig, ArenaError, Choice, GameState, PendingAdmin, PlayerState, RoundResult,
-    YieldSnapshot,
+    ArenaConfig, ArenaError, Choice, GameState, OracleFreshnessPolicy, PendingAdmin, PlayerState,
+    RoundResult, YieldSnapshot,
 };
 use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, Vec, contracttype, symbol_short};
 
@@ -48,6 +48,9 @@ pub(crate) enum DataKey {
     RosterCount,
     SurvivorCount,
     StorageVersion,
+    /// Per-instance oracle freshness policy (#1512). See
+    /// `ArenaRepository::load_oracle_freshness_policy`.
+    OracleFreshnessPolicy,
 }
 
 pub struct ArenaRepository<'a> {
@@ -1075,6 +1078,25 @@ impl ArenaStorage {
         env.storage()
             .persistent()
             .set(&DataKey::PlatformFeeBps, &fee_bps);
+    }
+
+    /// Per-instance oracle freshness policy (#1512). Defaults to
+    /// `OracleFreshnessPolicy::default_policy()` until the admin calls
+    /// `set_oracle_freshness_policy` — mirrors `load_platform_fee_bps`'s
+    /// read-with-default pattern above.
+    pub fn load_oracle_freshness_policy(env: &Env) -> OracleFreshnessPolicy {
+        Self::extend_persistent_ttl(env, &DataKey::OracleFreshnessPolicy);
+        env.storage()
+            .persistent()
+            .get(&DataKey::OracleFreshnessPolicy)
+            .unwrap_or_else(OracleFreshnessPolicy::default_policy)
+    }
+
+    pub fn save_oracle_freshness_policy(env: &Env, policy: &OracleFreshnessPolicy) {
+        Self::extend_persistent_ttl(env, &DataKey::OracleFreshnessPolicy);
+        env.storage()
+            .persistent()
+            .set(&DataKey::OracleFreshnessPolicy, policy);
     }
 
     pub fn save_pending_upgrade(env: &Env, upgrade: &PendingUpgrade) {

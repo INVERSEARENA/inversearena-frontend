@@ -1,9 +1,15 @@
 #![no_std]
-use soroban_sdk::{Address, BytesN, Env, contract, contracterror, contractimpl, symbol_short};
+use soroban_sdk::{
+    Address, BytesN, Env, contract, contracterror, contractimpl, contracttype, symbol_short,
+};
 
 /// On-chain yield rate oracle for InverseArena.
 ///
-/// Stores an admin-updateable yield rate in basis points (bps).
+/// Stores an admin-updateable yield rate in basis points (bps), alongside the
+/// ledger timestamp of the observation that produced it (#1512) so a
+/// consumer can classify how fresh that rate actually is instead of trusting
+/// a bare number.
+///
 /// The arena contract calls `get_current_yield_bps` once per `resolve_round`
 /// to snapshot the current USDY / RWA yield rate.
 ///
@@ -17,9 +23,20 @@ const KEY_ADMIN: soroban_sdk::Symbol = symbol_short!("ADMIN");
 const KEY_RATE: soroban_sdk::Symbol = symbol_short!("RATE");
 const KEY_MAX_RATE: soroban_sdk::Symbol = symbol_short!("MAX_RATE");
 const KEY_PENDING_ADMIN: soroban_sdk::Symbol = symbol_short!("P_ADMIN");
+/// Ledger timestamp (seconds) of the observation behind the current `KEY_RATE`
+/// value. Absent (reads as `0`) until the first `set_yield_bps`/`initialize`
+/// call — a consumer must treat `observed_at == 0` as "no observation has
+/// ever been recorded," i.e. maximally stale, not as a real epoch-0 reading.
+const KEY_OBSERVED_AT: soroban_sdk::Symbol = symbol_short!("OBS_AT");
 
 pub const DEFAULT_MAX_YIELD_BPS: u32 = 5_000;
 pub const MAX_MAX_RATE_BPS: u32 = 10_000;
+
+/// Version of the freshness-metadata shape this deployment exposes via
+/// `get_oracle_reading` (#1512). Bumped only if `OracleReading`'s fields
+/// change in a way callers must branch on; the plain `get_current_yield_bps`
+/// method never changes shape, so it carries no version of its own.
+pub const ORACLE_CONTRACT_VERSION: u32 = 1;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -29,6 +46,24 @@ pub enum OracleError {
     AlreadyInitialized = 2,
     RateTooHigh = 3,
     NoPendingAdmin = 4,
+}
+
+/// A yield rate reading together with its observation provenance (#1512).
+///
+/// Additive: exposed via the new `get_oracle_reading` view alongside the
+/// unchanged `get_current_yield_bps`, so an older caller that only knows the
+/// latter keeps working unmodified.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleReading {
+    pub rate_bps: u32,
+    /// Ledger timestamp (seconds) the rate was last set at. `0` means no
+    /// observation has ever been recorded on this instance.
+    pub observed_at: u64,
+    /// This deployment's `ORACLE_CONTRACT_VERSION`, so a caller that reads
+    /// more than one oracle instance (e.g. across an upgrade) can tell them
+    /// apart instead of assuming every instance shares the same shape.
+    pub source_version: u32,
 }
 
 #[contractimpl]
@@ -43,6 +78,9 @@ impl OracleContract {
         admin.require_auth();
         env.storage().persistent().set(&KEY_ADMIN, &admin);
         env.storage().persistent().set(&KEY_RATE, &initial_rate_bps);
+        env.storage()
+            .persistent()
+            .set(&KEY_OBSERVED_AT, &env.ledger().timestamp());
         env.storage()
             .persistent()
             .set(&KEY_MAX_RATE, &DEFAULT_MAX_YIELD_BPS);
@@ -65,7 +103,16 @@ impl OracleContract {
         }
         admin.require_auth();
         env.storage().persistent().set(&KEY_RATE, &rate_bps);
+        let observed_at = env.ledger().timestamp();
+        env.storage()
+            .persistent()
+            .set(&KEY_OBSERVED_AT, &observed_at);
+        // Unchanged shape (bare rate_bps) for existing consumers of this event.
         env.events().publish((symbol_short!("rate_set"),), rate_bps);
+        // Additive (#1512): carries the observation timestamp for consumers
+        // that need freshness provenance without re-parsing `rate_set`.
+        env.events()
+            .publish((symbol_short!("rate_obs"),), (rate_bps, observed_at));
         Ok(())
     }
 
@@ -138,12 +185,30 @@ impl OracleContract {
     pub fn get_current_yield_bps(env: Env) -> u32 {
         env.storage().persistent().get(&KEY_RATE).unwrap_or(0)
     }
+
+    /// Rate plus observation provenance (#1512): additive alongside
+    /// `get_current_yield_bps`, which keeps returning just the bare rate.
+    /// `observed_at == 0` means no `set_yield_bps`/`initialize` call has
+    /// ever landed on this instance — callers must treat that as maximally
+    /// stale, not as a real timestamp.
+    pub fn get_oracle_reading(env: Env) -> OracleReading {
+        let rate_bps = env.storage().persistent().get(&KEY_RATE).unwrap_or(0);
+        let observed_at = env.storage().persistent().get(&KEY_OBSERVED_AT).unwrap_or(0);
+        OracleReading {
+            rate_bps,
+            observed_at,
+            source_version: ORACLE_CONTRACT_VERSION,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{Env, testutils::Address as _};
+    use soroban_sdk::{
+        Env,
+        testutils::{Address as _, Ledger as _},
+    };
 
     fn setup(initial_rate: u32) -> (Env, OracleContractClient<'static>) {
         let env = Env::default();
@@ -328,6 +393,77 @@ mod tests {
             client.get_current_yield_bps(),
             500,
             "rate must be unchanged after a rejected call"
+        );
+    }
+
+    // ── Coverage added for issue #1512 (freshness metadata) ───────────────
+
+    #[test]
+    fn initialize_records_observed_at() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+        let contract_id = env.register(OracleContract, ());
+        let admin = Address::generate(&env);
+        let client = OracleContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &500);
+
+        let reading = client.get_oracle_reading();
+        assert_eq!(reading.rate_bps, 500);
+        assert_eq!(reading.observed_at, 1_000);
+        assert_eq!(reading.source_version, ORACLE_CONTRACT_VERSION);
+    }
+
+    #[test]
+    fn set_yield_bps_updates_observed_at() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+        let contract_id = env.register(OracleContract, ());
+        let admin = Address::generate(&env);
+        let client = OracleContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &500);
+
+        env.ledger().with_mut(|li| li.timestamp = 2_500);
+        client.set_yield_bps(&750);
+
+        let reading = client.get_oracle_reading();
+        assert_eq!(reading.rate_bps, 750);
+        assert_eq!(reading.observed_at, 2_500);
+    }
+
+    #[test]
+    fn get_oracle_reading_before_initialize_reports_no_observation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(OracleContract, ());
+        let client = OracleContractClient::new(&env, &contract_id);
+
+        let reading = client.get_oracle_reading();
+        assert_eq!(reading.rate_bps, 0);
+        assert_eq!(
+            reading.observed_at, 0,
+            "no set_yield_bps/initialize call has ever landed — observed_at must read as 0, not a real timestamp"
+        );
+    }
+
+    #[test]
+    fn set_yield_bps_rejected_above_ceiling_leaves_observed_at_unchanged() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+        let contract_id = env.register(OracleContract, ());
+        let admin = Address::generate(&env);
+        let client = OracleContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &500);
+
+        env.ledger().with_mut(|li| li.timestamp = 9_999);
+        let _ = client.try_set_yield_bps(&(DEFAULT_MAX_YIELD_BPS + 1));
+
+        let reading = client.get_oracle_reading();
+        assert_eq!(
+            reading.observed_at, 1_000,
+            "a rejected set_yield_bps must not advance the observation timestamp"
         );
     }
 }
