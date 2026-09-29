@@ -3,6 +3,8 @@ import cors from "cors";
 import helmet from "helmet";
 import { createApiRouter } from "./routes";
 import { createAdminRouter } from "./routes/admin";
+import { createTreasuryRouter } from "./routes/treasury";
+import { refreshTreasuryMetrics } from "./services/treasury/treasuryMetrics";
 import { createWalletRoleRouter } from "./routes/walletRole";
 import { createMaintenanceStatusRouter } from "./routes/maintenance";
 import { errorHandler } from "./middleware/errorHandler";
@@ -143,7 +145,7 @@ export function createApp(deps: AppDependencies): express.Application {
   });
 
   app.get("/metrics", async (_req, res) => {
-    const refreshes: Promise<unknown>[] = [refreshArenaMetrics(prisma)];
+    const refreshes: Promise<unknown>[] = [refreshArenaMetrics(prisma), refreshTreasuryMetrics(prisma)];
     if (deps.queueSnapshotSource) {
       const queueOptions =
         deps.queueCapacity === undefined
@@ -199,6 +201,7 @@ export function createApp(deps: AppDependencies): express.Application {
     "/api/admin",
     createAdminRouter(adminController, roundController, adminAuthMiddleware),
   );
+  app.use("/api/admin", createTreasuryRouter(adminAuthMiddleware, prisma));
   app.use("/api", createMaintenanceStatusRouter(maintenanceService));
 
   app.use(errorHandler);

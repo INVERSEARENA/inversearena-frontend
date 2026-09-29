@@ -146,3 +146,85 @@ model ArenaProjectionCheckpoint {
   @@index([status])
   @@map("arena_projection_checkpoints")
 }
+
+// Protocol treasury fee reconciliation (#1511).
+//
+// One row per canonical fee expectation, derived from an authoritative
+// on-chain event (currently: the platform fee implied by an arena's
+// `claimed` event) and matched against actual on-chain token movement.
+// Read-only reporting — this table never drives a transfer. See
+// backend/docs/TREASURY_RECONCILIATION_DESIGN.md.
+model TreasuryFeeRecord {
+  id     String @id @default(uuid())
+  // networkPassphrase-derived key; keeps testnet/mainnet records isolated,
+  // same convention as ArenaProjectionCheckpoint.network.
+  network String
+  // "platform_fee" today; the schema leaves room for other treasury record
+  // types (e.g. creator-stake collect/refund) as a documented follow-up.
+  recordType String @default("platform_fee") @map("record_type")
+  arenaId    String @map("arena_id")
+  asset      String
+  assetIssuer String? @map("asset_issuer")
+
+  // Canonical source event identity — the idempotency key (network, tx hash,
+  // event/operation index) required by #1511's ingestion acceptance criterion.
+  sourceTxHash         String   @map("source_tx_hash")
+  sourceEventId        String   @map("source_event_id")
+  sourceLedgerSequence Int      @map("source_ledger_sequence")
+  sourceLedgerClosedAt DateTime @map("source_ledger_closed_at")
+
+  // Expected side — derived from authoritative on-chain data (the claimed
+  // event's yield_amount) and a versioned protocol config snapshot, using
+  // exact integer (atomic-unit) math.
+  expectedAmountAtomic BigInt  @map("expected_amount_atomic")
+  configVersion        Int     @map("config_version")
+  feeBpsApplied         Int     @map("fee_bps_applied")
+  destination           String? @map("destination")
+
+  // Actual side — filled in only once/if a matching transfer is found.
+  actualAmountAtomic  BigInt? @map("actual_amount_atomic")
+  actualTxHash        String? @map("actual_tx_hash")
+  actualDestination   String? @map("actual_destination")
+
+  // pending | balanced | discrepant
+  status String @default("pending")
+  // missing_transfer | unexpected_transfer | amount_mismatch | destination_mismatch | unfinalized_ledger
+  discrepancyType String?   @map("discrepancy_type")
+  reconciledAt    DateTime? @map("reconciled_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([network, sourceTxHash, sourceEventId])
+  @@index([arenaId])
+  @@index([status])
+  @@index([sourceLedgerSequence])
+  @@map("treasury_fee_records")
+}
+
+// Idempotent ingestion checkpoint for treasury reconciliation (#1511).
+// Mirrors ArenaProjectionCheckpoint's per-(arenaId, network) lease pattern,
+// scoped to this ingestion job specifically (a distinct job from the #1382
+// arena state projection).
+model TreasuryReconciliationCheckpoint {
+  id                 String   @id @default(uuid())
+  arenaId            String   @map("arena_id")
+  network            String
+  lastLedgerSequence Int      @map("last_ledger_sequence")
+  // The `platform_fee_bps` in effect as of `lastLedgerSequence`, carried
+  // forward across ingestion runs so a resumed run knows which fee rate
+  // applied to a `claimed` event without re-scanning full history. Defaults
+  // to the contract's own global default (see `load_platform_fee_bps`).
+  lastKnownFeeBps Int @default(1000) @map("last_known_fee_bps")
+  // idle | ingesting | caught_up | failed
+  status     String    @default("idle")
+  lastError  String?   @map("last_error")
+  leaseOwner String?   @map("lease_owner")
+  leaseExpiresAt DateTime? @map("lease_expires_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  @@unique([arenaId, network])
+  @@index([status])
+  @@map("treasury_reconciliation_checkpoints")
+}
