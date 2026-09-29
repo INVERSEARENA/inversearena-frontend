@@ -1,4 +1,32 @@
 import { redis } from "./redisClient";
+import {
+  type NetworkIdentity,
+  deriveNetworkIdentity,
+  parseNetworkPassphrase,
+} from "../../frontend/src/shared-d/utils/identity-value-objects";
+import { getStellarConfig } from "../config/stellarConfig";
+
+/**
+ * Derive the {@link NetworkIdentity} for the currently configured Stellar
+ * network.  Cached after first call so it never re-parses the config.
+ *
+ * All arena-derived cache keys include this identity so that a testnet arena
+ * ID that happens to share characters with a mainnet ID never hits the same
+ * cache slot (#1522).
+ */
+let _networkIdentity: NetworkIdentity | null = null;
+export function getNetworkIdentity(): NetworkIdentity {
+  if (!_networkIdentity) {
+    const { networkPassphrase } = getStellarConfig();
+    _networkIdentity = deriveNetworkIdentity(parseNetworkPassphrase(networkPassphrase));
+  }
+  return _networkIdentity;
+}
+
+/** Reset the cached identity — for tests only. */
+export function _resetNetworkIdentityForTest(): void {
+  _networkIdentity = null;
+}
 
 export const cache = {
   async get<T>(key: string): Promise<T | null> {
@@ -42,11 +70,20 @@ export const cache = {
 };
 
 /**
- * Cache key builders
+ * Cache key builders.
+ *
+ * Arena-derived keys now include the canonical network identity (#1522) so
+ * testnet and mainnet arenas can never collide in a shared Redis instance.
+ * The network segment is derived from the `STELLAR_NETWORK_PASSPHRASE` env
+ * var via {@link getNetworkIdentity}.
+ *
+ * Non-arena keys (leaderboard, oracle yield, sessions, ledger continuity) are
+ * not arena-scoped and keep their existing format.
  */
 export const cacheKeys = {
   oracleYield: () => "oracle:yield",
-  arenaStats: (arenaId: string) => `arena:stats:${arenaId}`,
+  /** Arena stats — includes network identity to prevent cross-network collisions (#1522). */
+  arenaStats: (arenaId: string) => `arena:${getNetworkIdentity()}:stats:${arenaId}`,
   leaderboard: () => "leaderboard",
   /**
    * The last *live* (non-degraded) on-chain read for an arena (#1408) —
@@ -54,24 +91,29 @@ export const cacheKeys = {
    * disposable 15s cache of the full computed response, while this is the
    * "last known good" record a degraded response falls back to when a fresh
    * on-chain read fails.
+   *
+   * Includes network identity (#1522).
    */
-  arenaOnChainSnapshot: (arenaId: string) => `arena:onchain-snapshot:${arenaId}`,
+  arenaOnChainSnapshot: (arenaId: string) => `arena:${getNetworkIdentity()}:onchain-snapshot:${arenaId}`,
   /** Persisted ledger continuity window and recovery state (#1490). */
   ledgerContinuity: (network: string) => `ledger:continuity:${network}`,
   /** #1394: a resolved round's proof bundle is immutable for a given roundId. */
   roundProofBundle: (roundId: string) => `round:proof-bundle:${roundId}`,
-  /** #1500: canonical snapshot metadata for semantic change detection. */
-  arenaSnapshotMeta: (arenaId: string) => `arena:snapshot:meta:${arenaId}`,
-  /** #1500: verified full snapshot payload with version generation. */
-  arenaVerifiedSnapshot: (arenaId: string) => `arena:snapshot:verified:${arenaId}`,
+  /** #1500: canonical snapshot metadata for semantic change detection. Includes network identity (#1522). */
+  arenaSnapshotMeta: (arenaId: string) => `arena:${getNetworkIdentity()}:snapshot:meta:${arenaId}`,
+  /** #1500: verified full snapshot payload with version generation. Includes network identity (#1522). */
+  arenaVerifiedSnapshot: (arenaId: string) => `arena:${getNetworkIdentity()}:snapshot:verified:${arenaId}`,
 };
 
 /**
  * Key patterns for everything derived from ledger reads per arena (#1490).
  * A ledger rollback invalidates exactly these; unrelated keys (leaderboard,
  * oracle yield, sessions) are not derived from arena ledger state.
+ *
+ * Patterns use a wildcard for the network segment so rollbacks invalidate
+ * across all networks in a shared Redis instance (#1522).
  */
-export const arenaDerivedCachePatterns = ["arena:stats:*", "arena:onchain-snapshot:*"] as const;
+export const arenaDerivedCachePatterns = ["arena:*:stats:*", "arena:*:onchain-snapshot:*"] as const;
 
 /**
  * TTLs in seconds

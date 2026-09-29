@@ -6,6 +6,9 @@ import { StatCard } from "@/components/arena-v2/stats/StatCard";
 import { EliminationLog } from "@/components/arena-v2/stats/EliminationLog";
 import { ArenaFooter } from "@/components/arena-v2/footer/ArenaFooter";
 
+// TODO(#1496): demo-only route backed by local fixtures. Production arena
+// state/transactions must come from the canonical /arena feature so demo
+// modules stay out of the production arena bundle.
 const MOCK_ELIMINATION_LOG = [
   { id: "1", label: "USER 9021 X", status: "terminated" as const },
   { id: "2", label: "ALPHA.BRAVO.9", status: "terminated" as const },

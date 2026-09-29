@@ -1,5 +1,10 @@
 import type { PaymentStatus, TransactionRecord } from "../types/payment";
 
+/** Provenance marker for rows rebuilt from chain during self-repair (#1493). */
+export const RECONCILED_PROVENANCE = "reconciled";
+/** Canonical dedupe key for repair: transaction hash + operation index (#1493). */
+export const reconcileDedupeKey = (hash: string, opIndex: number) => `${hash}:${opIndex}`;
+
 export interface TransactionRepository {
   findByIdempotencyKey(idempotencyKey: string): Promise<TransactionRecord | null>;
   /**
