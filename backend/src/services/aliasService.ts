@@ -31,6 +31,8 @@ import { apiError } from "../utils/apiError";
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
+// TODO(#1498): normalize Mongo/Prisma/wallet identity joins through one resolver.
+export const IDENTITY_NAMESPACE = "alias:identity:normalized";
 const ALIAS_GRACE_PERIOD_DAYS = 30;
 const ALIAS_HISTORY_MAX = 50; // cap stored history per user
 
