@@ -58,6 +58,14 @@ const MIN_PLAYERS: u32 = 2;
 /// for the sibling contract's own counter — these are independent).
 const CONTRACT_VERSION: u32 = 1;
 
+/// The decimal precision `min_stake` is denominated in, matching Stellar's
+/// native asset (and the staking contract's own `MIN_INITIAL_STAKE`
+/// convention). `create_pool` scales it to each `stake_token`'s actual
+/// on-chain decimals so the same admin-configured "real-world" minimum
+/// applies uniformly regardless of which approved token a creator picks
+/// (#1361).
+const MIN_STAKE_REFERENCE_DECIMALS: u32 = 7;
+
 /// Factory contract — deploys arena instances and enforces protocol-level rules.
 ///
 /// Architecture overview: see `ARCHITECTURE.md` in the workspace root.
@@ -267,12 +275,13 @@ impl FactoryContract {
         if config.entry_fee <= 0 {
             return Err(FactoryError::EntryFeeTooLow);
         }
-        let min_stake = FactoryStorage::load_min_stake(&env)?;
-        if config.entry_fee < min_stake {
-            return Err(FactoryError::StakeBelowMinimum);
-        }
         if !FactoryStorage::is_supported_token(&env, &config.stake_token) {
             return Err(FactoryError::UnsupportedToken);
+        }
+        let min_stake = FactoryStorage::load_min_stake(&env)?;
+        let effective_min_stake = Self::normalize_min_stake(&env, &config.stake_token, min_stake)?;
+        if config.entry_fee < effective_min_stake {
+            return Err(FactoryError::StakeBelowMinimum);
         }
         if !FactoryStorage::is_approved_vault(&env, &config.yield_vault) {
             return Err(FactoryError::InvalidVault);
@@ -392,6 +401,46 @@ impl FactoryContract {
         token_client.transfer(host, &env.current_contract_address(), &amount);
     }
 
+    /// Scale the admin-configured `min_stake` (denominated in
+    /// `MIN_STAKE_REFERENCE_DECIMALS`) to `stake_token`'s actual on-chain
+    /// decimals, so the effective real-world minimum creator stake is
+    /// consistent across every supported token regardless of its precision
+    /// (#1361). Reads `decimals()` from the standard token interface, which
+    /// every approved token must already implement.
+    fn normalize_min_stake(
+        env: &Env,
+        stake_token: &Address,
+        min_stake: i128,
+    ) -> Result<i128, FactoryError> {
+        let token_decimals = token::TokenClient::new(env, stake_token).decimals();
+        if token_decimals == MIN_STAKE_REFERENCE_DECIMALS {
+            return Ok(min_stake);
+        }
+        if token_decimals > MIN_STAKE_REFERENCE_DECIMALS {
+            let scale = 10i128
+                .checked_pow(token_decimals - MIN_STAKE_REFERENCE_DECIMALS)
+                .ok_or(FactoryError::ArithmeticOverflow)?;
+            min_stake
+                .checked_mul(scale)
+                .ok_or(FactoryError::ArithmeticOverflow)
+        } else {
+            let scale = 10i128
+                .checked_pow(MIN_STAKE_REFERENCE_DECIMALS - token_decimals)
+                .ok_or(FactoryError::ArithmeticOverflow)?;
+            // Round up: a token with fewer decimals than the reference must
+            // never let a floor computation round down to a weaker minimum
+            // than intended.
+            let (quotient, remainder) = (min_stake / scale, min_stake % scale);
+            if remainder == 0 {
+                Ok(quotient)
+            } else {
+                quotient
+                    .checked_add(1)
+                    .ok_or(FactoryError::ArithmeticOverflow)
+            }
+        }
+    }
+
     /// Update the status of a deployed arena pool.
     ///
     /// Only callable by the arena contract itself. The calling arena's address
@@ -499,6 +548,21 @@ mod test {
             max_players: 10,
             round_duration: 60,
         }
+    }
+
+    /// A `pool_config` whose `stake_token` is a real deployed token contract
+    /// (7 decimals, matching `MIN_STAKE_REFERENCE_DECIMALS`) rather than a
+    /// bare `Address::generate`. Needed by any test that exercises
+    /// `create_pool` past the `is_supported_token` check, since #1361's
+    /// `normalize_min_stake` calls the real `decimals()` entry point on
+    /// `stake_token` and traps on an address with no contract behind it.
+    fn pool_config_with_real_token(env: &Env, entry_fee: i128) -> PoolConfig {
+        let mut cfg = pool_config(env, entry_fee);
+        let token_admin = Address::generate(env);
+        cfg.stake_token = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        cfg
     }
 
     #[test]
@@ -655,8 +719,11 @@ mod test {
         let (env, client, _admin, host) = setup();
         client.add_to_whitelist(&host);
 
+        let cfg = pool_config_with_real_token(&env, 99);
+        client.add_supported_token(&cfg.stake_token);
+
         let err = client
-            .try_create_pool(&host, &pool_config(&env, 99))
+            .try_create_pool(&host, &cfg)
             .err()
             .expect("stake below minimum must error")
             .expect("error must be a contract error");
@@ -670,7 +737,7 @@ mod test {
         client.add_to_whitelist(&host);
 
         // No token registered — must be rejected.
-        let cfg = pool_config(&env, 100);
+        let cfg = pool_config_with_real_token(&env, 100);
         let err = client
             .try_create_pool(&host, &cfg)
             .err()
@@ -835,8 +902,8 @@ mod test {
     fn create_pool_rejects_unapproved_vault() {
         let (env, client, _admin, host) = setup();
         client.add_to_whitelist(&host);
-        
-        let cfg = pool_config(&env, 100);
+
+        let cfg = pool_config_with_real_token(&env, 100);
         client.add_supported_token(&cfg.stake_token);
         client.add_approved_oracle(&cfg.oracle_contract);
 
@@ -852,8 +919,8 @@ mod test {
     fn create_pool_rejects_unapproved_oracle() {
         let (env, client, _admin, host) = setup();
         client.add_to_whitelist(&host);
-        
-        let cfg = pool_config(&env, 100);
+
+        let cfg = pool_config_with_real_token(&env, 100);
         client.add_supported_token(&cfg.stake_token);
         client.add_approved_vault(&cfg.yield_vault);
 
@@ -971,5 +1038,131 @@ mod test {
             .expect("error must be a contract error");
 
         assert_eq!(err, FactoryError::ArenaNotFound);
+    }
+
+    // ── #1361: min_stake decimal-precision normalization ─────────────────────
+    //
+    // `register_stellar_asset_contract_v2` always deploys a 7-decimal token
+    // (matching MIN_STAKE_REFERENCE_DECIMALS), so exercising the actual
+    // scaling math needs a token whose `decimals()` differs from 7. This mock
+    // implements only that one SEP-41 entry point — the sole thing
+    // `normalize_min_stake` calls on the token before deployment/transfer
+    // logic is ever reached.
+    mod decimals_mock {
+        mod high {
+            use soroban_sdk::{Env, contract, contractimpl};
+
+            #[contract]
+            pub struct MockDecimalsToken;
+
+            #[contractimpl]
+            impl MockDecimalsToken {
+                pub fn decimals(_env: Env) -> u32 {
+                    18
+                }
+            }
+        }
+
+        mod low {
+            use soroban_sdk::{Env, contract, contractimpl};
+
+            #[contract]
+            pub struct MockLowDecimalsToken;
+
+            #[contractimpl]
+            impl MockLowDecimalsToken {
+                pub fn decimals(_env: Env) -> u32 {
+                    2
+                }
+            }
+        }
+
+        pub use high::MockDecimalsToken;
+        pub use low::MockLowDecimalsToken;
+    }
+
+    #[test]
+    fn normalize_min_stake_unchanged_when_token_matches_reference_decimals() {
+        let (env, client, _admin, host) = setup();
+        client.add_to_whitelist(&host);
+        let cfg = pool_config_with_real_token(&env, 100);
+        client.add_supported_token(&cfg.stake_token);
+
+        let effective = env.as_contract(&client.address, || {
+            FactoryContract::normalize_min_stake(&env, &cfg.stake_token, 100)
+        });
+        assert_eq!(effective, Ok(100));
+    }
+
+    #[test]
+    fn normalize_min_stake_scales_up_for_higher_decimal_tokens() {
+        let env = Env::default();
+        let factory_id = env.register(FactoryContract, ());
+        let token_id = env.register(decimals_mock::MockDecimalsToken, ());
+
+        // 18-decimal token vs. the 7-decimal reference: scale by 10^11.
+        let effective = env.as_contract(&factory_id, || {
+            FactoryContract::normalize_min_stake(&env, &token_id, 100)
+        });
+        assert_eq!(effective, Ok(100 * 10i128.pow(11)));
+    }
+
+    #[test]
+    fn normalize_min_stake_rounds_up_for_lower_decimal_tokens() {
+        let env = Env::default();
+        let factory_id = env.register(FactoryContract, ());
+        let token_id = env.register(decimals_mock::MockLowDecimalsToken, ());
+
+        // 2-decimal token vs. the 7-decimal reference: divide by 10^5,
+        // rounding up so the effective floor never weakens.
+        let exact = env.as_contract(&factory_id, || {
+            FactoryContract::normalize_min_stake(&env, &token_id, 500_000)
+        });
+        assert_eq!(exact, Ok(5), "500_000 / 10^5 divides evenly");
+
+        let remainder = env.as_contract(&factory_id, || {
+            FactoryContract::normalize_min_stake(&env, &token_id, 500_001)
+        });
+        assert_eq!(
+            remainder,
+            Ok(6),
+            "a nonzero remainder must round the floor up, never down"
+        );
+    }
+
+    #[test]
+    fn create_pool_applies_effective_minimum_across_differing_token_decimals() {
+        let (env, client, _admin, host) = setup();
+        client.add_to_whitelist(&host);
+
+        // min_stake is 100 (7-decimal reference units). Against an 18-decimal
+        // token that is 100 * 10^11 raw units — an entry_fee of just 100 raw
+        // units on that token must still be rejected as below the real-world
+        // minimum, not silently accepted because it clears the unscaled
+        // integer floor.
+        let token_id = env.register(decimals_mock::MockDecimalsToken, ());
+        let mut cfg = pool_config(&env, 100);
+        cfg.stake_token = token_id.clone();
+        client.add_supported_token(&token_id);
+
+        let err = client
+            .try_create_pool(&host, &cfg)
+            .err()
+            .expect("entry_fee far below the decimal-scaled minimum must error")
+            .expect("error must be a contract error");
+        assert_eq!(err, FactoryError::StakeBelowMinimum);
+    }
+
+    #[test]
+    fn normalize_min_stake_reports_overflow_instead_of_wrapping() {
+        let env = Env::default();
+        let factory_id = env.register(FactoryContract, ());
+        let token_id = env.register(decimals_mock::MockDecimalsToken, ());
+
+        // i128::MAX scaled by 10^11 overflows i128.
+        let result = env.as_contract(&factory_id, || {
+            FactoryContract::normalize_min_stake(&env, &token_id, i128::MAX)
+        });
+        assert_eq!(result, Err(FactoryError::ArithmeticOverflow));
     }
 }

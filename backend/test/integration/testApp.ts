@@ -9,6 +9,8 @@ import { AuthService } from "../../src/services/authService";
 import { RoundService } from "../../src/services/roundService";
 import { RoundProofBundleService } from "../../src/services/roundProofBundleService";
 import { MongoTransactionRepository } from "../../src/repositories/mongoTransactionRepository";
+import { InMemoryTransactionIntentRepository } from "../../src/repositories/inMemoryTransactionIntentRepository";
+import { TransactionIntentService } from "../../src/services/transactionIntentService";
 import { prisma } from "../../src/db/prisma";
 
 const TEST_ARENA_FACTORY_CONTRACT_ID =
@@ -39,14 +41,14 @@ const TEST_PAYMENT_CONFIG: PaymentConfig = {
     sorobanRpcUrl: "https://soroban-testnet.stellar.org",
 };
 
-export function setupTestApp() {
+export function setupTestApp(overrides: { roundService?: RoundService } = {}) {
     const transactions = new MongoTransactionRepository();
     const paymentService = new PaymentService(transactions, { config: TEST_PAYMENT_CONFIG });
     const paymentWorker = new PaymentWorker(transactions, paymentService, dummyTxQueue as any);
     const arenaBackfillWorker = new ArenaBackfillWorker(prisma, TEST_ARENA_FACTORY_CONTRACT_ID);
     const adminService = new AdminService();
     const authService = new AuthService();
-    const roundService = new RoundService(prisma);
+    const roundService = overrides.roundService ?? new RoundService(prisma);
     const roundProofBundleService = new RoundProofBundleService(prisma, {
         sorobanRpcUrl: TEST_PAYMENT_CONFIG.sorobanRpcUrl,
         networkPassphrase: TEST_PAYMENT_CONFIG.networkPassphrase,
@@ -55,6 +57,7 @@ export function setupTestApp() {
         // No credit-asset issuers in tests; XLM is native and needs none.
         assetIssuers: {},
     });
+    const transactionIntentService = new TransactionIntentService(new InMemoryTransactionIntentRepository());
 
     const app = createApp({
         paymentService,
@@ -65,6 +68,7 @@ export function setupTestApp() {
         authService,
         roundService,
         roundProofBundleService,
+        transactionIntentService,
     });
 
     return app;

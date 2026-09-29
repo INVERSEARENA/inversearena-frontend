@@ -10,6 +10,7 @@ import { useWallet } from "@/features/wallet/useWallet";
 import {
   buildJoinArenaTransaction,
   submitSignedTransaction,
+  NETWORK_PASSPHRASE,
 } from "@/shared-d/utils/stellar-transactions";
 import {
   evaluateSigningRequest,
@@ -22,6 +23,7 @@ import {
 import { useAssetReadinessGate } from "@/features/asset-readiness/useAssetReadinessGate";
 import { displayAmountToStroops } from "@/shared-d/utils/stellar-asset-reader";
 import { AssetTrustlinePrompt } from "@/components/modals/AssetTrustlinePrompt";
+import { useTransactionIntent } from "@/shared-d/hooks/useTransactionIntent";
 
 const arenaParticipantSchema = z.object({
   id: z.string(),
@@ -118,6 +120,7 @@ export function ArenaLobbyClient({
 }: ArenaLobbyClientProps) {
   const router = useRouter();
   const wallet = useWallet();
+  const { runTrackedTransaction } = useTransactionIntent();
   const [stats, setStats] = useState<ArenaStats | null>(initialStats);
   const [participants, setParticipants] = useState<ArenaParticipant[]>(
     initialParticipants,
@@ -412,14 +415,6 @@ export function ArenaLobbyClient({
       throw new Error("Connect a wallet before joining this arena.");
     }
 
-    const unsignedTx = await buildJoinArenaTransaction(
-      wallet.publicKey,
-      arenaId,
-    );
-
-    // Validate XDR against the signing policy before prompting the wallet.
-    // This distinct error is catchable so the UI can show a policy-rejection
-    // message rather than a wallet-rejection one.
     if (!assetGate.canProceed) {
       setJoinError(assetGate.message);
       if (assetGate.phase === "remediation_offered") setShowTrustline(true);
@@ -427,24 +422,41 @@ export function ArenaLobbyClient({
     }
 
     setJoinError(null);
-    let decoded: DecodedEnvelope;
-    try {
-      decoded = evaluateSigningRequest(unsignedTx.toXDR(), "JOIN");
-    } catch (error) {
-      if (error instanceof SigningPolicyError) {
-        // Policy rejection — show error and do NOT call wallet.signTransaction.
-        setJoinError(error.message);
-        return;
-      }
-      throw error; // unexpected error
-    }
+    let policyRejected = false;
+    await runTrackedTransaction({
+      kind: "join_arena",
+      actionKey: `join_arena:${arenaId}`,
+      publicKey: wallet.publicKey,
+      buildTransaction: async () => {
+        const unsignedTx = await buildJoinArenaTransaction(wallet.publicKey!, arenaId);
 
-    // Render confirmation UI details from the decoded envelope (not the raw XDR).
-    setJoinConfirmation(decoded);
+        // Validate XDR against the signing policy before prompting the wallet.
+        // This distinct error is catchable so the UI can show a policy-rejection
+        // message rather than a wallet-rejection one.
+        let decoded: DecodedEnvelope;
+        try {
+          decoded = evaluateSigningRequest(unsignedTx.toXDR(), "JOIN");
+        } catch (error) {
+          if (error instanceof SigningPolicyError) {
+            // Policy rejection — show error and do NOT call wallet.signTransaction.
+            policyRejected = true;
+            setJoinError(error.message);
+          }
+          throw error;
+        }
+        setJoinConfirmation(decoded);
 
-    const signedXdr = await wallet.signTransaction(unsignedTx.toXDR());
-    onSigned();
-    await submitSignedTransaction(signedXdr);
+        return unsignedTx;
+      },
+      signTransaction: wallet.signTransaction,
+      submitSignedTransaction,
+      networkPassphrase: NETWORK_PASSPHRASE,
+      onSigned,
+    }).catch((error) => {
+      if (policyRejected) return;
+      throw error;
+    });
+    if (policyRejected) return;
 
     await Promise.all([fetchStats(), fetchParticipants(0, true)]);
 
