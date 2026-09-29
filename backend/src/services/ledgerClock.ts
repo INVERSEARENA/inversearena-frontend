@@ -24,6 +24,9 @@ let breakerOverride: CircuitBreaker | null = null;
 
 let ledgerObserver: ((identity: LedgerIdentity) => Promise<unknown>) | null = null;
 
+// TODO(#1505): expose a typable test clock for deterministic wall-time schedules.
+export const TEST_CLOCK_TICK_MS = 1;
+
 /**
  * Installs the continuity detector that sees every fresh ledger read (#1490).
  * Injected rather than imported so this module keeps no Redis dependency.

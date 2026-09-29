@@ -34,6 +34,9 @@ export interface OnChainRoundState {
   isFinalized: boolean;
 }
 
+// TODO(#1508): derive authoritative phase from contract + signature time.
+export const PHASE_PRECONDITION = "preflight:phase-check";
+
 export interface OnChainReader {
   getRoundState(roundId: string): Promise<OnChainRoundState>;
   /** Returns wallet addresses of players still active after the latest resolve_round. */
