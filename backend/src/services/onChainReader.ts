@@ -42,9 +42,17 @@ export type OnChainGameState = "Open" | "InProgress" | "Finished" | "Cancelled";
  * `arenaService.ts`/`ledgerClock.ts`. Restored to `null` (the default: use
  * the real gateway) by passing `null` to `setRpcServerForTest`.
  */
-let rpcServerOverride: rpc.Server | null = null;
+/**
+ * The subset of `rpc.Server` the override path actually calls. Typed
+ * narrowly so test doubles (e.g. the fault-injection wrapper in
+ * `tests/helpers/faultInjection.ts`, #1461) can satisfy it without casting;
+ * a real `rpc.Server` still satisfies it unchanged.
+ */
+export type OnChainRpcServer = Pick<rpc.Server, "getAccount" | "simulateTransaction">;
 
-export function setRpcServerForTest(server: rpc.Server | null): void {
+let rpcServerOverride: OnChainRpcServer | null = null;
+
+export function setRpcServerForTest(server: OnChainRpcServer | null): void {
   rpcServerOverride = server;
 }
 
