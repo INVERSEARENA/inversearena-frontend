@@ -39,6 +39,7 @@ module.exports = {
     "<rootDir>/tests/arenaPollerConcurrency\\.load\\.test\\.ts",
     "<rootDir>/tests/arenaPollerConcurrency\\.integration\\.test\\.ts",
     "<rootDir>/tests/transactionIntent\\.unit\\.test\\.ts",
+    "<rootDir>/tests/faultInjection\\.unit\\.test\\.ts",
     // Legacy script-style runners (no Jest `describe`/`it`)
     "<rootDir>/tests/leaderboard\\.test\\.ts",
     "<rootDir>/tests/security-headers\\.test\\.ts",
