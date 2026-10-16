@@ -229,4 +229,73 @@ export class NotificationPreferencesService {
       error: d.error ?? undefined,
     }));
   }
+
+  /**
+   * Get in-app notification inbox for a user (#1513).
+   * Returns notifications with acknowledgement/read status.
+   */
+  async getInboxNotifications(
+    userId: string,
+    options: { limit?: number; offset?: number; unreadOnly?: boolean } = {},
+  ): Promise<any> {
+    const { limit = 20, offset = 0, unreadOnly = false } = options;
+
+    const where: any = {
+      userId,
+      channel: "in_app",
+    };
+
+    if (unreadOnly) {
+      where.status = { not: "delivered" };
+    }
+
+    const notifications = await this.prisma.notificationDelivery.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      skip: offset,
+    });
+
+    const total = await this.prisma.notificationDelivery.count({
+      where: {
+        userId,
+        channel: "in_app",
+        ...(unreadOnly && { status: { not: "delivered" } }),
+      },
+    });
+
+    return {
+      items: notifications.map((n) => ({
+        id: n.id,
+        type: n.type,
+        message: `${n.type.charAt(0).toUpperCase() + n.type.slice(1)} notification`,
+        isRead: n.status === "delivered",
+        createdAt: n.createdAt.toISOString(),
+      })),
+      total,
+      limit,
+      offset,
+      hasMore: offset + limit < total,
+    };
+  }
+
+  /**
+   * Acknowledge (mark as read) a notification in the inbox (#1513).
+   */
+  async acknowledgeNotification(userId: string, notificationId: string): Promise<boolean> {
+    const notification = await this.prisma.notificationDelivery.findUnique({
+      where: { id: notificationId },
+    });
+
+    if (!notification || notification.userId !== userId) {
+      return false;
+    }
+
+    await this.prisma.notificationDelivery.update({
+      where: { id: notificationId },
+      data: { status: "delivered" },
+    });
+
+    return true;
+  }
 }

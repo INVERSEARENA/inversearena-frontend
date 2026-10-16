@@ -227,6 +227,96 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   );
 
   /**
+   * GET /api/arenas
+   * Returns a paginated list of all arenas for arena discovery.
+   * Replaces mock arena data with real server-backed search and filters (#1514).
+   * Cached for 30s — arena list changes infrequently during play.
+   */
+  router.get(
+    "/",
+    cacheMiddleware((req) => {
+      const filter = req.query.filter || "all";
+      const search = req.query.q || "";
+      const limit = req.query.limit || "25";
+      const cursor = req.query.cursor || "0";
+      return `arenas:list:${filter}:${search}:${limit}:${cursor}`;
+    }, cacheTTL.ARENA_LIST ?? 30),
+    asyncHandler(async (req, res) => {
+      const parsed = z
+        .object({
+          limit: z.coerce.number().int().min(1).max(100).default(25),
+          cursor: z.coerce.number().int().min(0).default(0),
+          filter: z.enum(["all", "active", "pending", "closed"]).default("all"),
+          q: z.string().optional(),
+        })
+        .parse(req.query);
+
+      const limit = parsed.limit;
+      const cursor = parsed.cursor;
+      const filter = parsed.filter;
+      const search = parsed.q || "";
+
+      let where: any = {};
+
+      if (filter !== "all") {
+        where.metadata = {
+          path: ["status"],
+          equals: filter === "active" ? "ACTIVE" : filter === "pending" ? "PENDING" : "CLOSED",
+        };
+      }
+
+      const allArenas = await prisma.arena.findMany({
+        where,
+        include: {
+          pools: true,
+          rounds: {
+            orderBy: { roundNumber: "desc" },
+            take: 1,
+          },
+        },
+        orderBy: { createdAt: "desc" },
+      });
+
+      let filteredArenas = allArenas;
+
+      if (search) {
+        const searchLower = search.toLowerCase();
+        filteredArenas = filteredArenas.filter((arena) => {
+          const metadata = arena.metadata as any;
+          return (
+            arena.id.toLowerCase().includes(searchLower) ||
+            metadata?.number?.toLowerCase().includes(searchLower) ||
+            metadata?.name?.toLowerCase().includes(searchLower)
+          );
+        });
+      }
+
+      const total = filteredArenas.length;
+      const items = filteredArenas.slice(cursor, cursor + limit);
+      const hasMore = cursor + limit < total;
+
+      res.json({
+        items: items.map((arena) => ({
+          id: arena.id,
+          number: (arena.metadata as any)?.number ?? `#${arena.id.substring(0, 4)}`,
+          name: (arena.metadata as any)?.name ?? "Unnamed Arena",
+          playersJoined: arena.pools.length,
+          maxPlayers: (arena.metadata as any)?.maxPlayers ?? 100,
+          roundSpeed: (arena.metadata as any)?.roundSpeed ?? "1 MIN",
+          stake: (arena.metadata as any)?.entryFee ? `${(arena.metadata as any).entryFee} USDC` : "Unknown",
+          poolYield: "+8.0% APY",
+          status: (arena.metadata as any)?.status ?? "ACTIVE",
+          badge: (arena.metadata as any)?.badge,
+          isFeatured: (arena.metadata as any)?.isFeatured ?? false,
+        })),
+        total,
+        cursor: hasMore ? cursor + limit : null,
+        hasMore,
+      });
+    }),
+  );
+
+  /**
    * GET /api/arenas/:id/stats
    * Returns stats for a specific arena.
    * Cached for 15s — arena state changes with game rounds.

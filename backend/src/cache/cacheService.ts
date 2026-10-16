@@ -129,6 +129,7 @@ export const cacheTTL = {
   ORACLE_YIELD: 60,
   ARENA_STATS: 15,
   ARENA_ROUNDS: 10,
+  ARENA_LIST: 30,
   LEADERBOARD: 30,
   // Deliberately long: this is "how far back may a degraded response reach",
   // not "how fresh is a normal response". Every degraded response carries its
