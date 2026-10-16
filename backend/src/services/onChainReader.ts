@@ -79,6 +79,12 @@ export class OnChainReadError extends Error {
   }
 }
 
+export interface OnChainRoundResult {
+  eliminated: bigint;
+  survivors: bigint;
+  yieldSnapshot: bigint;
+}
+
 /**
  * A dummy public key used as the simulation source for read-only calls.
  * Does not need funds — Soroban simulates without submitting.
@@ -170,6 +176,33 @@ async function simulateViewCall(
   });
 
   return getSorobanSimulationSingleFlight().run(cacheKey, runSimulation);
+}
+
+/** Read a resolved round and its yield snapshot. A missing result is a normal
+ * unresolved-round response; transport and decoding failures are surfaced. */
+export async function getOnChainRoundResult(
+  contractId: string,
+  round: number,
+): Promise<OnChainRoundResult | null> {
+  const gateway = new StellarRpcGateway();
+  const arg = nativeToScVal(round, { type: "u32" });
+  try {
+    const result = await simulateViewCall(contractId, "get_round_result", gateway, [arg]);
+    if (result === null || result === undefined) return null;
+    const value = result as Record<string, unknown>;
+    const snapshot = await simulateViewCall(contractId, "get_yield_snapshot", gateway, [arg]);
+    const yieldValue = snapshot as Record<string, unknown> | null;
+    if (!("eliminated" in value) || !("survivors" in value)) {
+      throw new Error("malformed RoundResult ScVal");
+    }
+    return {
+      eliminated: BigInt(value.eliminated as string | number | bigint),
+      survivors: BigInt(value.survivors as string | number | bigint),
+      yieldSnapshot: BigInt((yieldValue?.accrued ?? value.yield_snapshot ?? 0) as string | number | bigint),
+    };
+  } catch (error) {
+    throw new OnChainReadError("get_round_result", contractId, error);
+  }
 }
 
 /**

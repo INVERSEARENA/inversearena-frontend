@@ -790,7 +790,11 @@ impl ArenaContract {
         let factory_client = FactoryClient::new(&env, &config.factory);
         if config.state == GameState::Finished {
             let _ = factory_client.try_release_arena(&arena_addr);
-            let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Active);
+            // Settlement is terminal even if the winner never submits a claim.
+            // Reclaim the creator stake here, before any winner-controlled action,
+            // and persist the matching factory lifecycle state.
+            let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
+            let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Finished);
         } else if config.state == GameState::Cancelled {
             let _ = rwa_client.try_withdraw_all(&arena_addr);
             let _ = factory_client.try_release_arena(&arena_addr);
@@ -867,7 +871,9 @@ impl ArenaContract {
 
         ArenaEvents::prize_claimed(&env, &winner, total, total.saturating_sub(principal));
         
-        // Notify factory that prize has been claimed and game is settled
+        // The factory was already transitioned to Finished and the creator
+        // stake reclaimed when the final round resolved. Repeating the status
+        // write is harmless and keeps older factory deployments convergent.
         let factory_client = FactoryClient::new(&env, &config.factory);
         let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Finished);
         

@@ -16,6 +16,11 @@ const TOKEN_KEY: soroban_sdk::Symbol = symbol_short!("TOKEN");
 const TSTAKE_KEY: soroban_sdk::Symbol = symbol_short!("TSTAKE");
 const TSHARES_KEY: soroban_sdk::Symbol = symbol_short!("TSHARES");
 const PENDING_ADMIN_KEY: soroban_sdk::Symbol = symbol_short!("P_ADMIN");
+const REWARD_RATE_KEY: soroban_sdk::Symbol = symbol_short!("RWRATE");
+const PERIOD_FINISH_KEY: soroban_sdk::Symbol = symbol_short!("RWFINISH");
+const LAST_UPDATE_KEY: soroban_sdk::Symbol = symbol_short!("RWUPDATE");
+const REWARD_DURATION_KEY: soroban_sdk::Symbol = symbol_short!("RWDUR");
+const DEFAULT_REWARD_DURATION: u64 = 7 * 24 * 60 * 60;
 
 // TTL thresholds matching the arena contract pattern.
 const PERSISTENT_TTL_THRESHOLD: u32 = 100;
@@ -98,6 +103,10 @@ impl StakingContract {
         env.storage().persistent().set(&TSTAKE_KEY, &0i128);
         env.storage().persistent().set(&TSHARES_KEY, &0i128);
         env.storage().persistent().set(&PAUSED_KEY, &false);
+        env.storage().persistent().set(&REWARD_RATE_KEY, &0i128);
+        env.storage().persistent().set(&PERIOD_FINISH_KEY, &0u64);
+        env.storage().persistent().set(&LAST_UPDATE_KEY, &env.ledger().timestamp());
+        env.storage().persistent().set(&REWARD_DURATION_KEY, &DEFAULT_REWARD_DURATION);
 
         // #1012: Emit initialization event.
         env.events()
@@ -178,6 +187,7 @@ impl StakingContract {
     }
 
     pub fn total_staked(env: Env) -> i128 {
+        let _ = Self::accrue_rewards(&env);
         extend_persistent_ttl(&env, &TSTAKE_KEY);
         env.storage().persistent().get(&TSTAKE_KEY).unwrap_or(0)
     }
@@ -189,13 +199,13 @@ impl StakingContract {
 
     pub fn get_position(env: Env, staker: Address) -> StakePosition {
         extend_persistent_ttl(&env, &DataKey::Position(staker.clone()));
-        env.storage()
-            .persistent()
-            .get(&DataKey::Position(staker))
-            .unwrap_or(StakePosition {
-                amount: 0,
-                shares: 0,
-            })
+        let mut position: StakePosition = env.storage().persistent()
+            .get(&DataKey::Position(staker)).unwrap_or(StakePosition { amount: 0, shares: 0 });
+        let total_shares = Self::total_shares(env.clone());
+        position.amount = if total_shares == 0 { 0 } else {
+            position.shares.saturating_mul(Self::total_staked(env)).saturating_div(total_shares)
+        };
+        position
     }
 
     pub fn staked_balance(env: Env, staker: Address) -> i128 {
@@ -239,6 +249,8 @@ impl StakingContract {
         if amount <= 0 {
             return Err(StakingError::InvalidAmount);
         }
+
+        Self::accrue_rewards(&env)?;
 
         let total_staked = Self::total_staked(env.clone());
         let total_shares = Self::total_shares(env.clone());
@@ -311,6 +323,8 @@ impl StakingContract {
         if shares <= 0 {
             return Err(StakingError::InvalidAmount);
         }
+
+        Self::accrue_rewards(&env)?;
 
         let position = Self::get_position(env.clone(), staker.clone());
         if position.shares < shares {
@@ -387,13 +401,19 @@ impl StakingContract {
             return Err(StakingError::NoSharesOutstanding);
         }
 
-        let total_staked = Self::total_staked(env.clone());
-        let new_total_staked = total_staked
-            .checked_add(amount)
+        Self::accrue_rewards(&env)?;
+        let now = env.ledger().timestamp();
+        let finish: u64 = env.storage().persistent().get(&PERIOD_FINISH_KEY).unwrap_or(0);
+        let duration: u64 = env.storage().persistent().get(&REWARD_DURATION_KEY).unwrap_or(DEFAULT_REWARD_DURATION);
+        let previous_rate: i128 = env.storage().persistent().get(&REWARD_RATE_KEY).unwrap_or(0);
+        let remainder = if now < finish {
+            previous_rate.checked_mul((finish - now) as i128).ok_or(StakingError::ArithmeticOverflow)?
+        } else { 0 };
+        let rate = amount.checked_add(remainder).and_then(|v| v.checked_div(duration as i128))
             .ok_or(StakingError::ArithmeticOverflow)?;
-        env.storage()
-            .persistent()
-            .set(&TSTAKE_KEY, &new_total_staked);
+        env.storage().persistent().set(&REWARD_RATE_KEY, &rate);
+        env.storage().persistent().set(&PERIOD_FINISH_KEY, &(now + duration));
+        env.storage().persistent().set(&LAST_UPDATE_KEY, &now);
 
         let token_addr = Self::token(env.clone());
         let token_client = token::TokenClient::new(&env, &token_addr);
@@ -401,6 +421,24 @@ impl StakingContract {
 
         env.events()
             .publish((symbol_short!("REWARDS"),), (caller, amount));
+        Ok(())
+    }
+
+    pub fn reward_rate(env: Env) -> i128 {
+        let _ = Self::accrue_rewards(&env);
+        env.storage().persistent().get(&REWARD_RATE_KEY).unwrap_or(0)
+    }
+
+    pub fn reward_duration(env: Env) -> u64 {
+        env.storage().persistent().get(&REWARD_DURATION_KEY).unwrap_or(DEFAULT_REWARD_DURATION)
+    }
+
+    pub fn set_reward_duration(env: Env, duration: u64) -> Result<(), StakingError> {
+        Self::require_admin(&env)?;
+        if duration == 0 || duration > 365 * 24 * 60 * 60 { return Err(StakingError::InvalidAmount); }
+        Self::accrue_rewards(&env)?;
+        env.storage().persistent().set(&REWARD_DURATION_KEY, &duration);
+        env.events().publish((symbol_short!("RWDUR"),), duration);
         Ok(())
     }
 
@@ -442,6 +480,21 @@ impl StakingContract {
         if !env.storage().persistent().has(&ADMIN_KEY) {
             return Err(StakingError::NotInitialized);
         }
+        Ok(())
+    }
+
+    fn accrue_rewards(env: &Env) -> Result<(), StakingError> {
+        let now = env.ledger().timestamp();
+        let last: u64 = env.storage().persistent().get(&LAST_UPDATE_KEY).unwrap_or(now);
+        let finish: u64 = env.storage().persistent().get(&PERIOD_FINISH_KEY).unwrap_or(0);
+        let elapsed = core::cmp::min(now, finish).saturating_sub(last);
+        if elapsed > 0 {
+            let rate: i128 = env.storage().persistent().get(&REWARD_RATE_KEY).unwrap_or(0);
+            let accrued = rate.checked_mul(elapsed as i128).ok_or(StakingError::ArithmeticOverflow)?;
+            let total: i128 = env.storage().persistent().get(&TSTAKE_KEY).unwrap_or(0);
+            env.storage().persistent().set(&TSTAKE_KEY, &total.checked_add(accrued).ok_or(StakingError::ArithmeticOverflow)?);
+        }
+        env.storage().persistent().set(&LAST_UPDATE_KEY, &core::cmp::min(now, finish));
         Ok(())
     }
 }

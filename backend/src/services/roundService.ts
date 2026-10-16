@@ -30,6 +30,7 @@ import { invalidateArenaStats } from '../cache/cacheService';
 import {
   getOnChainActivePlayerIds,
   getOnChainWinner,
+  getOnChainRoundResult,
   getArenaOracleContract,
   getOracleReading,
 } from './onChainReader';
@@ -40,15 +41,17 @@ import { OracleFreshnessService, StaleOracleDataError, type OracleReading } from
 
 export interface OnChainRoundState {
   roundId: string;
-  oracleYield: number;
+  oracleYield: bigint;
   isFinalized: boolean;
+  eliminated?: bigint;
+  survivors?: bigint;
 }
 
 // TODO(#1508): derive authoritative phase from contract + signature time.
 export const PHASE_PRECONDITION = "preflight:phase-check";
 
 export interface OnChainReader {
-  getRoundState(roundId: string): Promise<OnChainRoundState>;
+  getRoundState(contractId: string, round: number): Promise<OnChainRoundState>;
   /** Returns wallet addresses of players still active after the latest resolve_round. */
   getActivePlayers(contractId: string): Promise<string[]>;
   /** Returns the single on-chain winner address once the game is finished, or null. */
@@ -60,8 +63,8 @@ export interface OnChainReader {
 }
 
 export class NoOpOnChainReader implements OnChainReader {
-  async getRoundState(roundId: string): Promise<OnChainRoundState> {
-    return { roundId, oracleYield: 0, isFinalized: false };
+  async getRoundState(_contractId: string, round: number): Promise<OnChainRoundState> {
+    return { roundId: String(round), oracleYield: 0n, isFinalized: false };
   }
   async getActivePlayers(_contractId: string): Promise<string[]> {
     return [];
@@ -79,8 +82,16 @@ export class NoOpOnChainReader implements OnChainReader {
 
 /** Production implementation backed by the Soroban simulation helpers. */
 export class SorobanOnChainReader implements OnChainReader {
-  async getRoundState(roundId: string): Promise<OnChainRoundState> {
-    return { roundId, oracleYield: 0, isFinalized: false };
+  async getRoundState(contractId: string, round: number): Promise<OnChainRoundState> {
+    const result = await getOnChainRoundResult(contractId, round);
+    if (!result) return { roundId: String(round), oracleYield: 0n, isFinalized: false };
+    return {
+      roundId: String(round),
+      oracleYield: result.yieldSnapshot,
+      isFinalized: true,
+      eliminated: result.eliminated,
+      survivors: result.survivors,
+    };
   }
   async getActivePlayers(contractId: string): Promise<string[]> {
     return getOnChainActivePlayerIds(contractId);
