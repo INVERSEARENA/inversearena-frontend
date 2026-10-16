@@ -34,6 +34,11 @@ export const LeaderboardQuerySchema = z.object({
   cursor: z.string().optional(),
 });
 
+export const KeysetPaginationQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(25).optional(),
+  cursor: z.string().max(512).optional(),
+});
+
 export const LeaderboardEntrySchema = z.object({
   walletAddress: z.string(),
   totalWinnings: z.number(),

@@ -10,6 +10,7 @@ import { RoundState } from '../types/round';
 import { enforcePayloadLimits } from '../validation/payloadLimits';
 import { roundMetadataMismatchesTotal } from '../utils/metrics';
 import { logger } from '../utils/logger';
+import { decodeCursorInput, encodeKeysetCursor } from '../utils/keysetPagination';
 
 export class RoundRepository {
   constructor(private prisma: PrismaClient) {}
@@ -72,36 +73,56 @@ export class RoundRepository {
     limit: number,
     cursor?: string,
   ): Promise<PaginatedResult<RoundData>> {
-    const offset = cursor ? this.decodeCursor(cursor) : 0;
+    const decoded = decodeCursorInput(cursor);
+
+    let whereClause: Prisma.RoundWhereInput = { arenaId };
+    let skip: number | undefined = undefined;
+
+    if (decoded.mode === "keyset") {
+      const lastRoundNumber = Number(decoded.cursor.sortValues.roundNumber);
+      const lastId = decoded.cursor.id;
+      whereClause = {
+        arenaId,
+        OR: [
+          { roundNumber: { gt: lastRoundNumber } },
+          { roundNumber: lastRoundNumber, id: { gt: lastId } },
+        ],
+      };
+    } else if (decoded.mode === "legacy") {
+      skip = decoded.offset;
+    }
+
     const rounds = await this.prisma.round.findMany({
-      where: { arenaId },
-      orderBy: [{ roundNumber: 'asc' }, { id: 'asc' }],
+      where: whereClause,
+      orderBy: [{ roundNumber: "asc" }, { id: "asc" }],
       take: limit + 1,
-      skip: offset,
+      ...(skip !== undefined ? { skip } : {}),
     });
 
     const hasMore = rounds.length > limit;
-    const items = rounds.slice(0, limit).map((round) => this.mapRound(round));
+    const pageRounds = rounds.slice(0, limit);
+    const items = pageRounds.map((round) => this.mapRound(round));
+
+    let nextCursor: string | null = null;
+    if (hasMore && pageRounds.length > 0) {
+      const last = pageRounds[pageRounds.length - 1];
+      nextCursor = encodeKeysetCursor({ roundNumber: last.roundNumber }, last.id);
+    }
 
     return {
       items,
-      cursor: hasMore ? this.encodeCursor(offset + limit) : null,
+      cursor: nextCursor,
       hasMore,
     };
   }
 
   private encodeCursor(offset: number): string {
-    return Buffer.from(JSON.stringify({ offset })).toString('base64url');
+    return Buffer.from(JSON.stringify({ offset })).toString("base64url");
   }
 
   private decodeCursor(cursor: string): number {
-    try {
-      const payload = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf-8')) as { offset: number };
-      if (typeof payload.offset !== 'number' || payload.offset < 0) return 0;
-      return payload.offset;
-    } catch {
-      return 0;
-    }
+    const res = decodeCursorInput(cursor);
+    return res.mode === "legacy" ? res.offset : 0;
   }
 
   async findByArenaAndNumber(

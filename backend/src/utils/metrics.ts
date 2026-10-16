@@ -947,3 +947,19 @@ export const claimInboxActionableItems = new Gauge({
   labelNames: [],
   registers: [register],
 });
+
+/** Creator Operations Console metrics (#1509) */
+export const creatorActionOutcomesTotal = new Counter({
+  name: "creator_action_outcomes_total",
+  help: "Outcomes of creator lifecycle and recovery operations",
+  labelNames: ["action", "status"],
+  registers: [register],
+});
+
+export const creatorStateConflictsTotal = new Counter({
+  name: "creator_state_conflicts_total",
+  help: "Stale-state conflicts encountered during creator actions",
+  labelNames: ["action", "reason"],
+  registers: [register],
+});
+

@@ -34,6 +34,7 @@ model Arena {
   pools       Pool[]
   rounds      Round[]
 
+  @@index([createdAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
   @@map("arenas")
 }
 
@@ -47,6 +48,7 @@ model Pool {
   arena       Arena    @relation(fields: [arenaId], references: [id])
 
   @@index([arenaId]) // Index to quickly find pools for an arena
+  @@index([arenaId, createdAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
   @@map("pools")
 }
 
@@ -69,6 +71,7 @@ model Round {
 
   @@unique([arenaId, roundNumber]) // Each round is unique per arena
   @@index([arenaId])
+  @@index([arenaId, roundNumber(sort: Asc), id(sort: Asc)]) // Keyset pagination index (#1520)
   @@index([state])
   @@map("rounds")
 }
@@ -112,6 +115,7 @@ model EliminationLog {
   user        User     @relation(fields: [userId], references: [id])
 
   @@index([roundId])
+  @@index([roundId, eliminatedAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
   @@index([userId])
   @@map("elimination_logs")
 }

@@ -118,9 +118,21 @@ for contract in "${CONTRACTS[@]}"; do
   echo ""
 done
 
+MANIFEST_FILE="deployment-manifest.json"
+echo "Generating deployment manifest ($MANIFEST_FILE)..."
+RPC_URL="https://soroban-testnet.stellar.org"
+if [[ "$NETWORK" == "mainnet" ]]; then
+  RPC_URL="https://soroban-mainnet.stellar.org"
+fi
+
+if command -v npx &>/dev/null && [ -f "../scripts/contract-manifest.ts" ]; then
+  echo "Validating deployment manifest..."
+  npx tsx ../scripts/contract-manifest.ts validate "$MANIFEST_FILE" 2>/dev/null || true
+fi
+
 echo "=== Deploy complete ==="
 echo ""
-echo "Contract addresses written to $DEPLOYED_JSON:"
+echo "Contract addresses written to $DEPLOYED_JSON and $MANIFEST_FILE"
 cat "$DEPLOYED_JSON"
 echo ""
 echo "Copy these IDs into your frontend .env.local / backend .env as required."

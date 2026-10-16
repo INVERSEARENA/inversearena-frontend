@@ -32,17 +32,14 @@ import {
   EvidenceRoundNotFoundError,
   EvidenceNotParticipantError,
 } from "../services/disputeEvidenceService";
-import { EvidenceParamsSchema } from "../types/evidence";
 import { CancellationRecoveryService } from "../services/cancellationRecoveryService";
+import { decodeCursorInput, encodeKeysetCursor } from "../utils/keysetPagination";
 
 const PaginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
   cursor: z.string().optional(),
 });
 
-interface DecodedCursor {
-  offset: number;
-}
 
 function encodeCursor(offset: number): string {
   return Buffer.from(JSON.stringify({ offset } as DecodedCursor)).toString("base64url");
@@ -245,16 +242,18 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
       const parsed = z
         .object({
           limit: z.coerce.number().int().min(1).max(100).default(25),
-          cursor: z.coerce.number().int().min(0).default(0),
+          cursor: z.string().optional(),
           filter: z.enum(["all", "active", "pending", "closed"]).default("all"),
           q: z.string().optional(),
         })
         .parse(req.query);
 
       const limit = parsed.limit;
-      const cursor = parsed.cursor;
+      const rawCursor = parsed.cursor;
       const filter = parsed.filter;
       const search = parsed.q || "";
+
+      const decoded = decodeCursorInput(rawCursor);
 
       let where: any = {};
 
@@ -265,7 +264,20 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
         };
       }
 
-      const allArenas = await prisma.arena.findMany({
+      let skip: number | undefined = undefined;
+
+      if (decoded.mode === "keyset") {
+        const lastCreatedAt = new Date(decoded.cursor.sortValues.createdAt as string);
+        const lastId = decoded.cursor.id;
+        where.OR = [
+          { createdAt: { lt: lastCreatedAt } },
+          { createdAt: lastCreatedAt, id: { lt: lastId } },
+        ];
+      } else if (decoded.mode === "legacy") {
+        skip = decoded.offset;
+      }
+
+      const rows = await prisma.arena.findMany({
         where,
         include: {
           pools: true,
@@ -274,14 +286,15 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
             take: 1,
           },
         },
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: limit + 1,
+        ...(skip !== undefined ? { skip } : {}),
       });
 
-      let filteredArenas = allArenas;
-
+      let pageRows = rows;
       if (search) {
         const searchLower = search.toLowerCase();
-        filteredArenas = filteredArenas.filter((arena) => {
+        pageRows = pageRows.filter((arena) => {
           const metadata = arena.metadata as any;
           return (
             arena.id.toLowerCase().includes(searchLower) ||
@@ -291,9 +304,17 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
         });
       }
 
-      const total = filteredArenas.length;
-      const items = filteredArenas.slice(cursor, cursor + limit);
-      const hasMore = cursor + limit < total;
+      const hasMore = pageRows.length > limit;
+      const items = pageRows.slice(0, limit);
+
+      let nextCursor: string | null = null;
+      if (hasMore && items.length > 0) {
+        const last = items[items.length - 1];
+        nextCursor = encodeKeysetCursor(
+          { createdAt: last.createdAt.toISOString() },
+          last.id,
+        );
+      }
 
       res.json({
         items: items.map((arena) => ({
@@ -308,9 +329,9 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
           status: (arena.metadata as any)?.status ?? "ACTIVE",
           badge: (arena.metadata as any)?.badge,
           isFeatured: (arena.metadata as any)?.isFeatured ?? false,
+          createdAt: arena.createdAt.toISOString(),
         })),
-        total,
-        cursor: hasMore ? cursor + limit : null,
+        cursor: nextCursor,
         hasMore,
       });
     }),

@@ -9,31 +9,13 @@ import type { RequestHandler } from "express";
 import { apiError } from "../utils/apiError";
 import { getAssetMetadata, formatAmount } from "../types/asset";
 import { lobbyReservationStore } from "../cache/lobbyReservationStore";
+import { decodeCursorInput, encodeKeysetCursor } from "../utils/keysetPagination";
 
 const PaginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
   cursor: z.string().optional(),
 });
 
-interface DecodedCursor {
-  offset: number;
-}
-
-function encodeCursor(offset: number): string {
-  return Buffer.from(JSON.stringify({ offset } as DecodedCursor)).toString("base64url");
-}
-
-function decodeCursor(cursor: string): number {
-  try {
-    const payload = JSON.parse(
-      Buffer.from(cursor, "base64url").toString("utf-8"),
-    ) as DecodedCursor;
-    if (typeof payload.offset !== "number" || payload.offset < 0) return 0;
-    return payload.offset;
-  } catch {
-    return 0;
-  }
-}
 
 function formatEliminationLog(log: {
   id: string;
@@ -168,22 +150,49 @@ export function createPoolsRouter(authMiddleware: RequestHandler): Router {
         throw apiError(404, "POOL_NOT_FOUND", "Pool not found");
       }
 
-      const offset = cursor ? decodeCursor(cursor) : 0;
+      const decoded = decodeCursorInput(cursor);
+
+      let whereClause: any = { round: { arenaId: pool.arenaId } };
+      let skip: number | undefined = undefined;
+
+      if (decoded.mode === "keyset") {
+        const lastEliminatedAt = new Date(decoded.cursor.sortValues.eliminatedAt as string);
+        const lastId = decoded.cursor.id;
+        whereClause = {
+          round: { arenaId: pool.arenaId },
+          OR: [
+            { eliminatedAt: { lt: lastEliminatedAt } },
+            { eliminatedAt: lastEliminatedAt, id: { lt: lastId } },
+          ],
+        };
+      } else if (decoded.mode === "legacy") {
+        skip = decoded.offset;
+      }
 
       const logs = await prisma.eliminationLog.findMany({
-        where: { round: { arenaId: pool.arenaId } },
-        orderBy: { eliminatedAt: "desc" },
+        where: whereClause,
+        orderBy: [{ eliminatedAt: "desc" }, { id: "desc" }],
         take: limit + 1,
-        skip: offset,
+        ...(skip !== undefined ? { skip } : {}),
         include: { round: { select: { roundNumber: true } } },
       });
 
       const hasMore = logs.length > limit;
-      const items = logs.slice(0, limit).map(formatEliminationLog);
+      const pageLogs = logs.slice(0, limit);
+      const items = pageLogs.map(formatEliminationLog);
+
+      let nextCursor: string | null = null;
+      if (hasMore && pageLogs.length > 0) {
+        const last = pageLogs[pageLogs.length - 1];
+        nextCursor = encodeKeysetCursor(
+          { eliminatedAt: last.eliminatedAt.toISOString() },
+          last.id,
+        );
+      }
 
       res.json({
         items,
-        cursor: hasMore ? encodeCursor(offset + limit) : null,
+        cursor: nextCursor,
         hasMore,
       });
     }),

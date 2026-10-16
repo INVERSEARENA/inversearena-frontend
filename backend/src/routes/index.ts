@@ -19,6 +19,7 @@ import { createInvitationsRouter } from "./invitations";
 import { createRoundProofBundleRouter } from "./roundProofBundle";
 import { createLobbyReservationRouter } from "./lobbyReservation";
 import { createDashboardRouter } from "./dashboard";
+import { createCreatorRouter } from "./creator";
 import type { PayoutsController } from "../controllers/payouts.controller";
 import type { WorkerController } from "../controllers/worker.controller";
 import type { AuthController } from "../controllers/auth.controller";
@@ -79,6 +80,7 @@ export function createApiRouter(
     createLeaderboardRouter(leaderboardController, requireAuth),
   );
   router.use("/dashboard", createDashboardRouter(requireAuth));
+  router.use("/creator", createCreatorRouter(requireAuth));
 
   return router;
 }

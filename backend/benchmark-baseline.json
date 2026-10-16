@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "updatedAt": "2026-10-16T12:00:00Z",
+  "limits": {
+    "maxAllowedRegressionPercent": 15.0
+  },
+  "benchmarks": {
+    "GET /api/arenas (keyset pagination p95)": {
+      "baselineLatencyMs": 45.0,
+      "maxAllowedLatencyMs": 100.0
+    },
+    "GET /api/pools/:id/eliminations (keyset pagination p95)": {
+      "baselineLatencyMs": 35.0,
+      "maxAllowedLatencyMs": 80.0
+    },
+    "GET /api/creator/arenas (creator dashboard p95)": {
+      "baselineLatencyMs": 50.0,
+      "maxAllowedLatencyMs": 120.0
+    },
+    "RoundRepository.listByArenaId (keyset fetch p95)": {
+      "baselineLatencyMs": 25.0,
+      "maxAllowedLatencyMs": 60.0
+    }
+  }
+}
