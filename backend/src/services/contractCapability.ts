@@ -54,7 +54,13 @@ let capabilityMap: Record<ContractKind, Record<string, number>> = {
   arena: {},
   factory: {},
   payout: {},
-  staking: {},
+  // #1516: the storage TTL keeper negotiates these before reading/writing TTL
+  // state, so an older deployed staking instance (v1) is silently skipped
+  // rather than probed with an entrypoint it does not have.
+  staking: {
+    storage_inventory: 2,
+    renew_storage: 2,
+  },
 };
 
 /**

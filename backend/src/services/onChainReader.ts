@@ -14,11 +14,11 @@
  *  - toArenaProjectionEvent     — typed boundary: raw RPC event → ArenaProjectionEvent
  */
 
-import { Contract, Keypair, nativeToScVal, scValToNative, xdr, rpc } from "@stellar/stellar-sdk";
+import { Address, Contract, Keypair, nativeToScVal, scValToNative, xdr, rpc } from "@stellar/stellar-sdk";
 // TODO(#1495): replace with a backend-owned Stellar gateway behind a typed
 // interface; this frontend import crosses package ownership and blocks
 // independent backend typecheck/build.
-import { StellarRpcGateway } from "../../frontend/src/shared-d/services/stellarRpcGateway";
+import { StellarRpcGateway } from "../../../frontend/src/shared-d/services/stellarRpcGateway";
 import { getStellarConfig, assertAllowedRpcUrl, RPC_MAX_RESPONSE_BYTES } from "../config/stellarConfig";
 import {
   getSorobanSimulationSingleFlight,
@@ -29,8 +29,34 @@ import {
   isArenaEventTopic,
   type ArenaProjectionEvent,
 } from "./projection/arenaEventTypes";
+import {
+  buildProvenance,
+  classifyReadFailure,
+  isRetryableErrorCode,
+  verifiedRead,
+  unavailableRead,
+  type OnChainReadResult,
+} from "../types/onChainRead";
+import { onChainReadOutcomesTotal } from "../utils/metrics";
 
 let sourcePublicKey: string | null = null;
+
+/**
+ * Record a typed on-chain read outcome for observability (#1519). Kept in one
+ * place so every reader emits the same, bounded-cardinality label set and a
+ * silent outage can never again be mistaken for a legitimate empty state.
+ */
+function recordReadOutcome(
+  functionName: string,
+  outcome: OnChainReadResult<unknown>["outcome"],
+  retryable: boolean,
+): void {
+  onChainReadOutcomesTotal.inc({
+    function: functionName,
+    outcome,
+    retryable: String(retryable),
+  });
+}
 /** On-chain game states — matches the contract's GameState enum. */
 export type OnChainGameState = "Open" | "InProgress" | "Finished" | "Cancelled";
 
@@ -97,16 +123,24 @@ function getSourcePublicKey(): string {
   return sourcePublicKey;
 }
 
+/** A simulated read plus the ledger it was observed against (when known). */
+interface SimulatedViewCall {
+  value: unknown;
+  ledgerSequence: number | null;
+}
+
 /**
- * Simulate a read-only Soroban contract call.
- * Returns the deserialized return value, or throws on error.
+ * Simulate a read-only Soroban contract call, returning both the deserialized
+ * return value and — when the read went through the real RPC path — the ledger
+ * it was observed against, so callers can attach provenance to typed
+ * availability results (#1519). Throws on error.
  */
-async function simulateViewCall(
+async function simulateViewCallDetailed(
   contractId: string,
   functionName: string,
   stellarRpcGateway: StellarRpcGateway,
   args: xdr.ScVal[] = [],
-): Promise<unknown> {
+): Promise<SimulatedViewCall> {
   // Test seam: when `setRpcServerForTest` has set an override, it fully
   // replaces the real `stellarRpcGateway` passed in by the caller for the
   // duration of the override — mirrors `arenaService.ts`/`ledgerClock.ts`'s
@@ -157,7 +191,9 @@ async function simulateViewCall(
   };
 
   if (rpcServerOverride) {
-    return runSimulation();
+    // The override path does not consult the ledger clock, so provenance
+    // records an unknown ledger rather than inventing one.
+    return { value: await runSimulation(), ledgerSequence: null };
   }
 
   const ledgerSequence = await stellarRpcGateway.getLatestLedger();
@@ -169,31 +205,96 @@ async function simulateViewCall(
     args,
   });
 
-  return getSorobanSimulationSingleFlight().run(cacheKey, runSimulation);
+  const value = await getSorobanSimulationSingleFlight().run(cacheKey, runSimulation);
+  return { value, ledgerSequence };
+}
+
+/** Simulate a read-only Soroban call; returns just the deserialized value. */
+async function simulateViewCall(
+  contractId: string,
+  functionName: string,
+  stellarRpcGateway: StellarRpcGateway,
+  args: xdr.ScVal[] = [],
+): Promise<unknown> {
+  const { value } = await simulateViewCallDetailed(
+    contractId,
+    functionName,
+    stellarRpcGateway,
+    args,
+  );
+  return value;
 }
 
 /**
- * Read the on-chain game state for an arena contract.
- * Returns the state string ("Open", "InProgress", "Finished", "Cancelled").
+ * Read the configured network label for provenance. Falls back to the network
+ * passphrase, which is always present in the Stellar config.
  */
-export async function getOnChainGameState(contractId: string): Promise<OnChainGameState> {
-  const stellarRpcGateway = new StellarRpcGateway();
+function provenanceNetwork(): string {
+  return getStellarConfig().networkPassphrase;
+}
+
+/**
+ * Run a read and turn its outcome into a typed {@link OnChainReadResult}
+ * (#1519), recording a bounded-cardinality metric for every result. A thrown
+ * infrastructure/decoding error becomes `unavailable` — never a benign value.
+ */
+async function runTypedRead<T>(
+  functionName: string,
+  contractId: string,
+  read: () => Promise<{ value: T; ledgerSequence: number | null }>,
+): Promise<OnChainReadResult<T>> {
   try {
-    const result = await simulateViewCall(contractId, "game_state", stellarRpcGateway);
-    // The contract returns a Symbol; scValToNative converts it to a string.
-    const state = String(result) as OnChainGameState;
-    return state;
-  } catch {
-    // If the contract call fails (e.g. not deployed yet), return "Open"
-    // as a safe default that won't incorrectly mark arenas as finished.
-    return "Open";
+    const { value, ledgerSequence } = await read();
+    recordReadOutcome(functionName, "verified", false);
+    return verifiedRead(
+      value,
+      buildProvenance({ functionName, contractId, network: provenanceNetwork(), ledgerSequence }),
+    );
+  } catch (error) {
+    const failure = classifyReadFailure(error);
+    const retryable = isRetryableErrorCode(failure.code);
+    recordReadOutcome(functionName, "unavailable", retryable);
+    return unavailableRead(
+      buildProvenance({
+        functionName,
+        contractId,
+        network: provenanceNetwork(),
+        ledgerSequence: null,
+        retryable,
+      }),
+      failure.code,
+      failure.message,
+    );
   }
+}
+
+/**
+ * Read the on-chain game state for an arena contract (#1519).
+ *
+ * The contract always returns a state, so `absent` is never a valid outcome:
+ * a failed read is `unavailable`, not a silent `"Open"`. Callers that
+ * genuinely want the old lenient behaviour must opt in explicitly by checking
+ * `outcome` themselves — the read no longer chooses a default state for them.
+ */
+export async function readOnChainGameState(
+  contractId: string,
+): Promise<OnChainReadResult<OnChainGameState>> {
+  const stellarRpcGateway = new StellarRpcGateway();
+  return runTypedRead("game_state", contractId, async () => {
+    const { value, ledgerSequence } = await simulateViewCallDetailed(
+      contractId,
+      "game_state",
+      stellarRpcGateway,
+    );
+    // The contract returns a Symbol; scValToNative converts it to a string.
+    return { value: String(value) as OnChainGameState, ledgerSequence };
+  });
 }
 
 /**
  * Read a deployed contract's `version()` return value.
  *
- * Unlike getOnChainGameState/getOnChainPlayerCount above, this propagates
+ * Unlike the lenient legacy readers it replaced, this propagates
  * failures instead of defaulting — contractCapability.ts (#1409) needs to
  * know definitively whether a version read succeeded, since a silently
  * defaulted version would let capability negotiation treat an
@@ -211,34 +312,46 @@ export async function getOnChainContractVersion(contractId: string): Promise<num
 }
 
 /**
- * Read the on-chain player count for an arena contract.
- * Returns the number of players who joined on-chain.
+ * Read the on-chain player count for an arena contract (#1519).
+ *
+ * `0` is a legitimate value (nobody has joined yet) and is returned as
+ * `verified`. A failed read is `unavailable`, never `0` — conflating the two
+ * would report an RPC outage as an empty arena.
  */
-export async function getOnChainPlayerCount(contractId: string): Promise<number> {
+export async function readOnChainPlayerCount(
+  contractId: string,
+): Promise<OnChainReadResult<number>> {
   const stellarRpcGateway = new StellarRpcGateway();
-  try {
-    const result = await simulateViewCall(contractId, "get_player_count", stellarRpcGateway);
-    return Number(result as bigint | number);
-  } catch {
-    // If the contract call fails, fall back to 0.
-    return 0;
-  }
+  return runTypedRead("get_player_count", contractId, async () => {
+    const { value, ledgerSequence } = await simulateViewCallDetailed(
+      contractId,
+      "get_player_count",
+      stellarRpcGateway,
+    );
+    return { value: Number(value as bigint | number), ledgerSequence };
+  });
 }
+
 /**
- * Read the on-chain player list for an arena contract.
- * Returns an array of player wallet addresses.
+ * Read the on-chain player list for an arena contract (#1519).
+ *
+ * A genuinely empty list (contract answered, no players) is `verified` with
+ * value `[]`; a failed read is `unavailable` with no value. Callers must not
+ * treat `unavailable` as an empty roster.
  */
-export async function getOnChainPlayers(contractId: string): Promise<string[]> {
+export async function readOnChainPlayers(
+  contractId: string,
+): Promise<OnChainReadResult<string[]>> {
   const stellarRpcGateway = new StellarRpcGateway();
-  try {
-    const result = await simulateViewCall(contractId, "get_players", stellarRpcGateway);
+  return runTypedRead("get_players", contractId, async () => {
+    const { value, ledgerSequence } = await simulateViewCallDetailed(
+      contractId,
+      "get_players",
+      stellarRpcGateway,
+    );
     // The contract returns a Vec<Address>; scValToNative converts it to an array of strings.
-    const players = result as string[];
-    return players;
-  } catch {
-    // If the contract call fails, return empty array.
-    return [];
-  }
+    return { value: value as string[], ledgerSequence };
+  });
 }
 
 /**
@@ -347,7 +460,7 @@ export async function getOnChainSnapshots(contractIds: readonly string[], vaultC
  * Read player count, game state, and total yield for an arena in one
  * all-or-nothing attempt (#1408).
  *
- * Unlike getOnChainPlayerCount/getOnChainGameState/getOnChainTotalYield
+ * Unlike the lenient legacy readers (readOnChainPlayerCount/GameState/TotalYield)
  * above, this throws on ANY failure instead of silently defaulting a single
  * field — arenaStatsService needs to know whether "this batch of on-chain
  * fields is genuinely live" as one fact, not three independently-defaulting
@@ -511,18 +624,149 @@ export async function getFactoryArenaPage(
 }
 
 /**
- * Read the total yield accrued from the rwa-adapter vault.
- * Returns the total yield amount as a number.
+ * Read the total yield accrued from the rwa-adapter vault (#1519).
+ *
+ * `0` is a legitimate value (no yield yet) and is returned as `verified`. A
+ * failed read is `unavailable`, never `0` — a silently zeroed yield would
+ * understate payouts.
  */
-export async function getOnChainTotalYield(contractId: string): Promise<number> {
+export async function readOnChainTotalYield(
+  contractId: string,
+): Promise<OnChainReadResult<number>> {
   const stellarRpcGateway = new StellarRpcGateway();
-  try {
-    const result = await simulateViewCall(contractId, "get_total_yield", stellarRpcGateway);
-    return Number(result as bigint | number);
-  } catch {
-    // If the contract call fails, fall back to 0.
-    return 0;
-  }
+  return runTypedRead("get_total_yield", contractId, async () => {
+    const { value, ledgerSequence } = await simulateViewCallDetailed(
+      contractId,
+      "get_total_yield",
+      stellarRpcGateway,
+    );
+    return { value: Number(value as bigint | number), ledgerSequence };
+  });
+}
+
+/** On-chain staking position for a single staker (#1510). */
+export interface OnChainStakePosition {
+  /** Principal-equivalent tracked by the contract, in token minor units. */
+  amount: bigint;
+  /** Pool shares owned by the staker. */
+  shares: bigint;
+}
+
+/** Global staking pool totals (#1510). */
+export interface OnChainStakingTotals {
+  /** Total tokens staked across all stakers, in minor units. */
+  totalStaked: bigint;
+  /** Total shares outstanding across all stakers. */
+  totalShares: bigint;
+}
+
+function toBigInt(value: unknown): bigint {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number") return BigInt(Math.trunc(value));
+  if (typeof value === "string") return BigInt(value);
+  throw new Error(`Expected an integer amount, received ${typeof value}`);
+}
+
+/**
+ * Read a staker's position from the staking contract (#1510).
+ *
+ * The contract returns a zeroed `StakePosition` for an unknown staker, which
+ * is a legitimate `verified` zero (the staker has no position) — distinct from
+ * `unavailable`, which carries no value at all.
+ */
+export async function readOnChainStakePosition(
+  contractId: string,
+  staker: string,
+): Promise<OnChainReadResult<OnChainStakePosition>> {
+  const stellarRpcGateway = new StellarRpcGateway();
+  return runTypedRead("get_position", contractId, async () => {
+    const arg = new Address(staker).toScVal();
+    const { value, ledgerSequence } = await simulateViewCallDetailed(
+      contractId,
+      "get_position",
+      stellarRpcGateway,
+      [arg],
+    );
+    const obj = value as { amount?: unknown; shares?: unknown };
+    return {
+      value: { amount: toBigInt(obj.amount ?? 0), shares: toBigInt(obj.shares ?? 0) },
+      ledgerSequence,
+    };
+  });
+}
+
+/**
+ * Read the staking pool's global totals (#1510). Two contract calls read
+ * against the same ledger window; a failure of either makes the whole read
+ * `unavailable` rather than reporting a half-updated pool.
+ */
+export async function readOnChainStakingTotals(
+  contractId: string,
+): Promise<OnChainReadResult<OnChainStakingTotals>> {
+  const stellarRpcGateway = new StellarRpcGateway();
+  return runTypedRead("staking_totals", contractId, async () => {
+    const [staked, shares] = await Promise.all([
+      simulateViewCallDetailed(contractId, "total_staked", stellarRpcGateway),
+      simulateViewCallDetailed(contractId, "total_shares", stellarRpcGateway),
+    ]);
+    return {
+      value: {
+        totalStaked: toBigInt(staked.value),
+        totalShares: toBigInt(shares.value),
+      },
+      ledgerSequence: staked.ledgerSequence ?? shares.ledgerSequence,
+    };
+  });
+}
+
+/** Minimum initial stake enforced by the contract, in token minor units (#1510). */
+export async function readOnChainMinInitialStake(
+  contractId: string,
+): Promise<OnChainReadResult<bigint>> {
+  const stellarRpcGateway = new StellarRpcGateway();
+  return runTypedRead("min_initial_stake", contractId, async () => {
+    const { value, ledgerSequence } = await simulateViewCallDetailed(
+      contractId,
+      "min_initial_stake",
+      stellarRpcGateway,
+    );
+    return { value: toBigInt(value), ledgerSequence };
+  });
+}
+
+/** A critical global storage key and whether it currently exists (#1516). */
+export interface OnChainStorageKeyInfo {
+  key: string;
+  present: boolean;
+}
+
+/**
+ * Read a contract's critical-key storage inventory (#1516).
+ *
+ * The contract publishes its bounded set of critical *global* keys (never
+ * per-staker keys) so the keeper knows which entries to request TTLs for. The
+ * contract cannot report remaining TTL (the SDK exposes TTL only to the test
+ * host), so this returns identity + presence only; headroom comes from RPC.
+ */
+export async function readOnChainStorageInventory(
+  contractId: string,
+): Promise<OnChainReadResult<OnChainStorageKeyInfo[]>> {
+  const stellarRpcGateway = new StellarRpcGateway();
+  return runTypedRead("storage_inventory", contractId, async () => {
+    const { value, ledgerSequence } = await simulateViewCallDetailed(
+      contractId,
+      "storage_inventory",
+      stellarRpcGateway,
+    );
+    const rows = Array.isArray(value) ? value : [];
+    return {
+      value: rows.map((row) => {
+        const record = row as { key?: unknown; present?: unknown };
+        return { key: String(record.key ?? ""), present: Boolean(record.present) };
+      }),
+      ledgerSequence,
+    };
+  });
 }
 
 /** Rate plus observation provenance, mirrors `contract/oracle/src/lib.rs`'s `OracleReading` (#1512). */

@@ -2,9 +2,9 @@
 mod types;
 
 use soroban_sdk::{
-    Address, BytesN, Env, contract, contractimpl, contracttype, symbol_short, token,
+    Address, BytesN, Env, Symbol, Vec, contract, contractimpl, contracttype, symbol_short, token,
 };
-use types::{StakePosition, StakerStats, StakingError};
+use types::{StakePosition, StakerStats, StorageKeyInfo, StakingError};
 
 // ─── Persistent storage keys ─────────────────────────────────────────────
 // Migrated from instance storage (#1009) so each key's TTL can be extended
@@ -23,7 +23,10 @@ const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
 
 /// Staking contract ABI/storage version, for client-side capability
 /// negotiation across mixed deployment versions.
-const CONTRACT_VERSION: u32 = 1;
+/// Bumped to 2 for #1516: adds the additive `ttl_health` and `renew_storage`
+/// entrypoints so the keeper can negotiate TTL-health support via
+/// `contractCapability.ts` rather than probing for the methods blindly.
+const CONTRACT_VERSION: u32 = 2;
 
 /// Minimum deposit accepted when the pool holds no shares, in token base units.
 ///
@@ -419,6 +422,64 @@ impl StakingContract {
         Ok(())
     }
 
+    /// The staking contract's bounded set of *global* persistent keys whose
+    /// loss would brick the contract. Per-staker `DataKey::Position` keys are
+    /// intentionally excluded: they are unbounded and enumerating them would
+    /// leak which wallets hold positions.
+    fn critical_global_keys(env: &Env) -> Vec<Symbol> {
+        Vec::from_array(
+            env,
+            [
+                ADMIN_KEY,
+                PAUSED_KEY,
+                TOKEN_KEY,
+                TSTAKE_KEY,
+                TSHARES_KEY,
+                PENDING_ADMIN_KEY,
+            ],
+        )
+    }
+
+    /// Read-only inventory of the contract's critical global storage keys
+    /// (#1516).
+    ///
+    /// Returns one row per critical key with its presence flag. Callable by
+    /// anyone: it exposes only the contract's own aggregate/admin key
+    /// inventory, never per-staker data. The keeper intersects these keys with
+    /// RPC `getLedgerEntries` `liveUntilLedgerSeq` to compute TTL headroom —
+    /// a contract cannot read its own entry TTL at runtime.
+    pub fn storage_inventory(env: Env) -> Vec<StorageKeyInfo> {
+        let mut out = Vec::new(&env);
+        for key in Self::critical_global_keys(&env).iter() {
+            let present = env.storage().persistent().has(&key);
+            out.push_back(StorageKeyInfo { key, present });
+        }
+        out
+    }
+
+    /// Extend the TTL of every present critical global key (#1516).
+    ///
+    /// Admin-gated and idempotent: `extend_ttl` only extends entries whose
+    /// remaining TTL is at or below [`PERSISTENT_TTL_THRESHOLD`], so repeated
+    /// calls inside the threshold are no-ops. A contract cannot read its own
+    /// entry TTL, so this method intentionally reports nothing beyond success —
+    /// the keeper determines what actually moved by re-reading
+    /// `liveUntilLedgerSeq` over RPC after the transaction confirms.
+    pub fn renew_storage(env: Env) -> Result<(), StakingError> {
+        Self::require_admin(&env)?;
+        for key in Self::critical_global_keys(&env).iter() {
+            if !env.storage().persistent().has(&key) {
+                continue;
+            }
+            env.storage().persistent().extend_ttl(
+                &key,
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_EXTEND_TO,
+            );
+        }
+        Ok(())
+    }
+
     fn require_admin(env: &Env) -> Result<Address, StakingError> {
         extend_persistent_ttl(env, &ADMIN_KEY);
         let admin: Address = env
@@ -451,6 +512,8 @@ mod test {
     use super::*;
     use soroban_sdk::Vec;
     use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::Ledger as _;
+    use soroban_sdk::testutils::storage::Persistent as _;
 
     fn mint_staker(env: &Env, token: &Address, amount: i128) -> Address {
         let staker = Address::generate(env);
@@ -1066,5 +1129,110 @@ mod test {
         assert_eq!(tokens, 200);
         assert_eq!(client.total_staked(), 300);
         assert_eq!(client.total_shares(), 300);
+    }
+
+    // ── #1516: storage TTL health + bounded renewal ──────────────────────
+
+    #[test]
+    fn storage_inventory_reports_absent_keys_before_initialization() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(StakingContract, ());
+        let client = StakingContractClient::new(&env, &contract_id);
+
+        let inventory = client.storage_inventory();
+        // Exactly the bounded set of global keys — no per-staker keys.
+        assert_eq!(inventory.len(), 6);
+        for row in inventory.iter() {
+            assert!(!row.present);
+        }
+    }
+
+    #[test]
+    fn storage_inventory_lists_critical_global_keys_and_not_positions() {
+        let (_env, client, _admin, _token, staker) = setup();
+        // A staker position exists; it must not appear in the inventory.
+        client.stake(&staker, &100);
+
+        let inventory = client.storage_inventory();
+        assert_eq!(inventory.len(), 6);
+
+        let mut present = 0;
+        let mut admin_seen = false;
+        let mut pending_seen = false;
+        for row in inventory.iter() {
+            if row.present {
+                present += 1;
+            }
+            if row.key == ADMIN_KEY {
+                admin_seen = true;
+                assert!(row.present);
+            }
+            if row.key == PENDING_ADMIN_KEY {
+                pending_seen = true;
+                // No pending admin transfer was proposed in setup.
+                assert!(!row.present);
+            }
+        }
+        // ADMIN, PAUSED, TOKEN, TSTAKE, TSHARES are set by initialize().
+        assert_eq!(present, 5);
+        assert!(admin_seen && pending_seen);
+    }
+
+    fn admin_ttl(env: &Env, contract: &Address) -> u32 {
+        env.as_contract(contract, || env.storage().persistent().get_ttl(&ADMIN_KEY))
+    }
+
+    #[test]
+    fn renew_storage_extends_when_below_threshold_and_is_idempotent() {
+        let (env, client, _admin, _token, _staker) = setup();
+
+        // Advance the ledger so ADMIN_KEY's headroom falls just below the
+        // renewal threshold, then confirm renewal restores it.
+        let initial = admin_ttl(&env, &client.address);
+        assert!(
+            initial > PERSISTENT_TTL_THRESHOLD,
+            "test env default TTL should exceed the threshold",
+        );
+        env.ledger().set_sequence_number(
+            env.ledger().sequence() + (initial - PERSISTENT_TTL_THRESHOLD + 1),
+        );
+        let before = admin_ttl(&env, &client.address);
+        assert!(before < PERSISTENT_TTL_THRESHOLD);
+
+        client.renew_storage();
+        let after = admin_ttl(&env, &client.address);
+        assert!(
+            after >= PERSISTENT_TTL_EXTEND_TO,
+            "renewal must restore headroom to the extend target",
+        );
+
+        // A second immediate renewal is a no-op: extend_ttl only fires inside
+        // the threshold, so the TTL does not move further.
+        client.renew_storage();
+        assert_eq!(admin_ttl(&env, &client.address), after);
+    }
+
+    #[test]
+    fn renew_storage_does_not_shorten_ttl_when_already_healthy() {
+        let (env, client, _admin, _token, _staker) = setup();
+
+        let before = admin_ttl(&env, &client.address);
+        client.renew_storage();
+        let after = admin_ttl(&env, &client.address);
+        assert!(after >= before, "renewal must never shorten a key's TTL");
+    }
+
+    #[test]
+    fn renew_storage_refuses_when_contract_identity_is_unset() {
+        // Identity uncertainty (never initialized / no admin) must fail closed
+        // rather than renew a contract the keeper cannot positively identify.
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(StakingContract, ());
+        let client = StakingContractClient::new(&env, &contract_id);
+
+        let result = client.try_renew_storage();
+        assert_eq!(result, Err(Ok(StakingError::NotInitialized)));
     }
 }

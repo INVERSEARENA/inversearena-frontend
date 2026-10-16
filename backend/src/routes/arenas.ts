@@ -14,7 +14,8 @@ import { RoundRepository } from "../repositories/roundRepository";
 import { ParticipantEligibilityService } from "../services/participantEligibilityService";
 import { apiError } from "../utils/apiError";
 import type { ArenaParticipant } from "../types/arena";
-import { getOnChainPlayers } from "../services/onChainReader";
+import { readOnChainPlayers } from "../services/onChainReader";
+import { hasReadValue } from "../types/onChainRead";
 import { isAuthorizedAdminWallet } from "../services/walletRoleService";
 import { createRateLimitMiddleware, getSyncPlayersRateLimitConfig } from "../middleware/rateLimit";
 import { createSseConnectionLimitMiddleware } from "../middleware/sseConnectionLimit";
@@ -712,8 +713,18 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
         throw apiError(400, "NO_CONTRACT_ADDRESS", "Arena has no contract address");
       }
 
-      // Fetch on-chain player list
-      const onChainPlayers = await getOnChainPlayers(contractAddress);
+      // Fetch on-chain player list. #1519: if the read is unavailable we must
+      // NOT treat it as an empty roster — that would silently sync zero
+      // players and report an outage as an empty arena. Surface it instead.
+      const playersResult = await readOnChainPlayers(contractAddress);
+      if (!hasReadValue(playersResult)) {
+        throw apiError(
+          503,
+          "CHAIN_READ_UNAVAILABLE",
+          `Could not read the on-chain player list for arena ${id}`,
+        );
+      }
+      const onChainPlayers = playersResult.value;
 
       // Batch-create User records for any wallet addresses that don't exist
       // yet. `skipDuplicates` makes this a single round trip instead of one

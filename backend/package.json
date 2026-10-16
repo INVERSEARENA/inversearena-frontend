@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit",
     "migrate": "prisma migrate deploy",
     "migrate:dev": "prisma migrate dev",
+    "ttl:plan": "tsx src/scripts/ttlKeeperPlan.ts",
     "simulate": "tsx scripts/simulate-game.ts",
     "bench:arena-polling": "tsx scripts/benchmark-arena-publish.ts",
     "verify:evidence": "tsx scripts/verify-evidence-package.ts"

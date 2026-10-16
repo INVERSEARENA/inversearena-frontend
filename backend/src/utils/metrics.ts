@@ -947,3 +947,85 @@ export const claimInboxActionableItems = new Gauge({
   labelNames: [],
   registers: [register],
 });
+
+// ─── #1519: Typed on-chain read availability outcomes ────────────────────────
+//
+// Every arena read helper reports a typed availability result (verified /
+// absent / stale / unavailable). This counter makes a silent RPC outage
+// visible: a spike in `outcome="unavailable"` is the difference between
+// "nobody is playing" and "we cannot reach the chain to find out".
+export const onChainReadOutcomesTotal = new Counter({
+  name: "inversearena_onchain_read_outcomes_total",
+  help: "On-chain read results by contract function, availability outcome and retryability",
+  labelNames: ["function", "outcome", "retryable"],
+  registers: [register],
+});
+
+// ─── #1510: Chain-backed staking position reads ──────────────────────────────
+export const stakingPositionReadDuration = new Histogram({
+  name: "inversearena_staking_position_read_duration_seconds",
+  help: "Latency of chain-backed staking position reads, by outcome",
+  labelNames: ["outcome"],
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+  registers: [register],
+});
+
+export const stakingPositionReadFailuresTotal = new Counter({
+  name: "inversearena_staking_position_read_failures_total",
+  help: "Failed chain-backed staking position reads, by reason",
+  labelNames: ["reason"],
+  registers: [register],
+});
+
+// Deliberately unlabelled: per-wallet labels would be unbounded cardinality.
+export const stakingReconciliationLagSeconds = new Gauge({
+  name: "inversearena_staking_reconciliation_lag_seconds",
+  help: "Age of the most recent successful staking position read; -1 means no successful read yet",
+  registers: [register],
+});
+
+// ─── #1521: Legacy asset-identity migration telemetry ────────────────────────
+//
+// Emitted whenever a caller still supplies a legacy asset shape to the
+// compatibility adapter. The counter is how a legacy field that should have
+// been retired becomes visible instead of lingering silently.
+export const legacyAssetMigrationTotal = new Counter({
+  name: "inversearena_legacy_asset_migration_total",
+  help: "Legacy asset descriptor shapes adapted to the canonical descriptor, by legacy form",
+  labelNames: ["legacy_form"],
+  registers: [register],
+});
+
+// ─── #1516: Contract storage TTL health + bounded renewal ────────────────────
+//
+// `ttlKeeperHeadroomLedgers` is the alerting signal: a low minimum across
+// (contract, key) means storage is approaching expiry. The renewal counter
+// records submitted → confirmed/failed so a stuck transaction is visible.
+export const ttlKeeperHeadroomLedgers = new Gauge({
+  name: "inversearena_ttl_keeper_headroom_ledgers",
+  help: "Ledgers of TTL headroom remaining per contract storage key; -1 means unreadable",
+  labelNames: ["contract", "key"],
+  registers: [register],
+});
+
+export const ttlKeeperRenewalsTotal = new Counter({
+  name: "inversearena_ttl_keeper_renewals_total",
+  help: "Bounded TTL renewal outcomes by contract and status (submitted/confirmed/failed/skipped)",
+  labelNames: ["contract", "status", "reason"],
+  registers: [register],
+});
+
+export const ttlKeeperConfirmationLagSeconds = new Histogram({
+  name: "inversearena_ttl_keeper_confirmation_lag_seconds",
+  help: "Seconds between submitting a renewal transaction and observing its confirmation",
+  labelNames: ["contract"],
+  buckets: [1, 5, 15, 30, 60, 120, 300, 600],
+  registers: [register],
+});
+
+export const ttlKeeperIdentifyFailuresTotal = new Counter({
+  name: "inversearena_ttl_keeper_identify_failures_total",
+  help: "Renewals skipped because contract/network/version identity could not be confirmed",
+  labelNames: ["contract", "reason"],
+  registers: [register],
+});

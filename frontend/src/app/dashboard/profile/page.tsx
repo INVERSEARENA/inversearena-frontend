@@ -12,6 +12,7 @@ import { MyArenasFilter } from "@/shared-d/features/profile/types";
 import { useWallet } from "@/features/wallet/useWallet";
 // Issue #1414 — alias management
 import { AliasManager } from "./AliasManager";
+import StakingPositionPanel from "@/features/staking/StakingPositionPanel";
 
 const truncateAddress = (address: string) => {
   if (!address) return "";
@@ -346,6 +347,12 @@ export default function ProfilePage() {
           </div>
         </div>
       </div>
+
+      {/* Staking Position Section (#1510) */}
+      <section className="space-y-4">
+        <h3 className="text-sm font-bold tracking-[0.2em] text-zinc-400 uppercase">STAKING.CFG</h3>
+        <StakingPositionPanel />
+      </section>
 
       {/* Preferences Section */}
       <section className="space-y-4">
