@@ -46,11 +46,24 @@ npm run dev
 
 ### Run Tests
 
-```bash
-npx tsx tests/round.integration.test.ts
-npx tsx tests/payment.integration.test.ts
-npx tsx tests/metrics.test.ts
-```
+The backend test suite is organized into tiered Jest projects rooted at `backend/tests/`:
+
+- **Unit tests** (fast, zero external dependencies):
+  ```bash
+  npm run test:unit
+  ```
+- **Integration tests** (requires MongoDB, PostgreSQL, and Redis):
+  ```bash
+  npm run test:integration
+  ```
+- **All tests**:
+  ```bash
+  npm test
+  ```
+- **CI test runner**:
+  ```bash
+  npm run test:ci
+  ```
 
 ### View Metrics
 

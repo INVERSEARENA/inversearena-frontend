@@ -37,7 +37,6 @@ export class InMemoryTransactionRepository implements TransactionRepository {
     if (
       this.records.has(record.id) ||
       this.idempotencyMap.has(record.idempotencyKey) ||
-      this.payoutMap.has(record.payoutId) ||
       this.nonceMap.has(nonceKey)
     ) {
       throw new Error("Duplicate transaction identifier, payout, idempotency key, or nonce");

@@ -189,7 +189,7 @@ export async function runArenaPollStages(
   const now = new Date().toISOString();
 
   const unchanged =
-    previous !== null &&
+    previous != null &&
     previous.fingerprint === fingerprint &&
     previous.canonical === canonical;
 
