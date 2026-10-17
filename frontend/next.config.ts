@@ -4,6 +4,17 @@ import { fileURLToPath } from "node:url";
 import { withSentryConfig } from "@sentry/nextjs";
 
 import { STATIC_SECURITY_HEADERS } from "./src/lib/csp";
+import { detectLeakedSecrets } from "./src/config/env";
+
+// Build fails immediately if any secret-looking variable is prefixed with NEXT_PUBLIC_ (#1650)
+const leakedSecrets = detectLeakedSecrets(process.env);
+if (leakedSecrets.length > 0) {
+  throw new Error(
+    `Security Error: Build failed because secret-looking variable(s) are exposed via NEXT_PUBLIC_:\n${leakedSecrets
+      .map((k) => `  - ${k}`)
+      .join("\n")}\nNever expose server secrets to the client bundle!`
+  );
+}
 
 const projectRoot = dirname(fileURLToPath(import.meta.url));
 

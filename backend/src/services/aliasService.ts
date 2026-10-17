@@ -59,8 +59,10 @@ const BUILT_IN_BLOCK_LIST = [
   "faggot",
 ];
 
+import { config } from "../config";
+
 function buildBlockList(): Set<string> {
-  const extra = (process.env.ALIAS_BLOCK_LIST ?? "")
+  const extra = (config.ALIAS_BLOCK_LIST ?? "")
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);

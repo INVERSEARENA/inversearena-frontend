@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "check:env-drift": "node ../scripts/generate-env-examples.mjs --check",
+    "generate:env": "node ../scripts/generate-env-examples.mjs",
     "test:pagination": "echo \"No dedicated pagination tests currently defined\"",
     "test:rate-limit": "node --test src/server/rate-limit/limiter.test.ts",
     "test:frontend": "jest"

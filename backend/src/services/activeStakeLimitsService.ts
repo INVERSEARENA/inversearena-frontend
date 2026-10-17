@@ -27,12 +27,14 @@ import type { PrismaClient } from "@prisma/client";
 import { logger } from "../utils/logger";
 import { activeStakeLimitBlockedTotal, activeStakeCurrentGauge } from "../utils/metrics";
 
+import { config } from "../config";
+
 // ── Configuration ────────────────────────────────────────────────────────────
 
 /** Maximum aggregate stake (in USDC-equivalent units) a single player may have
  *  locked in active rounds at any one time. Override via env in tests. */
 export const MAX_ACTIVE_STAKE_USDC =
-  Number(process.env.MAX_ACTIVE_STAKE_USDC ?? "10000");
+  Number(config.MAX_ACTIVE_STAKE_USDC ?? 10000);
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 

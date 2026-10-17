@@ -18,6 +18,7 @@
  * because nothing depends on the version.
  */
 import { getStellarConfig } from "../config/stellarConfig";
+import { config } from "../config";
 import {
   getRequiredCapabilityVersion,
   negotiateCapability,
@@ -63,8 +64,8 @@ const defaultDeps: CompatibilityManifestDeps = {
   configRevision: getCurrentLedgerSequence,
   negotiate: negotiateCapability,
   requiredVersion: getRequiredCapabilityVersion,
-  factoryContractId: () => process.env.ARENA_FACTORY_CONTRACT_ID || undefined,
-  payoutContractId: () => process.env.PAYOUT_CONTRACT_ID || undefined,
+  factoryContractId: () => config.ARENA_FACTORY_CONTRACT_ID || undefined,
+  payoutContractId: () => config.PAYOUT_CONTRACT_ID || undefined,
   now: () => new Date(),
 };
 

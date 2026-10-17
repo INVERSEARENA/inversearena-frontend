@@ -6,6 +6,7 @@ import {
 } from "rate-limiter-flexible";
 import { redis } from "../cache/redisClient";
 import { apiError } from "../utils/apiError";
+import { config } from "../config";
 
 export interface RateLimitConfig {
   keyPrefix: string;
@@ -16,15 +17,15 @@ export interface RateLimitConfig {
 }
 
 function readPositiveInt(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (!raw) return fallback;
+  const raw = (config as Record<string, unknown>)[name];
+  if (raw === undefined || raw === null || raw === "") return fallback;
   const parsed = Number(raw);
   return Number.isInteger(parsed) && parsed >= 1 ? parsed : fallback;
 }
 
 export function getNonceRateLimitConfig(): RateLimitConfig {
   return {
-    keyPrefix: process.env.RATE_LIMIT_NONCE_PREFIX ?? "rl:auth:nonce",
+    keyPrefix: config.RATE_LIMIT_NONCE_PREFIX ?? "rl:auth:nonce",
     points: readPositiveInt("RATE_LIMIT_NONCE_POINTS", 5),
     durationSeconds: readPositiveInt("RATE_LIMIT_NONCE_WINDOW_SECONDS", 60),
   };
@@ -32,7 +33,7 @@ export function getNonceRateLimitConfig(): RateLimitConfig {
 
 export function getPoolsRateLimitConfig(): RateLimitConfig {
   return {
-    keyPrefix: process.env.RATE_LIMIT_POOLS_PREFIX ?? "rl:pools:create",
+    keyPrefix: config.RATE_LIMIT_POOLS_PREFIX ?? "rl:pools:create",
     points: readPositiveInt("RATE_LIMIT_POOLS_POINTS", 3),
     durationSeconds: readPositiveInt("RATE_LIMIT_POOLS_WINDOW_SECONDS", 60),
   };
@@ -47,7 +48,7 @@ export function getPoolsRateLimitConfig(): RateLimitConfig {
  */
 export function getSyncPlayersRateLimitConfig(): RateLimitConfig {
   return {
-    keyPrefix: process.env.RATE_LIMIT_SYNC_PLAYERS_PREFIX ?? "rl:arenas:sync-players",
+    keyPrefix: config.RATE_LIMIT_SYNC_PLAYERS_PREFIX ?? "rl:arenas:sync-players",
     points: readPositiveInt("RATE_LIMIT_SYNC_PLAYERS_POINTS", 3),
     durationSeconds: readPositiveInt("RATE_LIMIT_SYNC_PLAYERS_WINDOW_SECONDS", 60),
   };
@@ -60,7 +61,7 @@ export function getSyncPlayersRateLimitConfig(): RateLimitConfig {
  */
 export function getLobbyReservationRateLimitConfig(): RateLimitConfig {
   return {
-    keyPrefix: process.env.RATE_LIMIT_RESERVATION_PREFIX ?? "rl:arenas:reservation",
+    keyPrefix: config.RATE_LIMIT_RESERVATION_PREFIX ?? "rl:arenas:reservation",
     points: readPositiveInt("RATE_LIMIT_RESERVATION_POINTS", 10),
     durationSeconds: readPositiveInt("RATE_LIMIT_RESERVATION_WINDOW_SECONDS", 60),
   };
@@ -68,7 +69,7 @@ export function getLobbyReservationRateLimitConfig(): RateLimitConfig {
 
 export function getVerifyRateLimitConfig(): RateLimitConfig {
   return {
-    keyPrefix: process.env.RATE_LIMIT_VERIFY_PREFIX ?? "rl:auth:verify",
+    keyPrefix: config.RATE_LIMIT_VERIFY_PREFIX ?? "rl:auth:verify",
     points: readPositiveInt("RATE_LIMIT_VERIFY_POINTS", 10),
     durationSeconds: readPositiveInt("RATE_LIMIT_VERIFY_WINDOW_SECONDS", 60),
     dualScope: true,
@@ -77,12 +78,12 @@ export function getVerifyRateLimitConfig(): RateLimitConfig {
 
 /** Expensive simulations (#1448): independent per-IP and per-wallet budgets. */
 export function getSimulationRateLimitConfig(): RateLimitConfig {
-  return { keyPrefix: process.env.RATE_LIMIT_SIMULATION_PREFIX ?? "rl:simulations", points: readPositiveInt("RATE_LIMIT_SIMULATION_POINTS", 5), durationSeconds: readPositiveInt("RATE_LIMIT_SIMULATION_WINDOW_SECONDS", 60), dualScope: true };
+  return { keyPrefix: (config as any).RATE_LIMIT_SIMULATION_PREFIX ?? "rl:simulations", points: readPositiveInt("RATE_LIMIT_SIMULATION_POINTS", 5), durationSeconds: readPositiveInt("RATE_LIMIT_SIMULATION_WINDOW_SECONDS", 60), dualScope: true };
 }
 
 export function getRefreshRateLimitConfig(): RateLimitConfig {
   return {
-    keyPrefix: process.env.RATE_LIMIT_REFRESH_PREFIX ?? "rl:auth:refresh",
+    keyPrefix: config.RATE_LIMIT_REFRESH_PREFIX ?? "rl:auth:refresh",
     points: readPositiveInt("RATE_LIMIT_REFRESH_POINTS", 20),
     durationSeconds: readPositiveInt("RATE_LIMIT_REFRESH_WINDOW_SECONDS", 60),
   };
@@ -90,7 +91,7 @@ export function getRefreshRateLimitConfig(): RateLimitConfig {
 
 export function getWalletRoleRateLimitConfig(): RateLimitConfig {
   return {
-    keyPrefix: process.env.RATE_LIMIT_WALLET_ROLE_PREFIX ?? "rl:admin:wallet-role",
+    keyPrefix: config.RATE_LIMIT_WALLET_ROLE_PREFIX ?? "rl:admin:wallet-role",
     points: readPositiveInt("RATE_LIMIT_WALLET_ROLE_POINTS", 20),
     durationSeconds: readPositiveInt("RATE_LIMIT_WALLET_ROLE_WINDOW_SECONDS", 60),
   };
@@ -98,18 +99,18 @@ export function getWalletRoleRateLimitConfig(): RateLimitConfig {
 
 const limiterCache = new Map<string, RateLimiterAbstract>();
 
-function getLimiter(config: RateLimitConfig): RateLimiterAbstract {
-  const cacheKey = `${config.keyPrefix}:${config.points}:${config.durationSeconds}`;
+function getLimiter(configOptions: RateLimitConfig): RateLimiterAbstract {
+  const cacheKey = `${configOptions.keyPrefix}:${configOptions.points}:${configOptions.durationSeconds}`;
   const existing = limiterCache.get(cacheKey);
   if (existing) return existing;
 
   const baseOptions = {
-    keyPrefix: config.keyPrefix,
-    points: config.points,
-    duration: config.durationSeconds,
+    keyPrefix: configOptions.keyPrefix,
+    points: configOptions.points,
+    duration: configOptions.durationSeconds,
   };
 
-  const redisUrl = process.env.REDIS_URL;
+  const redisUrl = config.REDIS_URL;
   const limiter = redisUrl
     ? new RateLimiterRedis({
         ...baseOptions,

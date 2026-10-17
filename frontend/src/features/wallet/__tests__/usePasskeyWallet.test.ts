@@ -46,13 +46,12 @@ describe('usePasskeyWallet', () => {
     expect(stored.address).toMatch(/^G[A-Z2-7]{55}$/);
   });
 
-  it('signs a transaction and returns base64', async () => {
+  it('deliberately rejects transaction signing requests (#1539)', async () => {
     const { result } = renderHook(() => usePasskeyWallet());
     await act(async () => { await result.current.register('player'); });
-    let sig: string | undefined;
-    await act(async () => { sig = await result.current.sign('AAAAAQ=='); });
-    expect(typeof sig).toBe('string');
-    expect(sig!.length).toBeGreaterThan(0);
+    await expect(result.current.sign('AAAAAQ==')).rejects.toThrow(
+      'Passkeys authenticate access to a wallet-bound account; they cannot sign Stellar transactions.',
+    );
   });
 
   it('disconnects and clears state', async () => {
@@ -75,29 +74,29 @@ describe('usePasskeyWallet — demo address derivation is disabled in production
   const originalNodeEnv = process.env.NODE_ENV;
 
   afterEach(() => {
-    Object.defineProperty(process.env, 'NODE_ENV', { value: originalNodeEnv, configurable: true });
+    process.env.NODE_ENV = originalNodeEnv;
   });
 
   it('isPasskeyDemoModeEnabled is false in production even with NEXT_PUBLIC_PASSKEY_DEMO_MODE=true', () => {
-    Object.defineProperty(process.env, 'NODE_ENV', { value: 'production', configurable: true });
+    process.env.NODE_ENV = 'production';
     // jest.setup.env.ts sets NEXT_PUBLIC_PASSKEY_DEMO_MODE=true; the NODE_ENV
     // check must still win.
     expect(isPasskeyDemoModeEnabled()).toBe(false);
   });
 
   it('isPasskeyDemoModeEnabled is true outside production (development)', () => {
-    Object.defineProperty(process.env, 'NODE_ENV', { value: 'development', configurable: true });
+    process.env.NODE_ENV = 'development';
     expect(isPasskeyDemoModeEnabled()).toBe(true);
   });
 
   it('rejects registration in a production build even with NEXT_PUBLIC_PASSKEY_DEMO_MODE=true', async () => {
-    Object.defineProperty(process.env, 'NODE_ENV', { value: 'production', configurable: true });
+    process.env.NODE_ENV = 'production';
     const { result } = renderHook(() => usePasskeyWallet());
     await expect(result.current.register('player')).rejects.toThrow(/disabled in production builds/);
   });
 
   it('allows the demo derivation outside production (development)', async () => {
-    Object.defineProperty(process.env, 'NODE_ENV', { value: 'development', configurable: true });
+    process.env.NODE_ENV = 'development';
     const { result } = renderHook(() => usePasskeyWallet());
     const reg = await result.current.register('player');
     expect(reg.address).toMatch(/^G[A-Z2-7]{55}$/);

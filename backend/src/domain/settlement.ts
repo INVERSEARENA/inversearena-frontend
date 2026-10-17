@@ -6,11 +6,13 @@ export interface SettlementBreakdown {
   netPayout: number;
 }
 
+import { config } from "../config";
+
 const DEFAULT_PLATFORM_FEE_BPS = 0;
 const STROOP_PRECISION = 1e7;
 
 function platformFeeBps(): number {
-  const env = Number(process.env.PLATFORM_FEE_BPS);
+  const env = Number(config.PLATFORM_FEE_BPS);
   return Number.isFinite(env) && env >= 0 && env <= 10_000 ? env : DEFAULT_PLATFORM_FEE_BPS;
 }
 

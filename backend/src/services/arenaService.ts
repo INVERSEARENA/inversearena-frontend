@@ -15,6 +15,7 @@ import type {
   CreateArenaInput,
 } from "../types/arena";
 import { getStellarConfig } from "../config/stellarConfig";
+import { config } from "../config";
 import { ArenaStatsService } from "./arenaStatsService";
 import { enforcePayloadLimits } from "../validation/payloadLimits";
 import { ArenaProjectionCheckpointStore } from "./projection/arenaProjectionCheckpointStore";
@@ -160,7 +161,7 @@ export class ArenaService {
       throw new Error("Invalid transaction hash");
     }
 
-    const factoryContractId = process.env.ARENA_FACTORY_CONTRACT_ID ?? null;
+    const factoryContractId = config.ARENA_FACTORY_CONTRACT_ID ?? null;
     if (!factoryContractId || !CONTRACT_ID_REGEX.test(factoryContractId)) {
       throw new Error(
         "ARENA_FACTORY_CONTRACT_ID is not configured with a valid Soroban contract ID",

@@ -6,6 +6,7 @@ import type { TransactionStateMachine } from "../services/transactionStateMachin
 import { TransactionState } from "../domain/transactionState";
 import { refreshLedgerIdentity } from "../services/ledgerClock";
 import { getRollbackGuard } from "../services/ledgerContinuity";
+import { config } from "../config";
 import {
   workerActiveJobsGauge,
   workerJobAttemptsTotal,
@@ -151,7 +152,7 @@ export function startTxReconcilerWorker(
     async (job: Job<ConfirmJobData>, token?: string) =>
       reconcileSubmittedTransaction(job, paymentService, transactionStateMachine, token),
     {
-      connection: { url: process.env.REDIS_URL ?? "redis://localhost:6379" },
+      connection: { url: config.REDIS_URL },
       concurrency,
     },
   );

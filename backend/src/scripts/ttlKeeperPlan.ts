@@ -50,9 +50,11 @@ function policyFromEnv(env: NodeJS.ProcessEnv): TtlKeeperPolicy {
   };
 }
 
+import { config } from "../config";
+
 export async function buildDryRunPlan() {
-  const manifests = manifestsFromEnv(process.env.TTL_KEEPER_MANIFESTS);
-  const policy = policyFromEnv(process.env);
+  const manifests = manifestsFromEnv(config.TTL_KEEPER_MANIFESTS);
+  const policy = policyFromEnv(config as any);
 
   return runTtlKeeper({
     reader: createRpcTtlReader(),

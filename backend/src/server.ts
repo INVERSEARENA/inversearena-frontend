@@ -5,7 +5,7 @@ import { prisma } from "./db/prisma";
 import { connectDB } from "./db/connection";
 import { MongoTransactionRepository } from "./repositories/mongoTransactionRepository";
 import { MongoTransactionIntentRepository } from "./repositories/mongoTransactionIntentRepository";
-import { validateConfig } from "./config/validate";
+import { validateConfig, config } from "./config";
 import { getPaymentConfig } from "./config/paymentConfig";
 
 import { PaymentService } from "./services/paymentService";
@@ -25,7 +25,7 @@ import { initLedgerContinuity } from "./services/ledgerContinuity";
 import { initSentry } from "./utils/sentry";
 import { logger } from "./utils/logger";
 
-const PORT = Number(process.env.PORT ?? 3001);
+const PORT = config.PORT;
 const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
 
 async function main() {
@@ -55,7 +55,7 @@ async function main() {
   // #1391: reconciles the Arena table against the factory contract's
   // authoritative get_arenas state. Same env var confirmArenaDeployment
   // already requires — fail fast at boot rather than on first triggered run.
-  const arenaFactoryContractId = process.env.ARENA_FACTORY_CONTRACT_ID ?? "";
+  const arenaFactoryContractId = config.ARENA_FACTORY_CONTRACT_ID ?? "";
   if (!CONTRACT_ID_REGEX.test(arenaFactoryContractId)) {
     throw new Error(
       "ARENA_FACTORY_CONTRACT_ID is not configured with a valid Soroban contract ID",

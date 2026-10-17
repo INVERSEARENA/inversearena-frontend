@@ -11,11 +11,11 @@ jest.mock("next/navigation", () => ({
 
 function withNodeEnv(value: string, fn: () => void): void {
   const original = process.env.NODE_ENV;
-  Object.defineProperty(process.env, "NODE_ENV", { value, configurable: true });
+  process.env.NODE_ENV = value;
   try {
     fn();
   } finally {
-    Object.defineProperty(process.env, "NODE_ENV", { value: original, configurable: true });
+    process.env.NODE_ENV = original;
   }
 }
 
