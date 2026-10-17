@@ -66,6 +66,27 @@ jobs:
         working-directory: ./contract
         run: cargo test -p arena storage_layout_
 
+      - name: Install cargo-llvm-cov (#1651)
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Add llvm-tools-preview (#1651)
+        run: rustup component add llvm-tools-preview
+
+      - name: Run contract test coverage and enforce thresholds (#1651)
+        working-directory: ./contract
+        run: ./scripts/check_contract_coverage.sh
+
+      - name: Upload contract coverage report artifacts (#1651)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: contract-coverage-report
+          path: |
+            contract/target/llvm-cov/lcov.info
+            contract/target/llvm-cov/html
+            contract/target/llvm-cov/coverage-summary.md
+          if-no-files-found: warn
+
       - name: Install Stellar CLI
         run: cargo install --locked stellar-cli
 
