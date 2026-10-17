@@ -3,14 +3,14 @@ use crate::types::PayoutError;
 use soroban_sdk::{Address, Env, contracttype, IntoVal, TryFromVal};
 
 pub trait StorageRepository<K, V> {
-    fn has(env: &Env, key: &K) -> bool;
-    fn get(env: &Env, key: &K) -> Option<V>;
-    fn set(env: &Env, key: &K, val: &V);
-    fn remove(env: &Env, key: &K);
+    fn has(&self, key: &K) -> bool;
+    fn get(&self, key: &K) -> Option<V>;
+    fn set(&self, key: &K, val: &V);
+    fn remove(&self, key: &K);
 }
 
 pub trait TtlRepository<K> {
-    fn extend_ttl(env: &Env, key: &K, threshold: u32, extend_to: u32);
+    fn extend_ttl(&self, key: &K, threshold: u32, extend_to: u32);
 }
 
 /// Minimum ledgers remaining before we extend a persistent entry's TTL
@@ -55,47 +55,50 @@ impl<'a> PayoutRepository<'a> {
 }
 
 impl StorageRepository<DataKey, Address> for PayoutRepository<'_> {
-    fn has(env: &Env, key: &DataKey) -> bool {
-        env.storage().persistent().has(key)
+    fn has(&self, key: &DataKey) -> bool {
+        self.env.storage().persistent().has(key)
     }
 
-    fn get(env: &Env, key: &DataKey) -> Option<Address> {
-        env.storage().persistent().get(key)
+    fn get(&self, key: &DataKey) -> Option<Address> {
+        self.env.storage().persistent().get(key)
     }
 
-    fn set(env: &Env, key: &DataKey, val: &Address) {
-        env.storage().persistent().set(key, val);
+    fn set(&self, key: &DataKey, val: &Address) {
+        self.env.storage().persistent().set(key, val);
     }
 
-    fn remove(env: &Env, key: &DataKey) {
-        env.storage().persistent().remove(key);
+    fn remove(&self, key: &DataKey) {
+        self.env.storage().persistent().remove(key);
     }
 }
 
 // For DataKey::Paid which stores a bool
 impl StorageRepository<DataKey, bool> for PayoutRepository<'_> {
-    fn has(env: &Env, key: &DataKey) -> bool {
-        env.storage().persistent().has(key)
+    fn has(&self, key: &DataKey) -> bool {
+        self.env.storage().persistent().has(key)
     }
 
-    fn get(env: &Env, key: &DataKey) -> Option<bool> {
-        env.storage().persistent().get(key)
+    fn get(&self, key: &DataKey) -> Option<bool> {
+        self.env.storage().persistent().get(key)
     }
 
-    fn set(env: &Env, key: &DataKey, val: &bool) {
-        env.storage().persistent().set(key, val);
+    fn set(&self, key: &DataKey, val: &bool) {
+        self.env.storage().persistent().set(key, val);
     }
 
-    fn remove(env: &Env, key: &DataKey) {
-        env.storage().persistent().remove(key);
+    fn remove(&self, key: &DataKey) {
+        self.env.storage().persistent().remove(key);
     }
 }
 
 
 impl TtlRepository<DataKey> for PayoutRepository<'_> {
-    fn extend_ttl(env: &Env, key: &DataKey, threshold: u32, extend_to: u32) {
-        if env.storage().persistent().has(key) {
-            env.storage().persistent().extend_ttl(key, threshold, extend_to);
+    fn extend_ttl(&self, key: &DataKey, threshold: u32, extend_to: u32) {
+        if self.env.storage().persistent().has(key) {
+            self.env
+                .storage()
+                .persistent()
+                .extend_ttl(key, threshold, extend_to);
         }
     }
 }
@@ -108,7 +111,8 @@ impl PayoutStorage {
     }
 
     pub fn has_admin(env: &Env) -> bool {
-        PayoutRepository::new(env).has(&DataKey::Admin)
+        let repo = PayoutRepository::new(env);
+        StorageRepository::<DataKey, Address>::has(&repo, &DataKey::Admin)
     }
 
     pub fn set_admin(env: &Env, admin: &Address) {
@@ -161,7 +165,8 @@ impl PayoutStorage {
     }
 
     pub fn delete_pending_admin(env: &Env) {
-        PayoutRepository::new(env).remove(&DataKey::PendingAdmin);
+        let repo = PayoutRepository::new(env);
+        StorageRepository::<DataKey, Address>::remove(&repo, &DataKey::PendingAdmin);
     }
 
     pub fn set_token(env: &Env, token: &Address) {
@@ -191,7 +196,7 @@ impl PayoutStorage {
     pub fn is_paid(env: &Env, payout_id: u64) -> bool {
         let repo = PayoutRepository::new(env);
         repo.extend_ttl( &DataKey::Paid(payout_id), PAYOUT_TTL_THRESHOLD, PAYOUT_TTL_EXTEND_TO);
-        repo.has(&DataKey::Paid(payout_id))
+        StorageRepository::<DataKey, bool>::has(&repo, &DataKey::Paid(payout_id))
     }
 
     pub fn mark_paid(env: &Env, payout_id: u64) {

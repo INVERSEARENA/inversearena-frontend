@@ -9,6 +9,7 @@ import { TransactionModal, type TransactionProgress } from "@/components/modals/
 import { useWallet } from "@/features/wallet/useWallet";
 import {
   buildJoinArenaTransaction,
+  buildLeaveArenaTransaction,
   submitSignedTransaction,
   NETWORK_PASSPHRASE,
 } from "@/shared-d/utils/stellar-transactions";
@@ -131,6 +132,8 @@ export function ArenaLobbyClient({
   const [loadingParticipants, setLoadingParticipants] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showJoinModal, setShowJoinModal] = useState(false);
+  const [showLeaveModal, setShowLeaveModal] = useState(false);
+  const [leaveError, setLeaveError] = useState<string | null>(null);
   const [isReserving, setIsReserving] = useState(false);
   const [reservationError, setReservationError] = useState<string | null>(null);
   /**
@@ -410,6 +413,17 @@ export function ArenaLobbyClient({
       ? "Join Unavailable"
       : "Join Arena";
 
+  // #1580: only a joined player, in the first-round lobby, may leave and be
+  // refunded. `currentRound === 0` mirrors the contract's `round_count == 0`.
+  const isParticipant = Boolean(
+    wallet.publicKey &&
+      mergedParticipants.some(
+        (participant) => participant.walletAddress === wallet.publicKey,
+      ),
+  );
+  const canLeave =
+    isOpen && stats.currentRound === 0 && isParticipant && walletConnected && !loadingStats;
+
   const handleConfirmJoin = async ({ onSigned }: TransactionProgress) => {
     if (!wallet.publicKey) {
       throw new Error("Connect a wallet before joining this arena.");
@@ -465,6 +479,44 @@ export function ArenaLobbyClient({
       behavior: "smooth",
       block: "start",
     });
+  };
+
+  const handleConfirmLeave = async ({ onSigned }: TransactionProgress) => {
+    if (!wallet.publicKey) {
+      throw new Error("Connect a wallet before leaving this arena.");
+    }
+
+    setLeaveError(null);
+    let policyRejected = false;
+    await runTrackedTransaction({
+      kind: "leave_arena",
+      actionKey: `leave_arena:${arenaId}`,
+      publicKey: wallet.publicKey,
+      buildTransaction: async () => {
+        const unsignedTx = await buildLeaveArenaTransaction(wallet.publicKey!, arenaId);
+        try {
+          evaluateSigningRequest(unsignedTx.toXDR(), "REFUND");
+        } catch (error) {
+          if (error instanceof SigningPolicyError) {
+            policyRejected = true;
+            setLeaveError(error.message);
+          }
+          throw error;
+        }
+        return unsignedTx;
+      },
+      signTransaction: wallet.signTransaction,
+      submitSignedTransaction,
+      networkPassphrase: NETWORK_PASSPHRASE,
+      onSigned,
+    }).catch((error) => {
+      if (policyRejected) return;
+      throw error;
+    });
+    if (policyRejected) return;
+
+    await Promise.all([fetchStats(), fetchParticipants(0, true)]);
+    setShowLeaveModal(false);
   };
 
   return (
@@ -551,14 +603,25 @@ export function ArenaLobbyClient({
               </p>
             </div>
 
-            <button
-              type="button"
-              disabled={joinDisabled || isReserving}
-              onClick={() => void handleJoinClick()}
-              className="rounded-full border border-[#3CFF1A]/40 bg-[#3CFF1A] px-6 py-3 text-sm font-black uppercase tracking-[0.2em] text-black transition hover:brightness-95 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/10 disabled:text-white/40"
-            >
-              {isReserving ? "Reserving..." : joinLabel}
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              {canLeave && (
+                <button
+                  type="button"
+                  onClick={() => setShowLeaveModal(true)}
+                  className="rounded-full border border-white/20 bg-white/5 px-6 py-3 text-sm font-black uppercase tracking-[0.2em] text-white/70 transition hover:border-red-400/50 hover:text-red-300"
+                >
+                  Leave Arena
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={joinDisabled || isReserving}
+                onClick={() => void handleJoinClick()}
+                className="rounded-full border border-[#3CFF1A]/40 bg-[#3CFF1A] px-6 py-3 text-sm font-black uppercase tracking-[0.2em] text-black transition hover:brightness-95 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/10 disabled:text-white/40"
+              >
+                {isReserving ? "Reserving..." : joinLabel}
+              </button>
+            </div>
           </div>
           {reservationError && (
             <p role="alert" className="mt-3 text-sm font-semibold text-red-400">
@@ -759,6 +822,30 @@ export function ArenaLobbyClient({
       {joinError && (
         <div className="mt-3 rounded-2xl border border-red-500/30 bg-red-900/60 p-4 text-sm text-red-300">
           <p className="font-semibold uppercase tracking-[0.2em]">{joinError}</p>
+        </div>
+      )}
+
+      <TransactionModal
+        isOpen={showLeaveModal}
+        onClose={() => {
+          setShowLeaveModal(false);
+          setLeaveError(null);
+        }}
+        title="Leave Arena"
+        description="Leave the lobby and reclaim your entry fee. You can rejoin before the round starts."
+        details={[
+          { label: "Arena", value: stats.arenaName },
+          {
+            label: "Refund",
+            value: formatCurrency(stats.entryFee, stats.stakeToken),
+          },
+        ]}
+        confirmLabel="Sign & Leave"
+        onConfirm={handleConfirmLeave}
+      />
+      {leaveError && (
+        <div className="mt-3 rounded-2xl border border-red-500/30 bg-red-900/60 p-4 text-sm text-red-300">
+          <p className="font-semibold uppercase tracking-[0.2em]">{leaveError}</p>
         </div>
       )}
 

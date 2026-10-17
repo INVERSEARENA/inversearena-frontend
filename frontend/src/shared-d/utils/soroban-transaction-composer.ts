@@ -72,7 +72,11 @@ export function buildCreatePoolCallOperation(
   }
 
   // Encode PoolConfig struct as required by factory contract (#1105)
-  // PoolConfig { stake_token, yield_vault, entry_fee, oracle_contract, min_players, max_players, round_duration }
+  // PoolConfig { stake_token, yield_vault, entry_fee, oracle_contract,
+  //              min_players, max_players, round_duration, start_deadline }
+  const nowSeconds = Math.floor(Date.now() / 1_000);
+  const startDeadlineSeconds = params.startDeadlineSeconds ?? 86_400;
+  const startDeadline = BigInt(nowSeconds + startDeadlineSeconds);
   const poolConfig = nativeToScVal({
     stake_token: currencyContractId,
     yield_vault: yieldVaultContractId,
@@ -81,13 +85,20 @@ export function buildCreatePoolCallOperation(
     min_players: 2,
     max_players: params.arenaCapacity,
     round_duration: BigInt(roundSpeedSeconds),
+    start_deadline: startDeadline,
   }, { type: "PoolConfig" });
 
-  // Factory.create_pool(host: Address, config: PoolConfig)
+  // Factory.create_pool(host: Address, config: PoolConfig, metadata_hash: BytesN<32>)
   // host is the pool creator's wallet address
   const hostAddress = encodeAddress(creatorPublicKey);
+  const metadataHash = params.metadataHash ?? new Uint8Array(32);
 
-  return factory.call("create_pool", hostAddress, poolConfig);
+  return factory.call(
+    "create_pool",
+    hostAddress,
+    poolConfig,
+    encodeBytes32(metadataHash),
+  );
 }
 
 export function buildStakeCallOperation(
@@ -119,6 +130,17 @@ export function buildJoinCallOperation(
   playerPublicKey: string,
 ): SorobanOperation {
   return poolContract.call("join_arena", encodeAddress(playerPublicKey));
+}
+
+/**
+ * Leave an arena lobby before the first round with a full refund (#1580).
+ * Matches `contract/arena/src/lib.rs`'s `leave_arena(player)`.
+ */
+export function buildLeaveArenaCallOperation(
+  poolContract: Contract,
+  playerPublicKey: string,
+): SorobanOperation {
+  return poolContract.call("leave_arena", encodeAddress(playerPublicKey));
 }
 
 /**

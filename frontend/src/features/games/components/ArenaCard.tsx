@@ -29,6 +29,15 @@ export const ArenaCard = ({ arena }: ArenaCardProps) => {
                     <div className="absolute top-0 right-0 p-4">
                         <span className="text-[9px] font-mono text-zinc-600 uppercase font-bold px-2 py-1 border border-white/5">ENTRY_STAKE</span>
                         <div className="text-lg font-extralight text-white mt-1">{arena.stake}</div>
+                        {typeof arena.metadataVerified === 'boolean' && (
+                            <span
+                                className={`mt-2 block text-[8px] font-mono uppercase font-bold tracking-widest ${
+                                    arena.metadataVerified ? 'text-neon-green' : 'text-red-400'
+                                }`}
+                            >
+                                {arena.metadataVerified ? 'METADATA_VERIFIED' : 'METADATA_MISMATCH'}
+                            </span>
+                        )}
                     </div>
 
                     <div className="flex flex-col h-full justify-between">
@@ -87,11 +96,22 @@ export const ArenaCard = ({ arena }: ArenaCardProps) => {
                     <h3 className="text-4xl font-extralight tracking-tighter text-white family-mono leading-none">
                         {arena.number}
                     </h3>
-                    {arena.badge && (
-                        <span className="text-[8px] px-2 py-0.5 bg-neon-pink text-white font-black tracking-widest uppercase">
-                            {arena.badge}
-                        </span>
-                    )}
+                    <div className="flex flex-col items-end gap-1">
+                        {arena.badge && (
+                            <span className="text-[8px] px-2 py-0.5 bg-neon-pink text-white font-black tracking-widest uppercase">
+                                {arena.badge}
+                            </span>
+                        )}
+                        {typeof arena.metadataVerified === 'boolean' && (
+                            <span
+                                className={`text-[8px] font-mono font-bold tracking-widest uppercase ${
+                                    arena.metadataVerified ? 'text-neon-green' : 'text-red-400'
+                                }`}
+                            >
+                                {arena.metadataVerified ? 'METADATA_VERIFIED' : 'METADATA_MISMATCH'}
+                            </span>
+                        )}
+                    </div>
                 </div>
 
                 <div className="space-y-4 mb-8">

@@ -10,6 +10,7 @@ import { apiError } from "../utils/apiError";
 import { getAssetMetadata, formatAmount } from "../types/asset";
 import { lobbyReservationStore } from "../cache/lobbyReservationStore";
 import { decodeCursorInput, encodeKeysetCursor } from "../utils/keysetPagination";
+import { verifyMetadataHash } from "../utils/metadataHash";
 
 const PaginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
@@ -106,6 +107,36 @@ export function createPoolsRouter(authMiddleware: RequestHandler): Router {
         },
         requestId: require("crypto").randomUUID(),
       });
+    }),
+  );
+
+  /**
+   * POST /api/pools/metadata/verify
+   *
+   * Verify a metadata document against the `metadata_hash` committed on-chain
+   * at pool creation (#1577). The caller supplies the hash read from
+   * `factory.get_arena`; a mismatch is rejected so the upload cannot replace
+   * the published name/description/rules/banner with different content.
+   */
+  router.post(
+    "/metadata/verify",
+    authMiddleware,
+    asyncHandler(async (req, res) => {
+      const MetadataVerifySchema = z.object({
+        metadata: z.record(z.unknown()),
+        metadataHash: z.string().regex(/^[0-9a-fA-F]{64}$/),
+      });
+      const { metadata, metadataHash } = MetadataVerifySchema.parse(req.body);
+
+      if (!verifyMetadataHash(metadata, metadataHash)) {
+        throw apiError(
+          422,
+          "METADATA_HASH_MISMATCH",
+          "Metadata does not match the hash committed on-chain",
+        );
+      }
+
+      res.json({ verified: true, metadataHash: metadataHash.toLowerCase() });
     }),
   );
 
