@@ -23,6 +23,7 @@ export type IntentKind =
   | "stake"
   | "unstake"
   | "join_arena"
+  | "leave_arena"
   | "commit_choice"
   | "reveal_choice"
   | "claim";

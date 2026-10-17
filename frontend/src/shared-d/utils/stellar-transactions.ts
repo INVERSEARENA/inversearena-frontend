@@ -49,6 +49,7 @@ import {
   buildGetArenaStateCallOperation,
   buildGetFullStateCallOperation,
   buildJoinCallOperation,
+  buildLeaveArenaCallOperation,
   buildRevealChoiceOperation,
   buildStakeCallOperation,
   buildSubmitCommitmentOperation,
@@ -341,6 +342,34 @@ export async function buildJoinArenaTransaction(
  * reveal time — the salt is never sent on-chain here), and build the
  * `submit_commitment` transaction carrying only the hash.
  */
+/**
+ * Build a `leave_arena` transaction for the lobby phase (#1580). The player
+ * receives their entry fee back and can rejoin later.
+ */
+export async function buildLeaveArenaTransaction(
+  publicKey: string,
+  poolId: string,
+) {
+  const FN = "buildLeaveArenaTransaction";
+  try {
+    const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
+    const validatedPoolId = StellarContractIdSchema.parse(poolId);
+
+    const account = await getAccount(validatedPublicKey, FN);
+    const poolContract = new ContractClientFactory(SOROBAN_RPC_URL).createContract(validatedPoolId);
+    const operation = buildLeaveArenaCallOperation(poolContract, validatedPublicKey);
+
+    return composeUnsignedTransaction(account, {
+      fee: getJoinArenaFee(),
+      networkPassphrase: NETWORK_PASSPHRASE,
+      timeout: getStandardTxTimeoutSeconds(),
+      operation,
+    });
+  } catch (error) {
+    throw parseContractError(error, FN);
+  }
+}
+
 export async function buildSubmitCommitmentTransaction(
   publicKey: string,
   poolId: string,
