@@ -15,7 +15,7 @@ set -euo pipefail
 
 NETWORK="${NETWORK:-testnet}"
 SOURCE="${SOURCE:-deployer}"
-CONTRACTS=("arena" "factory" "payout" "staking")
+CONTRACTS=("arena" "factory" "fee-router" "payout" "staking")
 WASM_DIR="target/wasm32-unknown-unknown/release"
 DEPLOYED_JSON="deployed.json"
 

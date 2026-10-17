@@ -157,6 +157,70 @@ The `rwa_adapter` contract enforces a minimum acceptable swap price (slippage gu
 
 ---
 
+## 9. Platform Fee Revenue-Share (Fee Router)
+
+### 9.1 Overview
+
+Arena contracts collect a platform fee at settlement. The **fee router contract** (`contract/fee-router`) bridges these fees to stakers and the protocol treasury, closing the revenue-share loop that previously had no on-chain path.
+
+```
+Arena settle
+  → arena transfers platform fee to FeeRouter (receive_fees)
+  → Anyone calls flush(token)
+  → FeeRouter splits by staking_share_bps:
+      staking share  → StakingContract.distribute_rewards(amount)
+      treasury share → treasury address transfer
+```
+
+### 9.2 Fee Router Contract
+
+| Parameter | Description |
+|---|---|
+| `staking_share_bps` | Basis-point share routed to staking (0–10 000). Governed via propose/commit with a 7-day timelock. |
+| `treasury` | Address receiving the non-staking share. |
+| `staking_contract` | Address of the staking contract (`distribute_rewards` target). |
+
+### 9.3 `flush(token)` Mechanics
+
+`flush` is callable by anyone:
+
+1. **Dust guard** — if the accumulated balance for `token` is below `MIN_FLUSH_AMOUNT` (1 000 000 base units ≈ 0.1 token at 7 decimals), the call returns `BelowMinFlushAmount` and the balance is preserved. This prevents dust-flush griefing.
+2. **Staking-token routing** — only when `staking_share_bps > 0` does the staking share go to `distribute_rewards`. All other fee tokens route entirely to the treasury.
+3. **Zero-shares deferral** — if the staking pool holds zero shares (nobody staked yet), the call returns `StakingPoolEmpty` without consuming the balance. Once stakers exist the next `flush` call succeeds normally.
+
+### 9.4 Governance
+
+The `staking_share_bps` setting is protected by a two-step timelocked governance flow:
+
+```
+admin calls propose_staking_share(new_bps)
+  ↓  (7-day timelock)
+anyone calls commit_staking_share()
+  → new_bps takes effect
+```
+
+### 9.5 Contract Responsibilities
+
+| Contract | Role in Fee Flow |
+|---|---|
+| `arena_manager.rs` | Transfers platform fee to the fee router at settlement |
+| `fee-router` | Holds fees, splits by governed ratio, calls staking and treasury |
+| `staking/lib.rs` | Receives `distribute_rewards` call; increases reward rate for stakers |
+
+### 9.6 Events
+
+| Topic | Emitting Function | Data Fields |
+|---|---|---|
+| `INIT` | `initialize()` | `(admin, staking_contract, treasury, staking_share_bps)` |
+| `FEE_IN` | `receive_fees()` | `(sender, token, amount)` |
+| `FEE_FLSH` | `flush()` | `(token, total, staking_amount, treasury_amount)` |
+| `FEE_DEFR` | `flush()` (pool empty) | `(token, deferred_amount)` |
+| `SHPR_PRO` | `propose_staking_share()` | `(new_bps, execute_after)` |
+| `SHPR_SET` | `commit_staking_share()` | `(new_bps)` |
+| `SHPR_CNC` | `cancel_staking_share()` | `()` |
+
+---
+
 ## Related Documents
 
 - [Contract Architecture](../contract/ARCHITECTURE.md)
