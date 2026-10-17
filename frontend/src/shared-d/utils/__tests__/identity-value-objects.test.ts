@@ -383,9 +383,8 @@ describe("mutationIdempotencyKey", () => {
   });
 
   it("different wallets produce different keys", () => {
-    const wallet2 = parseStellarAccountId(
-      "GCKFBEIYTKP5RDBQMUFJUMOOR2A46QMWDS4M7A6NZK2WQOG3ZHPJDPD3",
-    );
+    const validKey2 = StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 9));
+    const wallet2 = parseStellarAccountId(validKey2);
     const k1 = mutationIdempotencyKey(net, wallet, arena, 1, "join");
     const k2 = mutationIdempotencyKey(net, wallet2, arena, 1, "join");
     expect(k1).not.toBe(k2);

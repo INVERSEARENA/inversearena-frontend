@@ -52,7 +52,7 @@ type Brand<B> = { readonly [__brand]: B };
  * A branded string type. The underlying value is always a plain `string`
  * at runtime; the brand exists only in the type system.
  */
-export type Branded<T extends string, B> = T & Brand<B>;
+export type Branded<T extends string | number, B> = T & Brand<B>;
 
 // ─── StellarAccountId ─────────────────────────────────────────────────────────
 
@@ -98,7 +98,7 @@ export function tryParseStellarAccountId(raw: string): StellarAccountId | null {
  */
 export type SorobanContractId = Branded<string, "SorobanContractId">;
 
-const PLACEHOLDER_CONTRACT_RE = /^C\.{3}[A-Z0-9_-]+$/;
+const PLACEHOLDER_CONTRACT_RE = /^C[A-Z0-9]?\.{3}[A-Z0-9_-]+$/;
 
 export interface ParseContractIdOptions {
   /** Allow test placeholder IDs that start with `C...`. */

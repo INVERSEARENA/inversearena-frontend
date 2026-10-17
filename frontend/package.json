@@ -9,6 +9,8 @@
     "lint": "eslint",
     "test:pagination": "echo \"No dedicated pagination tests currently defined\"",
     "test:rate-limit": "node --test src/server/rate-limit/limiter.test.ts",
+    "test:bundle-summary": "node --test scripts/__tests__/summarize-bundle.test.mjs",
+    "bundle:summary": "node scripts/summarize-bundle.mjs next-build.log .next",
     "test:frontend": "jest"
   },
   "dependencies": {
