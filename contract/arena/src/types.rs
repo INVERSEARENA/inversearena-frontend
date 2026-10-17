@@ -370,6 +370,23 @@ pub enum ArenaError {
     /// `max_age_secs` via `set_oracle_freshness_policy` if the
     /// existing threshold is inappropriate for this arena.
     StaleOracleData = 40,
+
+    /// Returned by `join_arena` when the arena's configured start deadline has
+    /// passed and the first round has not started (#1579). The lobby is
+    /// closed, so entry is refused and the arena can be cancelled by anyone
+    /// via `cancel_unstarted`.
+    StartDeadlinePassed = 41,
+
+    /// Returned by `cancel_unstarted` when this arena has no start deadline
+    /// configured (#1579). Arenas deployed by a factory always have one; the
+    /// explicit error keeps an unconfigured arena from being cancelled under
+    /// the permissionless path.
+    NoStartDeadline = 42,
+
+    /// Returned by `leave_arena` or `ban_player` when the vault cannot release
+    /// the player's entry fee (#1580, #1581). The whole call reverts, so the
+    /// player is neither removed nor refunded partially.
+    VaultWithdrawFailed = 43,
 }
 
 #[contracttype]

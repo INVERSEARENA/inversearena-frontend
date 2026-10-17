@@ -249,15 +249,66 @@ impl ArenaContract {
         Ok(())
     }
 
+    /// Set the lobby start deadline (#1579).
+    ///
+    /// Only the deploying factory may call this, immediately after
+    /// `initialize`, as part of `create_pool`. It is a separate entry point
+    /// because `initialize` already sits at Soroban's ten-parameter limit. Once
+    /// the deadline passes, `join_arena` rejects new entries and anyone may
+    /// call `cancel_unstarted`.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    /// - `ArenaError::InvalidGameState` if the lobby is no longer open.
+    pub fn set_start_deadline(env: Env, deadline: u64) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        config.factory.require_auth();
+        if config.state != GameState::Open || config.round_count > 0 {
+            return Err(ArenaError::InvalidGameState);
+        }
+        ArenaStorage::save_start_deadline(&env, deadline);
+        Ok(())
+    }
+
+    /// Return the lobby start deadline (#1579), or `0` if none is configured.
+    /// The lobby UI uses this for its countdown and refund-availability state.
+    pub fn get_start_deadline(env: Env) -> u64 {
+        ArenaStorage::load_start_deadline(&env)
+    }
+
     /// Ban a player from joining this arena.
     ///
-    /// Existing player state is not modified, so a ban does not eliminate a
-    /// player who has already joined.
+    /// While the arena is still in its lobby (`round_count == 0`), a player who
+    /// has already joined is removed from the roster and refunded their entry
+    /// fee atomically (#1581). The ban flag persists so a future join attempt
+    /// is rejected with `PlayerBanned`.
+    ///
+    /// Once the first round has started, banning is rejected with
+    /// `ArenaAlreadyStarted`. Allowing it would give the host a way to
+    /// eliminate players mid-game by removing them from an in-progress
+    /// roster, which the game's commit-reveal model must not permit.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    /// - `ArenaError::ArenaAlreadyStarted` if at least one round has resolved.
+    /// - `ArenaError::VaultWithdrawFailed` if a joined player's refund cannot
+    ///   be released; the whole call reverts.
     pub fn ban_player(env: Env, player: Address) -> Result<(), ArenaError> {
         let config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
+
+        if config.round_count > 0 {
+            return Err(ArenaError::ArenaAlreadyStarted);
+        }
+
         ArenaStorage::set_player_banned(&env, &player, true);
         ArenaEvents::player_banned(&env, &config.admin, &player);
+
+        if ArenaStorage::load_player(&env, &player).is_some() {
+            let refund = Self::refund_lobby_player(&env, &config, &player)?;
+            ArenaStorage::remove_player(&env, &player);
+            ArenaEvents::player_refunded(&env, &player, refund);
+        }
         Ok(())
     }
 
@@ -310,6 +361,13 @@ impl ArenaContract {
         if config.round_count > 0 {
             return Err(ArenaError::ArenaAlreadyStarted);
         }
+        // #1579: the lobby closes at `start_deadline`. Once it has passed and
+        // the first round has not started, entry is refused and anyone can
+        // cancel the arena to unlock refunds.
+        let start_deadline = ArenaStorage::load_start_deadline(&env);
+        if start_deadline != 0 && env.ledger().timestamp() >= start_deadline {
+            return Err(ArenaError::StartDeadlinePassed);
+        }
         if player == config.admin {
             return Err(ArenaError::CreatorCannotJoin);
         }
@@ -349,6 +407,55 @@ impl ArenaContract {
         ArenaStorage::add_player(&env, &player);
         let count = ArenaStorage::load_roster_count(&env);
         ArenaEvents::player_joined(&env, &player, count);
+        ArenaStorage::exit_reentrancy_guard(&env);
+        Ok(())
+    }
+
+    /// Leave an arena lobby before the first round and reclaim the entry fee
+    /// (#1580).
+    ///
+    /// Allowed only while the arena is `Open` and no round has resolved. The
+    /// player's entry fee is released from the yield vault, the roster and
+    /// counters are updated, and the player state is removed so they may join
+    /// again later.
+    ///
+    /// Yield policy: any yield accrued in the lobby on the departing player's
+    /// principal is forfeited to the pool and is not paid out. The refund is
+    /// therefore exactly `entry_fee`, matching the amount the player staked.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    /// - `ArenaError::ContractPaused` if the contract is paused.
+    /// - `ArenaError::InvalidGameState` if the arena is not in the `Open` state.
+    /// - `ArenaError::ArenaAlreadyStarted` if at least one round has resolved.
+    /// - `ArenaError::NotAPlayer` if the caller never joined.
+    /// - `ArenaError::VaultWithdrawFailed` if the vault cannot release the fee.
+    ///
+    /// # Events
+    /// Emits `player_left` and `player_refunded`.
+    pub fn leave_arena(env: Env, player: Address) -> Result<(), ArenaError> {
+        ArenaStorage::enter_reentrancy_guard(&env)?;
+        player.require_auth();
+        let config = ArenaStorage::load_config(&env)?;
+        Self::require_not_paused(&config)?;
+        if config.state != GameState::Open {
+            return Err(ArenaError::InvalidGameState);
+        }
+        if config.round_count > 0 {
+            return Err(ArenaError::ArenaAlreadyStarted);
+        }
+        if ArenaStorage::load_player(&env, &player).is_none() {
+            return Err(ArenaError::NotAPlayer);
+        }
+
+        // Effects first: the roster and counters no longer include the player
+        // before any token movement. A failing vault call reverts everything.
+        ArenaStorage::remove_player(&env, &player);
+        let refund = Self::refund_lobby_player(&env, &config, &player)?;
+        let count = ArenaStorage::load_roster_count(&env);
+
+        ArenaEvents::player_left(&env, &player, count);
+        ArenaEvents::player_refunded(&env, &player, refund);
         ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
     }
@@ -464,23 +571,54 @@ impl ArenaContract {
             ArenaError::InvalidGameState,
         )?;
 
-        config.state = GameState::Cancelled;
-        ArenaStorage::save_config(&env, &config);
+        Self::transition_to_cancelled(&env, &mut config);
+        ArenaEvents::arena_cancelled(&env, &config.admin);
 
-        let arena_addr = env.current_contract_address();
-        if config.player_count > 0 {
-            let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
-            let _ = rwa_client.withdraw_all(&arena_addr);
+        ArenaStorage::exit_reentrancy_guard(&env);
+        Ok(())
+    }
+
+    /// Cancel an arena that never started once its start deadline has passed
+    /// (#1579).
+    ///
+    /// Permissionless: any caller may trigger this after `start_deadline` while
+    /// the first round has not resolved. It reuses the normal cancellation
+    /// path, so the arena becomes `Cancelled`, every joined player can claim a
+    /// refund, and the creator stake is returned to the host. Without this,
+    /// entry fees would stay locked forever in an arena that never reaches
+    /// `min_players`.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    /// - `ArenaError::ContractPaused` if the contract is paused.
+    /// - `ArenaError::InvalidGameState` if the arena is not in the `Open` state.
+    /// - `ArenaError::ArenaAlreadyStarted` if at least one round has resolved.
+    /// - `ArenaError::NoStartDeadline` if this arena has no deadline configured.
+    /// - `ArenaError::DeadlineTooSoon` if the deadline has not been reached.
+    ///
+    /// # Events
+    /// Emits `arena_cancelled`.
+    pub fn cancel_unstarted(env: Env) -> Result<(), ArenaError> {
+        ArenaStorage::enter_reentrancy_guard(&env)?;
+        let mut config = ArenaStorage::load_config(&env)?;
+        Self::require_not_paused(&config)?;
+        if config.state != GameState::Open {
+            return Err(ArenaError::InvalidGameState);
+        }
+        if config.round_count > 0 {
+            return Err(ArenaError::ArenaAlreadyStarted);
+        }
+        let deadline = ArenaStorage::load_start_deadline(&env);
+        if deadline == 0 {
+            return Err(ArenaError::NoStartDeadline);
+        }
+        if env.ledger().timestamp() < deadline {
+            return Err(ArenaError::DeadlineTooSoon);
         }
 
+        Self::transition_to_cancelled(&env, &mut config);
         ArenaEvents::arena_cancelled(&env, &config.admin);
-        
-        // Notify factory of cancellation: release active pool slot and refund creator stake
-        let factory_client = FactoryClient::new(&env, &config.factory);
-        let _ = factory_client.try_release_arena(&arena_addr);
-        let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
-        let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Cancelled);
-        
+
         ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
     }
@@ -1209,6 +1347,56 @@ impl ArenaContract {
         Ok(())
     }
 
+    /// Shared cancellation path: mark the arena `Cancelled`, release the pooled
+    /// principal, and tell the factory to free the pool slot and refund the
+    /// creator stake. Callers own the preconditions and the cancellation event.
+    fn transition_to_cancelled(env: &Env, config: &mut ArenaConfig) {
+        config.state = GameState::Cancelled;
+        ArenaStorage::save_config(env, config);
+
+        let arena_addr = env.current_contract_address();
+        if config.player_count > 0 {
+            let rwa_client = RwaAdapterClient::new(env, &config.yield_vault);
+            let _ = rwa_client.withdraw_all(&arena_addr);
+        }
+
+        let factory_client = FactoryClient::new(env, &config.factory);
+        let _ = factory_client.try_release_arena(&arena_addr);
+        let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
+        let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Cancelled);
+    }
+
+    /// Release one lobby player's entry fee from the vault and transfer it back
+    /// to them. Used by `leave_arena` and `ban_player` (#1580, #1581).
+    ///
+    /// Yield accrued on the refunded principal is intentionally left in the
+    /// vault for the remaining pool.
+    fn refund_lobby_player(
+        env: &Env,
+        config: &ArenaConfig,
+        player: &Address,
+    ) -> Result<i128, ArenaError> {
+        let arena_addr = env.current_contract_address();
+        let rwa_client = RwaAdapterClient::new(env, &config.yield_vault);
+        let withdrawn = rwa_client
+            .try_withdraw(&arena_addr, &config.entry_fee)
+            .map_err(|_| ArenaError::VaultWithdrawFailed)?
+            .map_err(|_| ArenaError::VaultWithdrawFailed)?;
+        let refund = if withdrawn > config.entry_fee {
+            config.entry_fee
+        } else {
+            withdrawn
+        };
+
+        let token_client = token::TokenClient::new(env, &config.stake_token);
+        token_client.transfer(&arena_addr, player, &refund);
+
+        let baseline = ArenaStorage::load_last_vault_balance(env);
+        ArenaStorage::save_last_vault_balance(env, baseline.saturating_sub(config.entry_fee));
+
+        Ok(refund)
+    }
+
     fn validate_player_limits(min_players: u32, max_players: u32) -> Result<(), ArenaError> {
         if min_players < MIN_PLAYERS_TO_START || min_players > max_players {
             return Err(ArenaError::InvalidPlayerLimits);
@@ -1437,6 +1625,10 @@ mod test {
         }
 
         pub fn deposit(_env: Env, _from: Address, _amount: i128) {}
+
+        pub fn withdraw(_env: Env, _user: Address, amount: i128) -> i128 {
+            amount
+        }
 
         pub fn withdraw_all(env: Env, user: Address) -> i128 {
             Self::balance_of(env, user)
@@ -4711,3 +4903,5 @@ mod test {
 mod integration_tests;
 #[cfg(test)]
 mod join_arena_tests;
+#[cfg(test)]
+mod lobby_tests;

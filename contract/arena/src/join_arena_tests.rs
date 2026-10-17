@@ -28,6 +28,9 @@ impl MockVault {
     pub fn balance_of(_env: Env, _user: Address) -> i128 {
         0
     }
+    pub fn withdraw(_env: Env, _user: Address, amount: i128) -> i128 {
+        amount
+    }
     pub fn withdraw_all(_env: Env, _user: Address) -> i128 {
         0
     }
@@ -130,19 +133,32 @@ fn banned_player_cannot_join_until_unbanned() {
 }
 
 #[test]
-fn banning_existing_player_does_not_remove_participation() {
+fn banning_a_joined_lobby_player_refunds_and_removes_them() {
     let (env, client, token_id) = setup_arena(GameState::Open);
     let player = Address::generate(&env);
-    StellarAssetClient::new(&env, &token_id).mint(&player, &100);
+    let token = StellarAssetClient::new(&env, &token_id);
+    token.mint(&player, &100);
 
     client.join_arena(&player);
     assert_eq!(client.player_count(), 1);
+
     client.ban_player(&player);
 
-    let players = client.get_players(&0);
-    assert_eq!(players.len(), 1);
-    assert_eq!(players.get(0).unwrap().0, player);
-    assert_eq!(client.player_count(), 1);
+    assert_eq!(client.player_count(), 0, "ban must remove the joined player");
+    assert_eq!(client.get_players(&0).len(), 0);
+    assert!(client.is_player_banned(&player));
+    assert_eq!(
+        TokenClient::new(&env, &token_id).balance(&player),
+        100,
+        "ban must refund the entry fee"
+    );
+
+    // The ban list still applies to future join attempts.
+    token.mint(&player, &100);
+    assert_eq!(
+        client.try_join_arena(&player),
+        Err(Ok(ArenaError::PlayerBanned))
+    );
 }
 
 /// join_arena() rejects with InvalidGameState when the arena is Active.

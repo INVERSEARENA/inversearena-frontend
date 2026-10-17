@@ -143,6 +143,18 @@ The arena pool contract uses `#[contracterror]` with **explicit** `repr(u32)` va
 > | 39 | `InvalidFreshnessPolicy` | `set_oracle_freshness_policy` called with `warn_age_secs > max_age_secs`, either `0`, or `max_age_secs` above `MAX_ORACLE_MAX_AGE_SECS` (86,400s) |
 > | 40 | `StaleOracleData` | `resolve_round` refused because the oracle's latest observation is older than the arena's configured `max_age_secs`, or was never recorded. Recoverable — retry once the oracle publishes a fresh observation. |
 
+> Codes added by the lobby lifecycle work (#1579, #1580, #1581), current as of
+> that enum:
+>
+> | Code | Variant | Meaning |
+> |------|---------|---------|
+> | 41 | `StartDeadlinePassed` | `join_arena` called at or after the lobby start deadline |
+> | 42 | `NoStartDeadline` | `cancel_unstarted` called on an arena with no configured deadline |
+> | 43 | `VaultWithdrawFailed` | `leave_arena`/`ban_player` could not release the entry fee from the vault; the whole call reverts |
+
+> The factory adds `InvalidStartDeadline = 21` (`FactoryError`) when
+> `PoolConfig.start_deadline` is outside `[created_at + 300, created_at + 2_592_000]`.
+
 > **Required process — every new `ArenaError` variant must be added in the same PR to all three places:**
 > 1. `contract/arena/src/lib.rs` — add the variant with its explicit `repr(u32)` value.
 > 2. `contract/arena/abi_snapshot.json` — add `"VariantName": N` to the `arena_error` object.

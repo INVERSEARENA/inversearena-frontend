@@ -139,6 +139,9 @@ fn full_game_lifecycle_commit_reveal() {
     //     (eliminates majority, so p2, p3, p4 are eliminated)
     env.ledger()
         .with_mut(|li| li.timestamp = start_ts + 31_536_000);
+    // Refresh the observation timestamp so the #1512 freshness check passes
+    // after the simulated year.
+    oracle_client.set_yield_bps(&500);
     arena_client.resolve_round();
     all_events.extend(env.events().all().iter());
 
@@ -307,8 +310,10 @@ fn factory_arena_payout_full_lifecycle() {
         min_players:      2,
         max_players:      10,
         round_duration:   3600,
+        start_deadline:   env.ledger().timestamp() + 86_400,
     };
-    let arena_addr = factory_client.create_pool(&host, &pool_cfg);
+    let metadata_hash = BytesN::from_array(&env, &[9u8; 32]);
+    let arena_addr = factory_client.create_pool(&host, &pool_cfg, &metadata_hash);
     let arena_client = ArenaContractClient::new(&env, &arena_addr);
 
     // Factory should have recorded the pool metadata.
@@ -316,6 +321,8 @@ fn factory_arena_payout_full_lifecycle() {
     assert_eq!(meta.arena_address, arena_addr);
     assert_eq!(meta.host, host);
     assert_eq!(meta.entry_fee, 100);
+    assert_eq!(meta.metadata_hash, metadata_hash);
+    assert_eq!(arena_client.get_start_deadline(), pool_cfg.start_deadline);
 
     // ── 7. Players join arena (deposits go to the vault via arena) ─────
     arena_client.join_arena(&p1);
@@ -361,6 +368,7 @@ fn factory_arena_payout_full_lifecycle() {
     // ── 10. Admin resolves round (oracle provides 5% yield) ────────────
     // Advance time so vault yield accrues.
     env.ledger().with_mut(|li| li.timestamp = start_ts + 31_536_000);
+    oracle_client.set_yield_bps(&500);
     arena_client.resolve_round();
 
     // Verify on-chain player states: p1 (minority) survives; p2/p3 eliminated.
@@ -395,6 +403,8 @@ fn factory_arena_payout_full_lifecycle() {
     let prize: i128 = 315;
     token_admin_client.mint(&payout_id, &prize);
 
+    // #1450: the winner must be registered as the payout destination first.
+    payout_client.register_destination(&1, &p1);
     // distribute_winnings is idempotent on payout_id; payout_id = 1.
     payout_client.distribute_winnings(&1, &p1, &prize);
 
@@ -490,6 +500,7 @@ fn arena_after_one_elimination_round(
     for i in 0..5 {
         arena_client.reveal_choice(&players[i], &choices[i], &salts[i]);
     }
+    OracleContractClient::new(env, &oracle_id).set_yield_bps(&0);
     arena_client.resolve_round();
 
     (arena_client, token_client, arena_id, players)
@@ -615,6 +626,7 @@ fn zero_survivor_resolve_round_claim_refund_succeeds() {
     arena_client.start_round(&3600);
     env.ledger().with_mut(|li| li.timestamp = 1000 + 3601);
 
+    OracleContractClient::new(&env, &oracle_id).set_yield_bps(&0);
     arena_client.resolve_round();
 
     // Zero survivors → Cancelled, and resolve_round must have withdrawn the

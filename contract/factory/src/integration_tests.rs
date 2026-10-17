@@ -112,6 +112,7 @@ fn factory_deploys_arena_and_full_game_plays() {
                 entry_fee: 100,
                 status: ArenaStatus::Active,
                 created_at: env.ledger().timestamp(),
+                metadata_hash: soroban_sdk::BytesN::from_array(&env, &[0u8; 32]),
             },
         );
         crate::storage::FactoryStorage::increment_pool_count(&env);
@@ -170,6 +171,9 @@ fn factory_deploys_arena_and_full_game_plays() {
     arena_client.reveal_choice(&p3, &arena::types::Choice::Heads, &salt3);
 
     // ── 9. Resolve round ────────────────────────────────────────────────
+    // Refresh the oracle observation so the #1512 freshness check passes at
+    // the advanced ledger timestamp.
+    oracle_client.set_yield_bps(&500);
     arena_client.resolve_round();
 
     // Verify round result

@@ -48,11 +48,19 @@ pub trait ArenaInterface {
         max_players: u32,
         round_duration: u64,
     );
+    /// Set right after `initialize`; see arena's `set_start_deadline` (#1579).
+    fn set_start_deadline(env: Env, deadline: u64);
 }
 
 const MIN_ROUND_DURATION: u64 = 60;
 const MAX_ROUND_DURATION: u64 = 604_800;
 const MIN_PLAYERS: u32 = 2;
+/// The lobby must stay open for at least this long after pool creation, so a
+/// host cannot create an arena that is effectively already expired (#1579).
+const MIN_START_DELAY_SECONDS: u64 = 300;
+/// Upper bound for `PoolConfig.start_deadline` (30 days). A longer window
+/// would let entry fees sit locked with no realistic cancellation path.
+const MAX_START_DELAY_SECONDS: u64 = 2_592_000;
 /// Factory contract ABI/storage version, for client-side capability
 /// negotiation across mixed deployment versions (see arena::CONTRACT_VERSION
 /// for the sibling contract's own counter — these are independent).
@@ -254,6 +262,7 @@ impl FactoryContract {
         env: Env,
         host: Address,
         config: PoolConfig,
+        metadata_hash: BytesN<32>,
     ) -> Result<Address, FactoryError> {
         if FactoryStorage::is_paused(&env) {
             return Err(FactoryError::ContractPaused);
@@ -268,6 +277,16 @@ impl FactoryContract {
             || config.max_players > MAX_PLAYERS_ALLOWED
         {
             return Err(FactoryError::InvalidConfig);
+        }
+
+        // #1579: bound the lobby lifetime relative to creation. Too short and
+        // the pool is stillborn; too long and entry fees are locked for an
+        // unreasonable period.
+        let now = env.ledger().timestamp();
+        if config.start_deadline < now.saturating_add(MIN_START_DELAY_SECONDS)
+            || config.start_deadline > now.saturating_add(MAX_START_DELAY_SECONDS)
+        {
+            return Err(FactoryError::InvalidStartDeadline);
         }
         if !FactoryStorage::is_whitelisted(&env, &host) {
             return Err(FactoryError::HostNotWhitelisted);
@@ -322,6 +341,7 @@ impl FactoryContract {
             &config.max_players,
             &config.round_duration,
         );
+        ArenaClient::new(&env, &arena).set_start_deadline(&config.start_deadline);
 
         FactoryStorage::save_creator_stake(
             &env,
@@ -341,6 +361,7 @@ impl FactoryContract {
             entry_fee: config.entry_fee,
             status: ArenaStatus::Active,
             created_at: env.ledger().timestamp(),
+            metadata_hash: metadata_hash.clone(),
         };
         FactoryStorage::save_pool(&env, pool_id, &pool_metadata);
         FactoryStorage::increment_pool_count(&env);
@@ -355,6 +376,7 @@ impl FactoryContract {
                 config.min_players,
                 config.max_players,
                 config.round_duration,
+                metadata_hash,
             ),
         );
         Ok(arena)
@@ -547,7 +569,12 @@ mod test {
             min_players: 2,
             max_players: 10,
             round_duration: 60,
+            start_deadline: env.ledger().timestamp() + 86_400,
         }
+    }
+
+    fn metadata_hash(env: &Env) -> BytesN<32> {
+        BytesN::from_array(env, &[7u8; 32])
     }
 
     /// A `pool_config` whose `stake_token` is a real deployed token contract
@@ -602,7 +629,7 @@ mod test {
     fn create_pool_rejects_unwhitelisted_host() {
         let (env, client, _admin, host) = setup();
         let err = client
-            .try_create_pool(&host, &pool_config(&env, 100))
+            .try_create_pool(&host, &pool_config(&env, 100), &metadata_hash(&env))
             .err()
             .expect("unwhitelisted host must error")
             .expect("error must be a contract error");
@@ -615,7 +642,7 @@ mod test {
         let mut config = pool_config(&env, 100);
         update(&mut config);
         let error = client
-            .try_create_pool(&host, &config)
+            .try_create_pool(&host, &config, &metadata_hash(&env))
             .err()
             .expect("invalid config must be rejected")
             .expect("error must be a contract error");
@@ -631,6 +658,32 @@ mod test {
     fn create_pool_rejects_round_duration_above_maximum() {
         assert_invalid_config(|config| {
             config.round_duration = 604_801
+        });
+    }
+
+    fn assert_invalid_start_deadline(update: impl FnOnce(&mut PoolConfig)) {
+        let (env, client, _admin, host) = setup();
+        let mut config = pool_config(&env, 100);
+        update(&mut config);
+        let error = client
+            .try_create_pool(&host, &config, &metadata_hash(&env))
+            .err()
+            .expect("invalid start deadline must be rejected")
+            .expect("error must be a contract error");
+        assert_eq!(error, FactoryError::InvalidStartDeadline);
+    }
+
+    #[test]
+    fn create_pool_rejects_start_deadline_below_minimum() {
+        assert_invalid_start_deadline(|config| {
+            config.start_deadline = MIN_START_DELAY_SECONDS - 1
+        });
+    }
+
+    #[test]
+    fn create_pool_rejects_start_deadline_above_maximum() {
+        assert_invalid_start_deadline(|config| {
+            config.start_deadline = MAX_START_DELAY_SECONDS + 1
         });
     }
 
@@ -666,7 +719,7 @@ mod test {
             let mut config = pool_config(&env, 100);
             config.max_players = *max_players;
             let err = client
-                .try_create_pool(&host, &config)
+                .try_create_pool(&host, &config, &metadata_hash(&env))
                 .err()
                 .expect("max_players > 100 must be rejected")
                 .expect("error must be a contract error");
@@ -687,7 +740,7 @@ mod test {
         client.pause();
 
         let err = client
-            .try_create_pool(&host, &pool_config(&env, 100))
+            .try_create_pool(&host, &pool_config(&env, 100), &metadata_hash(&env))
             .err()
             .expect("paused factory must error")
             .expect("error must be a contract error");
@@ -702,7 +755,7 @@ mod test {
         // proceeds past the pause check — fails on missing WASM hash).
         client.unpause();
         let err_after = client
-            .try_create_pool(&host, &pool_config(&env, 100))
+            .try_create_pool(&host, &pool_config(&env, 100), &metadata_hash(&env))
             .err()
             .expect("must still error (no wasm hash configured)")
             .expect("error must be a contract error");
@@ -723,7 +776,7 @@ mod test {
         client.add_supported_token(&cfg.stake_token);
 
         let err = client
-            .try_create_pool(&host, &cfg)
+            .try_create_pool(&host, &cfg, &metadata_hash(&env))
             .err()
             .expect("stake below minimum must error")
             .expect("error must be a contract error");
@@ -739,7 +792,7 @@ mod test {
         // No token registered — must be rejected.
         let cfg = pool_config_with_real_token(&env, 100);
         let err = client
-            .try_create_pool(&host, &cfg)
+            .try_create_pool(&host, &cfg, &metadata_hash(&env))
             .err()
             .expect("unsupported token must error")
             .expect("error must be a contract error");
@@ -749,7 +802,7 @@ mod test {
         // missing WASM hash, not on token validation).
         client.add_supported_token(&cfg.stake_token);
         let err_after = client
-            .try_create_pool(&host, &cfg)
+            .try_create_pool(&host, &cfg, &metadata_hash(&env))
             .err()
             .expect("must still error (no wasm hash configured)")
             .expect("error must be a contract error");
@@ -908,7 +961,7 @@ mod test {
         client.add_approved_oracle(&cfg.oracle_contract);
 
         let err = client
-            .try_create_pool(&host, &cfg)
+            .try_create_pool(&host, &cfg, &metadata_hash(&env))
             .err()
             .expect("unapproved vault must error")
             .expect("error must be a contract error");
@@ -925,7 +978,7 @@ mod test {
         client.add_approved_vault(&cfg.yield_vault);
 
         let err = client
-            .try_create_pool(&host, &cfg)
+            .try_create_pool(&host, &cfg, &metadata_hash(&env))
             .err()
             .expect("unapproved oracle must error")
             .expect("error must be a contract error");
@@ -1019,7 +1072,7 @@ mod test {
         // Removing the gate from release_arena must not weaken the pause switch
         // where it actually matters.
         let err = client
-            .try_create_pool(&host, &pool_config(&env, 100))
+            .try_create_pool(&host, &pool_config(&env, 100), &metadata_hash(&env))
             .err()
             .expect("paused factory must still refuse new pools")
             .expect("error must be a contract error");
@@ -1146,7 +1199,7 @@ mod test {
         client.add_supported_token(&token_id);
 
         let err = client
-            .try_create_pool(&host, &cfg)
+            .try_create_pool(&host, &cfg, &metadata_hash(&env))
             .err()
             .expect("entry_fee far below the decimal-scaled minimum must error")
             .expect("error must be a contract error");

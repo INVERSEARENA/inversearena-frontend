@@ -51,6 +51,8 @@ pub(crate) enum DataKey {
     /// Per-instance oracle freshness policy (#1512). See
     /// `ArenaRepository::load_oracle_freshness_policy`.
     OracleFreshnessPolicy,
+    /// Lobby start deadline (#1579). `0` means no deadline is configured.
+    StartDeadline,
 }
 
 pub struct ArenaRepository<'a> {
@@ -730,6 +732,51 @@ impl ArenaStorage {
         }
     }
 
+    /// Remove a player who joined but has not yet played, keeping the paged
+    /// roster, the survivor index, and both counters consistent (#1580, #1581).
+    ///
+    /// Returns `false` when the address was not on the roster, so callers can
+    /// distinguish "removed" from "never joined". Pages are rewritten in place
+    /// (roster order is preserved minus the removed address); the `PlayerState`
+    /// entry is deleted so a subsequent `join_arena` is treated as a fresh join.
+    pub fn remove_player(env: &Env, player: &Address) -> bool {
+        Self::ensure_paged_roster(env);
+        if Self::load_player(env, player).is_none() {
+            return false;
+        }
+
+        let roster = Self::load_all_players(env);
+        let mut kept = Vec::new(env);
+        for entry in roster.iter() {
+            if &entry != player {
+                kept.push_back(entry);
+            }
+        }
+        Self::write_roster_pages(env, &kept);
+        Self::save_roster_count(env, kept.len());
+
+        let survivors = Self::load_survivor_index(env);
+        let mut kept_survivors = Vec::new(env);
+        for entry in survivors.iter() {
+            if &entry != player {
+                kept_survivors.push_back(entry);
+            }
+        }
+        Self::write_survivor_pages(env, &kept_survivors);
+        Self::save_survivor_count(env, kept_survivors.len());
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Player(player.clone()));
+
+        if let Ok(mut config) = Self::load_config(env) {
+            config.player_count = config.player_count.saturating_sub(1);
+            config.active_player_count = config.active_player_count.saturating_sub(1);
+            Self::save_config(env, &config);
+        }
+        true
+    }
+
     pub fn load_active_roster(env: &Env) -> Vec<Address> {
         Self::ensure_paged_roster(env);
         let total = Self::load_roster_count_raw(env);
@@ -823,6 +870,22 @@ impl ArenaStorage {
     pub fn load_max_players(env: &Env) -> Option<u32> {
         Self::extend_persistent_ttl(env, &DataKey::MaxPlayers);
         env.storage().persistent().get(&DataKey::MaxPlayers)
+    }
+
+    /// Lobby start deadline (#1579), or `0` when none is configured.
+    pub fn save_start_deadline(env: &Env, deadline: u64) {
+        Self::extend_persistent_ttl(env, &DataKey::StartDeadline);
+        env.storage()
+            .persistent()
+            .set(&DataKey::StartDeadline, &deadline);
+    }
+
+    pub fn load_start_deadline(env: &Env) -> u64 {
+        Self::extend_persistent_ttl(env, &DataKey::StartDeadline);
+        env.storage()
+            .persistent()
+            .get(&DataKey::StartDeadline)
+            .unwrap_or(0)
     }
 
     pub fn save_commitment(env: &Env, player: &Address, round: u32, commitment: &BytesN<32>) {

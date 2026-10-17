@@ -25,6 +25,8 @@ Current payload version: **1**
 | `frsh_pol`    | `set_oracle_freshness_policy()` (#1512) | `(admin: Address, max_age_secs: u64, warn_age_secs: u64)` |
 | `oracle_freshness_observed` | `resolve_round()` (#1512) | `(round: u32, classification_code: u32, age_secs: u64)` — emitted on every attempt, success or rejection; `classification_code`: 0=Fresh, 1=Warning, 2=Stale, 3=Unavailable |
 | `oracle_stale_rejected` | `resolve_round()` (#1512) | `(round: u32, age_secs: u64)` — emitted only when resolution is refused for staleness |
+| `left`        | `leave_arena()` (#1580) | `(player_count: u32)` — topics `(left, player)` |
+| `refunded`    | `leave_arena()`, `ban_player()` (#1580, #1581) | `(amount: i128)` — topics `(refunded, player)`; emitted alongside `left`/`ban` |
 
 > Note (#1512): several rows in this table (e.g. `fee_upd`, `vault_oracle_failed`)
 > predate this table and were never added to it — pre-existing drift, not
@@ -36,7 +38,7 @@ Current payload version: **1**
 |---------------|------------------------|------------------------------------------|
 | `WL_ADD`      | `add_to_whitelist()`   | `(v, host: Address)`                     |
 | `WL_REM`      | `remove_from_whitelist()` | `(v, host: Address)`                  |
-| `POOL_CRE`    | `create_pool()`        | `(v, pool_id: u32, creator: Address, capacity: u32, stake_amount: i128)` |
+| `POOL_CRE`    | `create_pool()`        | `(pool_id: u32, host: Address, entry_fee: i128, arena: Address, min_players: u32, max_players: u32, round_duration: u64, metadata_hash: BytesN<32>)` — the metadata hash is appended by #1577 |
 | `UP_PROP`     | `propose_upgrade()`    | `(v, new_wasm_hash: BytesN<32>, execute_after: u64)` |
 | `UP_EXEC`     | `execute_upgrade()`    | `(v, new_wasm_hash: BytesN<32>)`         |
 | `UP_CANC`     | `cancel_upgrade()`     | `(v)`                                    |

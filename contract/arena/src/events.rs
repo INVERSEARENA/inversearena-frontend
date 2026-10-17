@@ -30,6 +30,20 @@ impl ArenaEvents {
             .publish((symbol_short!("unban"), admin.clone()), player.clone());
     }
 
+    /// Emitted when a player withdraws from the lobby before the first round
+    /// (#1580). `player_count` is the roster size after the removal.
+    pub fn player_left(env: &Env, player: &Address, player_count: u32) {
+        env.events()
+            .publish((symbol_short!("left"), player.clone()), player_count);
+    }
+
+    /// Emitted when an entry fee is returned to a player who left or was banned
+    /// from the lobby before the first round (#1580, #1581).
+    pub fn player_refunded(env: &Env, player: &Address, amount: i128) {
+        env.events()
+            .publish((symbol_short!("refunded"), player.clone()), amount);
+    }
+
     pub fn player_limits_configured(env: &Env, min_players: u32, max_players: u32) {
         env.events()
             .publish((symbol_short!("limits"),), (min_players, max_players));
