@@ -1192,7 +1192,7 @@ impl ArenaContract {
         ArenaStorage::load_round_result(&env, round)
     }
 
-    fn compute_commitment(env: &Env, choice: Choice, salt: &BytesN<32>) -> BytesN<32> {
+    pub(crate) fn compute_commitment(env: &Env, choice: Choice, salt: &BytesN<32>) -> BytesN<32> {
         let mut preimage = Bytes::new(env);
         preimage.push_back(choice.to_byte());
         let salt_bytes = salt.to_array();
@@ -4711,3 +4711,5 @@ mod test {
 mod integration_tests;
 #[cfg(test)]
 mod join_arena_tests;
+#[cfg(test)]
+mod test_vectors;
