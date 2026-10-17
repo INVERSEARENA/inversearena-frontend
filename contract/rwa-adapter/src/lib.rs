@@ -165,6 +165,11 @@ impl RwaAdapter {
             .unwrap_or(0)
     }
 
+    /// Read the adapter's configuration (admin, stake_token, oracle, total_deposited).
+    pub fn config(env: Env) -> Result<RwaConfig, RwaError> {
+        RwaStorage::load_config(&env)
+    }
+
     /// Checkpoint the index using the previous rate, then begin applying the
     /// oracle's current rate from this ledger onward.
     pub fn sync(env: Env) -> Result<(), RwaError> {
@@ -773,5 +778,24 @@ mod test {
             assert!(pos.withdrawn);
             assert_eq!(pos.principal, 0);
         });
+    }
+
+    #[test]
+    fn config_returns_configured_parameters_and_errors_when_uninitialized() {
+        let env = Env::default();
+        let uninit_id = env.register(RwaAdapter, ());
+        let uninit_client = RwaAdapterClient::new(&env, &uninit_id);
+
+        let err = uninit_client
+            .try_config()
+            .err()
+            .expect("uninitialized config must error")
+            .expect("must be contract error");
+        assert_eq!(err, RwaError::NotInitialized);
+
+        let (client, token_id, _contract_id) = setup(&env);
+        let cfg = client.config();
+        assert_eq!(cfg.stake_token, token_id);
+        assert_eq!(cfg.total_deposited, 0);
     }
 }

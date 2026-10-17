@@ -53,20 +53,25 @@ The factory contract uses `#[contracterror]` with explicit `repr(u32)` values. T
 | 1 | `NotInitialized` | `initialize` not called |
 | 2 | `AlreadyInitialized` | `initialize` called twice |
 | 3 | `Unauthorized` | Caller lacks permission |
-| 4 | `NoPendingUpgrade` | No upgrade proposal exists |
-| 5 | `TimelockNotExpired` | Upgrade timelock not elapsed |
-| 6 | `StakeBelowMinimum` | Stake below configured minimum |
-| 7 | `HostNotWhitelisted` | Caller not on host whitelist |
-| 8 | `InvalidStakeAmount` | Stake is zero or negative |
-| 9 | `PoolAlreadyExists` | Duplicate pool_id |
-| 10 | `InvalidCapacity` | Capacity out of range |
-| 11 | `WasmHashNotSet` | Arena WASM hash not configured |
-| 12 | `MalformedUpgradeState` | Partial upgrade state |
-| 13 | `UnsupportedToken` | Token not approved |
-| 14 | `UpgradeAlreadyPending` | Duplicate upgrade proposal |
-| 15 | `Paused` | Contract paused |
-| 16 | `ArenaNotFound` | Arena not registered |
-| 17 | `NotWhitelisted` | Player not on private arena whitelist |
+| 4 | `InvalidStakeAmount` | Stake is zero or negative |
+| 5 | `InsufficientCreatorStake` | Insufficient creator stake deposited |
+| 6 | `ArenaNotFound` | Arena not registered |
+| 7 | `StakeBelowMinimum` | Stake below configured minimum |
+| 8 | `HostNotWhitelisted` | Caller not on host whitelist |
+| 9 | `WasmHashNotSet` | Arena WASM hash not configured |
+| 10 | `PoolLimitReached` | Maximum pool sequence limit reached |
+| 11 | `InvalidVault` | Vault not approved or unreadable |
+| 12 | `InvalidOracle` | Oracle not approved |
+| 13 | `MaxActivePoolsReached` | Host reached maximum active pools limit |
+| 14 | `PoolNotFound` | Pool metadata not found |
+| 15 | `ContractPaused` | Factory contract is paused |
+| 16 | `UnsupportedToken` | Token not on supported token whitelist |
+| 17 | `EntryFeeTooLow` | Entry fee is zero or negative |
+| 18 | `InvalidConfig` | Invalid pool duration or capacity bounds |
+| 19 | `NoPendingAdmin` | No admin proposal pending |
+| 20 | `ArithmeticOverflow` | Decimal scaling overflowed i128 |
+| 21 | `VaultTokenMismatch` | Vault configured stake token does not match pool stake token |
+| 22 | `OracleMismatch` | Vault configured oracle does not match pool oracle |
 
 ### Arena (pool) — `200`–`299`
 

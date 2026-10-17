@@ -46,6 +46,15 @@ pub struct ArenaMetadata {
     pub created_at: u64,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VaultConfig {
+    pub admin: Address,
+    pub stake_token: Address,
+    pub oracle: Address,
+    pub total_deposited: i128,
+}
+
 #[contracterror]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FactoryError {
@@ -70,4 +79,8 @@ pub enum FactoryError {
     NoPendingAdmin = 19,
     /// Scaling `min_stake` to a token's decimals overflowed i128 (#1361).
     ArithmeticOverflow = 20,
+    /// Vault configured stake token does not match pool stake token (#1634).
+    VaultTokenMismatch = 21,
+    /// Vault configured oracle does not match pool oracle (#1634).
+    OracleMismatch = 22,
 }

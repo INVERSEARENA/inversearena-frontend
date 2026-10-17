@@ -50,6 +50,12 @@ pub trait ArenaInterface {
     );
 }
 
+/// Local stub for the vault entry point factory calls to inspect config.
+#[contractclient(name = "VaultClient")]
+pub trait VaultInterface {
+    fn config(env: Env) -> types::VaultConfig;
+}
+
 const MIN_ROUND_DURATION: u64 = 60;
 const MAX_ROUND_DURATION: u64 = 604_800;
 const MIN_PLAYERS: u32 = 2;
@@ -134,9 +140,28 @@ impl FactoryContract {
 
     pub fn add_approved_vault(env: Env, vault: Address) -> Result<(), FactoryError> {
         Self::require_admin(&env)?;
+        if let Ok(Ok(cfg)) = VaultClient::new(&env, &vault).try_config() {
+            FactoryStorage::save_vault_token(&env, &vault, &cfg.stake_token);
+        }
         FactoryStorage::set_approved_vault(&env, &vault, true);
         env.events().publish((symbol_short!("VLT_ADD"),), vault);
         Ok(())
+    }
+
+    pub fn add_approved_vault_for_token(
+        env: Env,
+        vault: Address,
+        token: Address,
+    ) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        FactoryStorage::save_vault_token(&env, &vault, &token);
+        FactoryStorage::set_approved_vault(&env, &vault, true);
+        env.events().publish((symbol_short!("VLT_ADD"),), vault);
+        Ok(())
+    }
+
+    pub fn get_vault_token(env: Env, vault: Address) -> Option<Address> {
+        FactoryStorage::get_vault_token(&env, &vault)
     }
 
     pub fn remove_approved_vault(env: Env, vault: Address) -> Result<(), FactoryError> {
@@ -288,6 +313,20 @@ impl FactoryContract {
         }
         if !FactoryStorage::is_approved_oracle(&env, &config.oracle_contract) {
             return Err(FactoryError::InvalidOracle);
+        }
+
+        // Validate stake token and oracle compatibility with the yield vault (#1634)
+        let vault_client = VaultClient::new(&env, &config.yield_vault);
+        let vault_cfg = match vault_client.try_config() {
+            Ok(Ok(cfg)) => cfg,
+            _ => return Err(FactoryError::InvalidVault),
+        };
+
+        if vault_cfg.stake_token != config.stake_token {
+            return Err(FactoryError::VaultTokenMismatch);
+        }
+        if vault_cfg.oracle != config.oracle_contract {
+            return Err(FactoryError::OracleMismatch);
         }
 
         // Check active pool limit for this host
@@ -930,6 +969,102 @@ mod test {
             .expect("unapproved oracle must error")
             .expect("error must be a contract error");
         assert_eq!(err, FactoryError::InvalidOracle);
+    }
+
+    #[test]
+    fn create_pool_rejects_vault_token_mismatch() {
+        let (env, client, admin, host) = setup();
+        client.add_to_whitelist(&host);
+
+        let token_a = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        let token_b = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        let oracle = env.register(oracle::OracleContract, ());
+        oracle::OracleContractClient::new(&env, &oracle).initialize(&admin, &500);
+
+        let vault = env.register(rwa_adapter::RwaAdapter, ());
+        rwa_adapter::RwaAdapterClient::new(&env, &vault).initialize(&admin, &token_a, &oracle);
+
+        client.add_supported_token(&token_a);
+        client.add_supported_token(&token_b);
+        client.add_approved_vault(&vault);
+        client.add_approved_oracle(&oracle);
+
+        let mut cfg = pool_config_with_real_token(&env, 100);
+        cfg.stake_token = token_b; // Mismatch: vault configured for token_a
+        cfg.yield_vault = vault;
+        cfg.oracle_contract = oracle;
+
+        let err = client
+            .try_create_pool(&host, &cfg)
+            .err()
+            .expect("vault token mismatch must error")
+            .expect("error must be a contract error");
+        assert_eq!(err, FactoryError::VaultTokenMismatch);
+    }
+
+    #[test]
+    fn create_pool_rejects_oracle_mismatch() {
+        let (env, client, admin, host) = setup();
+        client.add_to_whitelist(&host);
+
+        let token = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        let oracle_a = env.register(oracle::OracleContract, ());
+        let oracle_b = env.register(oracle::OracleContract, ());
+        oracle::OracleContractClient::new(&env, &oracle_a).initialize(&admin, &500);
+        oracle::OracleContractClient::new(&env, &oracle_b).initialize(&admin, &500);
+
+        let vault = env.register(rwa_adapter::RwaAdapter, ());
+        rwa_adapter::RwaAdapterClient::new(&env, &vault).initialize(&admin, &token, &oracle_a);
+
+        client.add_supported_token(&token);
+        client.add_approved_vault(&vault);
+        client.add_approved_oracle(&oracle_a);
+        client.add_approved_oracle(&oracle_b);
+
+        let mut cfg = pool_config_with_real_token(&env, 100);
+        cfg.stake_token = token;
+        cfg.yield_vault = vault;
+        cfg.oracle_contract = oracle_b; // Mismatch: vault configured for oracle_a
+
+        let err = client
+            .try_create_pool(&host, &cfg)
+            .err()
+            .expect("oracle mismatch must error")
+            .expect("error must be a contract error");
+        assert_eq!(err, FactoryError::OracleMismatch);
+    }
+
+    #[test]
+    fn add_approved_vault_records_token_when_available() {
+        let (env, client, admin, _host) = setup();
+        let token = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        let oracle = env.register(oracle::OracleContract, ());
+        oracle::OracleContractClient::new(&env, &oracle).initialize(&admin, &500);
+
+        let vault = env.register(rwa_adapter::RwaAdapter, ());
+        rwa_adapter::RwaAdapterClient::new(&env, &vault).initialize(&admin, &token, &oracle);
+
+        client.add_approved_vault(&vault);
+        assert_eq!(client.get_vault_token(&vault), Some(token));
+    }
+
+    #[test]
+    fn add_approved_vault_for_token_records_token_explicitly() {
+        let (env, client, _admin, _host) = setup();
+        let token = Address::generate(&env);
+        let vault = Address::generate(&env);
+
+        client.add_approved_vault_for_token(&vault, &token);
+        assert!(client.is_approved_vault(&vault));
+        assert_eq!(client.get_vault_token(&vault), Some(token));
     }
     // ── Regression: pause must not strand a pool slot (#1360) ────────────────
     //

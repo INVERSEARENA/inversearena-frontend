@@ -8,7 +8,7 @@ pub struct PendingAdmin {
 }
 
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RwaConfig {
     pub admin: Address,
     pub stake_token: Address,

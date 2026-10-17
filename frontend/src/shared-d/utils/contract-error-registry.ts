@@ -45,6 +45,37 @@ export const CONTRACT_PANIC_USER_MESSAGES: Readonly<Record<number, string>> =
     // Factory 100–199
     100: "Stake amount does not meet the rules for creating a pool.",
     101: "This token is not supported for pool creation.",
+    121: "The selected yield vault does not support this stake token.",
+    122: "The selected oracle does not match the yield vault oracle.",
+  });
+
+/**
+ * User-facing strings for Factory contract panic codes (contract/factory/src/types.rs).
+ */
+export const FACTORY_PANIC_USER_MESSAGES: Readonly<Record<number, string>> =
+  Object.freeze({
+    1: "The factory has not been initialized yet.",
+    2: "The factory has already been initialized.",
+    3: "You do not have permission to perform this factory action.",
+    4: "Invalid stake amount.",
+    5: "Insufficient creator stake.",
+    6: "The specified arena was not found.",
+    7: "The entry fee is below the required minimum stake.",
+    8: "The host is not whitelisted for pool creation.",
+    9: "The arena WASM hash is not configured.",
+    10: "Maximum pool limit has been reached.",
+    11: "The specified yield vault is invalid or unapproved.",
+    12: "The specified oracle is invalid or unapproved.",
+    13: "The host has reached their maximum active pool limit.",
+    14: "Pool not found.",
+    15: "The factory contract is currently paused.",
+    16: "This token is not supported for pool creation.",
+    17: "The entry fee must be greater than zero.",
+    18: "Invalid pool configuration parameters.",
+    19: "No pending admin transfer to accept.",
+    20: "Decimal scaling overflowed.",
+    21: "The selected yield vault does not support this stake token.",
+    22: "The selected oracle does not match the yield vault oracle.",
   });
 
 /**
@@ -62,5 +93,10 @@ export function formatContractPanicMessage(
 
 export function userMessageForContractPanicCode(code: number): string {
   const known = CONTRACT_PANIC_USER_MESSAGES[code];
+  return formatContractPanicMessage(code, known);
+}
+
+export function userMessageForFactoryPanicCode(code: number): string {
+  const known = FACTORY_PANIC_USER_MESSAGES[code] ?? CONTRACT_PANIC_USER_MESSAGES[code];
   return formatContractPanicMessage(code, known);
 }
