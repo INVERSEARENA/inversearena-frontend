@@ -1,0 +1,168 @@
+{
+  "version": "1.0.0",
+  "description": "Golden test vectors for commit-reveal hashing (SHA256([choice_byte] ++ salt)) shared between Soroban contract (Rust) and frontend client (TypeScript).",
+  "hashAlgorithm": "SHA-256",
+  "preimageFormat": "choice_byte (1 byte: Heads=0, Tails=1) ++ salt (32 bytes)",
+  "vectors": [
+    {
+      "id": "heads_all_zeros",
+      "description": "Heads choice (byte 0) with 32-byte all-zero salt (0x00 * 32)",
+      "choice": "Heads",
+      "choiceByte": 0,
+      "salt": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expectedHash": "7f9c9e31ac8256ca2f258583df262dbc7d6f68f2a03043d5c99a4ae5a7396ce9"
+    },
+    {
+      "id": "tails_all_zeros",
+      "description": "Tails choice (byte 1) with 32-byte all-zero salt (0x00 * 32)",
+      "choice": "Tails",
+      "choiceByte": 1,
+      "salt": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expectedHash": "1a7dfdeaffeedac489287e85be5e9c049a2ff6470f55cf30260f55395ac1b159"
+    },
+    {
+      "id": "heads_all_ones",
+      "description": "Heads choice (byte 0) with 32-byte all-0xff salt (0xff * 32)",
+      "choice": "Heads",
+      "choiceByte": 0,
+      "salt": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expectedHash": "5e16d316ecd5773e50c3b02737d424192b02f25b4245822079181c557aafda7d"
+    },
+    {
+      "id": "tails_all_ones",
+      "description": "Tails choice (byte 1) with 32-byte all-0xff salt (0xff * 32)",
+      "choice": "Tails",
+      "choiceByte": 1,
+      "salt": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expectedHash": "29fb7cd3be48a8d76bb031f0abce26caa9e092c000cd16bb101d30f63c4c1bc1"
+    },
+    {
+      "id": "heads_repeated_2a",
+      "description": "Heads choice with repeated byte 0x2a salt (0x2a * 32)",
+      "choice": "Heads",
+      "choiceByte": 0,
+      "salt": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+      "expectedHash": "a2baaf6ef8a316410827dd129a1732fa4cf1287f125daa72dc5c5cc8c881dccb"
+    },
+    {
+      "id": "tails_repeated_2a",
+      "description": "Tails choice with repeated byte 0x2a salt (0x2a * 32)",
+      "choice": "Tails",
+      "choiceByte": 1,
+      "salt": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+      "expectedHash": "e736814286df8886e66bb0fdae1c70196bfcb11d07b725b2fb2821418fcf9c4a"
+    },
+    {
+      "id": "heads_alternating_aa",
+      "description": "Heads choice with alternating bits 0xaa (10101010) salt",
+      "choice": "Heads",
+      "choiceByte": 0,
+      "salt": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedHash": "e0bb82791bae3c50bd9c20fa4ccdcb8064a56e5c12bc69b07e6712ac9b4429e6"
+    },
+    {
+      "id": "tails_alternating_aa",
+      "description": "Tails choice with alternating bits 0xaa (10101010) salt",
+      "choice": "Tails",
+      "choiceByte": 1,
+      "salt": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedHash": "b2642d0c3bfa93efe38e99e824962f54343302c923765271c6e99dfcbe43cc91"
+    },
+    {
+      "id": "heads_alternating_55",
+      "description": "Heads choice with alternating bits 0x55 (01010101) salt",
+      "choice": "Heads",
+      "choiceByte": 0,
+      "salt": "5555555555555555555555555555555555555555555555555555555555555555",
+      "expectedHash": "a23e5f60b577afd1d5d31a3efa2c95b1586648dbb4f0aa254d3de36cf3966d85"
+    },
+    {
+      "id": "tails_alternating_55",
+      "description": "Tails choice with alternating bits 0x55 (01010101) salt",
+      "choice": "Tails",
+      "choiceByte": 1,
+      "salt": "5555555555555555555555555555555555555555555555555555555555555555",
+      "expectedHash": "7b3cdd9e0fb3a15b7387dad963903166f7557b31293af21cfb17fe558ea6920a"
+    },
+    {
+      "id": "heads_sequential_asc",
+      "description": "Heads choice with ascending sequential bytes 0x00..0x1f",
+      "choice": "Heads",
+      "choiceByte": 0,
+      "salt": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "expectedHash": "699cacdb4c39d8e0bb1223352765a7f7acdc51dec6694f7b54c3d0a47f0cc409"
+    },
+    {
+      "id": "tails_sequential_asc",
+      "description": "Tails choice with ascending sequential bytes 0x00..0x1f",
+      "choice": "Tails",
+      "choiceByte": 1,
+      "salt": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "expectedHash": "491176b0f443c65a7c7d72df47d6cbc0d04e111fb5a619f60d3e77677ab6f919"
+    },
+    {
+      "id": "heads_sequential_desc",
+      "description": "Heads choice with descending sequential bytes 0x1f..0x00",
+      "choice": "Heads",
+      "choiceByte": 0,
+      "salt": "1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100",
+      "expectedHash": "d2634c1a665eb8a7b1264ad57f3d01c47bf7f78c16fd42e8c42fb1aa4bccb985"
+    },
+    {
+      "id": "tails_sequential_desc",
+      "description": "Tails choice with descending sequential bytes 0x1f..0x00",
+      "choice": "Tails",
+      "choiceByte": 1,
+      "salt": "1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100",
+      "expectedHash": "4496c1c2365edd2866e589c74c9cc98f67ca2942616e56ac2e6a5f3a75ae1bf6"
+    },
+    {
+      "id": "heads_single_bit_msb",
+      "description": "Heads choice with single MSB bit set in byte 0 (0x80 followed by 31 zeros)",
+      "choice": "Heads",
+      "choiceByte": 0,
+      "salt": "8000000000000000000000000000000000000000000000000000000000000000",
+      "expectedHash": "889acfe6d2cc90e575d79c6420f4feb102e934c2aa5987ea2c4caa000f90fb49"
+    },
+    {
+      "id": "tails_single_bit_msb",
+      "description": "Tails choice with single MSB bit set in byte 0 (0x80 followed by 31 zeros)",
+      "choice": "Tails",
+      "choiceByte": 1,
+      "salt": "8000000000000000000000000000000000000000000000000000000000000000",
+      "expectedHash": "5fcdcadb93f5d05e12fae2f0949203af1160c34934b43c4aa9cda898482ed18f"
+    },
+    {
+      "id": "heads_single_bit_lsb",
+      "description": "Heads choice with single LSB bit set in byte 31 (31 zeros followed by 0x01)",
+      "choice": "Heads",
+      "choiceByte": 0,
+      "salt": "0000000000000000000000000000000000000000000000000000000000000001",
+      "expectedHash": "1fd4247443c9440cb3c48c28851937196bc156032d70a96c98e127ecb347e45f"
+    },
+    {
+      "id": "tails_single_bit_lsb",
+      "description": "Tails choice with single LSB bit set in byte 31 (31 zeros followed by 0x01)",
+      "choice": "Tails",
+      "choiceByte": 1,
+      "salt": "0000000000000000000000000000000000000000000000000000000000000001",
+      "expectedHash": "2e255099d6d6bee307c8e7075acc78f949897c5f67b53adf60724c814d7b90cb"
+    },
+    {
+      "id": "heads_pseudorandom_pattern",
+      "description": "Heads choice with fixed pseudorandom pattern salt",
+      "choice": "Heads",
+      "choiceByte": 0,
+      "salt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expectedHash": "4e59bf27372b1304bc0b137d1be9d566ad58b154b6a6b5778af7f414b1d4b84c"
+    },
+    {
+      "id": "tails_pseudorandom_pattern",
+      "description": "Tails choice with fixed pseudorandom pattern salt",
+      "choice": "Tails",
+      "choiceByte": 1,
+      "salt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expectedHash": "e12bfaea7a08608ecb28622a8500fd7b18883d048351137825ca51a692b7403e"
+    }
+  ]
+}

@@ -68,6 +68,32 @@ ABI snapshots live at `<contract>/abi_snapshot.json` and are generated from comp
 
 After regenerating, commit the updated snapshot file and document the interface change in your PR.
 
+### Shared Commitment Test Vectors (#1643)
+
+Golden test vectors for the commit-reveal hashing algorithm (`SHA256([choice_byte] ++ salt)`) are checked into `contract/test-vectors/commitment.json` and shared between the Soroban contract (Rust) and frontend web client (TypeScript).
+
+To verify the test vectors:
+```bash
+# Rust contract tests
+cargo test -p arena test_vectors
+
+# Frontend Jest tests
+cd ../frontend && npm run test:frontend -- commit-reveal.test.ts
+
+# Standalone check
+./scripts/generate_commitment_vectors.sh --check
+```
+
+To regenerate / bless updated test vectors:
+```bash
+BLESS=1 cargo test -p arena test_vectors:: -- --nocapture
+# or
+./scripts/generate_commitment_vectors.sh --bless
+```
+
+See [COMMITMENT_VECTORS.md](../docs/COMMITMENT_VECTORS.md) for full layout and test suite details.
+
+
 ## Contributing
 
 1. Pick an issue from the tracker.

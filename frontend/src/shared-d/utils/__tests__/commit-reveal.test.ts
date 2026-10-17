@@ -8,12 +8,15 @@
  * self-consistency.
  */
 import { createHash } from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import {
   generateSalt,
   computeCommitment,
   saveCommitment,
   loadCommitment,
   clearCommitment,
+  RoundChoice,
 } from "../commit-reveal";
 
 const PUBLIC_KEY = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
@@ -150,3 +153,73 @@ describe("saveCommitment / loadCommitment / clearCommitment", () => {
     expect(loadCommitment("arena-1", 5, PUBLIC_KEY)).toBeNull();
   });
 });
+
+describe("Golden commitment test vectors (#1643)", () => {
+  interface VectorEntry {
+    id: string;
+    description: string;
+    choice: RoundChoice;
+    choiceByte: number;
+    salt: string;
+    expectedHash: string;
+  }
+
+  interface VectorFile {
+    version: string;
+    description: string;
+    hashAlgorithm: string;
+    preimageFormat: string;
+    vectors: VectorEntry[];
+  }
+
+  function loadGoldenVectors(): VectorFile {
+    const candidatePaths = [
+      path.resolve(__dirname, "../../../../../contract/test-vectors/commitment.json"),
+      path.resolve(process.cwd(), "../contract/test-vectors/commitment.json"),
+      path.resolve(process.cwd(), "contract/test-vectors/commitment.json"),
+      path.resolve(__dirname, "../../../../../contract/test-vectors/commitment.json"),
+    ];
+
+    for (const candidate of candidatePaths) {
+      if (fs.existsSync(candidate)) {
+        return JSON.parse(fs.readFileSync(candidate, "utf-8")) as VectorFile;
+      }
+    }
+    throw new Error(
+      `commitment.json not found in candidate paths:\n${candidatePaths.join("\n")}`,
+    );
+  }
+
+  const fixture = loadGoldenVectors();
+
+  it("loads golden vectors file successfully", () => {
+    expect(fixture.vectors.length).toBeGreaterThan(0);
+    expect(fixture.hashAlgorithm).toBe("SHA-256");
+  });
+
+  for (const vector of fixture.vectors) {
+    it(`asserts golden hash for ${vector.id} (${vector.choice})`, async () => {
+      const salt = Buffer.from(vector.salt, "hex");
+      expect(salt.length).toBe(32);
+      const actualBytes = await computeCommitment(vector.choice, new Uint8Array(salt));
+      const actualHex = Buffer.from(actualBytes).toString("hex");
+      expect(actualHex).toBe(vector.expectedHash);
+    });
+  }
+
+  it("asserts edge-case salts explicitly (all zeros and all 0xff)", async () => {
+    const zeroVector = fixture.vectors.find((v) => v.id === "heads_all_zeros");
+    const onesVector = fixture.vectors.find((v) => v.id === "heads_all_ones");
+    expect(zeroVector).toBeDefined();
+    expect(onesVector).toBeDefined();
+
+    const zeroSalt = new Uint8Array(32).fill(0x00);
+    const zeroCommitment = await computeCommitment("Heads", zeroSalt);
+    expect(Buffer.from(zeroCommitment).toString("hex")).toBe(zeroVector!.expectedHash);
+
+    const onesSalt = new Uint8Array(32).fill(0xff);
+    const onesCommitment = await computeCommitment("Heads", onesSalt);
+    expect(Buffer.from(onesCommitment).toString("hex")).toBe(onesVector!.expectedHash);
+  });
+});
+
