@@ -37,134 +37,143 @@ Codes are grouped by **range** so each crate can reserve a band. Implement new v
 | 7 | `DeadlineExpired` | Time window closed | The time window for this action has closed. |
 | 8 | `CapacityExceeded` | Arena / pool full | The arena has reached its maximum capacity. |
 
-### Factory — `100`–`199`
+### Arena Contract — Rust `ArenaError` (`contract/arena`)
 
-| Code | Name | Meaning | User-facing message |
-|------|------|---------|---------------------|
-| 100 | `InvalidStakeForPool` | Stake rules not met | Stake amount does not meet the rules for creating a pool. |
-| 101 | `UnsupportedToken` | Token not whitelisted | This token is not supported for pool creation. |
+The arena contract uses `#[contracterror]` with explicit `repr(u32)` values. These are the codes emitted by `ArenaError`:
 
-### Factory contract — Rust `Error` (`contract/factory`)
+| Code | Variant | Meaning / Description | User-facing message |
+|------|---------|-----------------------|---------------------|
+| 1 | `Unauthorized` | Returned when a caller attempts to perform an operation they are not authorized to perform.  Note that most standard authorization checks are handled automatically by Soroban's `require_auth` mechanism, which panics rather than returning a Rust error. | You do not have permission to perform this action. |
+| 2 | `CannotCancelStartedGame` | Kept for on-chain backward compatibility (discriminant 2). Prefer `InvalidGameState`. | Cannot cancel a game that has already started. |
+| 3 | `NotInitialised` | Kept for on-chain backward compatibility (discriminant 3). Prefer `NotInitialized`. | This arena has not been initialized yet. |
+| 4 | `RoundNotActive` | Returned when a player attempts to reveal their choice before the commitment phase has ended (i.e. before the `commit_deadline` has passed), or when the admin attempts to resolve a round when the arena is not in the `Active` state. | This action cannot be done in the current round state. |
+| 5 | `RoundNotStarted` | Returned during round resolution when no round start timestamp is recorded in storage. | The round has not started yet. |
+| 6 | `GracePeriodNotElapsed` | Returned when trying to resolve a round before the grace period (round duration) has not yet passed. | The grace period for this round has not elapsed yet. |
+| 7 | `InvalidReveal` | Returned when a player's revealed choice and salt do not match the cryptographic commitment they previously submitted. | Your revealed choice and salt do not match your commitment. |
+| 8 | `MissingCommitment` | Returned when a player attempts to reveal their choice, but they have not submitted a commitment for the current round. | You have not submitted a commitment for this round. |
+| 9 | `ChoiceAlreadyRevealed` | Returned when a player attempts to reveal their choice, but they have already successfully revealed their choice for the current round. | You have already revealed your choice for this round. |
+| 10 | `AlreadyInitialized` | Returned when a caller attempts to call `initialize` on an arena contract that has already been initialized. | This arena has already been initialized. |
+| 11 | `GameNotFinished` | Returned when a player attempts to claim the prize, but the arena is not in the `Finished` state. | The game is not finished yet. |
+| 12 | `PrizeAlreadyClaimed` | Returned when a player attempts to claim a prize they have already claimed, or when a payout has already been executed for this game. | You have already claimed your prize. |
+| 13 | `PlayerEliminated` | Returned when an eliminated player attempts to claim the prize or perform an action reserved for surviving players. | You have been eliminated from this arena. |
+| 14 | `NoPendingAdmin` | Returned when a caller attempts to accept the admin role, but there is no pending admin transfer proposal recorded. | There is no pending admin transfer to accept. |
+| 15 | `InvalidVaultAddress` | Returned when the vault address provided during initialization is invalid (e.g. not a contract or not responding to the required interface). | The vault address provided is invalid. |
+| 16 | `ContractPaused` | Returned when a state-mutating gameplay entry point is called while the contract is paused by the admin (emergency circuit breaker). | The contract is paused. State-changing actions are temporarily disabled. |
+| 17 | `InvalidGameState` | Returned when the arena is in an invalid lifecycle state for the requested operation.  Examples include attempting to join or cancel an arena that is already in progress/finished, or starting a round when the game is not in a valid state. | This action cannot be performed in the current arena state. |
+| 18 | `NotInitialized` | Returned when an operation is performed on an arena that has not yet been initialized. | This arena has not been initialized yet. |
+| 19 | `NotEnoughPlayers` | Returned when `start_round` is called with fewer than `MIN_PLAYERS_TO_START` active players. Prevents degenerate single-player or zero-player games where one player can win trivially. | Not enough players to start a round. At least 2 active players are required. |
+| 20 | `PlayerBanned` | Returned when a banned player attempts to join a new arena. | You have been banned from joining arenas. |
+| 21 | `CreatorCannotJoin` | Returned when the arena creator/admin attempts to join their own arena. | You cannot join your own arena. |
+| 22 | `ArenaFull` | Returned when a player attempts to join after the arena has reached capacity. | This arena is full. No more players can join. |
+| 23 | `InvalidPlayerLimits` | Returned when configured player limits are invalid. | Invalid player limits configured. |
+| 24 | `ReentrantCall` | Returned when a guarded state-changing entry point is called again before its previous invocation has cleared the temporary reentrancy guard. | A reentrant call was detected. Please wait for the current operation to finish. |
+| 25 | `RefundAlreadyClaimed` | Returned when a player attempts to claim a refund, but they have already claimed it. | You have already claimed your refund. |
+| 26 | `ArenaNotCancelled` | Returned when a player attempts to claim a refund, but the arena is not in the Cancelled state. | You can only claim a refund when the arena has been cancelled. |
+| 27 | `NotAPlayer` | Returned when a player attempts to claim a refund or perform an action, but they are not registered. | You are not registered as a player in this arena. |
+| 28 | `DeadlineTooSoon` | Returned when an operation is attempted before the required deadline has passed. | The required deadline has not passed yet. Please wait. |
+| 29 | `AlreadyJoined` | Returned when a player who has already joined the arena tries to join again. | You have already joined this arena. |
+| 30 | `UpgradeTimelockPending` | Returned when `execute_upgrade` is called before the timelock has elapsed after `propose_upgrade`. | The upgrade timelock has not elapsed yet. Please wait. |
+| 31 | `NoPendingUpgrade` | Returned when `execute_upgrade` is called without a prior `propose_upgrade`. | No pending upgrade was found. Propose an upgrade first. |
+| 32 | `InvalidEntryFee` | Returned when `initialize` is called with entry_fee <= 0. | The entry fee must be greater than zero. |
+| 33 | `CommitPhaseEnded` | Returned when `submit_commitment` is called after the commit deadline has passed. | The commitment phase has ended. You can no longer submit choices for this round. |
+| 34 | `InvalidDuration` | Returned when `initialize` or `start_round` is called with invalid duration. | Invalid round duration. Please check the duration parameter. |
+| 35 | `VaultDepositFailed` | Returned when vault deposit fails during `join_arena` or other token staking operations. The entry fee token transfer succeeded but the vault deposit did not. The contract rolls back the token transfer so no funds are left permanently locked. | Vault deposit failed. The token transfer has been rolled back. |
+| 36 | `InvalidPlatformFee` | Returned when `update_platform_fee` is called with a value above `MAX_PLATFORM_FEE_BPS`. | Platform fee exceeds maximum configured threshold. |
+| 37 | `ArenaAlreadyStarted` | Returned by `join_arena` once at least one round has been played.  The arena returns to `Open` between rounds so `start_round` can run again, so `state == Open` alone does not mean the lobby is still recruiting. Joining after eliminations would let a latecomer buy in at the original entry fee against a thinned field. | Arena has already started; new participants cannot join. |
+| 38 | `InvalidLeaderboardLimit` | Returned by `configure_leaderboard_limit` when `limit` is 0 or above `MAX_LEADERBOARD_LIMIT` (#1455). Appended; existing ordinals unchanged. | Leaderboard limit must be between 1 and 100. |
+| 39 | `InvalidFreshnessPolicy` | Returned by `set_oracle_freshness_policy` when `warn_age_secs` exceeds `max_age_secs`, either is 0, or `max_age_secs` exceeds `MAX_ORACLE_MAX_AGE_SECS` (#1512). Appended; existing ordinals unchanged. | Freshness policy warning age cannot exceed maximum age. |
+| 40 | `StaleOracleData` | Returned by `resolve_round` when the oracle's latest observation is older than the arena's configured `max_age_secs`, or was never recorded at all (#1512). Recoverable: the admin can retry once the oracle has published a fresh observation, or raise the policy's `max_age_secs` via `set_oracle_freshness_policy` if the existing threshold is inappropriate for this arena. | Oracle observation is stale. Retry when oracle publishes a fresh observation. |
 
-The factory contract uses `#[contracterror]` with explicit `repr(u32)` values. These are the codes emitted by `FactoryContract`:
+### Factory Contract — Rust `FactoryError` (`contract/factory`)
 
-| Code | Variant | Meaning |
-|------|---------|---------|
-| 1 | `NotInitialized` | `initialize` not called |
-| 2 | `AlreadyInitialized` | `initialize` called twice |
-| 3 | `Unauthorized` | Caller lacks permission |
-| 4 | `NoPendingUpgrade` | No upgrade proposal exists |
-| 5 | `TimelockNotExpired` | Upgrade timelock not elapsed |
-| 6 | `StakeBelowMinimum` | Stake below configured minimum |
-| 7 | `HostNotWhitelisted` | Caller not on host whitelist |
-| 8 | `InvalidStakeAmount` | Stake is zero or negative |
-| 9 | `PoolAlreadyExists` | Duplicate pool_id |
-| 10 | `InvalidCapacity` | Capacity out of range |
-| 11 | `WasmHashNotSet` | Arena WASM hash not configured |
-| 12 | `MalformedUpgradeState` | Partial upgrade state |
-| 13 | `UnsupportedToken` | Token not approved |
-| 14 | `UpgradeAlreadyPending` | Duplicate upgrade proposal |
-| 15 | `Paused` | Contract paused |
-| 16 | `ArenaNotFound` | Arena not registered |
-| 17 | `NotWhitelisted` | Player not on private arena whitelist |
+The factory contract uses `#[contracterror]` with explicit `repr(u32)` values. These are the codes emitted by `FactoryError`:
 
-### Arena (pool) — `200`–`299`
+| Code | Variant | Meaning / Description | User-facing message |
+|------|---------|-----------------------|---------------------|
+| 1 | `NotInitialized` | NotInitialized | Factory has not been initialized yet. |
+| 2 | `AlreadyInitialized` | AlreadyInitialized | Factory is already initialized. |
+| 3 | `Unauthorized` | Unauthorized | You do not have permission to perform this action. |
+| 4 | `InvalidStakeAmount` | InvalidStakeAmount | Invalid stake amount. |
+| 5 | `InsufficientCreatorStake` | InsufficientCreatorStake | Insufficient creator stake provided. |
+| 6 | `ArenaNotFound` | ArenaNotFound | Target arena was not found. |
+| 7 | `StakeBelowMinimum` | StakeBelowMinimum | Stake amount is below configured minimum threshold. |
+| 8 | `HostNotWhitelisted` | HostNotWhitelisted | Host is not on the factory whitelist. |
+| 9 | `WasmHashNotSet` | WasmHashNotSet | Arena WASM hash has not been configured. |
+| 10 | `PoolLimitReached` | PoolLimitReached | Factory pool limit reached. |
+| 11 | `InvalidVault` | InvalidVault | Invalid vault address provided. |
+| 12 | `InvalidOracle` | InvalidOracle | Invalid oracle address provided. |
+| 13 | `MaxActivePoolsReached` | MaxActivePoolsReached | Maximum active pools limit reached. |
+| 14 | `PoolNotFound` | PoolNotFound | Pool could not be found. |
+| 15 | `ContractPaused` | ContractPaused | Factory is currently paused. |
+| 16 | `UnsupportedToken` | UnsupportedToken | Token is not supported for pool creation. |
+| 17 | `EntryFeeTooLow` | EntryFeeTooLow | Entry fee is below minimum required threshold. |
+| 18 | `InvalidConfig` | InvalidConfig | Invalid arena configuration provided. |
+| 19 | `NoPendingAdmin` | NoPendingAdmin | No pending admin proposal exists. |
+| 20 | `ArithmeticOverflow` | Scaling `min_stake` to a token's decimals overflowed i128 (#1361). | Stake scaling arithmetic overflowed. |
 
-| Code | Name | Meaning | User-facing message |
-|------|------|---------|---------------------|
-| 200 | `NotJoined` | User not in pool | You need to join this arena before doing that. |
-| 201 | `AlreadySubmitted` | Choice already sent | You have already submitted a choice for this round. |
-| 202 | `InvalidRound` | Round mismatch | This round is not valid for the current game. |
-| 203 | `ChoiceNotOpen` | Not accepting choices | Choices are not being accepted right now. |
-| 204 | `NothingToClaim` | No payout | There is nothing to claim right now. |
+### Staking Contract — Rust `StakingError` (`contract/staking`)
 
-### Staking — `300`–`399`
+The staking contract uses `#[contracterror]` with explicit `repr(u32)` values. These are the codes emitted by `StakingError`:
 
-| Code | Name | Meaning | User-facing message |
-|------|------|---------|---------------------|
-| 300 | `StakeAmountInvalid` | Bad stake amount | Stake amount is invalid. |
-| 301 | `StakingPaused` | Staking disabled | Staking is temporarily unavailable. |
+| Code | Variant | Meaning / Description | User-facing message |
+|------|---------|-----------------------|---------------------|
+| 1 | `NotInitialized` | NotInitialized | Staking is not available yet. |
+| 2 | `AlreadyInitialized` | AlreadyInitialized | Staking is already set up. |
+| 3 | `Paused` | Paused | Staking is temporarily unavailable. |
+| 4 | `InvalidAmount` | InvalidAmount | Enter an amount greater than zero. |
+| 5 | `InsufficientShares` | InsufficientShares | You do not have that many shares to unstake. |
+| 6 | `ZeroShares` | ZeroShares | This deposit is too small for the current pool value. Stake more. |
+| 7 | `BelowMinimumInitialStake` | BelowMinimumInitialStake | The first deposit must be at least the minimum initial stake. |
+| 8 | `NoSharesOutstanding` | No shares outstanding — division by zero prevented (#1011). | No shares outstanding in the staking pool. |
+| 9 | `NoPendingAdmin` | No pending admin transfer has been proposed. | No pending admin transfer has been proposed. |
+| 10 | `ArithmeticOverflow` | A checked arithmetic operation on total_staked, total_shares, or a position's amount/shares would overflow or underflow i128 (#1362). | Staking arithmetic calculation overflowed. |
 
-### Payout — `400`–`499`
+### Payout Contract — Rust `PayoutError` (`contract/payout`)
 
-| Code | Name | Meaning | User-facing message |
-|------|------|---------|---------------------|
-| 400 | `PayoutNotReady` | Payout not available | Payout is not available yet. |
+The payout contract uses `#[contracterror]` with explicit `repr(u32)` values. These are the codes emitted by `PayoutError`:
 
-### Unassigned codes
+| Code | Variant | Meaning / Description | User-facing message |
+|------|---------|-----------------------|---------------------|
+| 1 | `NotInitialised` | The contract has not been initialised with an admin and token. | Payout contract is not initialized. |
+| 2 | `AlreadyInitialised` | `initialize` was called on an already-initialised contract. | Payout contract is already initialized. |
+| 3 | `Unauthorized` | Caller is not the configured admin. | You do not have permission to execute payouts. |
+| 4 | `AlreadyPaid` | A payout with this id has already been executed (idempotency guard). | A payout with this identifier has already been executed. |
+| 5 | `InvalidAmount` | A payout amount was zero or negative. | Payout amount is invalid. |
+| 6 | `EmptyBatch` | A batch payout was submitted with no recipients. | Batch payout contains no recipients. |
+| 8 | `InsufficientBalance` | Contract token balance is insufficient for the payout total. | Contract balance is insufficient for this payout. |
+| 9 | `DuplicateRecipient` | A batch contains duplicate recipient addresses. | Batch contains duplicate recipient addresses. |
+| 10 | `BatchTooLarge` | Batch recipient count exceeds the configured maximum. | Batch recipient count exceeds maximum allowable limit. |
+| 11 | `NoPendingAdmin` | No pending admin transfer has been proposed. | No pending admin transfer has been proposed. |
+| 12 | `DestinationMismatch` | `distribute_winnings` was called with a destination that does not match the address pre-registered by `register_destination`. Issue #1450 — payout destination binding. | Payout recipient does not match pre-registered destination address. |
+| 13 | `DestinationNotRegistered` | `distribute_winnings` was called for a payout_id that has no registered destination. Call `register_destination` first. Issue #1450 — payout destination binding. | No destination has been registered for this payout id. |
 
-Any number **not** listed above should be treated as **unknown** on the client: show a generic message and include `(on-chain code N)` for support. When adding a new code, assign the next free slot in the correct range and update both this file and `contract-error-registry.ts`.
+### RWA Adapter Contract — Rust `RwaError` (`contract/rwa-adapter`)
 
-### Arena contract — Rust `ArenaError` (`contract/arena`)
+The rwa-adapter contract uses `#[contracterror]` with explicit `repr(u32)` values. These are the codes emitted by `RwaError`:
 
-The arena pool contract uses `#[contracterror]` with **explicit** `repr(u32)` values (not the 200–299 band above). These are the codes emitted by `ArenaContract`:
+| Code | Variant | Meaning / Description | User-facing message |
+|------|---------|-----------------------|---------------------|
+| 1 | `NotInitialized` | NotInitialized | RWA Adapter is not initialized. |
+| 2 | `AlreadyInitialized` | AlreadyInitialized | RWA Adapter is already initialized. |
+| 3 | `NoDeposit` | NoDeposit | No active deposit found for caller. |
+| 4 | `Unauthorized` | Unauthorized | Caller is not authorized. |
+| 5 | `AlreadyWithdrawn` | AlreadyWithdrawn | Deposit has already been withdrawn. |
+| 6 | `InsufficientBalance` | InsufficientBalance | Insufficient vault balance. |
+| 7 | `ArithmeticOverflow` | ArithmeticOverflow | Yield rate calculation overflowed. |
+| 8 | `InvalidAmount` | InvalidAmount | Invalid amount provided. |
+| 9 | `NoPendingAdmin` | Returned when no admin transfer proposal is pending. | No pending admin transfer has been proposed. |
+| 10 | `NotAdmin` | Returned when a non-admin caller attempts to propose a new admin. | Caller is not an admin. |
 
-| Code | Variant | Meaning |
-|------|---------|---------|
-| 1 | `AlreadyInitialized` | `init` called twice |
-| 2 | `InvalidRoundSpeed` | Zero round speed |
-| 3 | `RoundAlreadyActive` | `start_round` while a round is open |
-| 4 | `NoActiveRound` | Operation requires an active round |
-| 5 | `SubmissionWindowClosed` | Past deadline |
-| 6 | `SubmissionAlreadyExists` | Duplicate submission |
-| 7 | `RoundStillOpen` | `timeout_round` before deadline |
-| 8 | `RoundDeadlineOverflow` | Ledger math overflow / round mismatch |
-| 9 | `NotInitialized` | Missing `init` |
-| 10 | `Paused` | Contract paused |
-| 11 | `ArenaFull` | Participant cap (admin capacity or hard bound) |
-| 12 | `AlreadyJoined` | Duplicate `join` |
-| 13 | `InvalidAmount` | Non-positive stake |
-| 14 | `NoPrizeToClaim` | No winner record |
-| 15 | `AlreadyClaimed` | `claim` already used |
-| 16 | `ReentrancyGuard` | Reserved |
-| 17 | `NotASurvivor` | Reserved |
-| 18 | `GameAlreadyFinished` | Game ended |
-| 19 | `TokenNotSet` | Token not configured |
-| 20 | `MaxSubmissionsPerRound` | Per-round submission bound (`contract/BOUNDS.md`) |
-| 21 | `PlayerEliminated` | Eliminated player attempted action |
-| 42 | `NotWhitelisted` | Non-whitelisted player attempted to join a private arena |
-| 37 | `ArenaAlreadyStarted` | `join_arena` after at least one round has been played, even while the arena is back in `Open` between rounds (#1358) |
-| 38 | `InvalidLeaderboardLimit` | `configure_leaderboard_limit` with `0` or a value above `MAX_LEADERBOARD_LIMIT` (100) (#1455) |
-| 22 | `WrongRoundNumber` | Submitted for wrong round |
-| 23 | `NotEnoughPlayers` | Too few players to start/resolve round |
-| 24 | `InvalidCapacity` | `set_capacity` value out of `[MIN, MAX]` range |
-| 25 | `NoPendingUpgrade` | `execute_upgrade`/`cancel_upgrade` with no proposal |
-| 26 | `TimelockNotExpired` | `execute_upgrade` called before 48-hour timelock |
+### Oracle Contract — Rust `OracleError` (`contract/oracle`)
 
-**ABI snapshot:** `contract/arena/abi_snapshot.json` guards these ordinals in CI (`abi_guard` tests).
+The oracle contract uses `#[contracterror]` with explicit `repr(u32)` values. These are the codes emitted by `OracleError`:
 
-> Note: the table above does not match the current `ArenaError` enum in
-> `contract/arena/src/types.rs` (pre-existing drift, not introduced by
-> #1512) — treat `types.rs` as the source of truth. Two codes added by
-> #1512, current as of that enum:
->
-> | Code | Variant | Meaning |
-> |------|---------|---------|
-> | 39 | `InvalidFreshnessPolicy` | `set_oracle_freshness_policy` called with `warn_age_secs > max_age_secs`, either `0`, or `max_age_secs` above `MAX_ORACLE_MAX_AGE_SECS` (86,400s) |
-> | 40 | `StaleOracleData` | `resolve_round` refused because the oracle's latest observation is older than the arena's configured `max_age_secs`, or was never recorded. Recoverable — retry once the oracle publishes a fresh observation. |
-
-> **Required process — every new `ArenaError` variant must be added in the same PR to all three places:**
-> 1. `contract/arena/src/lib.rs` — add the variant with its explicit `repr(u32)` value.
-> 2. `contract/arena/abi_snapshot.json` — add `"VariantName": N` to the `arena_error` object.
-> 3. `contract/arena/src/abi_guard.rs` — add `("VariantName", ArenaError::VariantName)` to the `pairs` slice.
->
-> Omitting any of the three lets `cargo test` pass while the snapshot is stale, providing false safety for downstream consumers that branch on error codes.
-
-### Staking contract — Rust `StakingError` (`contract/staking`)
-
-The staking contract uses `#[contracterror]` with explicit `repr(u32)` values (not the 300–399 band above). These are the codes emitted by `StakingContract`:
-
-| Code | Variant | Meaning | User-facing message |
-|------|---------|---------|---------------------|
-| 1 | `NotInitialized` | `initialize` not called | Staking is not available yet. |
-| 2 | `AlreadyInitialized` | `initialize` called twice | Staking is already set up. |
-| 3 | `Paused` | Contract paused | Staking is temporarily unavailable. |
-| 4 | `InvalidAmount` | Non-positive amount | Enter an amount greater than zero. |
-| 5 | `InsufficientShares` | Unstaking more shares than held | You do not have that many shares to unstake. |
-| 6 | `ZeroShares` | Deposit too small to mint a share at the pool's current value | This deposit is too small for the current pool value. Stake more. |
-| 7 | `BelowMinimumInitialStake` | First deposit into an empty pool is under `MIN_INITIAL_STAKE` | The first deposit must be at least the minimum initial stake. |
-
-Codes `6` and `7` are the share-inflation guards documented on `MIN_INITIAL_STAKE` in `contract/staking/src/lib.rs`. Clients can read the current floor from the `min_initial_stake` view and validate before submitting rather than surfacing code `7`.
+| Code | Variant | Meaning / Description | User-facing message |
+|------|---------|-----------------------|---------------------|
+| 1 | `NotInitialized` | NotInitialized | Oracle is not initialized. |
+| 2 | `AlreadyInitialized` | AlreadyInitialized | Oracle is already initialized. |
+| 3 | `RateTooHigh` | RateTooHigh | Yield rate exceeds configured maximum basis points. |
+| 4 | `NoPendingAdmin` | NoPendingAdmin | No pending admin transfer has been proposed. |
 
 ---
 

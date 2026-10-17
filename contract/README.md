@@ -68,6 +68,23 @@ ABI snapshots live at `<contract>/abi_snapshot.json` and are generated from comp
 
 After regenerating, commit the updated snapshot file and document the interface change in your PR.
 
+### Contract Documentation & Drift Checking (#1646)
+
+`contract/ERRORS.md`, `contract/EVENTS.md`, and `contract/CONTRACTS.md` are automatically generated from Rust doc comments and source definitions.
+
+```bash
+# Regenerate documentation
+node scripts/generate-contract-docs.mjs
+# or via bash wrapper:
+./scripts/generate-contract-docs.sh
+
+# Verify documentation matches source without drift (runs in CI)
+node scripts/generate-contract-docs.mjs --check
+# or via bash wrapper:
+./scripts/generate-contract-docs.sh --check
+```
+
+
 ## Contributing
 
 1. Pick an issue from the tracker.

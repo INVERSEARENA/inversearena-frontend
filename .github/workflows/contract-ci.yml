@@ -85,3 +85,10 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --workspace --no-deps
+
+      - name: Verify contract documentation drift (#1646)
+        working-directory: ./contract
+        run: |
+          node ./scripts/generate-contract-docs.mjs --check
+          node --test ./scripts/__tests__/generate-contract-docs.test.mjs
+
