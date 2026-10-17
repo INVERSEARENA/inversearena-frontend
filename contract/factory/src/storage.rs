@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use crate::types::{ArenaMetadata, ArenaStatus, FactoryError};
-use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, contracttype};
+use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, Vec, contracttype};
 
 const PERSISTENT_TTL_THRESHOLD: u32 = 100;
 const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
@@ -22,6 +22,7 @@ pub enum DataKey {
     Pool(u32),
     Paused,
     SupportedToken(Address),
+    SupportedTokens,
 }
 
 #[contracttype]
@@ -312,6 +313,40 @@ impl FactoryStorage {
         env.storage()
             .persistent()
             .set(&DataKey::SupportedToken(token.clone()), &supported);
+
+        let current: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SupportedTokens)
+            .unwrap_or(Vec::new(env));
+        let mut next = Vec::new(env);
+        for index in 0..current.len() {
+            if let Some(existing) = current.get(index) {
+                if existing != *token {
+                    next.push_back(existing);
+                }
+            }
+        }
+        if supported {
+            next.push_back(token.clone());
+        }
+        env.storage().persistent().set(&DataKey::SupportedTokens, &next);
+    }
+
+    pub fn list_supported_tokens(env: &Env, offset: u32, limit: u32) -> Vec<Address> {
+        let current: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SupportedTokens)
+            .unwrap_or(Vec::new(env));
+        let end = offset.saturating_add(limit.min(50)).min(current.len());
+        let mut result = Vec::new(env);
+        for index in offset..end {
+            if let Some(token) = current.get(index) {
+                result.push_back(token);
+            }
+        }
+        result
     }
 
     pub fn is_supported_token(env: &Env, token: &Address) -> bool {

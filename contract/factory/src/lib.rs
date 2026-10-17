@@ -194,6 +194,11 @@ impl FactoryContract {
         FactoryStorage::is_supported_token(&env, &token)
     }
 
+    /// Returns up to 50 supported tokens starting at the requested offset.
+    pub fn list_supported_tokens(env: Env, offset: u32, limit: u32) -> Vec<Address> {
+        FactoryStorage::list_supported_tokens(&env, offset, limit)
+    }
+
     pub fn get_min_stake(env: Env) -> Result<i128, FactoryError> {
         FactoryStorage::load_min_stake(&env)
     }
