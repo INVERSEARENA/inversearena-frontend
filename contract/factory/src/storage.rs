@@ -22,6 +22,7 @@ pub enum DataKey {
     Pool(u32),
     Paused,
     SupportedToken(Address),
+    VaultToken(Address),
 }
 
 #[contracttype]
@@ -160,6 +161,18 @@ impl FactoryStorage {
             .persistent()
             .get(&DataKey::ApprovedVault(vault.clone()))
             .unwrap_or(false)
+    }
+
+    pub fn save_vault_token(env: &Env, vault: &Address, token: &Address) {
+        Self::extend_persistent_ttl(env, &DataKey::VaultToken(vault.clone()));
+        env.storage()
+            .persistent()
+            .set(&DataKey::VaultToken(vault.clone()), token);
+    }
+
+    pub fn get_vault_token(env: &Env, vault: &Address) -> Option<Address> {
+        Self::extend_persistent_ttl(env, &DataKey::VaultToken(vault.clone()));
+        env.storage().persistent().get(&DataKey::VaultToken(vault.clone()))
     }
 
     pub fn set_approved_oracle(env: &Env, oracle: &Address, approved: bool) {
