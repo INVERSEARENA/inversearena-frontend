@@ -164,7 +164,7 @@ export function ChoiceSubmission({
   const canInteract = isArenaOpen && !isDeadlineReached && !isLocked;
 
   return (
-    <section className="rounded-[28px] border border-white/10 bg-[#07111d] p-5 shadow-[0_24px_80px_rgba(0,0,0,0.35)] sm:p-6">
+    <section className="rounded-[28px] border border-white/10 bg-[#07111d] p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:p-5 shadow-[0_24px_80px_rgba(0,0,0,0.35)] sm:p-6">
       <div className="flex flex-col gap-3 border-b border-white/10 pb-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/45">

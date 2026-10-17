@@ -6,6 +6,7 @@ import { motion } from "motion/react";
 import { Wallet } from "lucide-react";
 import { YieldPerformanceChart } from "@/components/analysis/charts/YieldPerformanceChart";
 import { YieldEventLog, type YieldEvent } from "@/components/analysis/logs/YieldEventLog";
+import { ReservesStatus } from "@/components/analysis/ReservesStatus";
 import { AnalysisFooter } from "@/components/analysis/stats/AnalysisFooter";
 import { AnalysisHeader } from "@/components/analysis/stats/AnalysisHeader";
 import { StatsGrid } from "@/components/analysis/stats/StatsGrid";
@@ -147,7 +148,8 @@ function AnalysisContent() {
             variants={{ hidden: { opacity: 0, y: 12 }, visible: { opacity: 1, y: 0 } }}
             transition={{ duration: 0.35, ease: [0.25, 0.46, 0.45, 0.94] }}
           >
-            <YieldEventLog events={events} />
+            <ReservesStatus arenaId={arenaId} />
+          <YieldEventLog events={events} />
           </motion.div>
         </motion.div>
 

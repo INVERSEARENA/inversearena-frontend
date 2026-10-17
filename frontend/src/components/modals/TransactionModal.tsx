@@ -129,13 +129,13 @@ export function TransactionModal({
                         <div className="flex gap-4">
                             <button
                                 onClick={onClose}
-                                className="flex-1 border-2 border-white/20 py-4 font-black uppercase tracking-widest text-white hover:bg-white/10 transition-colors"
+                                className="flex-1 border-2 border-white/20 min-h-[44px] py-4 font-black uppercase tracking-widest text-white hover:bg-white/10 transition-colors"
                             >
                                 Cancel
                             </button>
                             <button
                                 onClick={handleConfirm}
-                                className="flex-1 bg-primary text-black border-2 border-black py-4 font-black uppercase tracking-widest hover:translate-y-[-2px] hover:shadow-[4px_4px_0px_0px_#fff] transition-all"
+                                className="flex-1 bg-primary text-black border-2 border-black min-h-[44px] py-4 font-black uppercase tracking-widest hover:translate-y-[-2px] hover:shadow-[4px_4px_0px_0px_#fff] transition-all"
                             >
                                 {confirmLabel}
                             </button>
@@ -182,7 +182,7 @@ export function TransactionModal({
                                 }
                             }}
                             onClick={onClose}
-                            className="w-full bg-white text-black border-2 border-black py-4 font-black uppercase tracking-widest hover:bg-slate-200 transition-colors"
+                            className="w-full bg-white text-black border-2 border-black min-h-[44px] py-4 font-black uppercase tracking-widest hover:bg-slate-200 transition-colors"
                         >
                             Close
                         </button>
@@ -204,7 +204,7 @@ export function TransactionModal({
                         <div className="flex gap-4 w-full">
                             <button
                                 onClick={onClose}
-                                className="flex-1 border-2 border-white/20 py-4 font-black uppercase tracking-widest text-white hover:bg-white/10 transition-colors"
+                                className="flex-1 border-2 border-white/20 min-h-[44px] py-4 font-black uppercase tracking-widest text-white hover:bg-white/10 transition-colors"
                             >
                                 Close
                             </button>
@@ -213,7 +213,7 @@ export function TransactionModal({
                                     setErrorMessage(null);
                                     setState("REVIEW");
                                 }}
-                                className="flex-1 bg-red-500 text-black border-2 border-black py-4 font-black uppercase tracking-widest hover:brightness-110 transition-all font-display"
+                                className="flex-1 bg-red-500 text-black border-2 border-black min-h-[44px] py-4 font-black uppercase tracking-widest hover:brightness-110 transition-all font-display"
                             >
                                 Try Again
                             </button>
@@ -234,7 +234,7 @@ export function TransactionModal({
             closeOnEscape={!isProcessing}
             className="bg-[#0F172A]! border-3 border-black rounded-none!"
         >
-            <div className="p-6 lg:p-8 font-display">
+            <div className="max-h-[90dvh] overflow-y-auto p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:p-6 lg:p-8 font-display">
                 {/* Header */}
                 <div className="mb-6">
                     <div className="flex items-center gap-3 mb-2">
