@@ -46,6 +46,28 @@ GET /oracle/yield-rate
 
 The oracle price is **display-only**. The authoritative price used for payout is fetched on-chain at the moment the payout contract executes the USDY → USDC swap.
 
+### Bounded, delayed on-chain rate updates (#1570)
+
+The on-chain oracle (`contract/oracle`) no longer applies arbitrary instant
+rate jumps. Each `set_yield_bps` call may move the rate by at most
+`max_delta_bps` against the currently effective rate, and — when an
+`activation_delay` is configured — takes effect at `effective_at`
+(`now + activation_delay`) as a scheduled `pending_rate` instead of
+immediately. `max_delta_bps` and `activation_delay` are themselves
+admin-configurable within hard bounds (rate ≤ 10,000 bps, delay ≤ 7 days)
+and subject to the same delay. An emergency `set_rate_to_zero` path zeroes
+the rate immediately (explicitly evented as `zeroed`) for incident response.
+
+Consequences for consumers:
+
+- `arena.resolve_round` and the `rwa-adapter` vault read
+  `get_current_yield_bps`, which already returns the *effective* rate at the
+  current ledger time — no consumer changes were needed for correctness.
+- Keepers and frontends can read `get_rate_schedule()` (current, pending,
+  `effective_at`, bounds) to warn before a scheduled change activates; the
+  arena and adapter also expose `fetch_rate_schedule()` helpers that return
+  `None` against older oracle deployments.
+
 ---
 
 ## 4. Yield Attribution

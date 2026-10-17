@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { Suspense, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   LeaderboardTable,
   Pagination,
@@ -9,21 +10,61 @@ import {
   formatCurrency,
   type Survivor,
 } from "@/features/leaderboard";
+import { WalletContext } from "@/features/wallet/WalletProvider";
 import { PoolCreationModal } from "@/components/modals/PoolCreationModal";
 import { Skeleton } from "@/components/ui/Skeleton";
 
 const INITIAL_PAGE_SIZE = 20;
 const TABLE_ITEMS_PER_PAGE = 7;
 
-export default function LeaderboardPage() {
-  const [currentPage, setCurrentPage] = useState(1);
+function readPageFromUrl(sp: URLSearchParams): number {
+  const raw = sp.get("page");
+  const n = raw == null ? NaN : Number.parseInt(raw, 10);
+  return Number.isSafeInteger(n) && n >= 1 ? n : 1;
+}
+
+function LeaderboardContent() {
+  const searchParams = useSearchParams();
+  // Pagination state lives in the URL query params so pages are shareable
+  // (#1567). Defaults to 1; invalid values fall back to 1.
+  const [currentPage, setCurrentPage] = useState(() => readPageFromUrl(searchParams));
   const [isChallengeModalOpen, setIsChallengeModalOpen] = useState(false);
   const [targetedSurvivor, setTargetedSurvivor] = useState<
     { agentId: string; rank: number } | undefined
   >();
   const [displayedCount, setDisplayedCount] = useState(INITIAL_PAGE_SIZE);
 
-  const { survivors, loading: isLoading, error, hasMore, fetchMore } =
+  // Keep local page in sync when the URL changes (back/forward navigation).
+  useEffect(() => {
+    setCurrentPage(readPageFromUrl(searchParams));
+  }, [searchParams]);
+
+  const handlePageChange = useCallback((page: number) => {
+    setCurrentPage(page);
+    // Shareable URL: reflect the table page without a navigation.
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (page <= 1) {
+        params.delete("page");
+      } else {
+        params.set("page", String(page));
+      }
+      const qs = params.toString();
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${qs ? `?${qs}` : ""}`,
+      );
+    }
+  }, []);
+
+  // Connected wallet's own row is highlighted when it is on the loaded page.
+  // Read the context directly (nullable) so the page still renders outside
+  // a WalletProvider (e.g. unit tests).
+  const wallet = useContext(WalletContext);
+  const ownWallet = wallet?.publicKey ?? wallet?.address ?? null;
+
+  const { survivors, loading: isLoading, error, hasMore, fetchMore, refetch } =
     useLeaderboard(INITIAL_PAGE_SIZE);
 
   // Top 3 go to the podium; the rest fill the table
@@ -40,10 +81,13 @@ export default function LeaderboardPage() {
     return Math.ceil(displayedTableSurvivors.length / TABLE_ITEMS_PER_PAGE);
   }, [displayedTableSurvivors]);
 
+  // Clamp the URL page when the loaded data shrinks (e.g. fresh refetch).
+  const safePage = totalPages > 0 ? Math.min(currentPage, totalPages) : 1;
+
   const paginatedSurvivors = useMemo(() => {
-    const start = (currentPage - 1) * TABLE_ITEMS_PER_PAGE;
+    const start = (safePage - 1) * TABLE_ITEMS_PER_PAGE;
     return displayedTableSurvivors.slice(start, start + TABLE_ITEMS_PER_PAGE);
-  }, [currentPage, displayedTableSurvivors]);
+  }, [safePage, displayedTableSurvivors]);
 
   // Use `survivors` directly for the stat card; it only represents the
   // currently-loaded page, so the cards are labeled as partial (#1338).
@@ -64,9 +108,9 @@ export default function LeaderboardPage() {
     if (hasMore && !isLoading) {
       await fetchMore();
       setDisplayedCount((prev) => prev + INITIAL_PAGE_SIZE);
-      setCurrentPage(1); // Reset to first page after loading more
+      handlePageChange(1); // Reset to first page after loading more
     }
-  }, [hasMore, isLoading, fetchMore]);
+  }, [hasMore, isLoading, fetchMore, handlePageChange]);
 
   // Build podium display order: rank 2, rank 1, rank 3 (visual layout)
   const podiumOrdered = [
@@ -242,22 +286,34 @@ export default function LeaderboardPage() {
         </div>
       </section>
 
-      {error && <p className="px-2 font-mono text-xs text-red-400">{error}</p>}
+      {error && (
+        <div className="flex flex-col gap-2 px-2 sm:flex-row sm:items-center">
+          <p className="font-mono text-xs text-red-400" role="alert">{error}</p>
+          <button
+            type="button"
+            onClick={() => void refetch()}
+            className="w-fit border border-red-400/60 px-4 py-1.5 font-mono text-xs uppercase tracking-[0.2em] text-red-300 transition-colors hover:bg-red-400 hover:text-black"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* Rankings Table Section */}
       <LeaderboardTable
         survivors={paginatedSurvivors}
         onChallenge={handleChallenge}
         isLoading={isLoading}
+        highlightWallet={ownWallet}
       />
 
       {/* Pagination & Load More */}
       {!isLoading && (
         <div className="flex flex-col items-center gap-4">
           <Pagination
-            currentPage={currentPage}
+            currentPage={safePage}
             totalPages={totalPages}
-            onPageChange={setCurrentPage}
+            onPageChange={handlePageChange}
           />
           {hasMore && (
             <button
@@ -277,5 +333,13 @@ export default function LeaderboardPage() {
         {...(targetedSurvivor !== undefined && { challengedSurvivor: targetedSurvivor })}
       />
     </div>
+  );
+}
+
+export default function LeaderboardPage() {
+  return (
+    <Suspense>
+      <LeaderboardContent />
+    </Suspense>
   );
 }

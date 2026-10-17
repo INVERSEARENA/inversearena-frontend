@@ -56,6 +56,25 @@ address, amounts) is in the data payload so indexers can filter on `STAKED` /
 |---------------|---------------------------|---------------------------------------|
 | `PAYOUT`      | `distribute_winnings()`   | `(v, winner: Address, amount: i128, currency: Symbol)` |
 
+## Oracle Contract (#1570)
+
+Bounded, delayed rate updates. `rate_sch` / `par_sched` carry the scheduled
+value plus its `effective_at`; `rate_appl` / `par_appl` fire when a due
+schedule is persisted by the next admin write.
+
+| Topic       | Emitting Function      | Data Fields                                      |
+|-------------|------------------------|--------------------------------------------------|
+| `rate_set`  | `set_yield_bps()`      | `(rate_bps: u32)` — applied immediately (delay 0) |
+| `rate_sch`  | `set_yield_bps()`      | `(rate_bps: u32, effective_at: u64)` — scheduled |
+| `rate_appl` | (settle on next write) | `(rate_bps: u32)` — due schedule applied        |
+| `maxd_set`  | `set_max_delta_bps()`  | `(max_delta_bps: u32)` — applied immediately     |
+| `dly_set`   | `set_activation_delay()` | `(delay_secs: u64)` — applied immediately       |
+| `max_set`   | `set_max_rate()`       | `(max_rate_bps: u32)` — applied immediately      |
+| `par_sched` | `set_max_delta_bps()` / `set_activation_delay()` / `set_max_rate()` | `((which: Symbol, value, effective_at: u64))` with `which` in `max_delta` / `delay` / `max_rate` |
+| `par_appl`  | (settle on next write) | `(params_effective_at: u64)` — due params applied |
+| `zeroed`    | `set_rate_to_zero()`   | `(0u32)` — emergency zero                        |
+| `adm_chg`   | `accept_admin()`       | `(old_admin: Address, new_admin: Address)`       |
+
 ---
 
 ## Versioning Policy

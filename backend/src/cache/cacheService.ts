@@ -47,6 +47,8 @@ export const cacheKeys = {
    * on-chain read fails.
    */
   arenaOnChainSnapshot: (arenaId: string) => `arena:onchain-snapshot:${arenaId}`,
+  arenaYield: (arenaId: string, limit: number, cursor: string) =>
+    `arena:yield:${arenaId}:${limit}:${cursor}`,
 };
 
 /**
@@ -60,6 +62,7 @@ export const cacheTTL = {
   ORACLE_YIELD: 60,
   ARENA_STATS: 15,
   ARENA_ROUNDS: 10,
+  ARENA_YIELD: 60,
   LEADERBOARD: 30,
   // Deliberately long: this is "how far back may a degraded response reach",
   // not "how fresh is a normal response". Every degraded response carries its

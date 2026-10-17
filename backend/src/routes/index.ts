@@ -11,6 +11,7 @@ import { createPoolsRouter } from "./pools";
 import { createDocsRouter } from "./docs";
 import { createArenaReplayRouter } from "./arenaReplay";
 import { createNotificationPreferencesRouter } from "./notificationPreferences";
+import { createPushSubscriptionsRouter } from "./pushSubscriptions";
 import { createPortfolioExposureRouter } from "./portfolioExposure";
 import { createCancellationRecoveryRouter } from "./cancellationRecovery";
 import { createConfigRouter } from "./config";
@@ -54,6 +55,7 @@ export function createApiRouter(
   router.use("/arenas", createInvitationsRouter(requireAuth));
   router.use("/pools", createPoolsRouter(requireAuth));
   router.use("/users", createNotificationPreferencesRouter(requireAuth));
+  router.use("/users", createPushSubscriptionsRouter(requireAuth));
   router.use("/users", createPortfolioExposureRouter(requireAuth));
   router.use(
     "/leaderboard",

@@ -12,6 +12,8 @@ import { MyArenasFilter } from "@/shared-d/features/profile/types";
 import { useWallet } from "@/features/wallet/useWallet";
 // Issue #1414 — alias management
 import { AliasManager } from "./AliasManager";
+// Issue #1571 — Web Push opt-in for round-phase alerts
+import { PushSubscribeButton } from "@/features/notifications";
 
 const truncateAddress = (address: string) => {
   if (!address) return "";
@@ -372,6 +374,18 @@ export default function ProfilePage() {
                 <p className="text-[10px] text-zinc-600 mt-1 uppercase">RECAP_EMAILS_AND_UPDATES</p>
               </div>
               <span className="text-[9px] font-bold text-zinc-600 tracking-widest border border-zinc-700 px-2 py-1">DISABLED</span>
+            </div>
+          </div>
+
+          {/* Issue #1571 — opt in to Web Push round-phase alerts (works with
+              the app closed; delivery honors notification preferences). */}
+          <div className="p-6 border border-white/5 bg-black/20 backdrop-blur-sm space-y-4">
+            <div className="flex justify-between items-start gap-4">
+              <div>
+                <h4 className="text-[10px] font-bold tracking-[0.2em] text-zinc-500 uppercase">PUSH_ALERTS</h4>
+                <p className="text-[10px] text-zinc-600 mt-1 uppercase">ROUND_START_COMMIT_REVEAL_PAYOUT</p>
+              </div>
+              <PushSubscribeButton />
             </div>
           </div>
         </div>

@@ -1,6 +1,15 @@
+/**
+ * TEST-ONLY fixture module (#1567).
+ *
+ * Do NOT import this module from production components. Production code must
+ * import formatting helpers from `../utils/format` and data from the
+ * `useLeaderboard` hook (GET /api/leaderboard). An eslint
+ * `no-restricted-imports` rule (see frontend/eslint.config.mjs) enforces this.
+ */
 import { Survivor } from '../types';
+export { formatAgentId, formatCurrency } from '../utils/format';
 
-// Mock survivors for the rankings table
+// Mock survivors for the rankings table (tests / storybook only)
 export const mockRankedSurvivors: Survivor[] = [
   {
     id: 'survivor-4',
@@ -154,17 +163,5 @@ export function getPaginatedSurvivors(
 export function getTotalPages(itemsPerPage: number = 4): number {
   return Math.ceil(mockRankedSurvivors.length / itemsPerPage);
 }
-
-// Truncate agent ID for display (e.g. "G...X4Y2")
-export function formatAgentId(agentId: string): string {
-  if (agentId.length <= 8) return agentId;
-  return `${agentId.charAt(0)}...${agentId.slice(-4)}`;
-}
-
-// Format as currency (e.g. "$750.00")
-export function formatCurrency(value: number): string {
-  return `$${value.toLocaleString('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
+// NOTE: formatAgentId/formatCurrency live in ../utils/format and are
+// re-exported at the top of this file for test compatibility.

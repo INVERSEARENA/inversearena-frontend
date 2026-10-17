@@ -9,6 +9,7 @@ import { prisma } from "../db/prisma";
 import type { CreateArenaInput } from "../types/arena";
 import { ArenaService } from "../services/arenaService";
 import { ArenaStatsService } from "../services/arenaStatsService";
+import { ArenaYieldService } from "../services/arenaYieldService";
 import { RoundRepository } from "../repositories/roundRepository";
 import { ParticipantEligibilityService } from "../services/participantEligibilityService";
 import { apiError } from "../utils/apiError";
@@ -125,6 +126,7 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   const router = Router();
   const arenaService = new ArenaService(prisma);
   const arenaStatsService = new ArenaStatsService(prisma);
+  const arenaYieldService = new ArenaYieldService(prisma);
   const roundRepository = new RoundRepository(prisma);
   const eligibilityService = new ParticipantEligibilityService(prisma);
   const sseConnectionLimiter = createSseConnectionLimitMiddleware();
@@ -186,6 +188,57 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
       try {
         const stats = await arenaStatsService.getArenaStats(id);
         res.json(stats);
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("not found")) {
+          throw apiError(404, "ARENA_NOT_FOUND", error.message);
+        }
+        throw error;
+      }
+    }),
+  );
+
+  /**
+   * GET /api/arenas/:id/yield
+   * Returns the per-round yield time-series for an arena (#1568), sourced
+   * from indexed on-chain resolutions (round metadata). Ordered by round
+   * ascending with offset pagination; `cumulative` is computed over the full
+   * series so it stays correct across pages. Cached 60s with ETag support;
+   * finished arenas (SETTLED) additionally carry an immutable Cache-Control
+   * header since their series can no longer change.
+   */
+  router.get(
+    "/:id/yield",
+    cacheMiddleware(
+      (req) =>
+        cacheKeys.arenaYield(
+          req.params.id ?? "",
+          Number(req.query.limit ?? 100),
+          typeof req.query.cursor === "string" ? req.query.cursor : "",
+        ),
+      cacheTTL.ARENA_YIELD,
+    ),
+    asyncHandler(async (req, res) => {
+      const id = req.params.id;
+      if (!id) {
+        throw apiError(400, "INVALID_ARENA_ID", "Arena id is required");
+      }
+      const { limit, cursor } = z
+        .object({
+          limit: z.coerce.number().int().min(1).max(500).default(100),
+          cursor: z.string().optional(),
+        })
+        .parse(req.query);
+
+      try {
+        const series = await arenaYieldService.getYieldSeries(id, {
+          limit,
+          ...(cursor !== undefined ? { cursor } : {}),
+        });
+        if (series.finished) {
+          // Immutable: a SETTLED arena's series can never gain new points.
+          res.setHeader("Cache-Control", "public, max-age=3600, immutable");
+        }
+        res.json(series);
       } catch (error) {
         if (error instanceof Error && error.message.includes("not found")) {
           throw apiError(404, "ARENA_NOT_FOUND", error.message);
