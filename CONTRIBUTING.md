@@ -57,3 +57,28 @@ If you intentionally make a breaking change to a `contracttype` (e.g., adding a 
 2. Copy the "Actual" byte array from the test output.
 3. Update the hard-coded byte array in `snapshot_test.rs`.
 4. Document why the breaking change was necessary in your pull request.
+
+## Backend Testing Architecture (Tiered Jest Projects)
+
+The backend test suite is unified under `backend/tests/` and structured into tiered Jest projects to keep feedback fast while guaranteeing integration safety:
+
+- `backend/tests/unit/`: Pure unit tests executing with zero external service dependencies (no MongoDB Memory Server, PostgreSQL, or Redis connections). Tests use `backend/tests/unit/setup.ts`.
+- `backend/tests/integration/`: Integration tests validating interactions with MongoDB, PostgreSQL, and Redis. Tests use `backend/tests/integration/setup.ts`.
+- `backend/tests/contract-fixtures/`: Shared contract JSON fixtures and query plans.
+- `backend/tests/helpers/`: Shared test utilities and fault injection helpers.
+
+### Running Backend Tests
+
+```bash
+cd backend
+# Run unit tests (fast, no external services needed)
+npm run test:unit
+
+# Run integration tests (with Mongo/Postgres/Redis services active)
+npm run test:integration
+
+# Run all test suites
+npm test
+```
+
+In CI (`backend-ci.yml`), unit tests execute immediately across all PRs without service containers, while integration tests execute in an isolated containerized environment with Postgres and Redis.

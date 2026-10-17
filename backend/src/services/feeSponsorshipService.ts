@@ -108,12 +108,26 @@ export class FeeSponsorshipService {
    * returns the existing token.
    */
   issueEligibility(
-    winnerId: string,
-    transactionType: TransactionType = "payout",
+    winnerIdOrPayoutId: string,
+    transactionTypeOrWinnerId: TransactionType | string = "payout",
     transactionId: string | null = null,
   ): FeeEligibilityToken {
-    const payoutId = transactionType === "payout" ? transactionId : null;
-    const arenaId = ["join", "commit", "reveal"].includes(transactionType) ? transactionId : null;
+    let winnerId = winnerIdOrPayoutId;
+    let transactionType: TransactionType = "payout";
+    let actualTransactionId = transactionId;
+
+    const validTypes: TransactionType[] = ["payout", "join", "commit", "reveal"];
+    if (!validTypes.includes(transactionTypeOrWinnerId as TransactionType)) {
+      // Legacy signature: issueEligibility(payoutId, winnerId)
+      winnerId = transactionTypeOrWinnerId;
+      actualTransactionId = winnerIdOrPayoutId;
+      transactionType = "payout";
+    } else {
+      transactionType = transactionTypeOrWinnerId as TransactionType;
+    }
+
+    const payoutId = transactionType === "payout" ? actualTransactionId : null;
+    const arenaId = ["join", "commit", "reveal"].includes(transactionType) ? actualTransactionId : null;
 
     // Idempotency: return existing pending token for this transaction.
     for (const token of tokenStore.values()) {

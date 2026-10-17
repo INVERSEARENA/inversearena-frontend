@@ -16,7 +16,38 @@ on:
       - ".github/workflows/backend-ci.yml"
 
 jobs:
-  test:
+  unit-tests:
+    name: Unit Tests (Tiered - No Services)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: "npm"
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install Dependencies
+        working-directory: ./backend
+        run: npm ci
+
+      - name: Verify redaction policy (#1531)
+        run: node scripts/verify-redaction.mjs
+
+      - name: Generate Prisma Client
+        working-directory: ./backend
+        run: npx prisma generate
+
+      - name: Run Unit Tests
+        working-directory: ./backend
+        run: npm run test:unit
+
+  integration-tests:
+    name: Integration Tests (Tiered - With Services)
     runs-on: ubuntu-latest
 
     services:
@@ -58,9 +89,6 @@ jobs:
       - name: Install Dependencies
         working-directory: ./backend
         run: npm ci
-
-      - name: Verify redaction policy (#1531)
-        run: node scripts/verify-redaction.mjs
 
       - name: Run Prisma Migrations
         working-directory: ./backend
