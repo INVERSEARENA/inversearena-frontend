@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "updatedAt": "2026-10-17T12:00:00Z",
+  "description": "Baseline coverage thresholds for InverseArena smart contracts (#1651)",
+  "thresholds": {
+    "arena": {
+      "minLinePercent": 75.0,
+      "minBranchPercent": 55.0
+    },
+    "factory": {
+      "minLinePercent": 75.0,
+      "minBranchPercent": 55.0
+    },
+    "payout": {
+      "minLinePercent": 70.0,
+      "minBranchPercent": 50.0
+    },
+    "staking": {
+      "minLinePercent": 70.0,
+      "minBranchPercent": 50.0
+    },
+    "rwa-adapter": {
+      "minLinePercent": 65.0,
+      "minBranchPercent": 50.0
+    }
+  },
+  "global": {
+    "minLinePercent": 70.0,
+    "minBranchPercent": 50.0
+  }
+}

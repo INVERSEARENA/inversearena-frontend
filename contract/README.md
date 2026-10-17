@@ -54,6 +54,26 @@ cargo build --target wasm32-unknown-unknown --release
 cargo test --workspace
 ```
 
+### Test Coverage & Thresholds (#1651)
+
+Code coverage is measured with `cargo-llvm-cov` to ensure critical fund-moving logic (elimination, payout claims, cancel/refund paths) maintains high test branch and line coverage without regression.
+
+```bash
+# 1. Install cargo-llvm-cov & llvm-tools component (one-time setup)
+cargo install cargo-llvm-cov
+rustup component add llvm-tools-preview
+
+# 2. Run coverage analysis and enforce ratcheted thresholds
+./scripts/check_contract_coverage.sh
+
+# 3. Ratchet thresholds upward when test coverage improves
+./scripts/check_contract_coverage.sh --ratchet
+```
+
+- **HTML Report**: `contract/target/llvm-cov/html/index.html` (open in browser to inspect uncovered lines).
+- **LCOV Info**: `contract/target/llvm-cov/lcov.info` (consumed by IDEs and CI reporters).
+- **Thresholds**: Defined per crate in `contract/baseline-coverage.json` for `arena`, `factory`, `payout`, `staking`, and `rwa-adapter`.
+
 ### ABI Snapshots
 
 ABI snapshots live at `<contract>/abi_snapshot.json` and are generated from compiled WASM artifacts.
