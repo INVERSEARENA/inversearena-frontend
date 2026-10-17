@@ -370,6 +370,12 @@ pub enum ArenaError {
     /// `max_age_secs` via `set_oracle_freshness_policy` if the
     /// existing threshold is inappropriate for this arena.
     StaleOracleData = 40,
+
+    /// Returned by `configure_player_limits` when attempting to modify
+    /// player limits after the first player has already joined the arena (#1640).
+    /// Player limits become frozen once `player_count > 0` to protect
+    /// participant expectations.
+    ArenaAlreadyHasPlayers = 41,
 }
 
 #[contracttype]
