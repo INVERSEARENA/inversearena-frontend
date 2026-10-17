@@ -63,8 +63,16 @@ jest.mock("@creit-tech/stellar-wallets-kit", () => ({
     init: jest.fn(),
     authModal: jest.fn(),
     disconnect: jest.fn(),
+    getAddress: jest.fn(),
+    getNetwork: jest.fn(),
+    signTransaction: jest.fn(),
   },
   Networks: { TESTNET: "Test SDF Network ; September 2015" },
+}));
+
+jest.mock("@/lib/stellarConfig", () => ({
+  isStellarConfigured: true,
+  stellarConfig: { passphrase: "Test SDF Network ; September 2015" },
 }));
 
 jest.mock("@creit-tech/stellar-wallets-kit/modules/freighter", () => ({
@@ -88,10 +96,20 @@ const VALID_KEY = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
 const INVALID_KEY = "not-a-valid-key";
 const SHORT_KEY = "GSHORT";
 
+const MATCHING_NETWORK = {
+  network: "TESTNET",
+  networkPassphrase: "Test SDF Network ; September 2015",
+};
+const MISMATCHED_NETWORK = {
+  network: "PUBLIC",
+  networkPassphrase: "Public Global Stellar Network ; September 2015",
+};
+
 describe("useStellarWallet", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     window.localStorage.clear();
+    StellarWalletsKit.getNetwork.mockResolvedValue(MATCHING_NETWORK);
   });
 
   it("starts in disconnected state", () => {
@@ -350,6 +368,107 @@ describe("useStellarWallet", () => {
       });
 
       expect(window.localStorage.getItem(WALLET_DISCONNECTED_KEY)).toBeNull();
+    });
+  });
+
+  describe("network-mismatch recovery (#1404)", () => {
+    it("enters network-mismatch status when the wallet's active network differs from the app's", async () => {
+      StellarWalletsKit.authModal.mockResolvedValue({ address: VALID_KEY });
+      StellarWalletsKit.getNetwork.mockResolvedValue(MISMATCHED_NETWORK);
+
+      const { result } = renderHook(() => useStellarWallet(Networks.TESTNET));
+
+      await act(async () => {
+        await result.current.connectWallet();
+      });
+
+      expect(result.current.status).toBe("network-mismatch");
+      expect(result.current.publicKey).toBe(VALID_KEY);
+      expect(result.current.walletNetworkName).toBe(
+        MISMATCHED_NETWORK.networkPassphrase,
+      );
+    });
+
+    it("recovers to connected via recheckNetwork after the user switches network", async () => {
+      StellarWalletsKit.authModal.mockResolvedValue({ address: VALID_KEY });
+      StellarWalletsKit.getNetwork.mockResolvedValue(MISMATCHED_NETWORK);
+
+      const { result } = renderHook(() => useStellarWallet(Networks.TESTNET));
+
+      await act(async () => {
+        await result.current.connectWallet();
+      });
+      expect(result.current.status).toBe("network-mismatch");
+
+      StellarWalletsKit.getNetwork.mockResolvedValue(MATCHING_NETWORK);
+
+      await act(async () => {
+        await result.current.recheckNetwork();
+      });
+
+      expect(result.current.status).toBe("connected");
+      expect(result.current.walletNetworkName).toBeNull();
+    });
+
+    it("recheckNetwork is a no-op while disconnected", async () => {
+      const { result } = renderHook(() => useStellarWallet(Networks.TESTNET));
+
+      await act(async () => {
+        await result.current.recheckNetwork();
+      });
+
+      expect(result.current.status).toBe("disconnected");
+      expect(StellarWalletsKit.getNetwork).not.toHaveBeenCalled();
+    });
+
+    it("blocks signTransaction and flips to network-mismatch when the wallet switches network after connecting", async () => {
+      StellarWalletsKit.authModal.mockResolvedValue({ address: VALID_KEY });
+      StellarWalletsKit.getNetwork.mockResolvedValue(MATCHING_NETWORK);
+
+      const { result } = renderHook(() => useStellarWallet(Networks.TESTNET));
+
+      await act(async () => {
+        await result.current.connectWallet();
+      });
+      expect(result.current.status).toBe("connected");
+
+      StellarWalletsKit.getNetwork.mockResolvedValue(MISMATCHED_NETWORK);
+
+      let caughtError: unknown;
+      await act(async () => {
+        try {
+          await result.current.signTransaction(
+            "AAAAAgAAAABBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+          );
+        } catch (err) {
+          caughtError = err;
+        }
+      });
+
+      expect(caughtError).toBeInstanceOf(Error);
+      expect((caughtError as Error).message).toMatch(/different network/i);
+      expect(result.current.status).toBe("network-mismatch");
+      expect(StellarWalletsKit.signTransaction).not.toHaveBeenCalled();
+    });
+
+    it("does not block connecting or signing when a wallet module can't report its network", async () => {
+      StellarWalletsKit.authModal.mockResolvedValue({ address: VALID_KEY });
+      StellarWalletsKit.getNetwork.mockRejectedValue(
+        new Error("getNetwork not supported"),
+      );
+      StellarWalletsKit.signTransaction.mockResolvedValue({
+        signedTxXdr:
+          "AAAAAgAAAABBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      });
+
+      const { result } = renderHook(() => useStellarWallet(Networks.TESTNET));
+
+      await act(async () => {
+        await result.current.connectWallet();
+      });
+
+      expect(result.current.status).toBe("connected");
+      expect(result.current.walletNetworkName).toBeNull();
     });
   });
 });

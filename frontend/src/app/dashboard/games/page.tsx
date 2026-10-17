@@ -6,41 +6,41 @@ import { GamesFilters } from "@/features/games/components/GamesFilters";
 import { ArenaCard } from "@/features/games/components/ArenaCard";
 import { ArenaCardSkeleton } from "@/features/games/components/ArenaCardSkeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { mockArenas } from "@/features/games/mockArenas";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useMemo, useState, useEffect } from "react";
+import { Suspense, useState, useEffect } from "react";
 import { Search } from "lucide-react";
+import type { Arena } from "@/features/games/types";
 
 function GamesPageContent() {
   const searchParams = useSearchParams();
   const filter = searchParams.get("filter") || "all";
   const search = searchParams.get("q") || "";
   const [isLoading, setIsLoading] = useState(true);
+  const [arenas, setArenas] = useState<Arena[]>([]);
 
-  // Simulate loading
   useEffect(() => {
-    const timer = setTimeout(() => setIsLoading(false), 800);
-    return () => clearTimeout(timer);
-  }, []);
+    async function fetchArenas() {
+      try {
+        setIsLoading(true);
+        const params = new URLSearchParams();
+        if (search) params.append("q", search);
+        if (filter && filter !== "all") params.append("filter", filter);
+        params.append("limit", "100");
 
-  const filteredArenas = useMemo(() => {
-    let arenas = [...mockArenas];
+        const response = await fetch(`/api/arenas?${params.toString()}`);
+        if (!response.ok) throw new Error("Failed to fetch arenas");
 
-    if (filter === "high-stakes") {
-      arenas = arenas.filter(arena => arena.badge === "WHALE" || parseFloat(arena.stake) > 100);
-    } else if (filter === "fast-rounds") {
-      arenas = arenas.filter(arena => arena.badge === "BLITZ" || arena.roundSpeed.includes("30s"));
+        const data = await response.json();
+        setArenas(data.items || []);
+      } catch (error) {
+        console.error("Error fetching arenas:", error);
+        setArenas([]);
+      } finally {
+        setIsLoading(false);
+      }
     }
 
-    if (search) {
-      const searchLower = search.toLowerCase();
-      arenas = arenas.filter(arena =>
-        arena.id.toLowerCase().includes(searchLower) ||
-        arena.number.toLowerCase().includes(searchLower)
-      );
-    }
-
-    return arenas;
+    fetchArenas();
   }, [filter, search]);
 
   return (
@@ -62,8 +62,8 @@ function GamesPageContent() {
             <ArenaCardSkeleton />
             <ArenaCardSkeleton />
           </>
-        ) : filteredArenas.length > 0 ? (
-          filteredArenas.map((arena) => (
+        ) : arenas.length > 0 ? (
+          arenas.map((arena) => (
             <ArenaCard key={arena.id} arena={arena} />
           ))
         ) : (

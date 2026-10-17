@@ -3,12 +3,15 @@ import cors from "cors";
 import helmet from "helmet";
 import { createApiRouter } from "./routes";
 import { createAdminRouter } from "./routes/admin";
+import { createTreasuryRouter } from "./routes/treasury";
+import { refreshTreasuryMetrics } from "./services/treasury/treasuryMetrics";
 import { createWalletRoleRouter } from "./routes/walletRole";
 import { createMaintenanceStatusRouter } from "./routes/maintenance";
 import { errorHandler } from "./middleware/errorHandler";
 import { requestLogger } from "./middleware/logger";
 import { requestContextMiddleware } from "./middleware/requestContext";
 import { metricsMiddleware } from "./middleware/metrics";
+import { queryBudgetMiddleware } from "./middleware/queryBudgetMiddleware";
 import { maintenanceGuard } from "./middleware/maintenance";
 import {
   ApiKeyAuthProvider,
@@ -23,24 +26,34 @@ import { AuthController } from "./controllers/auth.controller";
 import { UsersController } from "./controllers/users.controller";
 import { LeaderboardController } from "./controllers/leaderboard.controller";
 import { TransactionsController } from "./controllers/transactions.controller";
+import { TransactionIntentsController } from "./controllers/transactionIntents.controller";
 import { RoundController } from "./controllers/round.controller";
-import { refreshArenaMetrics, register } from "./utils/metrics";
+import { refreshArenaMetrics, refreshQueueMetrics, register } from "./utils/metrics";
 import { redis } from "./cache/redisClient";
+import type { QueueSnapshotSource } from "./queues/txQueue";
 import type { PaymentService } from "./services/paymentService";
 import type { PaymentWorker } from "./workers/paymentWorker";
+import type { ArenaBackfillWorker } from "./workers/arenaBackfillWorker";
 import type { TransactionRepository } from "./repositories/transactionRepository";
+import type { TransactionIntentService } from "./services/transactionIntentService";
 import type { AdminService } from "./services/adminService";
 import type { AuthService } from "./services/authService";
 import type { RoundService } from "./services/roundService";
+import type { RoundProofBundleService } from "./services/roundProofBundleService";
 import { prisma } from "./db/prisma";
 
 export interface AppDependencies {
   paymentService: PaymentService;
   paymentWorker: PaymentWorker;
+  arenaBackfillWorker: ArenaBackfillWorker;
   transactions: TransactionRepository;
   adminService: AdminService;
   authService: AuthService;
   roundService: RoundService;
+  queueSnapshotSource?: QueueSnapshotSource;
+  queueCapacity?: number;
+  roundProofBundleService: RoundProofBundleService;
+  transactionIntentService: TransactionIntentService;
 }
 
 export function createApp(deps: AppDependencies): express.Application {
@@ -102,6 +115,7 @@ export function createApp(deps: AppDependencies): express.Application {
   app.use(requestLogger);
   app.use(requestContextMiddleware);
   app.use(metricsMiddleware);
+  app.use(queryBudgetMiddleware);
 
   const maintenanceService = new MaintenanceService();
   app.use(maintenanceGuard(maintenanceService));
@@ -134,11 +148,17 @@ export function createApp(deps: AppDependencies): express.Application {
   });
 
   app.get("/metrics", async (_req, res) => {
-    try {
-      await refreshArenaMetrics(prisma);
-    } catch {
-      // Keep the metrics endpoint available even if the database is degraded.
+    const refreshes: Promise<unknown>[] = [refreshArenaMetrics(prisma), refreshTreasuryMetrics(prisma)];
+    if (deps.queueSnapshotSource) {
+      const queueOptions =
+        deps.queueCapacity === undefined
+          ? {}
+          : { capacity: deps.queueCapacity };
+      refreshes.push(
+        refreshQueueMetrics(deps.queueSnapshotSource, queueOptions),
+      );
     }
+    await Promise.allSettled(refreshes);
     res.set("Content-Type", register.contentType);
     res.send(await register.metrics());
   });
@@ -147,7 +167,7 @@ export function createApp(deps: AppDependencies): express.Application {
     deps.paymentService,
     deps.transactions,
   );
-  const workerController = new WorkerController(deps.paymentWorker);
+  const workerController = new WorkerController(deps.paymentWorker, deps.arenaBackfillWorker);
   const adminController = new AdminController(
     deps.adminService,
     deps.paymentService,
@@ -158,6 +178,7 @@ export function createApp(deps: AppDependencies): express.Application {
   const usersController = new UsersController(prisma);
   const leaderboardController = new LeaderboardController(prisma);
   const transactionsController = new TransactionsController(deps.transactions);
+  const transactionIntentsController = new TransactionIntentsController(deps.transactionIntentService);
   const roundController = new RoundController(deps.roundService);
 
   const adminAuthMiddleware = requireAdmin(new ApiKeyAuthProvider());
@@ -172,9 +193,12 @@ export function createApp(deps: AppDependencies): express.Application {
       usersController,
       leaderboardController,
       transactionsController,
+      transactionIntentsController,
       adminAuthMiddleware,
       userAuthMiddleware,
       deps.authService,
+      deps.roundProofBundleService,
+      deps.transactions,
     ),
   );
   app.use("/api/admin", createWalletRoleRouter());
@@ -182,6 +206,7 @@ export function createApp(deps: AppDependencies): express.Application {
     "/api/admin",
     createAdminRouter(adminController, roundController, adminAuthMiddleware),
   );
+  app.use("/api/admin", createTreasuryRouter(adminAuthMiddleware, prisma));
   app.use("/api", createMaintenanceStatusRouter(maintenanceService));
 
   app.use(errorHandler);

@@ -6,7 +6,8 @@
  */
 
 import { PrismaClient, type Arena, type Round, type Pool } from "@prisma/client";
-import { getOnChainPlayerCount, getOnChainTotalYield } from "./onChainReader";
+import { readOnChainPlayerCount } from "./onChainReader";
+import { hasReadValue } from "../types/onChainRead";
 
 export interface ArenaExposure {
   arenaId: string;
@@ -118,11 +119,16 @@ export class PortfolioExposureService {
         }
       }
 
-      // Get player count from on-chain or fallback to DB
+      // Get player count from on-chain, falling back to the DB mirror only
+      // when the chain read is genuinely unavailable (#1519). A verified `0`
+      // is authoritative and is NOT replaced by the DB count.
       let playerCount = 0;
       if (contractAddress) {
         try {
-          playerCount = await getOnChainPlayerCount(contractAddress);
+          const result = await readOnChainPlayerCount(contractAddress);
+          playerCount = hasReadValue(result)
+            ? result.value
+            : await this.prisma.pool.count({ where: { arenaId: arena.id } });
         } catch {
           playerCount = await this.prisma.pool.count({ where: { arenaId: arena.id } });
         }

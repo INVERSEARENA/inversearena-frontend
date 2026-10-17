@@ -1,4 +1,4 @@
-import { TransactionRepository } from "../repositories/transactionRepository";
+import type { TransactionRepository } from "../repositories/transactionRepository";
 import { TransactionState } from "../domain/transactionState";
 import { logger } from "../utils/logger";
 
@@ -6,7 +6,7 @@ export class TransactionStateMachine {
   constructor(private transactions: TransactionRepository) {}
 
   async confirmSubmitted(transactionId: string): Promise<TransactionState> {
-    const tx = await this.transactions.getById(transactionId);
+    const tx = await this.transactions.findById(transactionId);
     if (!tx) {
       logger.warn({ transactionId }, "Transaction not found for confirmation");
       return TransactionState.UNKNOWN;

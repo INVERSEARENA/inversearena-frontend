@@ -49,4 +49,10 @@ TransactionSchema.index({ sourceAccount: 1, nonce: 1 }, { unique: true });
 TransactionSchema.index({ status: 1 });
 TransactionSchema.index({ txHash: 1 });
 
+// Claim inbox (#1489): one wallet's positions, newest first, keyset-paged.
+// The trailing `_id` matches the sort exactly so a page boundary can be served
+// from the index without an in-memory sort. Without this the query scans the
+// whole collection for every inbox request.
+TransactionSchema.index({ destinationAccount: 1, updatedAt: -1, _id: -1 });
+
 export const TransactionModel = model<TransactionDocument>("Transaction", TransactionSchema);

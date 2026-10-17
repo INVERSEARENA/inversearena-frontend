@@ -2,6 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { buildSubmitCommitmentTransaction, submitSignedTransaction } from "@/shared-d/utils/stellar-transactions";
+import {
+  evaluateSigningRequest,
+  // Imported as a value, not a type: these call sites narrow policy
+  // rejections with `instanceof SigningPolicyError`, which a type-only import
+  // erases to `any` and silently turns into a dead branch.
+  SigningPolicyError,
+  type DecodedEnvelope,
+} from "@/shared-d/security/policy";
 import type { WalletHook } from "@/features/wallet/useStellarWallet";
 
 type Choice = "Heads" | "Tails";
@@ -108,7 +116,24 @@ export function ChoiceSubmission({
         roundNumber,
       );
 
-      setPhase("submitting");
+      // Validate XDR against the signing policy before prompting the wallet.
+      // This distinct error is catchable so the UI can show a policy-rejection
+      // message rather than a wallet-rejection one.
+      let decoded: DecodedEnvelope;
+      try {
+        decoded = evaluateSigningRequest(unsignedTx.toXDR(), "COMMIT");
+      } catch (error) {
+        if (error instanceof SigningPolicyError) {
+          setError(error.message);
+          setPhase("error");
+          return;
+        }
+        throw error; // unexpected error
+      }
+
+      // Render confirmation UI details from the decoded envelope (not the raw XDR).
+      setError(null);
+
       const signedTxXdr = await signTransaction(unsignedTx.toXDR());
       await submitSignedTransaction(signedTxXdr);
       setPhase("submitted");

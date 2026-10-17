@@ -5,6 +5,7 @@ import { ReactNode } from "react";
 import { NotificationProvider } from "@/components/ui/NotificationProvider";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { MaintenanceBanner } from "@/components/maintenance/MaintenanceBanner";
+import { CompatibilitySync } from "@/shared-d/hooks/useCompatibility";
 
 // Dynamically import WalletProvider to avoid SSR issues with localStorage
 const WalletProvider = dynamic(
@@ -18,6 +19,7 @@ export function ClientProviders({ children }: { children: ReactNode }) {
             <NotificationProvider>
                 <WalletProvider>{children}</WalletProvider>
                 <MaintenanceBanner />
+                <CompatibilitySync />
             </NotificationProvider>
         </ErrorBoundary>
     );

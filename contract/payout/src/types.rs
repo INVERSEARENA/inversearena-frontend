@@ -24,4 +24,12 @@ pub enum PayoutError {
     BatchTooLarge = 10,
     /// No pending admin transfer has been proposed.
     NoPendingAdmin = 11,
+    /// `distribute_winnings` was called with a destination that does not match
+    /// the address pre-registered by `register_destination`.
+    /// Issue #1450 — payout destination binding.
+    DestinationMismatch = 12,
+    /// `distribute_winnings` was called for a payout_id that has no registered
+    /// destination. Call `register_destination` first.
+    /// Issue #1450 — payout destination binding.
+    DestinationNotRegistered = 13,
 }

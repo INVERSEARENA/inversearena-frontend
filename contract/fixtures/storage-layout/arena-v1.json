@@ -1,0 +1,56 @@
+{
+  "contract": "arena",
+  "contract_version": 2,
+  "schema_checksum": "arena-storage-v2-canonical",
+  "ledger": {
+    "sequence": 12345678,
+    "protocol": 22,
+    "note": "Fixture metadata only — not a live ledger anchor"
+  },
+  "entries": [
+    {
+      "name": "Choice::Heads",
+      "storage_class": "instance",
+      "key_xdr_hex": "",
+      "value_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr"
+    },
+    {
+      "name": "PlayerState",
+      "storage_class": "persistent",
+      "key_xdr_hex": "",
+      "value_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr"
+    },
+    {
+      "name": "DataKey::Player",
+      "storage_class": "persistent",
+      "key_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr",
+      "value_xdr_hex": ""
+    },
+    {
+      "name": "ArenaConfig",
+      "storage_class": "persistent",
+      "key_xdr_hex": "",
+      "value_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr"
+    },
+    {
+      "name": "PendingAdmin",
+      "storage_class": "persistent",
+      "key_xdr_hex": "",
+      "value_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr"
+    },
+    {
+      "name": "YieldSnapshot",
+      "storage_class": "persistent",
+      "key_xdr_hex": "",
+      "value_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr"
+    },
+    {
+      "name": "RoundResult",
+      "storage_class": "persistent",
+      "key_xdr_hex": "",
+      "value_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr"
+    }
+  ],
+  "migration_boundary": null,
+  "refresh_owners": ["@inversearena-contracts"]
+}

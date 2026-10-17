@@ -4,17 +4,30 @@ import React, { useState, useEffect } from "react";
 import { TrendingUp, CheckSquare, Zap, Info, Loader2, TerminalSquare, ShieldCheck, AlertTriangle } from "lucide-react";
 import { useWallet } from "@/features/wallet/useWallet";
 import {
+  evaluateSigningRequest,
+  // Imported as a value, not a type: these call sites narrow policy
+  // rejections with `instanceof SigningPolicyError`, which a type-only import
+  // erases to `any` and silently turns into a dead branch.
+  SigningPolicyError,
+  type DecodedEnvelope,
+} from "@/shared-d/security/policy";
+import {
   buildStakeProtocolTransaction,
   submitSignedTransaction,
   parseStellarError,
   STAKING_CONTRACT_ID,
   STELLAR_PLACEHOLDERS,
+  NETWORK_PASSPHRASE,
 } from "@/shared-d/utils/stellar-transactions";
 import {
   formatCurrencyInput,
   sanitizeNumericInput,
   type Currency,
 } from "@/shared-d/utils/form-validation";
+import { useAssetReadinessGate } from "@/features/asset-readiness/useAssetReadinessGate";
+import { displayAmountToStroops } from "@/shared-d/utils/stellar-asset-reader";
+import { AssetTrustlinePrompt } from "@/components/modals/AssetTrustlinePrompt";
+import { useTransactionIntent } from "@/shared-d/hooks/useTransactionIntent";
 
 // Stakes here are denominated in XLM (the modal validates against
 // balance.xlm), so the shared helpers use XLM's 7-decimal precision.
@@ -47,6 +60,7 @@ export default function StakeModal({
     balanceError,
     refreshBalance,
   } = useWallet();
+  const { runTrackedTransaction } = useTransactionIntent();
 
   const [amount, setAmount] = useState<string>("5000.00");
   const [txState, setTxState] = useState<TransactionState>("idle");
@@ -66,12 +80,36 @@ export default function StakeModal({
     STAKING_CONTRACT_ID !== STELLAR_PLACEHOLDERS.stakingContractId &&
     !STAKING_CONTRACT_ID.includes("...");
 
+  /**
+   * Asset-readiness gate (#1487).
+   *
+   * Staking is denominated in XLM, so this resolves `native` and the gate is
+   * open — but it is wired rather than assumed, so the same check applies the
+   * moment `STAKE_CURRENCY` becomes a credit asset, instead of the stake flow
+   * being the one path that silently starts requiring a trustline.
+   */
+  const amountStroops = (() => {
+    try {
+      return displayAmountToStroops(Number(amount));
+    } catch {
+      return 0n;
+    }
+  })();
+  const assetGate = useAssetReadinessGate({
+    assetCode: STAKE_CURRENCY,
+    amountStroops,
+    entryPoint: "stake",
+    enabled: isOpen && isConnected,
+  });
+  const [showTrustline, setShowTrustline] = useState(false);
+
   const isButtonDisabled =
     isProcessing ||
     txState === "success" ||
     (isConnected && !!balanceError) ||
     (isConnected && !isValidAmount) ||
-    !isStakingContractConfigured;
+    !isStakingContractConfigured ||
+    !assetGate.canProceed;
 
   useEffect(() => {
     if (!isOpen) {
@@ -112,11 +150,40 @@ export default function StakeModal({
 
     try {
       setTxState("signing");
-      const tx = await buildStakeProtocolTransaction(address, numAmount);
-      const signedXdr = await signTransaction(tx.toXDR());
+      let policyRejected = false;
+      await runTrackedTransaction({
+        kind: "stake",
+        actionKey: `stake:${numAmount}`,
+        publicKey: address,
+        buildTransaction: async () => {
+          const tx = await buildStakeProtocolTransaction(address, numAmount);
 
-      setTxState("submitting");
-      await submitSignedTransaction(signedXdr);
+          // Validate XDR against the signing policy before prompting the wallet.
+          // This distinct error is catchable so the UI can show a policy-rejection
+          // message rather than a wallet-rejection one.
+          try {
+            evaluateSigningRequest(tx.toXDR(), "STAKE");
+          } catch (error) {
+            if (error instanceof SigningPolicyError) {
+              policyRejected = true;
+              setErrorMessage(error.message);
+              setTxState("error");
+            }
+            throw error;
+          }
+
+          setErrorMessage("");
+          return tx;
+        },
+        signTransaction,
+        submitSignedTransaction,
+        networkPassphrase: NETWORK_PASSPHRASE,
+        onSigned: () => setTxState("submitting"),
+      }).catch((error) => {
+        if (policyRejected) return;
+        throw error;
+      });
+      if (policyRejected) return;
 
       setTxState("success");
       setTimeout(() => {
@@ -292,6 +359,33 @@ export default function StakeModal({
           )}
 
           {/* Action Buttons */}
+          {assetGate.phase !== "ready" && assetGate.phase !== "idle" && (
+            <div className="border-2 border-amber-500 bg-amber-50 p-4 text-sm text-amber-900">
+              <p className="font-bold uppercase tracking-widest">Asset readiness</p>
+              <p className="mt-2 text-left">{assetGate.message}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {assetGate.phase === "remediation_offered" && (
+                  <button
+                    type="button"
+                    onClick={() => setShowTrustline(true)}
+                    className="border-2 border-zinc-800 px-4 py-2 text-xs font-bold uppercase tracking-wider"
+                  >
+                    Set up trustline
+                  </button>
+                )}
+                {assetGate.canRetry && (
+                  <button
+                    type="button"
+                    onClick={() => void assetGate.check()}
+                    className="border-2 border-zinc-800 px-4 py-2 text-xs font-bold uppercase tracking-wider"
+                  >
+                    Check again
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="space-y-3">
             <button
               onClick={handleInitiateStake}
@@ -352,6 +446,26 @@ export default function StakeModal({
           </span>
         </div>
       </div>
+
+      <AssetTrustlinePrompt
+        isOpen={showTrustline}
+        onClose={() => setShowTrustline(false)}
+        remediation={assetGate.remediation}
+        message={assetGate.message}
+        phase={
+          assetGate.phase === "remediating"
+            ? "remediating"
+            : assetGate.phase === "blocked"
+              ? "blocked"
+              : "remediation_offered"
+        }
+        onConfirm={async () => {
+          await assetGate.remediate();
+          if (assetGate.canProceed) setShowTrustline(false);
+        }}
+        onRetry={() => void assetGate.check()}
+        actionLabel="stake"
+      />
     </div>
   );
 }

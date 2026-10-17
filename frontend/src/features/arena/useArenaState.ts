@@ -1,36 +1,52 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+"use client";
+
+import { useCallback, useEffect, useRef } from "react";
 import { fetchArenaState } from "@/shared-d/utils/stellar-transactions";
-import type { ArenaState, ArenaStateStatus, ArenaStateFromContract } from "@/shared-d/types/contract-state";
+import type {
+  ArenaState,
+  ArenaStateStatus,
+  ArenaStateFromContract,
+} from "@/shared-d/types/contract-state";
+import {
+  arenaStore,
+  normalizeArenaId,
+  useArenaStore,
+  type ArenaHealthStatus,
+  type ArenaStoreOwner,
+  type ArenaRequestToken,
+  type ArenaStoreSnapshot,
+} from "./arenaStore";
 
-export type ArenaHealthStatus = "connected" | "degraded" | "offline";
-
-
+export type { ArenaHealthStatus } from "./arenaStore";
+export type {
+  ArenaState,
+  ArenaStateStatus,
+  ArenaStateFromContract,
+} from "@/shared-d/types/contract-state";
 
 export interface UseArenaStateReturn {
   state: ArenaState | null;
   health: ArenaHealthStatus;
-  /** Epoch ms of the last successful chain-state read; null before the first. */
   lastSyncedAt: number | null;
-  /**
-   * Deterministically converge optimistic/local state to the authoritative
-   * chain state (#1385). Re-reads the Soroban contract and replaces the
-   * hook's state with the fresh snapshot. Callers drive this after a
-   * transaction's confirmation is reconciled: SUCCESS, REJECTED, and TIMEOUT
-   * all end by calling `reconcile(publicKey)` so the UI never keeps a stale
-   * optimistic assumption. Resolves the fresh `ArenaState` (or null when no
-   * arenaId is configured); rethrows the underlying fetch error unchanged so
-   * callers can decide how to surface a failed convergence.
-   */
   reconcile: (publicKey?: string) => Promise<ArenaState | null>;
 }
+
+export interface UseArenaStateActionsReturn {
+  reconcile: (publicKey?: string) => Promise<ArenaState | null>;
+}
+
+const POLL_INTERVAL_MS = 5_000;
+const FINISHED_POLL_INTERVAL_MS = 30_000;
+const INITIAL_BACKOFF_MS = 5_000;
+const MAX_BACKOFF_MS = 60_000;
 
 export function toArenaState(data: ArenaStateFromContract): ArenaState {
   const id = data.arenaId;
   const currentRound = data.contractArenaState.round;
   const isUserIn = data.contractUserState.active;
   const hasWon = data.contractUserState.won;
-  const currentStake = Number(data.contractArenaState.stakes) / 10_000_000; // Assuming 7 decimal places for display
-  const potentialPayout = Number(data.contractArenaState.payouts) / 10_000_000; // Assuming 7 decimal places for display
+  const currentStake = Number(data.contractArenaState.stakes) / 10_000_000;
+  const potentialPayout = Number(data.contractArenaState.payouts) / 10_000_000;
 
   return {
     id,
@@ -38,12 +54,18 @@ export function toArenaState(data: ArenaStateFromContract): ArenaState {
       if (data.gameState === null) return "open";
       if (hasWon && data.gameState === 4) return "finished";
       switch (data.gameState) {
-        case 0: return "open";
-        case 1: return "round_active";
-        case 2: return "resolving";
-        case 3: return "cancelled";
-        case 4: return "settled";
-        default: return "open";
+        case 0:
+          return "open";
+        case 1:
+          return "round_active";
+        case 2:
+          return "resolving";
+        case 3:
+          return "cancelled";
+        case 4:
+          return "settled";
+        default:
+          return "open";
       }
     })(),
     survivorsCount: data.playerCount,
@@ -66,97 +88,191 @@ export function toArenaState(data: ArenaStateFromContract): ArenaState {
   };
 }
 
-export function useArenaState(arenaId: string): UseArenaStateReturn {
-  const [state, setState] = useState<ArenaState | null>(null);
-  const [health, setHealth] = useState<ArenaHealthStatus>("connected");
-  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
-  const errorCount = useRef(0);
-  const timeoutId = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isMounted = useRef(true);
+function preserveUserState(
+  previous: ArenaState | null,
+  next: ArenaState,
+): ArenaState {
+  if (!previous) return next;
+  return {
+    ...next,
+    isUserIn: previous.isUserIn,
+    hasWon: previous.hasWon,
+    currentStake: previous.currentStake,
+    potentialPayout: previous.potentialPayout,
+    claimReady: previous.claimReady,
+  };
+}
 
-  const applyChainState = useCallback((data: ArenaStateFromContract): ArenaState => {
-    const nextState = toArenaState(data);
-    setState(nextState);
-    setLastSyncedAt(Date.now());
-    errorCount.current = 0;
-    setHealth("connected");
-    return nextState;
-  }, []);
+async function addClaimReadiness(
+  arenaId: string,
+  state: ArenaState,
+): Promise<ArenaState> {
+  if (!state.hasWon) return state;
+
+  try {
+    const response = await fetch(
+      `/api/payouts/claim-readiness/${encodeURIComponent(arenaId)}`,
+    );
+    if (!response.ok) return { ...state, claimReady: false };
+    const body = (await response.json()) as { ready?: unknown };
+    return { ...state, claimReady: body.ready === true };
+  } catch {
+    return { ...state, claimReady: false };
+  }
+}
+
+export function useArenaStateActions(arenaId: string): UseArenaStateActionsReturn {
+  const normalizedArenaId = normalizeArenaId(arenaId);
+  const currentArenaIdRef = useRef(normalizedArenaId);
+  const mountedRef = useRef(true);
+  const reconcileTokensRef = useRef<Set<ArenaRequestToken>>(new Set());
+  currentArenaIdRef.current = normalizedArenaId;
 
   const reconcile = useCallback(
     async (publicKey?: string): Promise<ArenaState | null> => {
-      if (!arenaId) return null;
+      if (
+        !normalizedArenaId ||
+        !mountedRef.current ||
+        currentArenaIdRef.current !== normalizedArenaId
+      ) {
+        return null;
+      }
 
-      // A reconcile read is the same authoritative read the poll loop uses —
-      // passing the caller's wallet address (when given) additionally populates
-      // the user-scoped fields (isUserIn / hasWon / currentStake).
-      const data = await fetchArenaState(arenaId, publicKey ?? "");
-
-      if (!isMounted.current) return null;
-      return applyChainState(data);
+      const request = arenaStore.actions.beginRequest(normalizedArenaId);
+      reconcileTokensRef.current.add(request);
+      try {
+        const data = await fetchArenaState(normalizedArenaId, publicKey ?? "");
+        if (
+          !mountedRef.current ||
+          currentArenaIdRef.current !== normalizedArenaId
+        ) {
+          return null;
+        }
+        let nextState = toArenaState(data);
+        if (nextState.hasWon) {
+          nextState = await addClaimReadiness(normalizedArenaId, nextState);
+        }
+        const applied = arenaStore.actions.resolveRequest(request, nextState);
+        return applied ? nextState : null;
+      } catch (error) {
+        if (
+          mountedRef.current &&
+          currentArenaIdRef.current === normalizedArenaId
+        ) {
+          arenaStore.actions.rejectRequest(request, false);
+        }
+        throw error;
+      } finally {
+        reconcileTokensRef.current.delete(request);
+      }
     },
-    [arenaId, applyChainState],
+    [normalizedArenaId],
   );
 
   useEffect(() => {
-    isMounted.current = true;
-
-    if (!arenaId) {
-      setState(null);
-      setHealth("connected");
-      setLastSyncedAt(null);
+    mountedRef.current = true;
+    if (!normalizedArenaId) {
       return () => {
-        isMounted.current = false;
+        mountedRef.current = false;
       };
     }
 
-    async function poll() {
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let pollErrorCount = 0;
+    const reconcileTokens = reconcileTokensRef.current;
+    const owner: ArenaStoreOwner | null =
+      arenaStore.actions.retainArena(normalizedArenaId);
+
+    const schedule = (delay: number): void => {
+      if (cancelled) return;
+      timeoutId = setTimeout(() => {
+        timeoutId = null;
+        void poll();
+      }, delay);
+    };
+
+    async function poll(): Promise<void> {
+      if (reconcileTokens.size > 0) {
+        schedule(POLL_INTERVAL_MS);
+        return;
+      }
+      const request = arenaStore.actions.beginRequest(normalizedArenaId);
       try {
-        // fetchArenaState expects (arenaId, userAddress) — pass empty string when no address
-        const data = await fetchArenaState(arenaId, "");
+        const data = await fetchArenaState(normalizedArenaId, "");
+        if (cancelled || !mountedRef.current) return;
 
-        if (!isMounted.current) return;
-
-        const nextState = toArenaState(data);
+        let nextState = toArenaState(data);
         if (nextState.hasWon) {
-          try {
-            const response = await fetch(`/api/payouts/claim-readiness/${encodeURIComponent(arenaId)}`);
-            if (response.ok) nextState.claimReady = ((await response.json()) as { ready: boolean }).ready;
-          } catch {
-            nextState.claimReady = false;
-          }
+          nextState = await addClaimReadiness(normalizedArenaId, nextState);
         }
-        if (!isMounted.current) return;
-        setState(nextState);
-        setLastSyncedAt(Date.now());
-        errorCount.current = 0;
-        setHealth("connected");
+        if (cancelled || !mountedRef.current) return;
 
-        // Slow down when game is finished
-        const interval = nextState.state === "finished" ? 30_000 : 5_000;
-        timeoutId.current = setTimeout(poll, interval);
+        const stateToApply = preserveUserState(
+          arenaStore.getSnapshot().state,
+          nextState,
+        );
+        if (arenaStore.actions.resolveRequest(request, stateToApply)) {
+          pollErrorCount = 0;
+        }
+        schedule(
+          nextState.status === "finished"
+            ? FINISHED_POLL_INTERVAL_MS
+            : POLL_INTERVAL_MS,
+        );
       } catch {
-        if (!isMounted.current) return;
-
-        errorCount.current++;
-        setHealth(errorCount.current > 3 ? "offline" : "degraded");
-
-        // Exponential backoff: 5s → 10s → 20s → max 60s
-        const backoff = Math.min(5_000 * 2 ** (errorCount.current - 1), 60_000);
-        timeoutId.current = setTimeout(poll, backoff);
+        if (cancelled || !mountedRef.current) return;
+        if (arenaStore.actions.rejectRequest(request, true)) {
+          pollErrorCount += 1;
+        }
+        pollErrorCount = Math.max(1, pollErrorCount);
+        const backoff = Math.min(
+          INITIAL_BACKOFF_MS * 2 ** (pollErrorCount - 1),
+          MAX_BACKOFF_MS,
+        );
+        schedule(backoff);
       }
     }
 
-    poll();
+    void poll();
 
     return () => {
-      isMounted.current = false;
-      if (timeoutId.current !== null) {
-        clearTimeout(timeoutId.current);
-        timeoutId.current = null;
+      cancelled = true;
+      mountedRef.current = false;
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
       }
+      reconcileTokens.clear();
+      arenaStore.actions.releaseArena(owner, normalizedArenaId);
     };
-  }, [arenaId, applyChainState]);
+  }, [normalizedArenaId]);
+
+  return { reconcile };
+}
+
+export function useArenaState(arenaId: string): UseArenaStateReturn {
+  const normalizedArenaId = normalizeArenaId(arenaId);
+  const selectState = useCallback(
+    (snapshot: ArenaStoreSnapshot) =>
+      snapshot.arenaId === normalizedArenaId ? snapshot.state : null,
+    [normalizedArenaId],
+  );
+  const selectHealth = useCallback(
+    (snapshot: ArenaStoreSnapshot): ArenaHealthStatus =>
+      snapshot.arenaId === normalizedArenaId ? snapshot.health : "connected",
+    [normalizedArenaId],
+  );
+  const selectLastSyncedAt = useCallback(
+    (snapshot: ArenaStoreSnapshot) =>
+      snapshot.arenaId === normalizedArenaId ? snapshot.lastSyncedAt : null,
+    [normalizedArenaId],
+  );
+
+  const state = useArenaStore(selectState);
+  const health = useArenaStore(selectHealth);
+  const lastSyncedAt = useArenaStore(selectLastSyncedAt);
+  const { reconcile } = useArenaStateActions(arenaId);
 
   return { state, health, lastSyncedAt, reconcile };
 }

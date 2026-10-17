@@ -10,6 +10,7 @@ import {
 } from "../validation/authSchemas";
 import { SignPayoutBodySchema, TransactionIdParamSchema, YieldUpdateSchema } from "../validation/requestValidation";
 import { RoundInputSchema } from "../types/round";
+import { ClaimInboxPageSchema } from "../types/claimInbox";
 import { z } from "./zodOpenApi";
 
 const ApiErrorSchema = z.object({
@@ -31,6 +32,11 @@ export const CreatePayoutBodySchema = z.object({
 export const LeaderboardQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20).optional(),
   cursor: z.string().optional(),
+});
+
+export const KeysetPaginationQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(25).optional(),
+  cursor: z.string().max(512).optional(),
 });
 
 export const LeaderboardEntrySchema = z.object({
@@ -115,4 +121,5 @@ export {
   RoundInputSchema,
   ApiErrorSchema,
   YieldUpdateSchema,
+  ClaimInboxPageSchema,
 };

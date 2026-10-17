@@ -104,7 +104,16 @@ const JoinArenaModal: React.FC<JoinArenaModalProps> = ({
     }
   };
 
-  const canConfirm = isChecked && !isLoading && !wouldExceedLimit && !stakeLimitLoading;
+  /**
+   * The one definition of "this join may proceed".
+   *
+   * Previously this existed alongside an inline duplicate on the button, and
+   * the two had drifted — the inline copy omitted the eligibility check. A
+   * condition stated twice is a condition that will eventually be trusted in
+   * the place that forgot it, so it is stated once here and read from both the
+   * `disabled` attribute and the styling.
+   */
+  const canConfirm = isChecked && !isLoading && eligibilityErrors.length === 0;
 
   return (
     <Modal isOpen={isOpen} onClose={onClose}>
@@ -194,9 +203,9 @@ const JoinArenaModal: React.FC<JoinArenaModalProps> = ({
         <div className="space-y-4 p-6">
           <button
             onClick={handleConfirm}
-            disabled={!isChecked || isLoading || eligibilityErrors.length > 0}
+            disabled={!canConfirm}
             className={`w-full border-3 border-black py-4 px-6 font-black text-lg italic tracking-wide transition-all ${
-              isChecked && !isLoading && eligibilityErrors.length === 0
+              canConfirm
                 ? 'bg-lime-400 text-black hover:bg-lime-300 active:scale-95'
                 : 'bg-gray-200 text-gray-400 cursor-not-allowed'
             }`}

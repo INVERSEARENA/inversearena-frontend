@@ -53,6 +53,19 @@ export function getSyncPlayersRateLimitConfig(): RateLimitConfig {
   };
 }
 
+/**
+ * Limiter for POST /api/arenas/:id/reservation (#1406). A generous budget:
+ * legitimate use re-reserves on every render of the join modal's
+ * confirmation step, not just once per join attempt.
+ */
+export function getLobbyReservationRateLimitConfig(): RateLimitConfig {
+  return {
+    keyPrefix: process.env.RATE_LIMIT_RESERVATION_PREFIX ?? "rl:arenas:reservation",
+    points: readPositiveInt("RATE_LIMIT_RESERVATION_POINTS", 10),
+    durationSeconds: readPositiveInt("RATE_LIMIT_RESERVATION_WINDOW_SECONDS", 60),
+  };
+}
+
 export function getVerifyRateLimitConfig(): RateLimitConfig {
   return {
     keyPrefix: process.env.RATE_LIMIT_VERIFY_PREFIX ?? "rl:auth:verify",
@@ -60,6 +73,11 @@ export function getVerifyRateLimitConfig(): RateLimitConfig {
     durationSeconds: readPositiveInt("RATE_LIMIT_VERIFY_WINDOW_SECONDS", 60),
     dualScope: true,
   };
+}
+
+/** Expensive simulations (#1448): independent per-IP and per-wallet budgets. */
+export function getSimulationRateLimitConfig(): RateLimitConfig {
+  return { keyPrefix: process.env.RATE_LIMIT_SIMULATION_PREFIX ?? "rl:simulations", points: readPositiveInt("RATE_LIMIT_SIMULATION_POINTS", 5), durationSeconds: readPositiveInt("RATE_LIMIT_SIMULATION_WINDOW_SECONDS", 60), dualScope: true };
 }
 
 export function getRefreshRateLimitConfig(): RateLimitConfig {

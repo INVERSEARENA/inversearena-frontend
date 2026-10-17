@@ -35,8 +35,28 @@ jest.mock("@/features/wallet/useWallet", () => ({
 jest.mock("@/shared-d/utils/stellar-transactions", () => ({
   buildJoinArenaTransaction: jest.fn(),
   buildSubmitChoiceTransaction: jest.fn(),
+  buildChangeTrustTransaction: jest.fn(),
   submitSignedTransaction: jest.fn(),
   parseStellarError: (err: unknown) => (err instanceof Error ? err.message : "Unknown error"),
+}));
+
+/**
+ * The signing firewall is stubbed in this suite, and that is deliberate.
+ *
+ * The flow fixtures here use a placeholder envelope ("unsigned-xdr") because
+ * these tests are about click → validate → sign → submit ordering, not about
+ * XDR. The real policy rejects a placeholder as malformed, which is correct:
+ * it cannot distinguish a placeholder from a tampered envelope. The firewall's
+ * own behaviour is covered directly in
+ * `src/shared-d/security/__tests__/policy.test.ts`, against real signed
+ * envelopes. Do not "fix" a failure here by loosening the policy.
+ */
+jest.mock("@/shared-d/security/policy", () => ({
+  evaluateSigningRequest: jest.fn(() => ({
+    type: "JOIN",
+    operations: [{ type: "invokeHostFunction" }],
+  })),
+  SigningPolicyError: class SigningPolicyError extends Error {},
 }));
 
 const STATS = {
@@ -59,6 +79,10 @@ function mockFetchOnce(response: unknown) {
   return { ok: true, json: async () => response } as Response;
 }
 
+function mockReservationFetch(status: number) {
+  return { ok: status < 400, status, json: async () => ({}) } as Response;
+}
+
 describe("ArenaLobbyClient join flow", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -68,7 +92,10 @@ describe("ArenaLobbyClient join flow", () => {
     });
     (submitSignedTransaction as jest.Mock).mockResolvedValue(undefined);
 
-    global.fetch = jest.fn().mockImplementation((url: string) => {
+    global.fetch = jest.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes("/reservation")) {
+        return Promise.resolve(mockReservationFetch(init?.method === "DELETE" ? 204 : 201));
+      }
       if (url.includes("/participants")) {
         return Promise.resolve(
           mockFetchOnce({ arenaId: "arena-1", total: 0, nextCursor: null, hasMore: false, items: [] }),
@@ -263,5 +290,116 @@ describe("ArenaLobbyClient join flow", () => {
 
     await screen.findByText("Alpha Arena");
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  describe("lobby capacity reservation (#1406)", () => {
+    it("reserves a slot via POST before opening the sign modal", async () => {
+      render(
+        <ArenaLobbyClient
+          arenaId="arena-1"
+          initialStats={STATS}
+          initialParticipants={[]}
+          initialNextCursor={null}
+        />,
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: "Join Arena" }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          expect.stringContaining("/api/arenas/arena-1/reservation"),
+          expect.objectContaining({ method: "POST" }),
+        );
+      });
+      expect(
+        await screen.findByRole("button", { name: /sign & join/i, hidden: true }),
+      ).toBeInTheDocument();
+    });
+
+    it("shows an error and does not open the sign modal when the arena is full (409)", async () => {
+      (global.fetch as jest.Mock).mockImplementation((url: string, init?: RequestInit) => {
+        if (url.includes("/reservation")) {
+          return Promise.resolve(mockReservationFetch(init?.method === "DELETE" ? 204 : 409));
+        }
+        if (url.includes("/participants")) {
+          return Promise.resolve(
+            mockFetchOnce({ arenaId: "arena-1", total: 0, nextCursor: null, hasMore: false, items: [] }),
+          );
+        }
+        return Promise.resolve(mockFetchOnce(STATS));
+      });
+
+      render(
+        <ArenaLobbyClient
+          arenaId="arena-1"
+          initialStats={STATS}
+          initialParticipants={[]}
+          initialNextCursor={null}
+        />,
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: "Join Arena" }));
+
+      expect(
+        await screen.findByText(/no open slots right now/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /sign & join/i, hidden: true }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("releases the reservation via DELETE when the sign modal is closed without confirming", async () => {
+      render(
+        <ArenaLobbyClient
+          arenaId="arena-1"
+          initialStats={STATS}
+          initialParticipants={[]}
+          initialNextCursor={null}
+        />,
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: "Join Arena" }));
+      await screen.findByRole("button", { name: /sign & join/i, hidden: true });
+
+      const cancelButton = await screen.findByRole("button", {
+        name: /cancel/i,
+        hidden: true,
+      });
+      fireEvent.click(cancelButton);
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          expect.stringContaining("/api/arenas/arena-1/reservation"),
+          expect.objectContaining({ method: "DELETE" }),
+        );
+      });
+    });
+
+    it("does not call DELETE when the modal closes because the join succeeded", async () => {
+      render(
+        <ArenaLobbyClient
+          arenaId="arena-1"
+          initialStats={STATS}
+          initialParticipants={[]}
+          initialNextCursor={null}
+        />,
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: "Join Arena" }));
+      const signButton = await screen.findByRole("button", {
+        name: /sign & join/i,
+        hidden: true,
+      });
+      fireEvent.click(signButton);
+
+      await waitFor(() => {
+        expect(submitSignedTransaction).toHaveBeenCalled();
+      });
+
+      const deleteCalls = (global.fetch as jest.Mock).mock.calls.filter(
+        ([, init]) => init?.method === "DELETE",
+      );
+      expect(deleteCalls).toHaveLength(0);
+    });
   });
 });

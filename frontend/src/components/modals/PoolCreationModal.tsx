@@ -4,7 +4,13 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Modal } from "@/components/ui/Modal";
 import { useWallet } from "@/features/wallet/useWallet";
 import { TransactionModal } from "@/components/modals/TransactionModal";
-import { buildCreatePoolTransaction, submitSignedTransaction } from "@/shared-d/utils/stellar-transactions";
+import {
+  evaluateSigningRequest,
+  type DecodedEnvelope,
+  type SigningPolicyError,
+} from "@/shared-d/security/policy";
+import { buildCreatePoolTransaction, submitSignedTransaction, NETWORK_PASSPHRASE } from "@/shared-d/utils/stellar-transactions";
+import { useTransactionIntent } from "@/shared-d/hooks/useTransactionIntent";
 import {
   formatCurrencyInput,
   sanitizeNumericInput,
@@ -22,6 +28,11 @@ import {
   MIN_STAKE,
   type RoundSpeed,
 } from "@/shared-d/utils/pool-schema";
+import {
+  loadPoolDraft,
+  savePoolDraft,
+  clearPoolDraft,
+} from "@/shared-d/utils/pool-draft";
 
 interface PoolCreationModalProps {
   isOpen: boolean;
@@ -53,8 +64,15 @@ export function PoolCreationModal({
 
   const [stakeError, setStakeError] = useState<string>("");
   const [capacityError, setCapacityError] = useState<string>("");
+  const [errorMessage, setErrorMessage] = useState<string>("");
   const [isFormValid, setIsFormValid] = useState(false);
   const [isDeploying, setIsDeploying] = useState(false);
+  const [draftRestored, setDraftRestored] = useState(false);
+  // Suppresses exactly the next run of the draft-save effect below, so a
+  // programmatic field reset (restoring a saved draft, or discarding one)
+  // doesn't get immediately echoed straight back out to localStorage as if
+  // the user had just edited the form.
+  const suppressNextDraftSaveRef = useRef(false);
 
   const stakeInputRef = useRef<HTMLInputElement>(null);
   const stakeErrorRef = useRef<HTMLDivElement>(null);
@@ -63,6 +81,7 @@ export function PoolCreationModal({
   const [estimatedFee] = useState(estimateCreatePoolFee());
 
   const { isConnected, address, connect, signTransaction, balance, isLoadingBalance } = useWallet();
+  const { runTrackedTransaction } = useTransactionIntent();
   const [showTxModal, setShowTxModal] = useState(false);
   const [txDetails, setTxDetails] = useState<{ label: string; value: string | number }[]>([]);
 
@@ -142,8 +161,52 @@ export function PoolCreationModal({
       setRoundSpeed("1M");
       setArenaCapacity(50);
       setIsDeploying(false);
+      setDraftRestored(false);
     }
   }, [isOpen]);
+
+  // Restore a persisted draft when the modal opens (#1405). Runs after the
+  // reset-on-close effect above has already put fields back at their
+  // defaults, so a valid draft simply overwrites those defaults; an
+  // incompatible/absent draft (loadPoolDraft returns null, e.g. wrong
+  // POOL_DRAFT_VERSION) leaves the defaults untouched.
+  useEffect(() => {
+    if (!isOpen) return;
+    suppressNextDraftSaveRef.current = true;
+    const draft = loadPoolDraft();
+    if (draft) {
+      setStakeAmountInput(draft.stakeAmountInput);
+      setCurrency(draft.currency);
+      setRoundSpeed(draft.roundSpeed);
+      setArenaCapacity(draft.arenaCapacity);
+      setDraftRestored(true);
+    }
+  }, [isOpen]);
+
+  // Persist the in-progress draft on every field change while the modal is
+  // open, skipping the run that immediately follows a restore or discard
+  // (see suppressNextDraftSaveRef) so those don't instantly re-save.
+  useEffect(() => {
+    if (!isOpen) return;
+    if (suppressNextDraftSaveRef.current) {
+      suppressNextDraftSaveRef.current = false;
+      return;
+    }
+    savePoolDraft({ stakeAmountInput, currency, roundSpeed, arenaCapacity });
+  }, [isOpen, stakeAmountInput, currency, roundSpeed, arenaCapacity]);
+
+  const handleDiscardDraft = () => {
+    // Resetting fields below triggers the save effect on the next render;
+    // suppress that one save so clearing isn't immediately undone by a
+    // fresh "100/USDC/1M/50" draft (mirrors the restore-effect guard above).
+    suppressNextDraftSaveRef.current = true;
+    clearPoolDraft();
+    setStakeAmountInput("100");
+    setCurrency("USDC");
+    setRoundSpeed("1M");
+    setArenaCapacity(50);
+    setDraftRestored(false);
+  };
 
   // Handle stake amount input change
   const handleStakeAmountChange = (value: string) => {
@@ -200,11 +263,27 @@ export function PoolCreationModal({
             </h2>
             <div className="bg-primary h-2 w-40 mb-4 border-b-2 border-black" />
             <p className="text-base font-medium text-slate-400 uppercase tracking-widest">
-              {challengedSurvivor 
+              {challengedSurvivor
                 ? `Challenging Agent ${challengedSurvivor.agentId.charAt(0)}...${challengedSurvivor.agentId.slice(-4)} (Rank #${challengedSurvivor.rank})`
                 : "Deploy new arena instance to Soroban network"}
             </p>
           </div>
+
+          {draftRestored && (
+            <div
+              role="status"
+              className="mb-6 flex items-center justify-between gap-4 bg-primary/10 border-2 border-primary/40 p-3 text-sm font-bold text-primary"
+            >
+              <span>Restored your unsaved draft from a previous session.</span>
+              <button
+                type="button"
+                onClick={handleDiscardDraft}
+                className="uppercase underline decoration-2 underline-offset-2 hover:text-white transition-colors shrink-0"
+              >
+                Discard draft
+              </button>
+            </div>
+          )}
 
           <div className="grid grid-cols-12 gap-6">
             <div className="col-span-12 lg:col-span-5 flex flex-col gap-5">
@@ -480,15 +559,26 @@ export function PoolCreationModal({
         details={txDetails}
         onConfirm={async ({ onSigned }) => {
           if (!address) throw new Error("Wallet disconnected. Please reconnect and try again.");
-          const tx = await buildCreatePoolTransaction(address, {
-            stakeAmount,
-            currency,
-            roundSpeed,
-            arenaCapacity,
+          await runTrackedTransaction({
+            kind: "create_pool",
+            actionKey: `create_pool:${currency}:${stakeAmount}:${roundSpeed}:${arenaCapacity}`,
+            publicKey: address,
+            buildTransaction: () =>
+              buildCreatePoolTransaction(address, {
+                stakeAmount,
+                currency,
+                roundSpeed,
+                arenaCapacity,
+              }),
+            signTransaction,
+            submitSignedTransaction,
+            networkPassphrase: NETWORK_PASSPHRASE,
+            onSigned,
           });
-          const signedXdr = await signTransaction(tx.toXDR());
-          onSigned();
-          await submitSignedTransaction(signedXdr);
+          // The pool was created successfully, so the draft no longer
+          // represents unsaved work; clear it rather than letting a stale
+          // draft resurface on the next Pool Creation open (#1405).
+          clearPoolDraft();
           onInitialize?.({
             stakeAmount,
             currency,
@@ -502,4 +592,11 @@ export function PoolCreationModal({
       />
     </>
   );
+  if (errorMessage) {
+    return (
+      <div className="mt-3 rounded-2xl border border-red-500/30 bg-red-900/60 p-4 text-sm text-red-300">
+        <p className="font-semibold uppercase tracking-[0.2em]">{errorMessage}</p>
+      </div>
+    );
+  }
 }

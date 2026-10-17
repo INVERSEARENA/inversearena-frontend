@@ -9,9 +9,11 @@
   `RefreshTokenModel` for a family now also carries `accessJti`, `refreshJti`,
   `deviceLabel`, and `ip`, captured at login and carried forward across
   rotations.
-- **SessionStore** (Redis) remains the fast-revocation index, keyed by JTI —
-  unchanged. Per-session revoke now has, for the first time, a way to find
-  exactly which two JTIs belong to a given family.
+- **SessionStore** (Redis) remains the fast-revocation index, keyed by JTI.
+  Login registers the access and refresh JTIs in one pipeline with independent
+  TTLs. Batch lookup/revocation is also pipelined, and transient Redis failures
+  retry idempotent commands up to three times. Per-session revoke can find
+  exactly which JTIs belong to a given family.
 
 ## State transitions
 

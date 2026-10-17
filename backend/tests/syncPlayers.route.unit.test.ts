@@ -8,7 +8,7 @@
 import { jest } from "@jest/globals";
 
 jest.mock("../src/services/onChainReader", () => ({
-  getOnChainPlayers: jest.fn(),
+  readOnChainPlayers: jest.fn(),
 }));
 
 import express from "express";
@@ -17,9 +17,30 @@ import { createArenasRouter } from "../src/routes/arenas";
 import { errorHandler } from "../src/middleware/errorHandler";
 import { prisma } from "../src/db/prisma";
 import { redis } from "../src/cache/redisClient";
-import { getOnChainPlayers } from "../src/services/onChainReader";
+import { readOnChainPlayers } from "../src/services/onChainReader";
+import { buildProvenance, unavailableRead, verifiedRead } from "../src/types/onChainRead";
 
-const mockGetOnChainPlayers = getOnChainPlayers as jest.MockedFunction<typeof getOnChainPlayers>;
+const mockGetOnChainPlayers = readOnChainPlayers as jest.MockedFunction<typeof readOnChainPlayers>;
+
+function verifiedPlayers(players: string[]) {
+  return verifiedRead(
+    players,
+    buildProvenance({ functionName: "get_players", contractId: "C123", network: "test" }),
+  );
+}
+
+function unavailablePlayers() {
+  return unavailableRead(
+    buildProvenance({
+      functionName: "get_players",
+      contractId: "C123",
+      network: "test",
+      retryable: true,
+    }),
+    "transport",
+    "RPC unreachable",
+  );
+}
 const OWNER = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
 process.env.RATE_LIMIT_SYNC_PLAYERS_POINTS = "1000";
 const authMiddleware = (req: any, _res: any, next: any) => {
@@ -63,7 +84,7 @@ describe("POST /api/arenas/:id/sync-players (#1218)", () => {
       },
     } as any;
 
-    mockGetOnChainPlayers.mockResolvedValue(["GPLAYER1", "GPLAYER2", "GPLAYER3"]);
+    mockGetOnChainPlayers.mockResolvedValue(verifiedPlayers(["GPLAYER1", "GPLAYER2", "GPLAYER3"]));
 
     const app = express();
     app.use("/api/arenas", createArenasRouter(authMiddleware));
@@ -97,7 +118,7 @@ describe("POST /api/arenas/:id/sync-players (#1218)", () => {
       },
     } as any;
 
-    mockGetOnChainPlayers.mockResolvedValue([]);
+    mockGetOnChainPlayers.mockResolvedValue(verifiedPlayers([]));
 
     const app = express();
     app.use("/api/arenas", createArenasRouter(authMiddleware));
@@ -122,7 +143,7 @@ describe("POST /api/arenas/:id/sync-players (#1218)", () => {
       createMany: async (args: any) => ({ count: 1 }),
     } as any;
 
-    mockGetOnChainPlayers.mockResolvedValue(["GEXISTING1", "GEXISTING2", "GNEW1"]);
+    mockGetOnChainPlayers.mockResolvedValue(verifiedPlayers(["GEXISTING1", "GEXISTING2", "GNEW1"]));
 
     const app = express();
     app.use("/api/arenas", createArenasRouter(authMiddleware));
@@ -166,5 +187,31 @@ describe("POST /api/arenas/:id/sync-players (#1218)", () => {
 
     expect(response.status).toBe(404);
     expect(response.body.error.code).toBe("ARENA_NOT_FOUND");
+  });
+
+  it("returns 503 instead of syncing zero players when the on-chain read is unavailable (#1519)", async () => {
+    (prisma as any).arena = {
+      findUnique: async () => ({ id: "arena-1", metadata: { contractAddress: "C123", createdBy: OWNER } }),
+    } as any;
+
+    let createManyCalls = 0;
+    (prisma as any).user = {
+      createMany: async () => {
+        createManyCalls++;
+        return { count: 0 };
+      },
+    } as any;
+
+    mockGetOnChainPlayers.mockResolvedValue(unavailablePlayers());
+
+    const app = express();
+    app.use("/api/arenas", createArenasRouter(authMiddleware));
+    app.use(errorHandler);
+
+    const response = await request(app).post("/api/arenas/arena-1/sync-players").send({});
+
+    expect(response.status).toBe(503);
+    expect(response.body.error.code).toBe("CHAIN_READ_UNAVAILABLE");
+    expect(createManyCalls).toBe(0);
   });
 });

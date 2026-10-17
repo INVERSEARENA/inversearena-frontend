@@ -145,6 +145,7 @@ consumers read the effective rate via `get_current_yield_bps` (arena
 - `pub fn set_activation_delay(env: Env, delay_secs: u64)` — activation delay within the 7-day hard bound, itself subject to the current delay
 - `pub fn set_max_rate(env: Env, max_rate_bps: u32)`
 - `pub fn get_current_yield_bps(env: Env) -> u32` — effective rate at the current ledger time
+- `pub fn get_oracle_reading(env: Env) -> OracleReading` — `{rate_bps, observed_at, source_version}` (#1512): the effective rate plus when it was applied; `observed_at == 0` means no observation has ever been recorded
 - `pub fn get_rate_schedule(env: Env) -> RateSchedule` — `{current, pending, effective_at, max_delta_bps, activation_delay, pending_*, params_effective_at}`
 - `pub fn get_max_yield_bps / get_max_delta_bps / get_activation_delay` — effective bound views
 

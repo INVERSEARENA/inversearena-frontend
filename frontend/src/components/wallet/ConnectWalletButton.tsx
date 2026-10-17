@@ -9,11 +9,13 @@ const shortAddress = (address: string) =>
   `${address.slice(0, 6)}...${address.slice(-4)}`;
 
 export const ConnectWalletButton = ({ className }: { className?: string }) => {
-  const { status, publicKey, error, connect, disconnect } = useWallet();
+  const { status, publicKey, error, connect, disconnect, walletNetworkName, recheckNetwork } =
+    useWallet();
   const passkey = usePasskeyWallet();
   const [showPasskeyPrompt, setShowPasskeyPrompt] = useState(false);
   const [passkeyUsername, setPasskeyUsername] = useState('');
   const [passkeyError, setPasskeyError] = useState<string | null>(null);
+  const [isCheckingNetwork, setIsCheckingNetwork] = useState(false);
 
   const buttonVariant = className ? 'none' : 'primary';
 
@@ -44,6 +46,45 @@ export const ConnectWalletButton = ({ className }: { className?: string }) => {
         <Button onClick={() => disconnect()} variant={buttonVariant} className={className}>
           Disconnect
         </Button>
+      </div>
+    );
+  }
+
+  // Wallet extension is connected but active on a different network than
+  // this app expects (#1404). Signing is blocked in this state (see
+  // useStellarWallet.signTransaction), so surface a clear, recoverable path
+  // instead of a confusing sign-time failure.
+  if (status === 'network-mismatch') {
+    return (
+      <div className="flex flex-col items-end gap-1">
+        <span
+          role="alert"
+          className="text-amber-400 text-xs max-w-[220px] text-right"
+        >
+          Wallet is on the wrong network
+          {walletNetworkName ? ` (${walletNetworkName})` : ''}. Switch it in your
+          wallet extension, then check again.
+        </span>
+        <div className="flex items-center gap-3">
+          <Button
+            onClick={async () => {
+              setIsCheckingNetwork(true);
+              try {
+                await recheckNetwork();
+              } finally {
+                setIsCheckingNetwork(false);
+              }
+            }}
+            disabled={isCheckingNetwork}
+            variant={buttonVariant}
+            className={className}
+          >
+            {isCheckingNetwork ? 'Checking...' : 'Check again'}
+          </Button>
+          <Button onClick={() => disconnect()} variant="none">
+            Disconnect
+          </Button>
+        </div>
       </div>
     );
   }

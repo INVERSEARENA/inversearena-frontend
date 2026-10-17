@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod snapshot_tests {
+    use crate::storage::DataKey;
     use crate::types::{
         ArenaConfig, Choice, GameState, PendingAdmin, PlayerState, RoundResult, YieldSnapshot,
     };
@@ -188,6 +189,21 @@ mod snapshot_tests {
             },
         };
         assert!(to_xdr(&env, result).len() > 0);
+    }
+
+    #[test]
+    fn snapshot_paged_roster_keys() {
+        let env = Env::default();
+        let player_page = to_xdr(&env, DataKey::PlayerPage(0));
+        let survivor_page = to_xdr(&env, DataKey::SurvivorPage(0));
+        let roster_count = to_xdr(&env, DataKey::RosterCount);
+        let survivor_count = to_xdr(&env, DataKey::SurvivorCount);
+        let storage_version = to_xdr(&env, DataKey::StorageVersion);
+
+        assert!(player_page.len() > 0);
+        assert_ne!(player_page, survivor_page);
+        assert_ne!(roster_count, survivor_count);
+        assert_ne!(storage_version, roster_count);
     }
 
     /// PendingAdmin stores a pending admin-transfer proposal. A discriminant

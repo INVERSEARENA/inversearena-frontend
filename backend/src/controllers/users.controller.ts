@@ -1,10 +1,22 @@
 import type { NextFunction, Request, Response } from "express";
 import type { PrismaClient } from "@prisma/client";
+import { z } from "zod";
 import { UserModel } from "../db/models/user.model";
 import { apiError } from "../utils/apiError";
+import { PlayerActivityService } from "../services/playerActivityService";
+import { logger } from "../utils/logger";
+
+const ActivityQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+  cursor: z.string().optional(),
+});
 
 export class UsersController {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly activityService: PlayerActivityService;
+
+  constructor(private readonly prisma: PrismaClient) {
+    this.activityService = new PlayerActivityService(prisma);
+  }
 
   /**
    * GET /api/users/me
@@ -17,28 +29,74 @@ export class UsersController {
    *  - gamesWon     — arenas where the user was never eliminated
    *  - totalYieldEarned — sum of payouts from resolved rounds (USDC string)
    *  - currentRank  — 1-based position on the all-time yield leaderboard (null if unranked)
+   *
+   * The read itself lives in `userProfileService.getUserProfileSummary` so
+   * the dashboard bootstrap composer (#1501) returns byte-identical profile
+   * data without duplicating the query.
    */
   me = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const { id, walletAddress } = req.user!;
+    const { id } = req.user!;
 
-    // ── Identity (MongoDB) ──────────────────────────────────────────
-    const user = await UserModel.findById(id).lean();
-    if (!user) {
-      next(apiError(404, "USER_NOT_FOUND", "User not found"));
+    try {
+      res.json(await getUserProfileSummary(this.prisma, id));
+    } catch (error) {
+      if (error instanceof ProfileNotFoundError) {
+        next(apiError(404, "USER_NOT_FOUND", "User not found"));
+        return;
+      }
+      next(error);
+    }
+  };
+
+  /**
+   * GET /api/users/me/activity
+   *
+   * Cursor-paginated feed of the authenticated wallet's elimination
+   * events (#1403). Scoped by walletAddress rather than the Mongo user id
+   * `req.user.id`, since `elimination_logs.user_id` is populated with the
+   * on-chain wallet address (see roundRepository.recordResolution, which
+   * writes `resolution.eliminatedPlayers` — themselves wallet addresses
+   * from getOnChainActivePlayerIds), not the Mongo identity id.
+   *
+   * See PlayerActivityService for the keyset-pagination design and why it
+   * (not this codebase's usual offset cursor) is required for a gap-free
+   * live feed.
+   */
+  activity = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const { walletAddress } = req.user!;
+    const parsedQuery = ActivityQuerySchema.safeParse(req.query);
+    if (!parsedQuery.success) {
+      next(apiError(400, "INVALID_QUERY", "Invalid limit or cursor"));
       return;
     }
+    const { limit, cursor } = parsedQuery.data;
 
-    // ── Game stats (PostgreSQL / Prisma) ────────────────────────────
-    const stats = await this.aggregateStats(id);
-
-    res.json({
-      id: user._id.toString(),
-      walletAddress: user.walletAddress,
-      displayName: user.displayName ?? null,
-      joinedAt: user.joinedAt,
-      lastLoginAt: user.lastLoginAt,
-      ...stats,
-    });
+    const started = Date.now();
+    try {
+      const page = await this.activityService.getActivityFeed(walletAddress, limit, cursor);
+      logger.info(
+        {
+          subsystem: "player-activity",
+          walletAddress,
+          resultCount: page.items.length,
+          hasMore: page.hasMore,
+          latencyMs: Date.now() - started,
+        },
+        "Player activity feed served",
+      );
+      res.json(page);
+    } catch (error) {
+      logger.error(
+        {
+          subsystem: "player-activity",
+          walletAddress,
+          latencyMs: Date.now() - started,
+          err: error,
+        },
+        "Player activity feed failed",
+      );
+      next(error);
+    }
   };
 
   // ──────────────────────────────────────────────────────────────────

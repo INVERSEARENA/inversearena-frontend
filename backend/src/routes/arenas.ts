@@ -10,27 +10,38 @@ import type { CreateArenaInput } from "../types/arena";
 import { ArenaService } from "../services/arenaService";
 import { ArenaStatsService } from "../services/arenaStatsService";
 import { ArenaYieldService } from "../services/arenaYieldService";
+import { RoundService } from "../services/roundService";
 import { RoundRepository } from "../repositories/roundRepository";
 import { ParticipantEligibilityService } from "../services/participantEligibilityService";
 import { apiError } from "../utils/apiError";
 import type { ArenaParticipant } from "../types/arena";
-import { getOnChainPlayers } from "../services/onChainReader";
+import { readOnChainPlayers } from "../services/onChainReader";
+import { hasReadValue } from "../types/onChainRead";
 import { isAuthorizedAdminWallet } from "../services/walletRoleService";
 import { createRateLimitMiddleware, getSyncPlayersRateLimitConfig } from "../middleware/rateLimit";
 import { createSseConnectionLimitMiddleware } from "../middleware/sseConnectionLimit";
+import { arenaStreamResyncsTotal } from "../utils/metrics";
 // Issue #1411 — Responsible active stake limits
 import { ActiveStakeLimitsService, ActiveStakeLimitError } from "../services/activeStakeLimitsService";
 // Issue #1412 — Arena health summary
 import { ArenaHealthService } from "../services/arenaHealthService";
+// Issue #1401 — Signed server-time synchronization
+import { arenaTimeRouter } from "./arenaTime";
+// Issue #1517 — Player dispute evidence packages
+import {
+  DisputeEvidenceService,
+  EvidenceArenaNotFoundError,
+  EvidenceRoundNotFoundError,
+  EvidenceNotParticipantError,
+} from "../services/disputeEvidenceService";
+import { CancellationRecoveryService } from "../services/cancellationRecoveryService";
+import { decodeCursorInput, encodeKeysetCursor } from "../utils/keysetPagination";
 
 const PaginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
   cursor: z.string().optional(),
 });
 
-interface DecodedCursor {
-  offset: number;
-}
 
 function encodeCursor(offset: number): string {
   return Buffer.from(JSON.stringify({ offset } as DecodedCursor)).toString("base64url");
@@ -81,6 +92,11 @@ function formatRound(round: {
 const ParticipantsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(12),
   cursor: z.coerce.number().int().min(0).default(0),
+});
+
+const CommitStatusParamsSchema = z.object({
+  id: z.string().trim().min(1).max(200),
+  roundNumber: z.coerce.number().int().min(1).max(1_000_000),
 });
 
 function normalizeRoundMetadata(metadata: unknown): {
@@ -135,6 +151,45 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   // Issue #1412
   const healthService = new ArenaHealthService(prisma);
 
+  // GET /api/arenas/time (#1401) — mounted from its own module
+  // (arenaTime.ts) rather than defined inline here, so it can be
+  // unit-tested without constructing arenaService/onChainReader's
+  // dependency graph, which has a pre-existing broken cross-boundary
+  // import (see the comment in services/serverTimeService.ts) that fails
+  // both `tsc --noEmit` and ts-jest module loading whenever anything in
+  // this router file is imported.
+  router.use(arenaTimeRouter);
+
+  // Constructed lazily (on first use) rather than eagerly here: RoundService's
+  // constructor resolves getStellarConfig() immediately, which throws outside
+  // NODE_ENV=test when SOROBAN_RPC_URL/STELLAR_NETWORK_PASSPHRASE aren't set.
+  // Building this router is a pure, side-effect-free operation that many
+  // lightweight route tests rely on (they mount just this router without a
+  // full server.ts boot / dotenv load), so router construction must not
+  // require Stellar config to be present.
+  let roundService: RoundService | undefined;
+  function getRoundService(): RoundService {
+    if (!roundService) {
+      roundService = new RoundService(prisma);
+    }
+    return roundService;
+  }
+
+  // Same lazy-construction reasoning as getRoundService() above — this
+  // service's dependencies (RoundProofBundleService) also resolve
+  // getStellarConfig() at construction time.
+  let disputeEvidenceService: DisputeEvidenceService | undefined;
+  function getDisputeEvidenceService(): DisputeEvidenceService {
+    if (!disputeEvidenceService) {
+      disputeEvidenceService = new DisputeEvidenceService(
+        prisma,
+        getRoundService(),
+        new CancellationRecoveryService(prisma),
+      );
+    }
+    return disputeEvidenceService;
+  }
+
   /**
    * POST /api/arenas
    * Creates an arena record and records the pending factory deployment metadata.
@@ -167,6 +222,120 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
       res.status(201).json({
         arena,
         requestId: randomUUID(),
+      });
+    }),
+  );
+
+  /**
+   * GET /api/arenas
+   * Returns a paginated list of all arenas for arena discovery.
+   * Replaces mock arena data with real server-backed search and filters (#1514).
+   * Cached for 30s — arena list changes infrequently during play.
+   */
+  router.get(
+    "/",
+    cacheMiddleware((req) => {
+      const filter = req.query.filter || "all";
+      const search = req.query.q || "";
+      const limit = req.query.limit || "25";
+      const cursor = req.query.cursor || "0";
+      return `arenas:list:${filter}:${search}:${limit}:${cursor}`;
+    }, cacheTTL.ARENA_LIST ?? 30),
+    asyncHandler(async (req, res) => {
+      const parsed = z
+        .object({
+          limit: z.coerce.number().int().min(1).max(100).default(25),
+          cursor: z.string().optional(),
+          filter: z.enum(["all", "active", "pending", "closed"]).default("all"),
+          q: z.string().optional(),
+        })
+        .parse(req.query);
+
+      const limit = parsed.limit;
+      const rawCursor = parsed.cursor;
+      const filter = parsed.filter;
+      const search = parsed.q || "";
+
+      const decoded = decodeCursorInput(rawCursor);
+
+      let where: any = {};
+
+      if (filter !== "all") {
+        where.metadata = {
+          path: ["status"],
+          equals: filter === "active" ? "ACTIVE" : filter === "pending" ? "PENDING" : "CLOSED",
+        };
+      }
+
+      let skip: number | undefined = undefined;
+
+      if (decoded.mode === "keyset") {
+        const lastCreatedAt = new Date(decoded.cursor.sortValues.createdAt as string);
+        const lastId = decoded.cursor.id;
+        where.OR = [
+          { createdAt: { lt: lastCreatedAt } },
+          { createdAt: lastCreatedAt, id: { lt: lastId } },
+        ];
+      } else if (decoded.mode === "legacy") {
+        skip = decoded.offset;
+      }
+
+      const rows = await prisma.arena.findMany({
+        where,
+        include: {
+          pools: true,
+          rounds: {
+            orderBy: { roundNumber: "desc" },
+            take: 1,
+          },
+        },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: limit + 1,
+        ...(skip !== undefined ? { skip } : {}),
+      });
+
+      let pageRows = rows;
+      if (search) {
+        const searchLower = search.toLowerCase();
+        pageRows = pageRows.filter((arena) => {
+          const metadata = arena.metadata as any;
+          return (
+            arena.id.toLowerCase().includes(searchLower) ||
+            metadata?.number?.toLowerCase().includes(searchLower) ||
+            metadata?.name?.toLowerCase().includes(searchLower)
+          );
+        });
+      }
+
+      const hasMore = pageRows.length > limit;
+      const items = pageRows.slice(0, limit);
+
+      let nextCursor: string | null = null;
+      if (hasMore && items.length > 0) {
+        const last = items[items.length - 1];
+        nextCursor = encodeKeysetCursor(
+          { createdAt: last.createdAt.toISOString() },
+          last.id,
+        );
+      }
+
+      res.json({
+        items: items.map((arena) => ({
+          id: arena.id,
+          number: (arena.metadata as any)?.number ?? `#${arena.id.substring(0, 4)}`,
+          name: (arena.metadata as any)?.name ?? "Unnamed Arena",
+          playersJoined: arena.pools.length,
+          maxPlayers: (arena.metadata as any)?.maxPlayers ?? 100,
+          roundSpeed: (arena.metadata as any)?.roundSpeed ?? "1 MIN",
+          stake: (arena.metadata as any)?.entryFee ? `${(arena.metadata as any).entryFee} USDC` : "Unknown",
+          poolYield: "+8.0% APY",
+          status: (arena.metadata as any)?.status ?? "ACTIVE",
+          badge: (arena.metadata as any)?.badge,
+          isFeatured: (arena.metadata as any)?.isFeatured ?? false,
+          createdAt: arena.createdAt.toISOString(),
+        })),
+        cursor: nextCursor,
+        hasMore,
       });
     }),
   );
@@ -408,6 +577,104 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   );
 
   /**
+   * GET /api/arenas/:id/rounds/:roundNumber/commit-status
+   *
+   * Round-scoped commit receipt (#1383): lets the authenticated caller check
+   * their own submit_commitment status for a specific round — one of
+   * accepted / pending / expired / missing. See
+   * backend/docs/COMMIT_RECEIPT_DESIGN.md for the full state machine.
+   *
+   * Scoped to the caller's own wallet (from the auth token) rather than an
+   * arbitrary wallet in the query string — this is a per-player status
+   * check, not a public participant listing, and requiring auth avoids
+   * letting any caller probe an arbitrary wallet's status for a round that
+   * hasn't resolved yet.
+   *
+   * Not cached: this is a per-player, low-latency indexed lookup, and a
+   * shared cache would risk serving one player's status to another.
+   */
+  router.get(
+    "/:id/rounds/:roundNumber/commit-status",
+    authMiddleware,
+    asyncHandler(async (req, res) => {
+      const { id: arenaId, roundNumber } = CommitStatusParamsSchema.parse(req.params);
+      const callerWallet = req.user?.walletAddress;
+
+      if (!callerWallet) {
+        throw apiError(401, "UNAUTHORIZED", "Unauthorized");
+      }
+
+      const arena = await prisma.arena.findUnique({ where: { id: arenaId } });
+      if (!arena) {
+        throw apiError(404, "ARENA_NOT_FOUND", `Arena with ID ${arenaId} not found`);
+      }
+
+      const receipt = await getRoundService().getCommitStatus(arenaId, roundNumber, callerWallet);
+      res.json(receipt);
+    }),
+  );
+
+  /**
+   * GET /api/arenas/:id/rounds/:roundNumber/evidence
+   *
+   * Player dispute evidence package (#1517): a read-only, privacy-scoped
+   * bundle of canonical identifiers, the caller's own commit/reveal/
+   * elimination/payout/refund status, config/contract versions and
+   * freshness provenance for one arena/round, with a checksum and schema
+   * version for offline integrity validation. See
+   * backend/docs/DISPUTE_EVIDENCE_PACKAGE_DESIGN.md.
+   *
+   * Scoped to the caller's own wallet (from the auth token) — same
+   * reasoning as commit-status above, plus an explicit rejection of any
+   * caller-supplied wallet/user identifier in the query string, so this
+   * endpoint can never be used to probe another wallet's private evidence.
+   *
+   * Not cached: per-player private data, and each package is checksummed
+   * against its own generation time — serving a stale cached copy under a
+   * fresh checksum would be actively misleading.
+   */
+  router.get(
+    "/:id/rounds/:roundNumber/evidence",
+    authMiddleware,
+    asyncHandler(async (req, res) => {
+      if (req.query.walletAddress !== undefined || req.query.userId !== undefined) {
+        throw apiError(
+          400,
+          "EVIDENCE_SCOPE_NOT_OVERRIDABLE",
+          "Evidence is always scoped to the authenticated caller's own wallet; walletAddress/userId query parameters are not accepted",
+        );
+      }
+
+      const { id: arenaId, roundNumber } = EvidenceParamsSchema.parse(req.params);
+      const userId = req.user?.id;
+      const walletAddress = req.user?.walletAddress;
+
+      if (!userId || !walletAddress) {
+        throw apiError(401, "UNAUTHORIZED", "Unauthorized");
+      }
+
+      try {
+        const evidence = await getDisputeEvidenceService().generatePackage(arenaId, roundNumber, {
+          userId,
+          walletAddress,
+        });
+        res.json({ success: true, data: evidence });
+      } catch (error) {
+        if (error instanceof EvidenceArenaNotFoundError) {
+          throw apiError(404, "ARENA_NOT_FOUND", error.message);
+        }
+        if (error instanceof EvidenceRoundNotFoundError) {
+          throw apiError(404, "ROUND_NOT_FOUND", error.message);
+        }
+        if (error instanceof EvidenceNotParticipantError) {
+          throw apiError(403, "EVIDENCE_NOT_PARTICIPANT", error.message);
+        }
+        throw error;
+      }
+    }),
+  );
+
+  /**
    * GET /api/arenas/:id/stream
    * Streams arena lifecycle events using Server-Sent Events.
    *
@@ -447,6 +714,15 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
         { sendEvent, sendSnapshot },
         arenaService,
         (() => {
+          // #1500 — a client that detected a version gap reconnects with
+          // `?resync=1` to explicitly request the latest full snapshot; the
+          // resync overrides any cursor (including the browser-supplied
+          // Last-Event-ID header) so the server always answers with current
+          // state instead of replaying the gap.
+          if (req.query.resync === "1") {
+            arenaStreamResyncsTotal.inc({ reason: "gap" });
+            return undefined;
+          }
           const raw = req.get("Last-Event-ID") ?? (typeof req.query.cursor === "string" ? req.query.cursor : undefined);
           if (raw === undefined) return undefined;
           const cursor = Number(raw);
@@ -511,8 +787,18 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
         throw apiError(400, "NO_CONTRACT_ADDRESS", "Arena has no contract address");
       }
 
-      // Fetch on-chain player list
-      const onChainPlayers = await getOnChainPlayers(contractAddress);
+      // Fetch on-chain player list. #1519: if the read is unavailable we must
+      // NOT treat it as an empty roster — that would silently sync zero
+      // players and report an outage as an empty arena. Surface it instead.
+      const playersResult = await readOnChainPlayers(contractAddress);
+      if (!hasReadValue(playersResult)) {
+        throw apiError(
+          503,
+          "CHAIN_READ_UNAVAILABLE",
+          `Could not read the on-chain player list for arena ${id}`,
+        );
+      }
+      const onChainPlayers = playersResult.value;
 
       // Batch-create User records for any wallet addresses that don't exist
       // yet. `skipDuplicates` makes this a single round trip instead of one

@@ -14,7 +14,7 @@ import {
   act,
 } from "@testing-library/react";
 import { useArenaState } from "../useArenaState";
-import type { ArenaStateResponse } from "@/shared-d/utils/stellar-transactions";
+import type { ArenaStateFromContract } from "@/shared-d/types/contract-state";
 import {
   submitSignedTransaction,
   captureTransactionOutcome,
@@ -29,8 +29,8 @@ const mockFetchArenaState = jest.fn();
 
 jest.mock("@stellar/stellar-sdk/rpc", () => ({
   Server: jest.fn().mockImplementation(() => ({
-    sendTransaction: mockSendTransaction,
-    getTransaction: mockGetTransaction,
+    sendTransaction: (...args: unknown[]) => mockSendTransaction(...args),
+    getTransaction: (...args: unknown[]) => mockGetTransaction(...args),
   })),
 }));
 
@@ -59,16 +59,19 @@ jest.mock("@/shared-d/utils/stellar-transactions", () => ({
 const ARENA_ID = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
 const USER_KEY = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
 
-function baseResponse(overrides: Partial<ArenaStateResponse> = {}): ArenaStateResponse {
+function baseResponse(
+  overrides: Partial<ArenaStateFromContract> = {},
+): ArenaStateFromContract {
   return {
     arenaId: ARENA_ID,
-    survivorsCount: 7,
-    maxCapacity: 10,
-    isUserIn: false,
-    hasWon: false,
-    currentStake: 100,
-    potentialPayout: 250,
-    roundNumber: 2,
+    contractArenaState: {
+      survivors: 7,
+      capacity: 10,
+      round: 2,
+      stakes: 100_000_000n,
+      payouts: 250_000_000n,
+    },
+    contractUserState: { active: false, won: false },
     gameState: 1,
     entryFee: 100,
     playerCount: 7,
@@ -107,7 +110,7 @@ describe("client reconciliation integration (#1385)", () => {
 
     // Pre-join optimistic view (not yet on-chain).
     mockFetchArenaState.mockResolvedValue(
-      baseResponse({ isUserIn: false }),
+      baseResponse({ contractUserState: { active: false, won: false } }),
     );
     await waitFor(() => expect(result.current.state).not.toBeNull());
     expect(result.current.state?.isUserIn).toBe(false);
@@ -126,7 +129,7 @@ describe("client reconciliation integration (#1385)", () => {
 
     // 3. Converge the UI: chain now shows this wallet joined.
     mockFetchArenaState.mockResolvedValue(
-      baseResponse({ isUserIn: true }),
+      baseResponse({ contractUserState: { active: true, won: false } }),
     );
     await act(async () => {
       await result.current.reconcile(USER_KEY);
@@ -208,7 +211,7 @@ describe("client reconciliation integration (#1385)", () => {
 
     // 3. Converge the UI once the timeout is reconciled to CONFIRMED.
     mockFetchArenaState.mockResolvedValue(
-      baseResponse({ isUserIn: true }),
+      baseResponse({ contractUserState: { active: true, won: false } }),
     );
     await act(async () => {
       await result.current.reconcile(USER_KEY);

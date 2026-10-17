@@ -224,6 +224,37 @@ Copy `backend/.env.example` → `backend/.env` and `frontend/.env.example` →
 
 ---
 
+## Client compatibility manifest (#1491)
+
+`GET /api/config/compatibility[?arenaId=C...]` returns the network, a
+`configRevision` (the ledger it was derived at), each negotiated contract
+version, and per-capability support (`join`, `commit`, `reveal`, `claim`,
+`admin`). Responses are cacheable for 15 s; the frontend never replaces a
+manifest with a lower `configRevision` and stops trusting one older than 5 min.
+The capability map in `backend/src/services/contractCapability.ts` decides which
+contract version each entrypoint needs.
+
+**Rollout order**
+
+1. Deploy the backend first. An old frontend ignores the endpoint.
+2. Upgrade contracts. Arenas still on an older version report the affected
+   capabilities as unsupported, so the new frontend disables only those actions
+   (reads keep working).
+3. Deploy the frontend last. Against a backend without the endpoint (404) it
+   allows every action, as before.
+
+**Rollback**
+
+- Frontend rollback: safe at any point; the older build never calls the endpoint.
+- Backend rollback: the new frontend gets 404, treats it as an old backend and
+  stops gating. Rolling back a contract upgrade makes the manifest report
+  the capability as unsupported again at the next refresh (within 15 s cache +
+  60 s poll).
+- A newer manifest `schemaVersion` than the frontend supports blocks mutations
+  with a "refresh to update" message rather than guessing.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause / fix |

@@ -73,7 +73,7 @@ export function createPayoutsRouter(
       }
 
       const { payoutId, winnerId } = IssueEligibilityBodySchema.parse(req.body);
-      const token = feeSponsorshipService.issueEligibility(payoutId, winnerId);
+      const token = feeSponsorshipService.issueEligibility(winnerId, "payout", payoutId);
       res.status(201).json(token);
     }),
   );
@@ -158,6 +158,38 @@ export function createPayoutsRouter(
 
       const tokens = feeSponsorshipService.listPendingForWinner(winnerId);
       res.json({ tokens });
+    }),
+  );
+
+  /**
+   * POST /api/payouts/eligibility/transactions
+   * Issue fee sponsorship for arena gameplay transactions (#1518).
+   * Supports join, commit, and reveal transaction types.
+   * Requires admin authorization.
+   */
+  router.post(
+    "/eligibility/transactions",
+    adminAuthMiddleware,
+    asyncHandler(async (req, res) => {
+      if (!FEE_SPONSORSHIP_ENABLED) {
+        throw apiError(503, "SPONSORSHIP_DISABLED", "Fee sponsorship is not enabled on this deployment");
+      }
+
+      const TransactionEligibilitySchema = z.object({
+        winnerId: z.string().trim().min(1).max(128),
+        transactionType: z.enum(["join", "commit", "reveal"]),
+        arenaId: z.string().trim().min(1).max(128),
+      });
+
+      const { winnerId, transactionType, arenaId } = TransactionEligibilitySchema.parse(req.body);
+
+      const token = feeSponsorshipService.issueEligibility(
+        winnerId,
+        transactionType as any,
+        arenaId
+      );
+
+      res.status(201).json(token);
     }),
   );
 

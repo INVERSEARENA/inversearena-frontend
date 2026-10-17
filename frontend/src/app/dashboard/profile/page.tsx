@@ -14,6 +14,7 @@ import { useWallet } from "@/features/wallet/useWallet";
 import { AliasManager } from "./AliasManager";
 // Issue #1571 — Web Push opt-in for round-phase alerts
 import { PushSubscribeButton } from "@/features/notifications";
+import StakingPositionPanel from "@/features/staking/StakingPositionPanel";
 
 const truncateAddress = (address: string) => {
   if (!address) return "";
@@ -348,6 +349,12 @@ export default function ProfilePage() {
           </div>
         </div>
       </div>
+
+      {/* Staking Position Section (#1510) */}
+      <section className="space-y-4">
+        <h3 className="text-sm font-bold tracking-[0.2em] text-zinc-400 uppercase">STAKING.CFG</h3>
+        <StakingPositionPanel />
+      </section>
 
       {/* Preferences Section */}
       <section className="space-y-4">

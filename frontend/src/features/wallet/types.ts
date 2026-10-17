@@ -1,6 +1,11 @@
 import type { Balance } from '@/shared-d/utils/stellar-balance';
 
-export type WalletStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
+export type WalletStatus =
+  | 'disconnected'
+  | 'connecting'
+  | 'connected'
+  | 'network-mismatch'
+  | 'error';
 
 export interface WalletState {
   status: WalletStatus;
@@ -26,4 +31,17 @@ export interface WalletContextType extends WalletState {
   balanceError: string | null;
   signTransaction: (xdr: string) => Promise<string>;
   refreshBalance: () => Promise<void>;
+  /**
+   * Set only when status is 'network-mismatch': the human-readable name of
+   * the network the connected wallet extension is actually active on, so
+   * the UI can tell the user what they're on vs. what's expected.
+   */
+  walletNetworkName: string | null;
+  /**
+   * Re-checks the connected wallet's active network against the app's
+   * configured network. Call after the user switches network inside their
+   * extension to recover from a 'network-mismatch' state without a full
+   * reconnect.
+   */
+  recheckNetwork: () => Promise<void>;
 }

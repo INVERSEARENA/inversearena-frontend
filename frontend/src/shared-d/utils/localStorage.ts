@@ -7,6 +7,7 @@ export enum StorageKey {
   ARENA_SETTINGS = "arena_settings",
   ONBOARDING_COMPLETED = "onboarding_completed",
   HAS_STAKED = "has_staked",
+  ARENA_POOL_DRAFT = "arena_pool_draft",
 }
 
 export const localStorageManager = {

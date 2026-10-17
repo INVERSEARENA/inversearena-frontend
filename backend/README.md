@@ -26,7 +26,7 @@ Soroban-based winner distribution system.
 Prometheus-compatible metrics at `/metrics`:
 
 - HTTP request rates and latencies
-- Worker job queue lengths
+- Worker queue backlog, oldest age, throughput, retries, saturation, and latency
 - Transaction confirmation rates
 - Round resolution metrics
 
@@ -88,6 +88,7 @@ Set these values in deployment secrets (never commit private keys):
 - `PAYOUTS_MAX_ATTEMPTS`: Max worker submit retries before marking failed
 - `PAYOUTS_CONFIRM_POLL_MS`: Confirmation polling interval
 - `PAYOUTS_CONFIRM_MAX_POLLS`: Max confirmation polls
+- `TX_WORKER_CONCURRENCY`: Confirmation worker concurrency and autoscaling capacity signal (default `1`)
 - `PAYOUT_CONTRACT_ID`: Soroban payout contract
 - `PAYOUT_METHOD_NAME`: Contract method (default `distribute_winnings`)
 - `PAYOUT_SOURCE_ACCOUNT`: Payout source account

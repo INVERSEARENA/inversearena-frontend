@@ -1,5 +1,8 @@
 name: Backend CI
 
+# TODO(#1506): Add seeded repetition and timing artifact collection.
+# TODO(#1506): Classify deterministic failures, flakes, and slow tests.
+
 on:
   push:
     branches: ["main"]
@@ -55,6 +58,9 @@ jobs:
       - name: Install Dependencies
         working-directory: ./backend
         run: npm ci
+
+      - name: Verify redaction policy (#1531)
+        run: node scripts/verify-redaction.mjs
 
       - name: Run Prisma Migrations
         working-directory: ./backend

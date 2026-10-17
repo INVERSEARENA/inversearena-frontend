@@ -3,6 +3,9 @@ import type { Request, Response, NextFunction, RequestHandler } from "express";
 import type { AuthService } from "../services/authService";
 import { apiError } from "../utils/apiError";
 
+// TODO(#1504): bind an authorization epoch claim to privileged sessions.
+const CLAIM_AUTH_EPOCH = "authz_epoch";
+
 // Augment Express Request so controllers can read adminId / user without casting
 declare global {
   namespace Express {

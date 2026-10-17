@@ -15,7 +15,8 @@ import { rpc } from "@stellar/stellar-sdk";
 const { Api, Server } = rpc;
 import { z } from "zod";
 
-import { getOnChainGameState } from "./onChainReader";
+import { readOnChainGameState } from "./onChainReader";
+import { requireReadValue } from "../types/onChainRead";
 import { getPaymentConfig, type PaymentConfig } from "../config/paymentConfig";
 import type { TransactionRepository } from "../repositories/transactionRepository";
 import { payoutsSuccessTotal } from "../utils/metrics";
@@ -134,7 +135,11 @@ export class PaymentService {
     const startedAt = Date.now();
     if (!/^C[A-Z2-7]{55}$/ .test(arenaId)) throw new Error("Invalid arena contract id");
     try {
-      const [chainState, records] = await Promise.all([getOnChainGameState(arenaId), this.transactions.listByStatus(["built", "queued", "awaiting_signature", "submitted", "confirmed", "failed", "dead"], 1000)]);
+      const [chainStateResult, records] = await Promise.all([readOnChainGameState(arenaId), this.transactions.listByStatus(["built", "queued", "awaiting_signature", "submitted", "confirmed", "failed", "dead"], 1000)]);
+      // #1519: an unavailable read must not be reported as "not finished" and
+      // thereby tell the caller the claim is simply not ready yet. Throwing
+      // lets the catch below log it as a failure so the caller retries.
+      const chainState = requireReadValue(chainStateResult);
       const payout = records.filter((record) => record.payoutId === arenaId).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0];
       const payoutBlocksClaim = payout?.status === "submitted" || payout?.status === "confirmed";
       const ready = chainState === "Finished" && !payoutBlocksClaim;

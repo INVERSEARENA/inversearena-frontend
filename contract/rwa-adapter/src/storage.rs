@@ -1,4 +1,4 @@
-use crate::types::{PendingAdmin, RwaConfig, RwaError, YieldAccrual};
+use crate::types::{PendingAdmin, RwaConfig, RwaError, YieldAccrual, YieldIndex};
 use soroban_sdk::{Address, Env, symbol_short};
 
 // Extend TTL whenever a persistent key is read or written (#1076, #1077).
@@ -8,6 +8,7 @@ const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
 #[soroban_sdk::contracttype]
 enum DataKey {
     Position(Address),
+    YieldIndex,
 }
 
 pub struct RwaStorage;
@@ -67,7 +68,18 @@ impl RwaStorage {
                 principal: 0,
                 withdrawn: false,
                 deposited_at: 0,
+                index_entry: 0,
             })
+    }
+
+    pub fn load_yield_index(env: &Env) -> Option<YieldIndex> {
+        Self::extend_ttl(env, &DataKey::YieldIndex);
+        env.storage().persistent().get(&DataKey::YieldIndex)
+    }
+
+    pub fn save_yield_index(env: &Env, index: &YieldIndex) {
+        Self::extend_ttl(env, &DataKey::YieldIndex);
+        env.storage().persistent().set(&DataKey::YieldIndex, index);
     }
 
     pub fn save_position(env: &Env, user: &Address, pos: &YieldAccrual) {

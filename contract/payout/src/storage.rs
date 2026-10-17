@@ -31,6 +31,11 @@ pub(crate) enum DataKey {
     PendingAdmin,
     Token,
     Paid(u64),
+    /// Issue #1450 — pre-registered payout destination.
+    /// Stores the `Address` that is permitted to receive the payout for a
+    /// given `payout_id`. Set by `register_destination`; checked by
+    /// `distribute_winnings` before any transfer.
+    Destination(u64),
 }
 
 // ~6 months in ledgers (assuming 5s per ledger)
@@ -198,5 +203,39 @@ impl PayoutStorage {
             PERSISTENT_TTL_THRESHOLD,
             PERSISTENT_TTL_TARGET,
         );
+    }
+
+    // ── Issue #1450 — payout destination binding ──────────────────────────────
+
+    /// Store the pre-authorised destination address for `payout_id`.
+    ///
+    /// Must be called by the admin before `distribute_winnings`. Once set the
+    /// binding cannot be overwritten — any attempt to register a second
+    /// destination for the same `payout_id` is a no-op (the existing binding
+    /// wins), because the payout may already be in-flight by the time a second
+    /// registration arrives.
+    pub fn register_destination(env: &Env, payout_id: u64, destination: &Address) {
+        let key = DataKey::Destination(payout_id);
+        // Do not overwrite an existing binding.
+        if env.storage().persistent().has(&key) {
+            return;
+        }
+        env.storage().persistent().set(&key, destination);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_TARGET);
+    }
+
+    /// Return the pre-registered destination for `payout_id`, or `None` if
+    /// `register_destination` has not been called yet.
+    pub fn get_destination(env: &Env, payout_id: u64) -> Option<Address> {
+        let key = DataKey::Destination(payout_id);
+        let val: Option<Address> = env.storage().persistent().get(&key);
+        if val.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_TARGET);
+        }
+        val
     }
 }

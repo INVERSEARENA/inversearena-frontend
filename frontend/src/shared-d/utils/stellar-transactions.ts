@@ -4,12 +4,20 @@
  * Split per #245: `contract-client-factory`, `horizon-account-loader`,
  * `stellar-fee-estimator`, and `soroban-transaction-composer`.
  */
-import { Account, TransactionBuilder } from "@stellar/stellar-sdk";
+import {
+  Account,
+  Asset,
+  BASE_FEE,
+  Operation,
+  TransactionBuilder,
+} from "@stellar/stellar-sdk";
 import {
   PositiveAmountSchema,
   RoundChoiceSchema,
   RoundNumberSchema,
   SignedXdrSchema,
+  StellarAmountSchema,
+  StellarAssetCodeSchema,
   StellarContractIdSchema,
   StellarPublicKeySchema,
 } from "@/shared-d/utils/security-validation";
@@ -23,7 +31,10 @@ import {
   parseContractError,
 } from "@/shared-d/utils/contract-error";
 import { ContractClientFactory } from "@/shared-d/utils/contract-client-factory";
-import { StellarRpcGateway } from "@/shared-d/services/stellarRpcGateway";
+import {
+  StellarRpcGateway,
+  type SorobanRpcTransaction,
+} from "@/shared-d/services/stellarRpcGateway";
 import {
   getDefaultInvokeBaseFee,
   getInfiniteTimeout,
@@ -45,11 +56,13 @@ import {
   composeUnsignedTransaction,
 } from "@/shared-d/utils/soroban-transaction-composer";
 import { CreatePoolParamsSchema } from "@/shared-d/utils/stellar-transaction-schemas";
+import type { ArenaStateFromContract } from "@/shared-d/types/contract-state";
 import {
   parseArenaStateFromScVal,
   parseUserStateFromScVal,
   buildArenaDisplayState,
 } from "@/shared-d/utils/contract-state-parsers";
+import { assertCapability } from "@/shared-d/utils/compatibility-store";
 import {
   clearCommitment,
   computeCommitment,
@@ -73,6 +86,7 @@ export const STAKING_CONTRACT_ID =
 export const NETWORK_PASSPHRASE = stellarConfig.passphrase;
 export const HORIZON_URL = stellarConfig.horizonUrl;
 export const SOROBAN_RPC_URL = stellarConfig.sorobanRpcUrl;
+export const ASSET_ISSUERS = stellarConfig.assetIssuers;
 
 export const DEFAULT_DEPLOYMENT_MANIFEST = {
   network: process.env.NEXT_PUBLIC_STELLAR_NETWORK ?? "unknown",
@@ -84,7 +98,6 @@ export const DEFAULT_DEPLOYMENT_MANIFEST = {
   },
 } as const;
 
-const defaultSorobanClients = new ContractClientFactory(DEFAULT_DEPLOYMENT_MANIFEST);
 const stellarRpcGateway = new StellarRpcGateway();
 
 /**
@@ -155,7 +168,6 @@ export async function buildStakeProtocolTransaction(
       });
     }
 
-    const server = stellarRpcGateway.rpcServer;
     const account = await getAccount(validatedPublicKey, FN);
     const stakingContract = new ContractClientFactory(SOROBAN_RPC_URL).createContract(STAKING_CONTRACT_ID,);
 
@@ -173,7 +185,70 @@ export async function buildStakeProtocolTransaction(
       operation,
     });
 
-    return server.prepareTransaction(builtTx);
+    return stellarRpcGateway.prepareTransaction(
+      builtTx as SorobanRpcTransaction,
+    );
+  } catch (error) {
+    throw parseContractError(error, FN);
+  }
+}
+
+/**
+ * Build an unsigned `changeTrust` for a classic credit asset (#1487).
+ *
+ * This is the guided-remediation counterpart to the Soroban business
+ * transactions above: it is the only *classic* transaction this app builds,
+ * and the only one the `TRUSTLINE` signing policy admits.
+ *
+ * Deliberately not routed through `stellarRpcGateway.prepareTransaction`:
+ * `prepareTransaction` is for Soroban invocations and would compute a
+ * resource/footprint fee for an operation that has none. A `changeTrust` is
+ * priced with the classic per-operation fee, so it is composed directly.
+ *
+ * `limit` is required rather than defaulted to "unlimited". An unlimited
+ * trustline means accepting the issuer's full supply of that asset, which is a
+ * decision the confirmation UI must show explicitly — see
+ * `buildRemediation` in `asset-readiness.ts`, which is what supplies it.
+ */
+export async function buildChangeTrustTransaction(
+  publicKey: string,
+  asset: { code: string; issuer: string },
+  limit: string,
+) {
+  const FN = "buildChangeTrustTransaction";
+  try {
+    const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
+    const validatedCode = StellarAssetCodeSchema.parse(asset.code);
+    const validatedIssuer = StellarPublicKeySchema.parse(asset.issuer);
+    const validatedLimit = StellarAmountSchema.parse(limit);
+
+    if (validatedIssuer === validatedPublicKey) {
+      // A self-issued trustline is a no-op that can never reach `authorized`,
+      // and it still costs a base-reserve subentry. The preflight rejects this
+      // as `invalid_asset`; refuse it here too so the builder is safe to call
+      // directly.
+      throw new ContractError({
+        code: ContractErrorCode.VALIDATION_FAILED,
+        message:
+          "Cannot create a trustline to an asset issued by the connected account.",
+        fn: FN,
+      });
+    }
+
+    const account = await getAccount(validatedPublicKey, FN);
+
+    return new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .setTimeout(getShortTxTimeoutSeconds())
+      .addOperation(
+        Operation.changeTrust({
+          asset: new Asset(validatedCode, validatedIssuer),
+          limit: validatedLimit,
+        }),
+      )
+      .build();
   } catch (error) {
     throw parseContractError(error, FN);
   }
@@ -205,7 +280,6 @@ export async function buildUnstakeProtocolTransaction(
       });
     }
 
-    const server = stellarRpcGateway.rpcServer;
     const account = await getAccount(validatedPublicKey, FN);
     const stakingContract = new ContractClientFactory(SOROBAN_RPC_URL).createContract(STAKING_CONTRACT_ID,);
 
@@ -223,7 +297,9 @@ export async function buildUnstakeProtocolTransaction(
       operation,
     });
 
-    return server.prepareTransaction(builtTx);
+    return stellarRpcGateway.prepareTransaction(
+      builtTx as SorobanRpcTransaction,
+    );
   } catch (error) {
     throw parseContractError(error, FN);
   }
@@ -240,6 +316,8 @@ export async function buildJoinArenaTransaction(
   try {
     const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
     const validatedPoolId = StellarContractIdSchema.parse(poolId);
+    // Compatibility gate (#1491): refuse before any transaction exists.
+    assertCapability("join", validatedPoolId, FN);
 
     const account = await getAccount(validatedPublicKey, FN);
     const poolContract = new ContractClientFactory(SOROBAN_RPC_URL).createContract(validatedPoolId);
@@ -275,6 +353,8 @@ export async function buildSubmitCommitmentTransaction(
     const validatedPoolId = StellarContractIdSchema.parse(poolId);
     const validatedChoice = RoundChoiceSchema.parse(choice);
     const validatedRoundNumber = RoundNumberSchema.parse(roundNumber);
+    // Gate before the salt is generated or stored so a refused commit leaves no local state (#1491).
+    assertCapability("commit", validatedPoolId, FN);
 
     const salt = generateSalt();
     const commitment = await computeCommitment(validatedChoice, salt);
@@ -323,6 +403,7 @@ export async function buildRevealChoiceTransaction(
     const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
     const validatedPoolId = StellarContractIdSchema.parse(poolId);
     const validatedRoundNumber = RoundNumberSchema.parse(roundNumber);
+    assertCapability("reveal", validatedPoolId, FN);
 
     const stored = loadCommitment(validatedPoolId, validatedRoundNumber, validatedPublicKey);
     if (!stored) {
@@ -375,9 +456,10 @@ export async function buildClaimWinningsTransaction(
   try {
     const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
     const validatedPoolId = StellarContractIdSchema.parse(poolId);
+    assertCapability("claim", validatedPoolId, FN);
 
     const arenaState = await fetchArenaState(validatedPoolId, validatedPublicKey);
-    if (!arenaState.hasWon) {
+    if (!arenaState.contractUserState.won) {
       throw new ContractError({
         code: ContractErrorCode.VALIDATION_FAILED,
         message:
@@ -433,7 +515,6 @@ export async function fetchArenaState(
       ? StellarPublicKeySchema.parse(userAddress)
       : undefined;
 
-    const server = stellarRpcGateway.rpcServer;
     const arenaContract = new ContractClientFactory(SOROBAN_RPC_URL).createContract(validatedArenaId);
 
     const dummyAccount = new Account(
@@ -455,7 +536,9 @@ export async function fetchArenaState(
       operation: getStateOperation,
     });
 
-    const stateSimulation = await stellarRpcGateway.simulateTransaction(stateTx);
+    const stateSimulation = await stellarRpcGateway.simulateTransaction(
+      stateTx as SorobanRpcTransaction,
+    );
 
     if (
       "error" in stateSimulation ||
@@ -500,12 +583,11 @@ export async function submitSignedTransaction(signedXdr: string) {
   const FN = "submitSignedTransaction";
   try {
     const validatedSignedXdr = SignedXdrSchema.parse(signedXdr);
-    const server = stellarRpcGateway.rpcServer;
 
     const tx = TransactionBuilder.fromXDR(
       validatedSignedXdr,
       NETWORK_PASSPHRASE,
-    );
+    ) as SorobanRpcTransaction;
     const response = await stellarRpcGateway.sendTransaction(tx);
 
     if (response.status !== "PENDING") {
@@ -518,7 +600,7 @@ export async function submitSignedTransaction(signedXdr: string) {
 
     const hash = response.hash;
     let getTxResponse: Awaited<
-      ReturnType<(typeof server)["getTransaction"]>
+      ReturnType<StellarRpcGateway["getTransaction"]>
     > | undefined;
 
     const { maxRetries, retryIntervalMs } = getSubmitRetryConfig();
@@ -529,8 +611,9 @@ export async function submitSignedTransaction(signedXdr: string) {
         setTimeout(resolve, retryIntervalMs),
       );
       try {
-        getTxResponse = await stellarRpcGateway.getTransaction(hash);
-        if (getTxResponse.status !== "NOT_FOUND") {
+        const transactionResponse = await stellarRpcGateway.getTransaction(hash);
+        getTxResponse = transactionResponse;
+        if (transactionResponse.status !== "NOT_FOUND") {
           break;
         }
       } catch {
@@ -591,7 +674,11 @@ export async function checkTransactionOnHorizon(
   hash: string;
   status: "SUCCESS" | "FAILED" | "NOT_FOUND";
 }> {
-  return stellarRpcGateway.checkTransactionOnHorizon(hash, fetchFn);
+  return stellarRpcGateway.checkTransactionOnHorizon(
+    hash,
+    horizonBaseUrl,
+    fetchFn,
+  );
 }
 
 /**
@@ -628,7 +715,11 @@ export async function reconcilePendingTransaction(
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
 
-    const result = await stellarRpcGateway.checkTransactionOnHorizon(hash, fetchFn).catch(
+    const result = await stellarRpcGateway.checkTransactionOnHorizon(
+      hash,
+      horizonBaseUrl,
+      fetchFn,
+    ).catch(
       (): { hash: string; status: "SUCCESS" | "FAILED" | "NOT_FOUND" } => ({ hash, status: "NOT_FOUND" }),
     );
 

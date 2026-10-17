@@ -8,6 +8,10 @@ import { useStellarWallet } from './useStellarWallet';
 import { usePasskeyWallet } from './usePasskeyWallet';
 import { isStellarConfigured, stellarConfig } from '@/lib/stellarConfig';
 import { Balance, fetchWalletBalance } from '@/shared-d/utils/stellar-balance';
+// Side-effect import: installs the single asset-readiness telemetry sink for
+// the whole app. Every gate the provider renders — join, stake, claim — reports
+// through it, so there is one place to change or disable the destination.
+import '@/shared-d/telemetry/install-asset-readiness-sink';
 
 export const WalletContext = createContext<WalletContextType | null>(null);
 
@@ -26,9 +30,11 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
     isConnected: extensionIsConnected,
     status: extensionStatus,
     error: extensionError,
+    walletNetworkName: extensionWalletNetworkName,
     connectWallet,
     disconnectWallet,
     signTransaction: signWithExtension,
+    recheckNetwork: recheckExtensionNetwork,
   } = useStellarWallet(network);
   const passkey = usePasskeyWallet();
 
@@ -41,9 +47,17 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
   const passkeyActive = passkey.isRegistered && passkey.address !== null;
   const publicKey = passkeyActive ? passkey.address : extensionPublicKey;
   const isConnected = passkeyActive ? true : extensionIsConnected;
+  // Passkeys sign through the app's own backend/relayer rather than a
+  // browser extension with its own independently-selectable network, so a
+  // passkey session can never be in a 'network-mismatch' state (#1404).
   const status = passkeyActive ? 'connected' : extensionStatus;
   const error = passkeyActive ? null : extensionError;
+  const walletNetworkName = passkeyActive ? null : extensionWalletNetworkName;
   const signTransaction = passkeyActive ? passkey.sign : signWithExtension;
+  const recheckNetwork = useCallback(async () => {
+    if (passkeyActive) return;
+    await recheckExtensionNetwork();
+  }, [passkeyActive, recheckExtensionNetwork]);
 
   const [balance, setBalance] = useState<Balance>({ xlm: 0, usdc: 0 });
   const [isLoadingBalance, setIsLoadingBalance] = useState(false);
@@ -106,6 +120,8 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
       disconnect,
       signTransaction,
       refreshBalance,
+      walletNetworkName,
+      recheckNetwork,
     }),
     [
       status,
@@ -120,6 +136,8 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
       disconnect,
       signTransaction,
       refreshBalance,
+      walletNetworkName,
+      recheckNetwork,
     ]
   );
 
