@@ -42,6 +42,7 @@ export const CONTRACT_PANIC_USER_MESSAGES: Readonly<Record<number, string>> =
     33: "The commitment phase has ended. You can no longer submit choices for this round.",
     34: "Invalid round duration. Please check the duration parameter.",
     35: "Vault deposit failed. The token transfer has been rolled back.",
+    41: "Player limits cannot be modified once players have already joined the arena.",
     // Factory 100–199
     100: "Stake amount does not meet the rules for creating a pool.",
     101: "This token is not supported for pool creation.",
