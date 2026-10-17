@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "updatedAt": "2026-10-17T12:00:00Z",
+  "defaultMaxAllowedRegressionPercent": 10.0,
+  "entrypoints": {
+    "join": {
+      "instructions": 150000,
+      "read_entries": 4,
+      "write_entries": 3,
+      "read_bytes": 1200,
+      "write_bytes": 900,
+      "maxAllowedRegressionPercent": 10.0
+    },
+    "commit": {
+      "instructions": 130000,
+      "read_entries": 4,
+      "write_entries": 3,
+      "read_bytes": 1100,
+      "write_bytes": 800,
+      "maxAllowedRegressionPercent": 10.0
+    },
+    "reveal": {
+      "instructions": 145000,
+      "read_entries": 4,
+      "write_entries": 3,
+      "read_bytes": 1200,
+      "write_bytes": 850,
+      "maxAllowedRegressionPercent": 10.0
+    },
+    "resolve_10": {
+      "instructions": 850000,
+      "read_entries": 25,
+      "write_entries": 15,
+      "read_bytes": 5000,
+      "write_bytes": 3500,
+      "maxAllowedRegressionPercent": 10.0
+    },
+    "resolve_100": {
+      "instructions": 4500000,
+      "read_entries": 160,
+      "write_entries": 110,
+      "read_bytes": 32000,
+      "write_bytes": 25000,
+      "maxAllowedRegressionPercent": 10.0
+    },
+    "resolve_max": {
+      "instructions": 4500000,
+      "read_entries": 160,
+      "write_entries": 110,
+      "read_bytes": 32000,
+      "write_bytes": 25000,
+      "maxAllowedRegressionPercent": 10.0
+    },
+    "claim": {
+      "instructions": 170000,
+      "read_entries": 6,
+      "write_entries": 4,
+      "read_bytes": 1600,
+      "write_bytes": 1100,
+      "maxAllowedRegressionPercent": 10.0
+    },
+    "refund": {
+      "instructions": 140000,
+      "read_entries": 5,
+      "write_entries": 4,
+      "read_bytes": 1300,
+      "write_bytes": 950,
+      "maxAllowedRegressionPercent": 10.0
+    },
+    "stake": {
+      "instructions": 130000,
+      "read_entries": 5,
+      "write_entries": 4,
+      "read_bytes": 1200,
+      "write_bytes": 900,
+      "maxAllowedRegressionPercent": 10.0
+    },
+    "unstake": {
+      "instructions": 135000,
+      "read_entries": 5,
+      "write_entries": 4,
+      "read_bytes": 1250,
+      "write_bytes": 920,
+      "maxAllowedRegressionPercent": 10.0
+    }
+  }
+}

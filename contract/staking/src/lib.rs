@@ -1289,3 +1289,7 @@ mod test {
         assert_eq!(result, Err(Ok(StakingError::NotInitialized)));
     }
 }
+
+#[cfg(test)]
+mod resource_benchmarks;
+

@@ -80,8 +80,25 @@ jobs:
           path: contract/target/wasm-metrics/sizes.md
           if-no-files-found: error
 
+      - name: Check contract resource costs and regression thresholds (#1649)
+        working-directory: ./contract
+        run: |
+          chmod +x ./scripts/check_resource_costs.sh ./scripts/evaluate_resource_costs.py
+          ./scripts/check_resource_costs.sh
+
+      - name: Upload resource cost metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-resource-cost-metrics
+          path: |
+            contract/target/resource-metrics/report.md
+            contract/target/resource-metrics/costs.json
+          if-no-files-found: ignore
+
       - name: Build contract docs
         working-directory: ./contract
         env:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --workspace --no-deps
+
