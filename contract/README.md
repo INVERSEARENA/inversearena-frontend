@@ -68,6 +68,29 @@ ABI snapshots live at `<contract>/abi_snapshot.json` and are generated from comp
 
 After regenerating, commit the updated snapshot file and document the interface change in your PR.
 
+### Resource Cost Benchmarks
+
+Contract execution resource costs (CPU instructions, ledger read/write entries, and ledger read/write bytes) are metered via `env.cost_estimate().resources()` across hot paths:
+- `join` (`ArenaContract::join_arena`)
+- `commit` (`ArenaContract::submit_commitment`)
+- `reveal` (`ArenaContract::reveal_choice`)
+- `resolve_10`, `resolve_100`, `resolve_max` (`ArenaContract::resolve_round`)
+- `claim` (`ArenaContract::claim`)
+- `refund` (`ArenaContract::claim_refund`)
+- `stake` (`StakingContract::stake`)
+- `unstake` (`StakingContract::unstake`)
+
+Resource baselines are stored in `contract/baseline-resource-costs.json`. CI fails on any unblessed regression exceeding the configured threshold (default 10%).
+
+```bash
+# Run benchmarks and evaluate against committed baseline
+./scripts/check_resource_costs.sh
+
+# Bless / update baseline after intentional changes or SDK upgrades
+./scripts/check_resource_costs.sh --bless
+```
+
+
 ## Contributing
 
 1. Pick an issue from the tracker.

@@ -4711,3 +4711,6 @@ mod test {
 mod integration_tests;
 #[cfg(test)]
 mod join_arena_tests;
+#[cfg(test)]
+mod resource_benchmarks;
+

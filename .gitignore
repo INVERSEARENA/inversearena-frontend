@@ -13,6 +13,8 @@ contract/target/
 # Testing & caches
 coverage/
 .eslintcache
+__pycache__/
+*.py[cod]
 
 # IDE settings
 .vscode/
