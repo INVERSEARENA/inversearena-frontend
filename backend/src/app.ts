@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
+import { config } from "./config";
 import { createApiRouter } from "./routes";
 import { createAdminRouter } from "./routes/admin";
 import { createTreasuryRouter } from "./routes/treasury";
@@ -88,7 +89,7 @@ export function createApp(deps: AppDependencies): express.Application {
       },
     })
   );
-  const allowedOrigins = (process.env.ALLOWED_ORIGINS || "").split(",").filter(Boolean);
+  const allowedOrigins = (config.ALLOWED_ORIGINS || "").split(",").filter(Boolean);
   app.use(cors({
     origin: allowedOrigins.length > 0 ? allowedOrigins : undefined,
     credentials: true,

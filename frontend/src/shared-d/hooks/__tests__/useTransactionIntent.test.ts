@@ -1,4 +1,3 @@
-import { describe, it, expect, beforeEach, afterEach, jest } from "@jest/globals";
 import { renderHook, act } from "@testing-library/react";
 import { Account, Contract, TransactionBuilder } from "@stellar/stellar-sdk";
 import { useTransactionIntent } from "../useTransactionIntent";
@@ -33,10 +32,10 @@ function jsonResponse(body: unknown, ok = true) {
 type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 
 describe("useTransactionIntent", () => {
-  let fetchMock: jest.Mock<FetchFn>;
+  let fetchMock: jest.Mock<Promise<Response>, [string, RequestInit?]>;
 
   beforeEach(() => {
-    fetchMock = jest.fn<FetchFn>();
+    fetchMock = jest.fn<Promise<Response>, [string, RequestInit?]>();
     global.fetch = fetchMock as unknown as typeof fetch;
     sessionStorage.clear();
   });
@@ -55,8 +54,8 @@ describe("useTransactionIntent", () => {
 
     const { result } = renderHook(() => useTransactionIntent());
 
-    const signTransaction = jest.fn<(xdr: string) => Promise<string>>().mockResolvedValue(REAL_SIGNED_XDR);
-    const submitSignedTransaction = jest.fn<(signedXdr: string) => Promise<unknown>>().mockResolvedValue({ status: "SUCCESS" });
+    const signTransaction = jest.fn<Promise<string>, [string]>().mockResolvedValue(REAL_SIGNED_XDR);
+    const submitSignedTransaction = jest.fn<Promise<unknown>, [string]>().mockResolvedValue({ status: "SUCCESS" });
     const onSigned = jest.fn();
 
     let outcome: { hash: string } | undefined;
@@ -102,8 +101,8 @@ describe("useTransactionIntent", () => {
     const { result } = renderHook(() => useTransactionIntent());
 
     const rejection = new Error("User rejected access");
-    const signTransaction = jest.fn<(xdr: string) => Promise<string>>().mockRejectedValue(rejection);
-    const submitSignedTransaction = jest.fn<(signedXdr: string) => Promise<unknown>>();
+    const signTransaction = jest.fn<Promise<string>, [string]>().mockRejectedValue(rejection);
+    const submitSignedTransaction = jest.fn<Promise<unknown>, [string]>();
 
     await act(async () => {
       await expect(
@@ -144,7 +143,7 @@ describe("useTransactionIntent", () => {
     });
 
     const { result } = renderHook(() => useTransactionIntent());
-    const signTransaction = jest.fn<(xdr: string) => Promise<string>>().mockRejectedValue(new Error("Signing window timed out"));
+    const signTransaction = jest.fn<Promise<string>, [string]>().mockRejectedValue(new Error("Signing window timed out"));
 
     await act(async () => {
       await expect(
@@ -154,7 +153,7 @@ describe("useTransactionIntent", () => {
           publicKey: PUBLIC_KEY,
           buildTransaction: async () => buildTestTransaction(),
           signTransaction,
-          submitSignedTransaction: jest.fn<(signedXdr: string) => Promise<unknown>>(),
+          submitSignedTransaction: jest.fn<Promise<unknown>, [string]>(),
           networkPassphrase: PASSPHRASE,
         })
       ).rejects.toThrow();
@@ -174,10 +173,10 @@ describe("useTransactionIntent", () => {
     });
 
     const { result } = renderHook(() => useTransactionIntent());
-    const signTransaction = jest.fn<(xdr: string) => Promise<string>>().mockResolvedValue(REAL_SIGNED_XDR);
+    const signTransaction = jest.fn<Promise<string>, [string]>().mockResolvedValue(REAL_SIGNED_XDR);
     const submissionError = new Error("Soroban rejected transaction");
     const submitSignedTransaction = jest
-      .fn<(signedXdr: string) => Promise<unknown>>()
+      .fn<Promise<unknown>, [string]>()
       .mockRejectedValue(submissionError);
 
     await act(async () => {
@@ -210,7 +209,7 @@ describe("useTransactionIntent", () => {
     });
 
     const { result } = renderHook(() => useTransactionIntent());
-    const signTransaction = jest.fn<(xdr: string) => Promise<string>>().mockRejectedValue(new Error("User rejected access"));
+    const signTransaction = jest.fn<Promise<string>, [string]>().mockRejectedValue(new Error("User rejected access"));
 
     await act(async () => {
       await expect(
@@ -220,7 +219,7 @@ describe("useTransactionIntent", () => {
           publicKey: PUBLIC_KEY,
           buildTransaction: async () => buildTestTransaction(),
           signTransaction,
-          submitSignedTransaction: jest.fn<(signedXdr: string) => Promise<unknown>>(),
+          submitSignedTransaction: jest.fn<Promise<unknown>, [string]>(),
           networkPassphrase: PASSPHRASE,
         })
       ).rejects.toThrow();
@@ -237,7 +236,7 @@ describe("useTransactionIntent", () => {
           publicKey: PUBLIC_KEY,
           buildTransaction: async () => buildTestTransaction(),
           signTransaction,
-          submitSignedTransaction: jest.fn<(signedXdr: string) => Promise<unknown>>(),
+          submitSignedTransaction: jest.fn<Promise<unknown>, [string]>(),
           networkPassphrase: PASSPHRASE,
         })
       ).rejects.toThrow();
@@ -253,8 +252,8 @@ describe("useTransactionIntent", () => {
     fetchMock.mockRejectedValue(new Error("network down"));
 
     const { result } = renderHook(() => useTransactionIntent());
-    const signTransaction = jest.fn<(xdr: string) => Promise<string>>().mockResolvedValue(REAL_SIGNED_XDR);
-    const submitSignedTransaction = jest.fn<(signedXdr: string) => Promise<unknown>>().mockResolvedValue({ status: "SUCCESS" });
+    const signTransaction = jest.fn<Promise<string>, [string]>().mockResolvedValue(REAL_SIGNED_XDR);
+    const submitSignedTransaction = jest.fn<Promise<unknown>, [string]>().mockResolvedValue({ status: "SUCCESS" });
 
     let outcome: { hash: string } | undefined;
     await act(async () => {

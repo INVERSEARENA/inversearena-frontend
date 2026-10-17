@@ -8,6 +8,8 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
+    "lint": "node ../scripts/check-backend-env-lint.mjs",
+    "check:env-drift": "node ../scripts/generate-env-examples.mjs --check",
     "test:request-validation": "tsx --test tests/request-validation.unit.test.ts",
     "test": "jest",
     "test:migration": "jest --testPathPattern=migration.test.ts --runInBand",

@@ -1,5 +1,6 @@
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import { apiError } from "../utils/apiError";
+import { config } from "../config";
 
 const DEFAULT_MAX_CONNECTIONS_PER_IP = 5;
 const DEFAULT_MAX_CONNECTIONS_PER_ARENA = 100;
@@ -8,8 +9,8 @@ const connectionsByIp = new Map<string, number>();
 const connectionsByArena = new Map<string, number>();
 
 function readPositiveInt(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (!raw) return fallback;
+  const raw = (config as Record<string, unknown>)[name];
+  if (raw === undefined || raw === null || raw === "") return fallback;
   const parsed = Number(raw);
   return Number.isInteger(parsed) && parsed >= 1 ? parsed : fallback;
 }

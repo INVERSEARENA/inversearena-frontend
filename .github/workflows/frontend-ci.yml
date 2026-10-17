@@ -38,5 +38,9 @@ jobs:
       - name: TypeScript typecheck
         run: pnpm exec tsc --noEmit
 
+      - name: Check .env.example drift (#1650)
+        working-directory: .
+        run: node scripts/generate-env-examples.mjs --check
+
       - name: Jest unit tests
         run: pnpm exec jest --ci --runInBand --passWithNoTests

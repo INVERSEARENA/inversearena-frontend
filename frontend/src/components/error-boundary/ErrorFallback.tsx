@@ -84,14 +84,14 @@ Timestamp: ${new Date().toISOString()}
               : "Something went wrong in the arena"}
           </p>
           <p className="text-gray-500 text-sm">
-            Don't worry, your data is safe. Try one of the recovery options below.
+            Don&apos;t worry, your data is safe. Try one of the recovery options below.
           </p>
         </div>
 
         {/* Error Details (Collapsed by default) — only shown outside
             production, since error.message/error.stack can reveal internal
             file paths and function names to end users. */}
-        {process.env.NODE_ENV !== "production" && (
+        {(process.env as Record<string, string | undefined>).NODE_ENV !== "production" && (
           <details className="mb-8 bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
             <summary className="cursor-pointer p-4 hover:bg-gray-800 transition-colors text-gray-400 font-mono text-sm">
               View Technical Details

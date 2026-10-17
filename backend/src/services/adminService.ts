@@ -3,6 +3,8 @@ import { AuditLogModel } from "../db/models/auditLog.model";
 import { ConfirmationTokenModel } from "../db/models/confirmationToken.model";
 import type { AuditLogEntry, RequestTokenResult } from "../types/admin";
 
+import { config } from "../config";
+
 const DEFAULT_TTL_SECONDS = 900; // 15 minutes
 
 function hashToken(rawToken: string): string {
@@ -10,7 +12,7 @@ function hashToken(rawToken: string): string {
 }
 
 function ttlSeconds(): number {
-  const env = Number(process.env.ADMIN_TOKEN_TTL_SECONDS);
+  const env = Number(config.ADMIN_TOKEN_TTL_SECONDS);
   return Number.isFinite(env) && env > 0 ? env : DEFAULT_TTL_SECONDS;
 }
 

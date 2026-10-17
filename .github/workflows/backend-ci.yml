@@ -62,6 +62,12 @@ jobs:
       - name: Verify redaction policy (#1531)
         run: node scripts/verify-redaction.mjs
 
+      - name: Verify zero process.env reads outside src/config (#1650)
+        run: node scripts/check-backend-env-lint.mjs
+
+      - name: Check .env.example drift (#1650)
+        run: node scripts/generate-env-examples.mjs --check
+
       - name: Run Prisma Migrations
         working-directory: ./backend
         env:

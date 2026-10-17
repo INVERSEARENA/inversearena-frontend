@@ -31,15 +31,18 @@ export class StakingNotConfiguredError extends Error {
  * contract id is a hard error (mirrors `stellarConfig.ts`): silently treating
  * it as unset would hide a typo as "staking not deployed".
  */
-export function resolveStakingConfig(env: NodeJS.ProcessEnv = process.env): StakingConfig {
-  const raw = env.STAKING_CONTRACT_ID?.trim();
+import { config } from "../config";
+
+export function resolveStakingConfig(env?: NodeJS.ProcessEnv): StakingConfig {
+  const activeEnv = env ?? (config as any);
+  const raw = (activeEnv.STAKING_CONTRACT_ID as string | undefined)?.trim();
   const contractId = raw ? raw : null;
   if (contractId && !CONTRACT_ID_RE.test(contractId)) {
     throw new Error(
       "STAKING_CONTRACT_ID must be a valid Stellar contract id (C...55 base32 chars)",
     );
   }
-  const decimalsRaw = env.STAKING_ASSET_DECIMALS?.trim();
+  const decimalsRaw = (activeEnv.STAKING_ASSET_DECIMALS as string | undefined)?.trim();
   const decimals = decimalsRaw ? Number(decimalsRaw) : 7;
   if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) {
     throw new Error("STAKING_ASSET_DECIMALS must be an integer in [0, 18]");

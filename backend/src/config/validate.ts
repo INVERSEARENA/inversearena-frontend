@@ -1,9 +1,13 @@
 import { checkRotationReadiness, type RotationReadiness, type SecretPurpose } from "./secretKeyring";
 import { getTreasuryConfig } from "./treasuryConfig";
 import { getOracleFreshnessConfig } from "./oracleFreshnessConfig";
+import { validateBackendEnv } from "./env";
 import { logger } from "../utils/logger";
 
 export function validateConfig(): void {
+  // Validate overall backend environment schema first (#1650)
+  validateBackendEnv();
+
   const apiKey = process.env.ADMIN_API_KEY ?? "";
   if (apiKey === "change-me-in-production") {
     throw new Error(

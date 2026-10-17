@@ -19,9 +19,11 @@ import {
   getLobbyReservationRateLimitConfig,
 } from "../middleware/rateLimit";
 
+import { config } from "../config";
+
 const RESERVATION_TTL_SECONDS = Math.max(
   1,
-  Number(process.env.LOBBY_RESERVATION_TTL_SECONDS) || 120,
+  Number(config.LOBBY_RESERVATION_TTL_SECONDS) || 120,
 );
 
 const ArenaIdParamsSchema = z.object({

@@ -18,13 +18,15 @@ export const maskWalletAddress = (address?: string) => {
     return `${address.slice(0, 8)}...${address.slice(-4)}`;
 };
 
+import { config } from "../config";
+
 const configuredSecrets = [
-    process.env.JWT_SECRET,
-    process.env.ADMIN_API_KEY,
+    config.JWT_SECRET,
+    config.ADMIN_API_KEY,
 ].filter(Boolean) as string[];
 
 export const logger = pino({
-    level: process.env.LOG_LEVEL || "info",
+    level: config.LOG_LEVEL || "info",
     redact: {
         paths: redactPaths,
         censor: "[REDACTED]",

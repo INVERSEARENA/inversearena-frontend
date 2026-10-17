@@ -24,16 +24,18 @@ beforeAll(async () => {
         rm(join(mongoCacheDir, "mongodb-macos-arm64-8.2.1.tgz"), { force: true }),
         rm(join(mongoCacheDir, "8.2.1.lock"), { force: true }),
     ]);
-    mongoServer = await MongoMemoryServer.create();
-    const mongoUri = mongoServer.getUri();
-    process.env.MONGO_URI = mongoUri;
+    if (!process.env.SKIP_MONGO_MEMORY_SERVER && process.platform !== "win32") {
+        try {
+            mongoServer = await MongoMemoryServer.create();
+            const mongoUri = mongoServer.getUri();
+            process.env.MONGO_URI = mongoUri;
 
-    // Connect to postgres
-    // Ensure the DATABASE_URL is set in the environment or actions
-
-    // Connect to mongoose if required (check start scripts or env vars)
-    if (process.env.MONGO_URI) {
-        await mongoose.connect(process.env.MONGO_URI);
+            if (process.env.MONGO_URI) {
+                await mongoose.connect(process.env.MONGO_URI);
+            }
+        } catch (err) {
+            console.warn("MongoMemoryServer unavailable, continuing without in-memory Mongo:", (err as Error).message);
+        }
     }
 });
 

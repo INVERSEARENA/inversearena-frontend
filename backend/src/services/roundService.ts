@@ -37,6 +37,7 @@ import {
 import { NotificationPreferencesService } from './notificationPreferencesService';
 import { PushService } from './pushService';
 import { getStellarConfig, type StellarConfig } from '../config/stellarConfig';
+import { config } from '../config';
 import { buildRoundResolution } from '../domain/roundResolution';
 import { contextLogger, maskWalletAddress } from '../utils/logger';
 import { OracleFreshnessService, StaleOracleDataError, type OracleReading } from './oracleFreshnessService';
@@ -225,7 +226,7 @@ export class RoundService {
     contractId: string,
     roundNumber: number,
   ): Promise<number> {
-    const signerSecret = process.env.ARENA_ADMIN_SECRET;
+    const signerSecret = config.ARENA_ADMIN_SECRET;
 
     if (!signerSecret) {
       throw new Error("ARENA_ADMIN_SECRET is not configured. Cannot submit on-chain resolve_round.");

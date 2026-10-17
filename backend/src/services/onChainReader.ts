@@ -20,6 +20,7 @@ import { Address, Contract, Keypair, nativeToScVal, scValToNative, xdr, rpc } fr
 // independent backend typecheck/build.
 import { StellarRpcGateway } from "../../../frontend/src/shared-d/services/stellarRpcGateway";
 import { getStellarConfig, assertAllowedRpcUrl, RPC_MAX_RESPONSE_BYTES } from "../config/stellarConfig";
+import { config } from "../config";
 import {
   getSorobanSimulationSingleFlight,
   SorobanSimulationSingleFlight,
@@ -119,7 +120,7 @@ function getSourcePublicKey(): string {
   if (!sourcePublicKey) {
     // Derive a deterministic public key from an env var or generate a random one.
     // The key itself is irrelevant for simulation — it just needs to be valid.
-    const secret = process.env.ARENA_SIM_SOURCE_SECRET;
+    const secret = config.ARENA_SIM_SOURCE_SECRET;
     if (secret) {
       sourcePublicKey = Keypair.fromSecret(secret).publicKey();
     } else {

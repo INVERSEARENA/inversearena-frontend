@@ -5,8 +5,10 @@ export function isValidStellarAddress(address: string): boolean {
   return STELLAR_PUBLIC_KEY_REGEX.test(address);
 }
 
+import { config } from "../config";
+
 function getAdminWalletAllowlist(): Set<string> {
-  const raw = process.env.ADMIN_WALLET_ADDRESSES ?? "";
+  const raw = config.ADMIN_WALLET_ADDRESSES ?? "";
   return new Set(
     raw
       .split(",")
