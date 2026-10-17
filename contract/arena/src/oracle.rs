@@ -48,6 +48,13 @@ pub enum OracleFreshness {
     Unavailable,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OracleCallOutcome<T> {
+    Success(T),
+    Failed,
+    Unavailable,
+}
+
 impl OracleFreshness {
     /// Stable numeric code for event payloads (Soroban events favor small
     /// primitives over enums for indexer-friendliness).
