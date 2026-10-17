@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { buildSubmitCommitmentTransaction, submitSignedTransaction } from "@/shared-d/utils/stellar-transactions";
+import { useAutoReveal } from "@/features/arena/useAutoReveal";
 import {
   evaluateSigningRequest,
   // Imported as a value, not a type: these call sites narrow policy
@@ -18,6 +19,8 @@ interface ChoiceSubmissionProps {
   arenaId: string;
   roundNumber: number;
   deadline: string;
+  revealDeadline?: string;
+  phase?: "commit" | "reveal" | "resolved";
   arenaStatus: string;
   wallet: Pick<
     WalletHook,
@@ -59,12 +62,14 @@ export function ChoiceSubmission({
   arenaId,
   roundNumber,
   deadline,
+  revealDeadline = "",
+  phase: arenaPhase = "commit",
   arenaStatus,
   wallet,
 }: ChoiceSubmissionProps) {
   const { publicKey, isConnected, connectWallet, signTransaction, status: walletStatus } = wallet;
   const [selectedChoice, setSelectedChoice] = useState<Choice | null>(null);
-  const [phase, setPhase] = useState<SubmissionPhase>("idle");
+  const [submissionPhase, setPhase] = useState<SubmissionPhase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [secondsRemaining, setSecondsRemaining] = useState(0);
 
@@ -72,7 +77,16 @@ export function ChoiceSubmission({
   const deadlineMs = useMemo(() => (deadline ? Date.parse(deadline) : null), [deadline]);
   const isDeadlineReached = deadlineMs !== null && secondsRemaining <= 0;
   const isArenaOpen = arenaStatus.toUpperCase() === "OPEN";
-  const isLocked = phase === "signing" || phase === "submitting" || phase === "submitted";
+  const isLocked = submissionPhase === "signing" || submissionPhase === "submitting" || submissionPhase === "submitted";
+  const autoReveal = useAutoReveal({
+    arenaId,
+    roundNumber,
+    phase: arenaPhase,
+    revealDeadline: revealDeadline ? Date.parse(revealDeadline) : null,
+    publicKey,
+    signTransaction,
+    enabled: Boolean(revealDeadline),
+  });
 
   useEffect(() => {
     const tick = () => {
@@ -224,11 +238,21 @@ export function ChoiceSubmission({
         </div>
 
         <div className="text-right">
-          {phase === "submitted" ? (
+          {autoReveal.phase === "confirmed" ? (
+            <p className="text-sm font-semibold text-[#3CFF1A]">Reveal confirmed</p>
+          ) : autoReveal.phase === "signing" ? (
+            <p className="text-sm font-semibold text-white/80">Reveal awaiting wallet signature</p>
+          ) : autoReveal.phase === "submitted" ? (
+            <p className="text-sm font-semibold text-white/80">Reveal submitted, confirming...</p>
+          ) : autoReveal.phase === "failed" ? (
+            <p role="alert" className="text-sm font-semibold text-[#FF0A54]">{autoReveal.error}</p>
+          ) : arenaPhase === "reveal" ? (
+            <p className="text-sm font-semibold text-white/80">Reveal window open</p>
+          ) : submissionPhase === "submitted" ? (
             <p className="text-sm font-semibold text-[#3CFF1A]">
               Choice submitted: {selectedChoice}
             </p>
-          ) : phase === "error" ? (
+          ) : submissionPhase === "error" ? (
             <div className="space-y-1">
               <p className="text-sm font-semibold text-[#FF0A54]">{error}</p>
               <button
