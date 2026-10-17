@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    "examples/**",
+    "coverage/**",
   ]),
   // #1567 — the mock leaderboard module is test-only. Production code must
   // use `useLeaderboard` (GET /api/leaderboard) and `../utils/format`.
@@ -29,6 +31,16 @@ const eslintConfig = defineConfig([
           ],
         },
       ],
+      // Baseline legacy rules downgraded to warnings for burn-down plan (#1642).
+      // See docs/LINT_BASELINE.md for migration tracking.
+      "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/no-require-imports": "warn",
+      "react-hooks/set-state-in-effect": "warn",
+      "react-hooks/immutability": "warn",
+      "react-hooks/error-boundaries": "warn",
+      "react/jsx-no-comment-textnodes": "warn",
+      "react/no-unescaped-entities": "warn",
+      "prefer-const": "warn",
     },
   },
 ]);

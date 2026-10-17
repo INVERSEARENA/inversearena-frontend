@@ -21,6 +21,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
         with:
@@ -33,10 +35,52 @@ jobs:
           cache-dependency-path: frontend/pnpm-lock.yaml
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile --ignore-scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Cache Next.js build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            frontend/.next/cache
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('frontend/pnpm-lock.yaml') }}-${{ hashFiles('frontend/src/**', 'frontend/public/**') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-${{ hashFiles('frontend/pnpm-lock.yaml') }}-
 
       - name: TypeScript typecheck
         run: pnpm exec tsc --noEmit
 
+      - name: ESLint check (quiet baseline)
+        run: pnpm exec eslint --quiet
+
+      - name: ESLint check on changed files (zero warnings)
+        if: github.event_name == 'pull_request'
+        run: |
+          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- 'src/**/*.ts' 'src/**/*.tsx' || true)
+          if [ -n "$CHANGED_FILES" ]; then
+            echo "Linting changed files with zero-warning threshold:"
+            echo "$CHANGED_FILES"
+            pnpm exec eslint --max-warnings=0 $CHANGED_FILES
+          else
+            echo "No changed TS/TSX files detected in PR."
+          fi
+
       - name: Jest unit tests
         run: pnpm exec jest --ci --runInBand --passWithNoTests
+
+      - name: Bundle summary unit tests
+        run: node --test scripts/__tests__/summarize-bundle.test.mjs
+
+      - name: Build Next.js application
+        run: pnpm run build 2>&1 | tee next-build.log
+        env:
+          NEXT_PUBLIC_STELLAR_NETWORK: "testnet"
+          NEXT_PUBLIC_SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org"
+          NEXT_PUBLIC_STELLAR_HORIZON_URL: "https://horizon-testnet.stellar.org"
+          NEXT_PUBLIC_ARENA_FACTORY_CONTRACT_ID: "CA3D5KRYMCMCZWATH7KOWPVF3U5OHZDYIN2DTNZTR7BMDUFYHCVWZE4M"
+          NEXT_PUBLIC_INDEXER_URL: "http://localhost:3001"
+          NEXT_PUBLIC_APP_URL: "http://localhost:3000"
+          SENTRY_SUPPRESS_ANALYTICS: "1"
+
+      - name: Report bundle size summary to PR job summary
+        if: always()
+        run: node scripts/summarize-bundle.mjs next-build.log .next >> $GITHUB_STEP_SUMMARY
