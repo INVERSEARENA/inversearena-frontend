@@ -53,28 +53,25 @@ async function loadArenaLobbyData(arenaId: string) {
 export default async function ArenaLobbyPage({ params }: PageProps) {
   const { id: arenaId } = await params;
 
+  let lobbyData: Awaited<ReturnType<typeof loadArenaLobbyData>>;
   try {
-    const { notFound, stats, participants, nextCursor } =
-      await loadArenaLobbyData(arenaId);
-
-    return (
-      <ArenaLobbyClient
-        arenaId={arenaId}
-        initialStats={stats}
-        initialParticipants={participants}
-        initialNextCursor={nextCursor}
-        notFound={notFound}
-      />
-    );
+    lobbyData = await loadArenaLobbyData(arenaId);
   } catch {
-    return (
-      <ArenaLobbyClient
-        arenaId={arenaId}
-        initialStats={null}
-        initialParticipants={[]}
-        initialNextCursor={null}
-        notFound={false}
-      />
-    );
+    lobbyData = {
+      notFound: false,
+      stats: null,
+      participants: [],
+      nextCursor: null,
+    };
   }
+
+  return (
+    <ArenaLobbyClient
+      arenaId={arenaId}
+      initialStats={lobbyData.stats}
+      initialParticipants={lobbyData.participants}
+      initialNextCursor={lobbyData.nextCursor}
+      notFound={lobbyData.notFound}
+    />
+  );
 }

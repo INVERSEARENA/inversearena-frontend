@@ -7,8 +7,8 @@ interface TotalYieldPotProps {
   apr: number;
   /** When omitted, the badge falls back to the pre-#1512 unconditional "ORACLE VERIFIED"
    * label — callers that haven't wired up freshness data yet see no behavior change. */
-  freshness?: OracleFreshness;
-  ageSeconds?: number | null;
+  freshness?: OracleFreshness | undefined;
+  ageSeconds?: number | null | undefined;
 }
 
 function formatAge(ageSeconds: number): string {

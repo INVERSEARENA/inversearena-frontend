@@ -36,6 +36,14 @@ export default withSentryConfig(nextConfig, {
   // Requires SENTRY_AUTH_TOKEN (server-only; never exposed to the browser).
   widenClientFileUpload: true,
 
+  // Edge case (#1642): Skip source map upload in CI when SENTRY_AUTH_TOKEN is not provided
+  dryRun: !process.env.SENTRY_AUTH_TOKEN,
+  disableLogger: true,
+  sentry: {
+    disableServerWebpackPlugin: !process.env.SENTRY_AUTH_TOKEN,
+    disableClientWebpackPlugin: !process.env.SENTRY_AUTH_TOKEN,
+  },
+
   webpack: {
     // Do not wrap Next.js middleware/proxy. src/proxy.ts sets CORS + the
     // security headers, including the CSP nonce (#1296); Sentry's auto-wrap

@@ -33,10 +33,41 @@ jobs:
           cache-dependency-path: frontend/pnpm-lock.yaml
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile --ignore-scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Cache Next.js build cache
+        uses: actions/cache@v4
+        with:
+          path: frontend/.next/cache
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('frontend/pnpm-lock.yaml') }}-${{ hashFiles('frontend/src/**', 'frontend/public/**') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-${{ hashFiles('frontend/pnpm-lock.yaml') }}-
+            ${{ runner.os }}-nextjs-
+
+      - name: ESLint
+        run: pnpm lint --max-warnings 0
 
       - name: TypeScript typecheck
         run: pnpm exec tsc --noEmit
+
+      - name: Next.js production build
+        run: pnpm build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+          NODE_ENV: "production"
+          NEXT_PUBLIC_STELLAR_NETWORK: "testnet"
+          NEXT_PUBLIC_SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org"
+          NEXT_PUBLIC_HORIZON_URL: "https://horizon-testnet.stellar.org"
+          NEXT_PUBLIC_FACTORY_CONTRACT_ID: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
+          NEXT_PUBLIC_USDC_CONTRACT_ID: "CDEVGFYSZ7R424P5FBRQ76S67T24QY4V3Y2N5P64Q76R424P5FBRQ76S"
+          NEXT_PUBLIC_APP_ORIGIN: "http://localhost:3000"
+          NEXT_PUBLIC_DEMO_ARENA_ID: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
+          SENTRY_AUTH_TOKEN: ""
+          SENTRY_SUPPRESS_TURBOPACK_WARNING: "1"
+
+      - name: Report bundle size summary
+        if: always()
+        run: node scripts/report-bundle-size.mjs
 
       - name: Jest unit tests
         run: pnpm exec jest --ci --runInBand --passWithNoTests

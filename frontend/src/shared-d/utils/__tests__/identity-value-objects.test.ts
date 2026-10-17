@@ -384,7 +384,7 @@ describe("mutationIdempotencyKey", () => {
 
   it("different wallets produce different keys", () => {
     const wallet2 = parseStellarAccountId(
-      "GCKFBEIYTKP5RDBQMUFJUMOOR2A46QMWDS4M7A6NZK2WQOG3ZHPJDPD3",
+      "GAW5MSSAEVIFIVOXSEJWKW274AO7YYUUQKKZR4SS77LUDKD4SP5E6AEA",
     );
     const k1 = mutationIdempotencyKey(net, wallet, arena, 1, "join");
     const k2 = mutationIdempotencyKey(net, wallet2, arena, 1, "join");

@@ -4,6 +4,7 @@ export interface AgentIdentity {
   rank: number;
   level: number;
   survivalTime: number; // in seconds
+  displayName?: string | null;
 }
 
 // Stats card data (mapping to backend UserProfile)

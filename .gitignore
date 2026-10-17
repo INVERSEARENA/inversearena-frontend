@@ -9,6 +9,7 @@ build/
 
 # Rust / Soroban (workspace build artifacts)
 contract/target/
+target/
 
 # Testing & caches
 coverage/

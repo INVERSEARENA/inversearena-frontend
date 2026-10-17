@@ -58,7 +58,7 @@ export const RoundResolvedOverlay: React.FC<RoundResolvedOverlayProps> = ({
   const startHold = () => {
     setHolding(true);
     if (holdProgress.current) holdProgress.current.style.width = "0%";
-    let start = Date.now();
+    const start = Date.now();
     const tick = () => {
       const elapsed = Date.now() - start;
       const pct = Math.min(100, (elapsed / 1000) * 100);

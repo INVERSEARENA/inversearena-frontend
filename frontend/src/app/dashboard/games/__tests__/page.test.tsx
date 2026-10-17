@@ -4,6 +4,7 @@
 import React from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import GamesPage from "../page";
+import { mockArenas } from "@/features/games/mockArenas";
 
 const mockGet = jest.fn((key: string): string | null => {
   if (key === "filter") return null;
@@ -16,6 +17,23 @@ jest.mock("next/navigation", () => ({
   useRouter: () => ({ push: jest.fn(), replace: jest.fn() }),
   usePathname: () => "/dashboard/games",
 }));
+
+beforeEach(() => {
+  global.fetch = jest.fn((url: RequestInfo | URL) => {
+    const urlStr = url.toString();
+    const parsed = new URL(urlStr, "http://localhost");
+    const q = parsed.searchParams.get("q");
+    const items = q ? mockArenas.filter((a) => a.id.includes(q)) : mockArenas;
+    return Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ items }),
+    } as Response);
+  });
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
+});
 
 describe("GamesPage — Suspense boundary (issue #1285)", () => {
   it("wraps its useSearchParams() consumer in a Suspense boundary", () => {
