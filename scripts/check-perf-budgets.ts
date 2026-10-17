@@ -9,6 +9,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { fileURLToPath } from "url";
 
 export interface BudgetDeltaResult {
   metric: string;
@@ -186,7 +187,9 @@ export function runAllBudgetChecks(repoRoot: string): PerfBudgetReport {
 }
 
 if (process.argv[1] && process.argv[1].endsWith("check-perf-budgets.ts")) {
-  const root = path.resolve(__dirname, "..");
+  // scripts/ is an ESM package ("type": "module"), so `__dirname` does not
+  // exist here — resolve from this file's URL instead (#1656 gate fix).
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const report = runAllBudgetChecks(root);
   const md = generateMarkdownReport(report);
   console.log(md);
