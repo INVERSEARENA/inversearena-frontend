@@ -963,3 +963,73 @@ export const creatorStateConflictsTotal = new Counter({
   registers: [register],
 });
 
+export const feeEligibilityIssuedTotal = new Counter({
+  name: "fee_eligibility_issued_total",
+  help: "Total number of fee sponsorship eligibilities issued",
+  registers: [register],
+});
+
+export const feeEligibilityConsumedTotal = new Counter({
+  name: "fee_eligibility_consumed_total",
+  help: "Total number of fee sponsorship eligibilities consumed",
+  registers: [register],
+});
+
+export const feeEligibilityExpiredTotal = new Counter({
+  name: "fee_eligibility_expired_total",
+  help: "Total number of fee sponsorship eligibilities expired",
+  registers: [register],
+});
+
+export const activeStakeLimitBlockedTotal = new Counter({
+  name: "active_stake_limit_blocked_total",
+  help: "Total active stake limit blocked checks",
+  labelNames: ["reason"],
+  registers: [register],
+});
+
+export const activeStakeCurrentGauge = new Gauge({
+  name: "active_stake_current_usdc",
+  help: "Current active stake per user",
+  labelNames: ["user_id"],
+  registers: [register],
+});
+
+export const ttlKeeperHeadroomLedgers = new Gauge({
+  name: "ttl_keeper_headroom_ledgers",
+  help: "TTL keeper headroom in ledgers",
+  labelNames: ["contract", "key"],
+  registers: [register],
+});
+
+export const ttlKeeperIdentifyFailuresTotal = new Counter({
+  name: "ttl_keeper_identify_failures_total",
+  help: "TTL keeper identify failures total",
+  labelNames: ["contract", "reason"],
+  registers: [register],
+});
+
+export const ttlKeeperRenewalsTotal = new Counter({
+  name: "ttl_keeper_renewals_total",
+  help: "TTL keeper renewals total",
+  labelNames: ["contract", "status", "reason"],
+  registers: [register],
+});
+
+export const ttlKeeperConfirmationLagSeconds = new Histogram({
+  name: "ttl_keeper_confirmation_lag_seconds",
+  help: "TTL keeper confirmation lag in seconds",
+  labelNames: ["contract"],
+  registers: [register],
+});
+
+export const cacheRequestsTotal = new Counter({
+  name: "cache_requests_total",
+  help: "Total cache requests by namespace and result (hit or miss)",
+  labelNames: ["namespace", "result"],
+  registers: [register],
+});
+
+
+
+

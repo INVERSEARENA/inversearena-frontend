@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../middleware/validate";
 import { cacheMiddleware } from "../middleware/cache";
-import { cacheTTL } from "../cache/cacheService";
+import { CacheKeys, cacheTTL } from "../cache/cacheService";
 import { prisma } from "../db/prisma";
 import { createRateLimitMiddleware, getPoolsRateLimitConfig } from "../middleware/rateLimit";
 import type { RequestHandler } from "express";
@@ -162,7 +162,11 @@ export function createPoolsRouter(authMiddleware: RequestHandler): Router {
     authMiddleware,
     cacheMiddleware(
       (req) =>
-        `pool:eliminations:${req.params.id}:${req.query.limit ?? 25}:${req.query.cursor ?? "0"}`,
+        CacheKeys.pool.eliminations(
+          req.params.id ?? "",
+          (req.query.limit as string) ?? 25,
+          (req.query.cursor as string) ?? "0",
+        ),
       cacheTTL.ARENA_STATS,
     ),
     asyncHandler(async (req, res) => {

@@ -39,6 +39,8 @@ const TEST_PAYMENT_CONFIG: PaymentConfig = {
     hotSignerSecret: undefined,
     networkPassphrase: "Test SDF Network ; September 2015",
     sorobanRpcUrl: "https://soroban-testnet.stellar.org",
+    feeSponsorshipEnabled: false,
+    feeSponsorshipTtlHours: 72,
 };
 
 export function setupTestApp(overrides: { roundService?: RoundService } = {}) {

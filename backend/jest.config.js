@@ -51,10 +51,17 @@ module.exports = {
     "<rootDir>/tests/round\\.integration\\.test\\.ts",
   ],
   transform: {
-    "^.+\\.tsx?$": ["ts-jest", { tsconfig: "tsconfig.json" }],
+    "^.+\\.tsx?$": ["ts-jest", { tsconfig: "tsconfig.json", isolatedModules: true }],
+    "^.+\\.jsx?$": ["ts-jest", { tsconfig: "tsconfig.json", isolatedModules: true }],
   },
+  transformIgnorePatterns: [
+    "node_modules/(?!(@creit-tech|@jsr)/)",
+  ],
   setupFilesAfterEnv: ["<rootDir>/test/setup.ts"],
   moduleNameMapper: {
+    "^@creit-tech/stellar-wallets-kit$": "<rootDir>/test/__mocks__/@creit-tech/stellar-wallets-kit.ts",
+    "^@/shared-d/(.*)$": "<rootDir>/../frontend/src/shared-d/$1",
+    "^@/lib/(.*)$": "<rootDir>/../frontend/src/lib/$1",
     "^@/(.*)$": "<rootDir>/src/$1",
   },
   // Surface open async handle sources so tests cannot silently leave timers or

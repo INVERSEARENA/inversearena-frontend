@@ -3,7 +3,7 @@ import { Router, type RequestHandler } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../middleware/validate";
 import { cacheMiddleware } from "../middleware/cache";
-import { cacheKeys, cacheTTL } from "../cache/cacheService";
+import { CacheKeys, cacheKeys, cacheTTL } from "../cache/cacheService";
 import { subscribeArena } from "../cache/arenaPoller";
 import { prisma } from "../db/prisma";
 import type { CreateArenaInput } from "../types/arena";
@@ -235,11 +235,11 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   router.get(
     "/",
     cacheMiddleware((req) => {
-      const filter = req.query.filter || "all";
-      const search = req.query.q || "";
-      const limit = req.query.limit || "25";
-      const cursor = req.query.cursor || "0";
-      return `arenas:list:${filter}:${search}:${limit}:${cursor}`;
+      const filter = (req.query.filter as string) || "all";
+      const search = (req.query.q as string) || "";
+      const limit = (req.query.limit as string) || "25";
+      const cursor = (req.query.cursor as string) || "0";
+      return CacheKeys.arena.list(filter, search, limit, cursor);
     }, cacheTTL.ARENA_LIST ?? 30),
     asyncHandler(async (req, res) => {
       const parsed = z
@@ -347,7 +347,7 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
    */
   router.get(
     "/:id/stats",
-    cacheMiddleware((req) => cacheKeys.arenaStats(req.params.id ?? ""), cacheTTL.ARENA_STATS),
+    cacheMiddleware((req) => CacheKeys.arena.stats(req.params.id ?? ""), cacheTTL.ARENA_STATS),
     asyncHandler(async (req, res) => {
       const id = req.params.id;
       if (!id) {
@@ -379,7 +379,7 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
     "/:id/yield",
     cacheMiddleware(
       (req) =>
-        cacheKeys.arenaYield(
+        CacheKeys.arena.yield(
           req.params.id ?? "",
           Number(req.query.limit ?? 100),
           typeof req.query.cursor === "string" ? req.query.cursor : "",
@@ -421,7 +421,12 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
     "/:id/rounds",
     authMiddleware,
     cacheMiddleware(
-      (req) => `arena:rounds:${req.params.id}:${req.query.limit ?? 25}:${req.query.cursor ?? "0"}`,
+      (req) =>
+        CacheKeys.arena.rounds(
+          req.params.id ?? "",
+          (req.query.limit as string) ?? 25,
+          (req.query.cursor as string) ?? "0",
+        ),
       cacheTTL.ARENA_ROUNDS,
     ),
     asyncHandler(async (req, res) => {
@@ -834,7 +839,7 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   router.get(
     "/:id/health",
     cacheMiddleware(
-      (req) => `arena:health:${req.params.id}`,
+      (req) => CacheKeys.arena.health(req.params.id ?? ""),
       10, // 10 second TTL
     ),
     asyncHandler(async (req, res) => {

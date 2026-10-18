@@ -7,6 +7,11 @@ process.env.NONCE_TTL_SECONDS = "300";
 process.env.ADMIN_API_KEY = "test-admin-key-at-least-32-chars-long";
 process.env.ORACLE_WEBHOOK_SECRET = "test-oracle-webhook-secret";
 process.env.MONGOMS_MD5_CHECK = "0";
+process.env.NEXT_PUBLIC_SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
+process.env.NEXT_PUBLIC_HORIZON_URL = "https://horizon-testnet.stellar.org";
+process.env.NEXT_PUBLIC_FACTORY_CONTRACT_ID = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
+process.env.NEXT_PUBLIC_USDC_CONTRACT_ID = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
+process.env.TRUSTED_PROXY_COUNT = "1";
 
 import { redis } from "../src/cache/redisClient";
 import { prisma } from "../src/db/prisma";

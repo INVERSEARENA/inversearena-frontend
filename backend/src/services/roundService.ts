@@ -26,7 +26,7 @@ import {
   lifecycleCommandOutcomeTotal,
   lifecycleCommandDurationSeconds,
 } from '../utils/metrics';
-import { invalidateArenaStats } from '../cache/cacheService';
+import { invalidateArenaStats, invalidateRound } from '../cache/cacheService';
 import {
   getOnChainActivePlayerIds,
   getOnChainWinner,
@@ -467,6 +467,7 @@ export class RoundService {
       // immediately rather than after the TTL. Best-effort — a Redis outage
       // must not fail an otherwise-successful resolution.
       await invalidateArenaStats(round.arenaId).catch(() => {});
+      await invalidateRound(round.id).catch(() => {});
 
       // Best-effort round phase push fan-out (#1571); never fails resolution.
       void this.notifyRoundResolved(round.arenaId, round.roundNumber, input.allActivePlayerIds).catch(() => {});

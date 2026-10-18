@@ -20,6 +20,7 @@ import { enforcePayloadLimits } from "../validation/payloadLimits";
 import { ArenaProjectionCheckpointStore } from "./projection/arenaProjectionCheckpointStore";
 import { initialArenaProjection, type ArenaProjectionState } from "./projection/arenaProjectionFold";
 import { replayArenaProjection, type ArenaReplayOptions } from "./projection/arenaProjectionReplay";
+import { cache, invalidateArena, tags } from "../cache/cacheService";
 
 const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
 const TX_HASH_REGEX = /^[0-9a-f]{64}$/i;
@@ -214,6 +215,9 @@ export class ArenaService {
         metadata,
       },
     });
+
+    await invalidateArena(arena.id).catch(() => {});
+    await cache.invalidate(tags.arenas()).catch(() => {});
 
     return {
       id: arena.id,
