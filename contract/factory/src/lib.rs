@@ -1,8 +1,12 @@
 #![no_std]
 
+mod events;
 mod snapshot_tests;
 mod storage;
 pub mod types;
+
+#[cfg(test)]
+mod index_tests;
 
 #[cfg(test)]
 mod integration_tests;
@@ -371,11 +375,17 @@ impl FactoryContract {
         FactoryStorage::save_pool(&env, pool_id, &pool_metadata);
         FactoryStorage::increment_pool_count(&env);
 
+        // #1613: update secondary indexes atomically with pool creation.
+        FactoryStorage::index_host_pool(&env, &host, pool_id);
+        FactoryStorage::index_pool_status(&env, pool_id, &ArenaStatus::Active);
+
+        // #1607: emit via typed helper with normalized topics + versioned payload.
+        events::pool_created(&env, &host, pool_id, &arena, config.entry_fee);
         env.events().publish(
             (symbol_short!("POOL_CRE"),),
             (
                 pool_id,
-                host,
+                host.clone(),
                 config.entry_fee,
                 arena.clone(),
                 config.min_players,
@@ -479,7 +489,16 @@ impl FactoryContract {
     ) -> Result<(), FactoryError> {
         let meta = FactoryStorage::load_pool(&env, pool_id).ok_or(FactoryError::PoolNotFound)?;
         meta.arena_address.require_auth();
+        let old_status = meta.status.clone();
         FactoryStorage::update_pool_status(&env, pool_id, &status);
+
+        // #1613: O(1) swap-remove from old bucket, append to new bucket.
+        if old_status != status {
+            FactoryStorage::transition_pool_status(&env, pool_id, &old_status, &status);
+        }
+
+        // #1607: emit via typed helper with normalized topics + versioned payload.
+        events::pool_status_updated(&env, &meta.arena_address, pool_id, FactoryStorage::arena_status_ordinal(&status));
         env.events()
             .publish((symbol_short!("POOL_ST"),), (pool_id, status));
         Ok(())
@@ -503,6 +522,45 @@ impl FactoryContract {
         let end = core::cmp::min(total, offset.saturating_add(limit));
         if start <= end {
             for pool_id in start..=end {
+                if let Some(meta) = FactoryStorage::load_pool(&env, pool_id) {
+                    result.push_back(meta);
+                }
+            }
+        }
+        result
+    }
+
+    /// #1613: Return pools created by `host`, paged by `page` (0-indexed).
+    ///
+    /// Each page contains up to `HOST_POOLS_PAGE_SIZE` pool IDs.  The caller
+    /// iterates pages until an empty page is returned.
+    pub fn get_arenas_by_host(env: Env, host: Address, page: u32) -> Vec<ArenaMetadata> {
+        let pool_ids = FactoryStorage::get_host_pools_page(&env, &host, page);
+        let mut result: Vec<ArenaMetadata> = Vec::new(&env);
+        for i in 0..pool_ids.len() {
+            if let Some(pool_id) = pool_ids.get(i) {
+                if let Some(meta) = FactoryStorage::load_pool(&env, pool_id) {
+                    result.push_back(meta);
+                }
+            }
+        }
+        result
+    }
+
+    /// #1613: Return pools in `status`, paged by `offset` / `limit`.
+    ///
+    /// Uses the StatusBucket secondary index.  Stable ordering is NOT
+    /// guaranteed across status transitions (swap-remove may reorder IDs).
+    pub fn get_arenas_by_status(
+        env: Env,
+        status: ArenaStatus,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<ArenaMetadata> {
+        let pool_ids = FactoryStorage::get_pools_by_status(&env, &status, offset, limit);
+        let mut result: Vec<ArenaMetadata> = Vec::new(&env);
+        for i in 0..pool_ids.len() {
+            if let Some(pool_id) = pool_ids.get(i) {
                 if let Some(meta) = FactoryStorage::load_pool(&env, pool_id) {
                     result.push_back(meta);
                 }

@@ -4,6 +4,7 @@ use soroban_sdk::{Address, Env, contract, contractimpl, token};
 const SECONDS_PER_YEAR: u64 = 31_536_000;
 const INDEX_SCALE: i128 = 1_000_000_000_000_000_000;
 
+mod events;
 mod oracle;
 mod storage;
 mod types;

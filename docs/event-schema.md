@@ -4,7 +4,7 @@ This document defines all events emitted by the `ArenaContract` so frontend inde
 
 ## Encoding
 
-Events are emitted via `env.events().publish((topic,), data)` using the Soroban SDK. The Horizon/RPC event stream encodes them as:
+Events are emitted via `env.events().publish((topics...), data)` using the Soroban SDK. The Horizon/RPC event stream encodes them as:
 
 ```json
 {
@@ -17,7 +17,71 @@ Events are emitted via `env.events().publish((topic,), data)` using the Soroban 
 }
 ```
 
-Decode `topic[0]` as a Soroban `Symbol` (max 9 ASCII chars). Decode `value.xdr` per the type column below.
+### Normative event convention (#1607)
+
+All contracts MUST emit events using the following convention. This section
+is **normative** — deviations are bugs.
+
+```
+topic[0]  = contract namespace as a Symbol
+            arena   → "arena"
+            factory → "factory"
+            rwa     → "rwa"
+topic[1]  = event name as a Symbol (max 9 ASCII chars via symbol_short!)
+topic[2+] = indexed addresses only (filterable by indexers)
+            Never put amounts, counts, or other data in topics.
+
+data      = versioned tuple (v: u32, ...rest)
+            v MUST be the first field so decoders can dispatch without
+            reading further.  Unknown versions MUST be silently ignored,
+            never cause a decoder to fail.
+```
+
+**Example (arena `player_joined`):**
+
+```text
+topic[0] = "arena"
+topic[1] = "join"
+topic[2] = player address  (indexed)
+data     = (1, player_count: u32)     // v=1
+```
+
+**Example (factory `pool_created`):**
+
+```text
+topic[0] = "factory"
+topic[1] = "pool_cre"
+topic[2] = host address  (indexed)
+data     = (1, pool_id: u32, arena: Address, entry_fee: i128)
+```
+
+**Example (rwa `deposited`):**
+
+```text
+topic[0] = "rwa"
+topic[1] = "deposit"
+topic[2] = depositor address  (indexed)
+data     = (1, amount: i128)
+```
+
+### Versioning rules
+
+- `v = 1` is the current version for all events.
+- When a payload field is added, removed, or retyped, bump `v`.
+- Decoders MUST tolerate unknown newer versions by skipping the event (log
+  and ignore), never by throwing.
+- Adding a new event topic (additive) does NOT require bumping `v` for
+  existing events — only payload shape changes do.
+
+### Migration note
+
+Before #1607, events used inconsistent conventions: factory used
+`symbol_short!("POOL_CRE")`, the adapter used lowercase `dep`/`wdraw`/`short`
+with amounts in topics, and arena used `ArenaEvents` helpers without a
+namespace or version field.  All contracts now emit via typed helpers in an
+`events.rs` per contract.  The legacy event topics are still emitted
+alongside the normalized ones during a transition period so existing indexers
+do not break.
 
 ## Decoder versioning and ownership
 

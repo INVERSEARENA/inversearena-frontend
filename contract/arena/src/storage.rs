@@ -18,6 +18,16 @@ pub trait TtlRepository<K> {
 
 const PERSISTENT_TTL_THRESHOLD: u32 = 100;
 const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
+
+/// Grace period (in ledgers) added on top of the round duration for the
+/// temporary-storage TTL of CommitmentForRound and ChoiceForRound (#1612).
+/// 17_280 ledgers ≈ 1 day at a 5-second cadence.
+const COMMIT_TTL_GRACE_LEDGERS: u32 = 17_280;
+
+/// Soroban temporary storage maximum TTL (ledgers). Current network value as
+/// of protocol 21.  Clamping prevents set_ttl rejections when a configured
+/// round duration would exceed this.
+const SOROBAN_TEMP_MAX_TTL: u32 = 3_110_400; // ~6 months
 pub(crate) const PAGED_ROSTER_VERSION: u32 = 2;
 const LEGACY_ROSTER_VERSION: u32 = 1;
 
@@ -889,38 +899,61 @@ impl ArenaStorage {
     }
 
     pub fn save_commitment(env: &Env, player: &Address, round: u32, commitment: &BytesN<32>) {
-        Self::extend_persistent_ttl(env, &DataKey::CommitmentForRound(player.clone(), round));
-        env.storage().persistent().set(
-            &DataKey::CommitmentForRound(player.clone(), round),
-            commitment,
-        );
+        // Issue #1612: CommitmentForRound uses temporary storage. Commitments
+        // are only valid until the round resolves (~minutes). Using temporary
+        // storage avoids the higher persistent-entry rent and write fees.
+        //
+        // TTL = round_duration + COMMIT_TTL_GRACE_LEDGERS, clamped to
+        // SOROBAN_TEMP_MAX_TTL.  If it expires before resolution the missing
+        // entry is treated as "no commitment" — documented below in
+        // `load_commitment`.
+        let round_dur = Self::load_round_duration(env);
+        // Approximate ledgers for the round duration (5-second ledger cadence).
+        let dur_ledgers = (round_dur / 5) as u32;
+        let ttl = dur_ledgers
+            .saturating_add(COMMIT_TTL_GRACE_LEDGERS)
+            .min(SOROBAN_TEMP_MAX_TTL);
+        let key = DataKey::CommitmentForRound(player.clone(), round);
+        env.storage().temporary().set(&key, commitment);
+        env.storage().temporary().extend_ttl(&key, ttl, ttl);
     }
 
+    /// Returns the commitment hash for `(player, round)`, or `None` when:
+    ///   - the player never committed, OR
+    ///   - the temporary entry expired (treated as no-commit per #1612 spec).
+    ///
+    /// Resolution callers should treat `None` as an absent / late commitment
+    /// and score the player as having not participated.
     pub fn load_commitment(env: &Env, player: &Address, round: u32) -> Option<BytesN<32>> {
-        Self::extend_persistent_ttl(env, &DataKey::CommitmentForRound(player.clone(), round));
         env.storage()
-            .persistent()
+            .temporary()
             .get(&DataKey::CommitmentForRound(player.clone(), round))
     }
 
     pub fn save_choice(env: &Env, player: &Address, round: u32, choice: &Choice) {
-        Self::extend_persistent_ttl(env, &DataKey::ChoiceForRound(player.clone(), round));
-        env.storage()
-            .persistent()
-            .set(&DataKey::ChoiceForRound(player.clone(), round), choice);
+        // Issue #1612: ChoiceForRound uses temporary storage for the same
+        // reasons as CommitmentForRound above.
+        let round_dur = Self::load_round_duration(env);
+        let dur_ledgers = (round_dur / 5) as u32;
+        let ttl = dur_ledgers
+            .saturating_add(COMMIT_TTL_GRACE_LEDGERS)
+            .min(SOROBAN_TEMP_MAX_TTL);
+        let key = DataKey::ChoiceForRound(player.clone(), round);
+        env.storage().temporary().set(&key, choice);
+        env.storage().temporary().extend_ttl(&key, ttl, ttl);
     }
 
     pub fn load_choice(env: &Env, player: &Address, round: u32) -> Option<Choice> {
-        Self::extend_persistent_ttl(env, &DataKey::ChoiceForRound(player.clone(), round));
         env.storage()
-            .persistent()
+            .temporary()
             .get(&DataKey::ChoiceForRound(player.clone(), round))
     }
 
     /// Remove a single player's choice for a round (#1075: clear stale choice on elimination).
+    /// No-op when the entry has already expired or was never written.
     pub fn remove_player_choice(env: &Env, player: &Address, round: u32) {
         env.storage()
-            .persistent()
+            .temporary()
             .remove(&DataKey::ChoiceForRound(player.clone(), round));
     }
 
@@ -1179,19 +1212,22 @@ impl ArenaStorage {
     }
 
     /// Clear all players' choices and commitments for the specified round.
-    /// Since commitments and choices are now keyed by (Address, round),
-    /// this is primarily for cleanup. May be called at the start or end of a round.
+    /// Since commitments and choices now live in temporary storage (#1612),
+    /// explicit removal is optional — entries will expire on their own TTL.
+    /// This helper is retained for callers that want to release storage
+    /// immediately (e.g. after resolution) rather than waiting for expiry.
     pub fn clear_round_data(env: &Env, round: u32) {
         Self::ensure_paged_roster(env);
         let total = Self::load_roster_count_raw(env);
         for page_index in 0..Self::page_count(total) {
             let page = Self::load_roster_page_raw(env, page_index);
             for player in page.iter() {
+                // Temporary storage: use temporary().remove()
                 env.storage()
-                    .persistent()
+                    .temporary()
                     .remove(&DataKey::ChoiceForRound(player.clone(), round));
                 env.storage()
-                    .persistent()
+                    .temporary()
                     .remove(&DataKey::CommitmentForRound(player.clone(), round));
             }
         }
