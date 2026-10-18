@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import { X, CheckCircle, AlertCircle, Info, AlertTriangle } from 'lucide-react';
-import type { InternalNotification } from '../../shared-d/types/notification';
+import type { InternalNotification } from '@/shared/lib/notification';
 
 interface NotificationCardProps {
   notification: InternalNotification;

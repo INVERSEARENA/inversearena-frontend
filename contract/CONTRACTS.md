@@ -39,6 +39,7 @@
 - `pub fn cancel_arena(env: Env) -> Result<(), ArenaError>`
 - `pub fn get_players(env: Env, page: u32) -> Vec<(Address, PlayerState)>`
 - `pub fn player_count(env: Env) -> u32`
+- `pub fn get_player_status(env: Env, player: Address) -> Result<PlayerStatus, ArenaError>` — every per-player fact for the current round in one read; `joined: false` for non-players (#1582)
 - `pub fn start_round(env: Env, duration_seconds: u64) -> Result<(), ArenaError>`
 - `pub fn resolve_round(env: Env) -> Result<(), ArenaError>`
 - `pub fn claim(env: Env, winner: Address) -> Result<(), ArenaError>`
@@ -97,6 +98,8 @@
 - `pub fn remove_approved_oracle(env: Env, oracle: Address) -> Result<(), FactoryError>`
 - `pub fn get_min_stake(env: Env) -> Result<i128, FactoryError>`
 - `pub fn get_creator_stake(env: Env, arena: Address) -> Option<CreatorStakeRecord>`
+- `pub fn set_global_pause(env: Env, paused: bool, reason: Symbol) -> Result<(), FactoryError>` — protocol-admin emergency pause honoured by every arena's fund-moving entry points (#1583)
+- `pub fn is_globally_paused(env: Env) -> bool` (#1583)
 
 ## Payout
 

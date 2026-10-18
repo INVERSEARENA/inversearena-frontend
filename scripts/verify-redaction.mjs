@@ -9,7 +9,7 @@ import { dirname, resolve } from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const redactionPath = resolve(
   root,
-  "frontend/src/shared-d/security/redaction.ts",
+  "frontend/src/shared/lib/security/redaction.ts",
 );
 const source = readFileSync(redactionPath, "utf8");
 

@@ -12,7 +12,7 @@ Without coordination, two tabs can independently:
 
 ## Solution
 
-`frontend/src/shared-d/utils/mutation-coordinator.ts` provides a coordinator
+`frontend/src/shared/lib/mutation-coordinator.ts` provides a coordinator
 that serialises wallet mutations across browser tabs on the same origin.
 
 ### Transport
@@ -43,7 +43,7 @@ A lock key uniquely identifies one mutation:
 Build keys with the exported helper:
 
 ```ts
-import { buildMutationKey } from "@/shared-d/utils/mutation-coordinator";
+import { buildMutationKey } from "@/shared/lib/mutation-coordinator";
 
 const key = buildMutationKey(network, walletPublicKey, arenaId, round, "commit");
 ```
@@ -107,7 +107,7 @@ and must wait for the normal polling path to converge.
 import {
   getMutationCoordinator,
   buildMutationKey,
-} from "@/shared-d/utils/mutation-coordinator";
+} from "@/shared/lib/mutation-coordinator";
 
 // In a transaction hook / modal:
 const coordinator = getMutationCoordinator();

@@ -18,8 +18,8 @@
 
 import React from 'react';
 import { Modal } from '../ui/Modal';
-import { maskAccountId, type TrustlineRemediation } from '@/shared-d/utils/asset-readiness';
-import { stroopsToAmount } from '@/shared-d/utils/stellar-asset-reader';
+import { maskAccountId, type TrustlineRemediation } from '@/features/asset-readiness/model/asset-readiness';
+import { stroopsToAmount } from '@/shared/lib/stellar/stellar-asset-reader';
 
 export interface AssetTrustlinePromptProps {
   isOpen: boolean;

@@ -1,6 +1,6 @@
 "use client";
 
-import { Survivor } from "../types";
+import { Survivor } from "../model/types";
 import { RankTableRow } from "./RankTableRow";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";

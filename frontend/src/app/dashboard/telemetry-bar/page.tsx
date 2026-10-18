@@ -7,8 +7,8 @@ import {
   ServerTelemetry,
   GlobalPoolData,
 } from "./types/telemetry-bar.types";
-import { CoinGeckoSimplePriceSchema } from "@/shared-d/utils/security-validation";
-import { UI_BEHAVIOR } from "@/components/hook-d/arenaConstants";
+import { CoinGeckoSimplePriceSchema } from "@/shared/lib/security-validation";
+import { UI_BEHAVIOR } from "@/shared/config/arenaConstants";
 
 const STATIC_SYSTEM_STATUS: SystemStatus = "operational";
 const STATIC_SERVER_TELEMETRY: ServerTelemetry = {

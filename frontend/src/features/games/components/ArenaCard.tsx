@@ -1,6 +1,6 @@
 'use client'
 import React, { useState } from 'react';
-import { Arena } from '../types';
+import { Arena } from '../model/types';
 import JoinArenaModal from '@/components/modals/JoinArenaModal';
 
 interface ArenaCardProps {

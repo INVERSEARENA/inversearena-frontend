@@ -1,6 +1,6 @@
 "use client";
 
-import type { RankMovement } from "../types";
+import type { RankMovement } from "../model/types";
 
 interface RankBadgeProps {
   rank: number;

@@ -1,16 +1,16 @@
 import React from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { PoolCreationModal } from "../PoolCreationModal";
-import { useWallet } from "@/features/wallet/useWallet";
-import { buildCreatePoolTransaction, submitSignedTransaction } from "@/shared-d/utils/stellar-transactions";
-import { loadPoolDraft, savePoolDraft } from "@/shared-d/utils/pool-draft";
-import { StorageKey } from "@/shared-d/utils/localStorage";
-import { POOL_DRAFT_VERSION } from "@/shared-d/utils/pool-schema";
+import { useWallet } from "@/features/wallet/hooks/useWallet";
+import { buildCreatePoolTransaction, submitSignedTransaction } from "@/shared/lib/stellar/stellar-transactions";
+import { loadPoolDraft, savePoolDraft } from "@/features/pools/model/pool-draft";
+import { StorageKey } from "@/shared/lib/localStorage";
+import { POOL_DRAFT_VERSION } from "@/features/pools/model/pool-schema";
 
-jest.mock("@/features/wallet/useWallet", () => ({
+jest.mock("@/features/wallet/hooks/useWallet", () => ({
   useWallet: jest.fn(),
 }));
-jest.mock("@/shared-d/utils/stellar-transactions", () => ({
+jest.mock("@/shared/lib/stellar/stellar-transactions", () => ({
   buildCreatePoolTransaction: jest.fn(),
   submitSignedTransaction: jest.fn(),
 }));

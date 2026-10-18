@@ -3,7 +3,7 @@ import {
   type NetworkIdentity,
   deriveNetworkIdentity,
   parseNetworkPassphrase,
-} from "../../../frontend/src/shared-d/utils/identity-value-objects";
+} from "../../../frontend/src/shared/lib/identity-value-objects";
 import { getStellarConfig } from "../config/stellarConfig";
 import { cacheRequestsTotal } from "../utils/metrics";
 

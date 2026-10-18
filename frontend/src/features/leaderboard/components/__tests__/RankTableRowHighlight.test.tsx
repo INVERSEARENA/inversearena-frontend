@@ -2,8 +2,8 @@ import React from "react";
 import { render, screen } from "@testing-library/react";
 import { RankTableRow } from "../RankTableRow";
 import { LeaderboardTable } from "../LeaderboardTable";
-import { formatAgentId, formatCurrency } from "../../utils/format";
-import type { Survivor } from "../../types";
+import { formatAgentId, formatCurrency } from "@/features/leaderboard/model/format";
+import type { Survivor } from "@/features/leaderboard/model/types";
 
 const survivor: Survivor = {
   id: "1",

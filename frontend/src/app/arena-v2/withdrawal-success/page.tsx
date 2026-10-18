@@ -6,7 +6,7 @@ import { motion } from "framer-motion";
 import { SuccessHeader } from "@/components/arena-v2/withdrawal/SuccessHeader";
 import { UnlockedPadlock } from "@/components/arena-v2/withdrawal/UnlockedPadlock";
 import { WithdrawalDetails } from "@/components/arena-v2/withdrawal/WithdrawalDetails";
-import { consumeWithdrawalToken } from "@/lib/withdrawalSession";
+import { consumeWithdrawalToken } from "@/shared/lib/withdrawalSession";
 
 const STELLAR_EXPERT_BASE = "https://stellar.expert/explorer/public/tx";
 

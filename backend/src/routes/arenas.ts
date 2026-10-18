@@ -15,7 +15,7 @@ import { RoundRepository } from "../repositories/roundRepository";
 import { ParticipantEligibilityService } from "../services/participantEligibilityService";
 import { apiError } from "../utils/apiError";
 import type { ArenaParticipant } from "../types/arena";
-import { readOnChainPlayers } from "../services/onChainReader";
+import { readOnChainPlayerStatus, readOnChainPlayers } from "../services/onChainReader";
 import { hasReadValue } from "../types/onChainRead";
 import { isAuthorizedAdminWallet } from "../services/walletRoleService";
 import { createRateLimitMiddleware, getSyncPlayersRateLimitConfig } from "../middleware/rateLimit";
@@ -144,7 +144,7 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   const arenaStatsService = new ArenaStatsService(prisma);
   const arenaYieldService = new ArenaYieldService(prisma);
   const roundRepository = new RoundRepository(prisma);
-  const eligibilityService = new ParticipantEligibilityService(prisma);
+  const eligibilityService = new ParticipantEligibilityService(prisma, readOnChainPlayerStatus);
   const sseConnectionLimiter = createSseConnectionLimitMiddleware();
   // Issue #1411
   const stakeService = new ActiveStakeLimitsService(prisma);

@@ -7,7 +7,7 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
-import { StellarRpcGateway } from "../../../frontend/src/shared-d/services/stellarRpcGateway";
+import { StellarRpcGateway } from "../../../frontend/src/shared/lib/stellar/stellarRpcGateway";
 
 import type {
   ArenaCreationResult,

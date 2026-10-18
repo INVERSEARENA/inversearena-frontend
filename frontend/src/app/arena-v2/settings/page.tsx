@@ -4,7 +4,7 @@ import { useState } from "react";
 import { SettingsCard } from "@/components/arena-v2/settings/SettingsCard";
 import { SettingsSlider } from "@/components/arena-v2/settings/SettingsSlider";
 import { SettingsToggle } from "@/components/arena-v2/settings/SettingsToggle";
-import { useArenaSettings } from "@/shared-d/hooks/useArenaSettings";
+import { useArenaSettings } from "@/features/arena/hooks/useArenaSettings";
 
 type ColorMode = "dark" | "high-contrast";
 

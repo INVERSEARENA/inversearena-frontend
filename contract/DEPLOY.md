@@ -251,7 +251,7 @@ Exact upgrade commands depend on your contract ABI; document them here when impl
 
 ## 6. Environment variables (frontend)
 
-The Next.js app reads public env vars (see `frontend/src/components/hook-d/arenaConstants.ts`). Set these in `.env.local` (never commit secrets):
+The Next.js app reads public env vars (see `frontend/src/shared/config/arenaConstants.ts`). Set these in `.env.local` (never commit secrets):
 
 ### Testnet example
 

@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { useWallet } from '@/features/wallet/useWallet';
-import { usePasskeyWallet } from '@/features/wallet/usePasskeyWallet';
+import { useWallet } from '@/features/wallet/hooks/useWallet';
+import { usePasskeyWallet } from '@/features/wallet/hooks/usePasskeyWallet';
 import { Button } from '@/components/ui/Button';
 
 const shortAddress = (address: string) =>

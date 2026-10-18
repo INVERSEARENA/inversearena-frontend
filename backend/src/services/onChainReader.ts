@@ -18,7 +18,7 @@ import { Address, Contract, Keypair, nativeToScVal, scValToNative, xdr, rpc } fr
 // TODO(#1495): replace with a backend-owned Stellar gateway behind a typed
 // interface; this frontend import crosses package ownership and blocks
 // independent backend typecheck/build.
-import { StellarRpcGateway } from "../../../frontend/src/shared-d/services/stellarRpcGateway";
+import { StellarRpcGateway } from "../../../frontend/src/shared/lib/stellar/stellarRpcGateway";
 import { getStellarConfig, assertAllowedRpcUrl, RPC_MAX_RESPONSE_BYTES } from "../config/stellarConfig";
 import {
   getSorobanSimulationSingleFlight,
@@ -38,6 +38,7 @@ import {
   type OnChainReadResult,
 } from "../types/onChainRead";
 import { onChainReadOutcomesTotal } from "../utils/metrics";
+import { decodePlayerStatus, type OnChainPlayerStatus } from "./playerStatus";
 
 let sourcePublicKey: string | null = null;
 
@@ -469,6 +470,27 @@ export async function getArenaOracleContract(arenaContractId: string): Promise<s
   } catch (error) {
     throw new OnChainReadError("get_oracle_contract", arenaContractId, error);
   }
+}
+
+/**
+ * Read a player's complete per-arena status in one simulation (#1582). The
+ * source of truth for backend eligibility checks. A non-player is a
+ * `verified` status with `joined: false`; a failed read is `unavailable`.
+ */
+export async function readOnChainPlayerStatus(
+  contractId: string,
+  player: string,
+): Promise<OnChainReadResult<OnChainPlayerStatus>> {
+  const stellarRpcGateway = new StellarRpcGateway();
+  return runTypedRead("get_player_status", contractId, async () => {
+    const { value, ledgerSequence } = await simulateViewCallDetailed(
+      contractId,
+      "get_player_status",
+      stellarRpcGateway,
+      [new Address(player).toScVal()],
+    );
+    return { value: decodePlayerStatus(value), ledgerSequence };
+  });
 }
 
 /** Combined result of a single successful live-on-chain read (#1408). */

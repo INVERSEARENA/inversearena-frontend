@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withSentryConfig } from "@sentry/nextjs";
 
-import { STATIC_SECURITY_HEADERS } from "./src/lib/csp";
+import { STATIC_SECURITY_HEADERS } from "./src/shared/config/csp";
 
 const projectRoot = dirname(fileURLToPath(import.meta.url));
 

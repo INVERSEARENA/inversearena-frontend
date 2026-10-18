@@ -269,29 +269,38 @@ mod tests {
     }
 
     /// Mock oracle exposing a pending scheduled rate (#1570).
-    #[contract]
-    struct MockOracleScheduled;
+    ///
+    /// Nested in its own module: `#[contractimpl]` generates module-scoped
+    /// items named after each method, so a second `get_current_yield_bps`
+    /// beside `MockOracle500` would collide.
+    mod scheduled_oracle_mock {
+        use soroban_sdk::{Env, contract, contractimpl};
 
-    #[contractimpl]
-    impl MockOracleScheduled {
-        pub fn get_current_yield_bps(_env: Env) -> u32 {
-            500
-        }
+        #[contract]
+        pub struct MockOracleScheduled;
 
-        pub fn get_rate_schedule(_env: Env) -> super::RateSchedule {
-            super::RateSchedule {
-                current: 500,
-                pending: Some(700),
-                effective_at: Some(1_100),
-                max_delta_bps: 1_000,
-                activation_delay: 100,
-                pending_max_rate: None,
-                pending_max_delta: None,
-                pending_delay: None,
-                params_effective_at: None,
+        #[contractimpl]
+        impl MockOracleScheduled {
+            pub fn get_current_yield_bps(_env: Env) -> u32 {
+                500
+            }
+
+            pub fn get_rate_schedule(_env: Env) -> super::super::RateSchedule {
+                super::super::RateSchedule {
+                    current: 500,
+                    pending: Some(700),
+                    effective_at: Some(1_100),
+                    max_delta_bps: 1_000,
+                    activation_delay: 100,
+                    pending_max_rate: None,
+                    pending_max_delta: None,
+                    pending_delay: None,
+                    params_effective_at: None,
+                }
             }
         }
     }
+    use scheduled_oracle_mock::MockOracleScheduled;
 
     #[test]
     fn fetch_rate_schedule_returns_pending_schedule() {

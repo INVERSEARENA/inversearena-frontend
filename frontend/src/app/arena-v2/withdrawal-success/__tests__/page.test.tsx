@@ -10,7 +10,7 @@
 import React from "react";
 import { render, screen } from "@testing-library/react";
 import WithdrawalSuccessPage from "../page";
-import { markWithdrawalComplete, WITHDRAWAL_TOKEN_KEY } from "@/lib/withdrawalSession";
+import { markWithdrawalComplete, WITHDRAWAL_TOKEN_KEY } from "@/shared/lib/withdrawalSession";
 
 // ---------------------------------------------------------------------------
 // next/navigation stubs

@@ -13,7 +13,7 @@
  * reads performed by `RoundService.resolveRound` — see #1098) and is a pure
  * read/derive path with no additional on-chain calls and no writes. It does
  * not verify anything itself; verification is the client's job (see
- * `frontend/src/shared-d/utils/contract-state-parsers.ts`'s
+ * `frontend/src/shared/lib/stellar/contract-state-parsers.ts`'s
  * `recomputeSurvivorship`).
  */
 

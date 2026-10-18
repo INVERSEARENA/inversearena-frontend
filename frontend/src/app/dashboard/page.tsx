@@ -27,7 +27,7 @@ import {
   globalIntelItems,
   recentGames,
   activeAnnouncement,
-} from "@/features/dashboard-home/mockHome";
+} from "@/features/dashboard-home/model/mockHome";
 
 const HAS_STAKED_KEY = "inversearena_has_staked";
 

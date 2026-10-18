@@ -229,7 +229,7 @@ Unhandled React render errors caught by the `ErrorBoundary` are automatically re
 ### How it works
 
 - `sentry.client.config.ts` (project root) initialises the SDK on the browser.
-- `src/lib/sentry.ts` exposes `captureReactError()`, called by `ErrorBoundary.componentDidCatch`.
+- `src/shared/lib/sentry.ts` exposes `captureReactError()`, called by `ErrorBoundary.componentDidCatch`.
 - Each report includes the **React component stack** so you can pinpoint the exact component that threw.
 - The existing fallback UI ("Retry / Go Home / Report Issue") is unchanged.
 

@@ -76,7 +76,7 @@ so clients can verify the off-chain display data.
 
 ### Canonical JSON specification
 
-Both the frontend (`frontend/src/shared-d/utils/metadata-hash.ts`) and backend
+Both the frontend (`frontend/src/shared/lib/stellar/metadata-hash.ts`) and backend
 (`backend/src/utils/metadataHash.ts`) serialize metadata identically:
 
 1. Encode as UTF-8.

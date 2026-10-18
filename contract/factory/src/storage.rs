@@ -5,14 +5,6 @@ use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, Vec, contracttype};
 const PERSISTENT_TTL_THRESHOLD: u32 = 100;
 const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
 
-/// Maximum pool IDs stored per HostPools page. Bounded to keep storage reads
-/// O(1) per page and predictable ledger overhead.
-pub const HOST_POOLS_PAGE_SIZE: u32 = 50;
-
-/// Maximum pool IDs stored per StatusBucket. O(1) swap-remove keeps
-/// `update_arena_status` at constant cost regardless of bucket size.
-pub const STATUS_BUCKET_MAX: u32 = 200;
-
 #[contracttype]
 pub enum DataKey {
     CreatorStake(Address),
@@ -31,14 +23,8 @@ pub enum DataKey {
     Paused,
     SupportedToken(Address),
     SupportedTokens,
-    /// Secondary index: pool IDs created by a specific host, paged.
-    /// Key = (host Address, page index u32) → Vec<pool_id u32>
-    HostPoolsPage(Address, u32),
-    /// Number of pages in HostPools for a given host.
-    HostPoolsPageCount(Address),
-    /// Secondary index: pool IDs in a given status bucket.
-    /// Key = status ordinal (0=Pending, 1=Active, 2=Finished, 3=Cancelled) → Vec<pool_id u32>
-    StatusBucket(u32),
+    /// Instance-storage flag for the protocol-wide emergency pause (#1583).
+    GlobalPaused,
 }
 
 #[contracttype]
@@ -264,6 +250,26 @@ impl FactoryStorage {
         env.storage().persistent().set(&DataKey::Paused, &paused);
     }
 
+    /// Protocol-wide emergency pause read by every arena (#1583).
+    ///
+    /// Kept in instance storage: invoking the factory already loads its
+    /// instance entry, so an arena's cross-contract check adds no further
+    /// ledger entry. The read never extends a TTL.
+    pub fn is_globally_paused(env: &Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::GlobalPaused)
+            .unwrap_or(false)
+    }
+
+    pub fn set_globally_paused(env: &Env, paused: bool) {
+        env.storage().instance().set(&DataKey::GlobalPaused, &paused);
+        env.storage().instance().extend_ttl(
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
+    }
+
     // ── Pool Metadata ─────────────────────────────────────────────────────
 
     pub fn pool_count(env: &Env) -> u32 {
@@ -371,207 +377,5 @@ impl FactoryStorage {
             .persistent()
             .get(&DataKey::SupportedToken(token.clone()))
             .unwrap_or(false)
-    }
-
-    // ── HostPools secondary index (#1613) ─────────────────────────────────
-    //
-    // `HostPools(host) → paged Vec<pool_id>` lets callers query a host's
-    // pools in O(page) without scanning the entire pool list.
-    //
-    // Paging strategy: each page holds up to HOST_POOLS_PAGE_SIZE pool IDs.
-    // `HostPoolsPageCount(host)` tracks the total number of pages allocated.
-    // New IDs are appended to the last page; once full a new page is created.
-
-    fn load_host_pools_page_count(env: &Env, host: &Address) -> u32 {
-        Self::extend_persistent_ttl(env, &DataKey::HostPoolsPageCount(host.clone()));
-        env.storage()
-            .persistent()
-            .get(&DataKey::HostPoolsPageCount(host.clone()))
-            .unwrap_or(0)
-    }
-
-    fn save_host_pools_page_count(env: &Env, host: &Address, count: u32) {
-        Self::extend_persistent_ttl(env, &DataKey::HostPoolsPageCount(host.clone()));
-        env.storage()
-            .persistent()
-            .set(&DataKey::HostPoolsPageCount(host.clone()), &count);
-    }
-
-    fn load_host_pools_page(env: &Env, host: &Address, page: u32) -> Vec<u32> {
-        Self::extend_persistent_ttl(env, &DataKey::HostPoolsPage(host.clone(), page));
-        env.storage()
-            .persistent()
-            .get(&DataKey::HostPoolsPage(host.clone(), page))
-            .unwrap_or_else(|| Vec::new(env))
-    }
-
-    fn save_host_pools_page(env: &Env, host: &Address, page: u32, ids: &Vec<u32>) {
-        Self::extend_persistent_ttl(env, &DataKey::HostPoolsPage(host.clone(), page));
-        env.storage()
-            .persistent()
-            .set(&DataKey::HostPoolsPage(host.clone(), page), ids);
-    }
-
-    /// Append `pool_id` to the HostPools index for `host`.  Called atomically
-    /// from `create_pool` so the index is always consistent with the pool
-    /// record (#1613).
-    pub fn index_host_pool(env: &Env, host: &Address, pool_id: u32) {
-        let page_count = Self::load_host_pools_page_count(env, host);
-
-        // Find the last page; create the first page when count == 0.
-        let (page_index, mut page) = if page_count == 0 {
-            (0u32, Vec::new(env))
-        } else {
-            let last = page_count - 1;
-            let p = Self::load_host_pools_page(env, host, last);
-            (last, p)
-        };
-
-        if page.len() < HOST_POOLS_PAGE_SIZE {
-            // Still room on the current last page.
-            page.push_back(pool_id);
-            Self::save_host_pools_page(env, host, page_index, &page);
-            if page_count == 0 {
-                Self::save_host_pools_page_count(env, host, 1);
-            }
-        } else {
-            // Current page is full; open a new one.
-            let new_page_index = page_index.saturating_add(1);
-            let mut new_page = Vec::new(env);
-            new_page.push_back(pool_id);
-            Self::save_host_pools_page(env, host, new_page_index, &new_page);
-            Self::save_host_pools_page_count(env, host, new_page_index + 1);
-        }
-    }
-
-    /// Return a page of pool IDs for `host`.  `page` is 0-indexed.
-    /// Returns an empty Vec when the page doesn't exist.
-    pub fn get_host_pools_page(env: &Env, host: &Address, page: u32) -> Vec<u32> {
-        Self::load_host_pools_page(env, host, page)
-    }
-
-    /// Total number of pools indexed for `host` (sum across all pages).
-    pub fn host_pool_count(env: &Env, host: &Address) -> u32 {
-        let page_count = Self::load_host_pools_page_count(env, host);
-        if page_count == 0 {
-            return 0;
-        }
-        // All pages except the last are full; last page may be partial.
-        let last = page_count - 1;
-        let full_pages = last;
-        let last_page_len = Self::load_host_pools_page(env, host, last).len();
-        full_pages.saturating_mul(HOST_POOLS_PAGE_SIZE).saturating_add(last_page_len)
-    }
-
-    // ── StatusBucket secondary index (#1613) ──────────────────────────────
-    //
-    // `StatusBucket(status_ordinal) → Vec<pool_id>` tracks which pool IDs are
-    // in each status.  Status changes use swap-remove to keep the operation
-    // O(1) — the cost of `update_arena_status` does not grow with pool count.
-    //
-    // Ordinals: 0=Pending, 1=Active, 2=Finished, 3=Cancelled  (matches
-    // `ArenaStatus` variant order in types.rs).
-
-    pub(crate) fn arena_status_ordinal(status: &ArenaStatus) -> u32 {
-        match status {
-            ArenaStatus::Pending   => 0,
-            ArenaStatus::Active    => 1,
-            ArenaStatus::Finished  => 2,
-            ArenaStatus::Cancelled => 3,
-        }
-    }
-
-    fn load_status_bucket(env: &Env, ordinal: u32) -> Vec<u32> {
-        Self::extend_persistent_ttl(env, &DataKey::StatusBucket(ordinal));
-        env.storage()
-            .persistent()
-            .get(&DataKey::StatusBucket(ordinal))
-            .unwrap_or_else(|| Vec::new(env))
-    }
-
-    fn save_status_bucket(env: &Env, ordinal: u32, ids: &Vec<u32>) {
-        Self::extend_persistent_ttl(env, &DataKey::StatusBucket(ordinal));
-        env.storage()
-            .persistent()
-            .set(&DataKey::StatusBucket(ordinal), ids);
-    }
-
-    /// Insert `pool_id` into the bucket for `status`.  Called from
-    /// `create_pool` when a new pool is registered (initial status = Pending).
-    pub fn index_pool_status(env: &Env, pool_id: u32, status: &ArenaStatus) {
-        let ordinal = Self::arena_status_ordinal(status);
-        let mut bucket = Self::load_status_bucket(env, ordinal);
-        // Avoid duplicates (idempotent).
-        for i in 0..bucket.len() {
-            if bucket.get(i) == Some(pool_id) {
-                return;
-            }
-        }
-        bucket.push_back(pool_id);
-        Self::save_status_bucket(env, ordinal, &bucket);
-    }
-
-    /// Move `pool_id` from `old_status` bucket to `new_status` bucket.
-    ///
-    /// Removal is O(1) via swap-remove: find the target ID, swap with the
-    /// last element, then pop — so cursor positions of other IDs in the
-    /// bucket are not predictably stable across status transitions.  Callers
-    /// must not store bucket-local positions as stable cursors.
-    pub fn transition_pool_status(
-        env: &Env,
-        pool_id: u32,
-        old_status: &ArenaStatus,
-        new_status: &ArenaStatus,
-    ) {
-        let old_ord = Self::arena_status_ordinal(old_status);
-        let new_ord = Self::arena_status_ordinal(new_status);
-        if old_ord == new_ord {
-            return;
-        }
-
-        // O(1) swap-remove from old bucket.
-        let mut old_bucket = Self::load_status_bucket(env, old_ord);
-        let len = old_bucket.len();
-        let mut found_at: Option<u32> = None;
-        for i in 0..len {
-            if old_bucket.get(i) == Some(pool_id) {
-                found_at = Some(i);
-                break;
-            }
-        }
-        if let Some(idx) = found_at {
-            if idx < len - 1 {
-                // Swap the target with the last element.
-                let last = old_bucket.get(len - 1).unwrap();
-                old_bucket.set(idx, last);
-            }
-            old_bucket.pop_back();
-            Self::save_status_bucket(env, old_ord, &old_bucket);
-        }
-
-        // Append to new bucket.
-        let mut new_bucket = Self::load_status_bucket(env, new_ord);
-        new_bucket.push_back(pool_id);
-        Self::save_status_bucket(env, new_ord, &new_bucket);
-    }
-
-    /// Return a page of pool IDs in a given `status`.
-    ///
-    /// `offset` / `limit` are plain slice semantics over the flat bucket Vec.
-    /// Because swap-remove can reorder IDs on each status transition, callers
-    /// must not rely on stable ordering; use pool-ID-based cursor semantics
-    /// (re-scan from the beginning) after any status-changing call.
-    pub fn get_pools_by_status(env: &Env, status: &ArenaStatus, offset: u32, limit: u32) -> Vec<u32> {
-        let ordinal = Self::arena_status_ordinal(status);
-        let bucket = Self::load_status_bucket(env, ordinal);
-        let clamped = limit.min(crate::types::MAX_ARENAS_PAGE_SIZE);
-        let end = offset.saturating_add(clamped).min(bucket.len());
-        let mut result = Vec::new(env);
-        for i in offset..end {
-            if let Some(id) = bucket.get(i) {
-                result.push_back(id);
-            }
-        }
-        result
     }
 }

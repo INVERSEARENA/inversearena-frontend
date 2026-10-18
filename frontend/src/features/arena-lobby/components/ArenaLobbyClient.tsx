@@ -1,0 +1,873 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { z } from "zod";
+import { useRouter } from "next/navigation";
+import { ArenaStatsSkeleton } from "@/components/arena/ArenaStatsSkeleton";
+import { ChoiceSubmission } from "@/components/arena/ChoiceSubmission";
+import { TransactionModal, type TransactionProgress } from "@/components/modals/TransactionModal";
+import { useWallet } from "@/features/wallet";
+import {
+  buildJoinArenaTransaction,
+  buildLeaveArenaTransaction,
+  submitSignedTransaction,
+  NETWORK_PASSPHRASE,
+} from "@/shared/lib/stellar/stellar-transactions";
+import {
+  evaluateSigningRequest,
+  // Imported as a value, not a type: these call sites narrow policy
+  // rejections with `instanceof SigningPolicyError`, which a type-only import
+  // erases to `any` and silently turns into a dead branch.
+  SigningPolicyError,
+  type DecodedEnvelope,
+} from "@/shared/lib/security/policy";
+import { useAssetReadinessGate } from "@/features/asset-readiness";
+import { displayAmountToStroops } from "@/shared/lib/stellar/stellar-asset-reader";
+import { AssetTrustlinePrompt } from "@/components/modals/AssetTrustlinePrompt";
+import { useTransactionIntent } from "@/shared/lib/hooks/useTransactionIntent";
+
+const arenaParticipantSchema = z.object({
+  id: z.string(),
+  walletAddress: z.string(),
+  // null while the round is still OPEN — the backend hides other players'
+  // choices until the round closes so callers can't vote accordingly (#1212).
+  choice: z.enum(["heads", "tails"]).nullable(),
+  stake: z.number(),
+  status: z.enum(["READY", "ACTIVE", "ELIMINATED"]),
+  roundNumber: z.number(),
+  joinedAt: z.string(),
+});
+
+const arenaStatsSchema = z.object({
+  arenaId: z.string(),
+  arenaName: z.string(),
+  currentPot: z.number(),
+  playerCount: z.number(),
+  maxPlayers: z.number(),
+  survivorCount: z.number(),
+  currentRound: z.number(),
+  entryFee: z.number(),
+  stakeToken: z.string(),
+  joinDeadline: z.string().nullable(),
+  yieldAccrued: z.number(),
+  status: z.string(),
+  lastUpdated: z.string(),
+  // #1408: present once the backend has ever completed a live on-chain read
+  // for this arena; optional so a response from before this field existed
+  // (or an intermediate cache entry) still validates.
+  degraded: z.boolean().optional(),
+  ledgerSequence: z.number().nullable().optional(),
+  snapshotVerifiedAt: z.string().nullable().optional(),
+});
+
+const arenaParticipantsResponseSchema = z.object({
+  arenaId: z.string(),
+  total: z.number(),
+  nextCursor: z.number().nullable(),
+  hasMore: z.boolean(),
+  items: z.array(arenaParticipantSchema),
+});
+
+type ArenaStats = z.infer<typeof arenaStatsSchema>;
+type ArenaParticipant = z.infer<typeof arenaParticipantSchema>;
+type ArenaParticipantsResponse = z.infer<typeof arenaParticipantsResponseSchema>;
+
+interface ArenaLobbyClientProps {
+  arenaId: string;
+  initialStats: ArenaStats | null;
+  initialParticipants: ArenaParticipant[];
+  initialNextCursor: number | null;
+  notFound?: boolean;
+}
+
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
+
+function formatCurrency(value: number, token: string): string {
+  const formatted = value.toLocaleString(undefined, {
+    minimumFractionDigits: Number.isInteger(value) ? 0 : 2,
+    maximumFractionDigits: 2,
+  });
+  return `${formatted} ${token}`;
+}
+
+function formatCountdown(joinDeadline: string | null): string {
+  // null deadline means no deadline (open-ended arena)
+  if (!joinDeadline) return "No deadline";
+  const remaining = Math.max(0, Date.parse(joinDeadline) - Date.now());
+  const totalSeconds = Math.floor(remaining / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${seconds}s`;
+  }
+
+  return `${minutes}m ${seconds}s`;
+}
+
+function shortAddress(address: string): string {
+  if (address.length <= 12) return address;
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+export function ArenaLobbyClient({
+  arenaId,
+  initialStats,
+  initialParticipants,
+  initialNextCursor,
+  notFound = false,
+}: ArenaLobbyClientProps) {
+  const router = useRouter();
+  const wallet = useWallet();
+  const { runTrackedTransaction } = useTransactionIntent();
+  const [stats, setStats] = useState<ArenaStats | null>(initialStats);
+  const [participants, setParticipants] = useState<ArenaParticipant[]>(
+    initialParticipants,
+  );
+  const [nextCursor, setNextCursor] = useState<number | null>(initialNextCursor);
+  const [hasMore, setHasMore] = useState(Boolean(initialNextCursor !== null));
+  const [loadingStats, setLoadingStats] = useState(false);
+  const [loadingParticipants, setLoadingParticipants] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showJoinModal, setShowJoinModal] = useState(false);
+  const [showLeaveModal, setShowLeaveModal] = useState(false);
+  const [leaveError, setLeaveError] = useState<string | null>(null);
+  const [isReserving, setIsReserving] = useState(false);
+  const [reservationError, setReservationError] = useState<string | null>(null);
+  /**
+   * Set when the signing firewall rejects the envelope we built (#1487).
+   *
+   * Distinct from `error`: a policy rejection is not a request failure, and
+   * the user should see the specific rule that fired rather than a generic
+   * banner. Kept separate so it cannot be clobbered by an unrelated fetch
+   * that happens to fail at the same time.
+   */
+  const [joinError, setJoinError] = useState<string | null>(null);
+  /**
+   * The decoded envelope, rendered into the confirmation modal. Holding the
+   * decode rather than the XDR is the point of the firewall: nothing reaches
+   * the confirmation screen that has not been parsed and checked.
+   */
+  const [joinConfirmation, setJoinConfirmation] = useState<DecodedEnvelope | null>(null);
+
+  /**
+   * Asset-readiness gate for the entry fee (#1487).
+   *
+   * The stake is received by this account, so the account needs a trustline and
+   * limit headroom for `stakeToken` before the join transaction is built.
+   */
+  const entryFeeStroops = useMemo(
+    () => (stats ? displayAmountToStroops(stats.entryFee) : 0n),
+    [stats],
+  );
+  const assetGate = useAssetReadinessGate({
+    assetCode: stats?.stakeToken,
+    amountStroops: entryFeeStroops,
+    entryPoint: "join",
+    enabled: Boolean(stats?.stakeToken),
+  });
+  const [showTrustline, setShowTrustline] = useState(false);
+
+  const isOpen = stats?.status === "open";
+  const walletConnected = wallet.isConnected && !!wallet.publicKey;
+
+  const mergedParticipants = useMemo(() => {
+    const map = new Map<string, ArenaParticipant>();
+    for (const participant of participants) {
+      map.set(participant.id, participant);
+    }
+    return Array.from(map.values());
+  }, [participants]);
+
+  const mergeParticipants = (incoming: ArenaParticipant[]) => {
+    setParticipants((current) => {
+      const map = new Map<string, ArenaParticipant>();
+      for (const participant of incoming) {
+        map.set(participant.id, participant);
+      }
+      for (const participant of current) {
+        if (!map.has(participant.id)) {
+          map.set(participant.id, participant);
+        }
+      }
+      return Array.from(map.values());
+    });
+  };
+
+  const fetchStats = async () => {
+    setLoadingStats(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/arenas/${arenaId}/stats`, {
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        throw new Error(`Stats request failed (${response.status})`);
+      }
+
+      const json = await response.json();
+      const parsed = arenaStatsSchema.safeParse(json);
+      if (!parsed.success) {
+        throw new Error(`Invalid stats response: ${parsed.error.message}`);
+      }
+      setStats(parsed.data);
+      setError(null);
+    } catch (fetchError) {
+      setError(
+        fetchError instanceof Error ? fetchError.message : "Failed to refresh arena stats",
+      );
+    } finally {
+      setLoadingStats(false);
+    }
+  };
+
+  const fetchParticipants = async (cursor = 0, replace = false) => {
+    setLoadingParticipants(true);
+    try {
+      const params = new URLSearchParams({
+        limit: "12",
+        cursor: String(cursor),
+      });
+      const response = await fetch(
+        `${API_BASE}/api/arenas/${arenaId}/participants?${params.toString()}`,
+        { cache: "no-store" },
+      );
+
+      if (!response.ok) {
+        throw new Error(`Participants request failed (${response.status})`);
+      }
+
+      const json = await response.json();
+      const parsed = arenaParticipantsResponseSchema.safeParse(json);
+      if (!parsed.success) {
+        throw new Error(`Invalid participants response: ${parsed.error.message}`);
+      }
+      const data = parsed.data;
+      if (replace || cursor === 0) {
+        mergeParticipants(data.items);
+      } else {
+        setParticipants((current) => [...current, ...data.items]);
+      }
+      setNextCursor(data.nextCursor);
+      setHasMore(data.hasMore);
+      setError(null);
+    } catch (fetchError) {
+      setError(
+        fetchError instanceof Error
+          ? fetchError.message
+          : "Failed to refresh participants",
+      );
+    } finally {
+      setLoadingParticipants(false);
+    }
+  };
+
+  function authHeaders(): HeadersInit {
+    const token =
+      typeof window !== "undefined"
+        ? window.localStorage.getItem("access_token")
+        : null;
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }
+
+  // Backend-authoritative lobby capacity reservation (#1406): holds this
+  // player's slot for RESERVATION_TTL seconds before they open the sign
+  // modal, so two players racing for the arena's last slot can't both start
+  // signing only to have one fail on-chain after paying a network fee.
+  // Returns true if a slot was actually reserved.
+  const reserveJoinSlot = async (): Promise<boolean> => {
+    setIsReserving(true);
+    setReservationError(null);
+    try {
+      const response = await fetch(
+        `${API_BASE}/api/arenas/${arenaId}/reservation`,
+        { method: "POST", headers: authHeaders() },
+      );
+
+      if (response.status === 409) {
+        setReservationError("This arena has no open slots right now.");
+        return false;
+      }
+      if (!response.ok) {
+        throw new Error(`Reservation request failed (${response.status})`);
+      }
+      return true;
+    } catch (reserveError) {
+      setReservationError(
+        reserveError instanceof Error
+          ? reserveError.message
+          : "Failed to reserve a slot in this arena.",
+      );
+      return false;
+    } finally {
+      setIsReserving(false);
+    }
+  };
+
+  // Best-effort: releasing early just frees the slot sooner for someone
+  // else. If it fails, the reservation's own TTL still expires it (see
+  // lobbyReservationStore) — the user is never charged for the delay.
+  const releaseJoinSlot = () => {
+    void fetch(`${API_BASE}/api/arenas/${arenaId}/reservation`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    }).catch(() => undefined);
+  };
+
+  const handleJoinClick = async () => {
+    // Asset readiness first (#1487). Taking a join slot and only then telling
+    // the user their account cannot receive the stake wastes both.
+    if (!assetGate.canProceed) {
+      if (assetGate.phase === "remediation_offered") setShowTrustline(true);
+      return;
+    }
+    const reserved = await reserveJoinSlot();
+    if (reserved) {
+      setShowJoinModal(true);
+    }
+  };
+
+  const handleCloseJoinModal = () => {
+    setShowJoinModal(false);
+    releaseJoinSlot();
+  };
+
+  useEffect(() => {
+    setStats(initialStats);
+    setParticipants(initialParticipants);
+    setNextCursor(initialNextCursor);
+    setHasMore(initialNextCursor !== null);
+  }, [initialStats, initialParticipants, initialNextCursor]);
+
+  useEffect(() => {
+    if (notFound) return;
+
+    void fetchStats();
+    void fetchParticipants(0, true);
+
+    const statsTimer = window.setInterval(() => {
+      void fetchStats();
+    }, 10_000);
+
+    const participantsTimer = window.setInterval(() => {
+      if (isOpen) {
+        void fetchParticipants(0, true);
+      }
+    }, 5_000);
+
+    return () => {
+      window.clearInterval(statsTimer);
+      window.clearInterval(participantsTimer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [arenaId, notFound, isOpen]);
+
+  if (notFound) {
+    return (
+      <div className="min-h-screen bg-[#050816] px-4 py-10 text-white sm:px-6 lg:px-8">
+        <div className="mx-auto flex min-h-[70vh] w-full max-w-4xl flex-col justify-center rounded-[28px] border border-white/10 bg-[#08101b] p-8 text-center shadow-[0_24px_80px_rgba(0,0,0,0.35)]">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-white/45">
+            Arena not found
+          </p>
+          <h1 className="mt-3 text-4xl font-black uppercase tracking-tight">
+            No lobby exists for this ID
+          </h1>
+          <p className="mx-auto mt-4 max-w-xl text-sm leading-7 text-white/65">
+            The arena identifier <span className="font-mono text-white">{arenaId}</span> does not resolve to an active lobby.
+            You can return to the games dashboard and pick another arena.
+          </p>
+          <div className="mt-8 flex justify-center">
+            <button
+              type="button"
+              onClick={() => router.push("/dashboard/games")}
+              className="rounded-full border border-white/10 bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.2em] text-black transition hover:opacity-90"
+            >
+              Back to Games
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!stats) {
+    return (
+      <div className="min-h-screen bg-[#050816] px-4 py-10 text-white sm:px-6 lg:px-8">
+        <div className="mx-auto w-full max-w-7xl">
+          <ArenaStatsSkeleton />
+        </div>
+      </div>
+    );
+  }
+
+  const playerCapacity =
+    stats.maxPlayers > 0 ? `${stats.playerCount}/${stats.maxPlayers}` : `${stats.playerCount}`;
+  // joinDeadline === null means "no deadline" (always open), not "already passed"
+  const hasPassedDeadline = stats.joinDeadline && Date.parse(stats.joinDeadline) <= Date.now();
+  const joinDisabled = !isOpen || hasPassedDeadline || loadingStats || !walletConnected;
+  const joinLabel = !walletConnected
+    ? "Wallet Required"
+    : joinDisabled
+      ? "Join Unavailable"
+      : "Join Arena";
+
+  // #1580: only a joined player, in the first-round lobby, may leave and be
+  // refunded. `currentRound === 0` mirrors the contract's `round_count == 0`.
+  const isParticipant = Boolean(
+    wallet.publicKey &&
+      mergedParticipants.some(
+        (participant) => participant.walletAddress === wallet.publicKey,
+      ),
+  );
+  const canLeave =
+    isOpen && stats.currentRound === 0 && isParticipant && walletConnected && !loadingStats;
+
+  const handleConfirmJoin = async ({ onSigned }: TransactionProgress) => {
+    if (!wallet.publicKey) {
+      throw new Error("Connect a wallet before joining this arena.");
+    }
+
+    if (!assetGate.canProceed) {
+      setJoinError(assetGate.message);
+      if (assetGate.phase === "remediation_offered") setShowTrustline(true);
+      return;
+    }
+
+    setJoinError(null);
+    let policyRejected = false;
+    await runTrackedTransaction({
+      kind: "join_arena",
+      actionKey: `join_arena:${arenaId}`,
+      publicKey: wallet.publicKey,
+      buildTransaction: async () => {
+        const unsignedTx = await buildJoinArenaTransaction(wallet.publicKey!, arenaId);
+
+        // Validate XDR against the signing policy before prompting the wallet.
+        // This distinct error is catchable so the UI can show a policy-rejection
+        // message rather than a wallet-rejection one.
+        let decoded: DecodedEnvelope;
+        try {
+          decoded = evaluateSigningRequest(unsignedTx.toXDR(), "JOIN");
+        } catch (error) {
+          if (error instanceof SigningPolicyError) {
+            // Policy rejection — show error and do NOT call wallet.signTransaction.
+            policyRejected = true;
+            setJoinError(error.message);
+          }
+          throw error;
+        }
+        setJoinConfirmation(decoded);
+
+        return unsignedTx;
+      },
+      signTransaction: wallet.signTransaction,
+      submitSignedTransaction,
+      networkPassphrase: NETWORK_PASSPHRASE,
+      onSigned,
+    }).catch((error) => {
+      if (policyRejected) return;
+      throw error;
+    });
+    if (policyRejected) return;
+
+    await Promise.all([fetchStats(), fetchParticipants(0, true)]);
+
+    setShowJoinModal(false);
+    document.getElementById("choice-submission")?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  };
+
+  const handleConfirmLeave = async ({ onSigned }: TransactionProgress) => {
+    if (!wallet.publicKey) {
+      throw new Error("Connect a wallet before leaving this arena.");
+    }
+
+    setLeaveError(null);
+    let policyRejected = false;
+    await runTrackedTransaction({
+      kind: "leave_arena",
+      actionKey: `leave_arena:${arenaId}`,
+      publicKey: wallet.publicKey,
+      buildTransaction: async () => {
+        const unsignedTx = await buildLeaveArenaTransaction(wallet.publicKey!, arenaId);
+        try {
+          evaluateSigningRequest(unsignedTx.toXDR(), "REFUND");
+        } catch (error) {
+          if (error instanceof SigningPolicyError) {
+            policyRejected = true;
+            setLeaveError(error.message);
+          }
+          throw error;
+        }
+        return unsignedTx;
+      },
+      signTransaction: wallet.signTransaction,
+      submitSignedTransaction,
+      networkPassphrase: NETWORK_PASSPHRASE,
+      onSigned,
+    }).catch((error) => {
+      if (policyRejected) return;
+      throw error;
+    });
+    if (policyRejected) return;
+
+    await Promise.all([fetchStats(), fetchParticipants(0, true)]);
+    setShowLeaveModal(false);
+  };
+
+  return (
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(60,255,26,0.14),_transparent_36%),linear-gradient(180deg,_#050816_0%,_#07111d_42%,_#050816_100%)] px-4 py-6 text-white sm:px-6 lg:px-8">
+      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6">
+        <section className="rounded-[32px] border border-white/10 bg-[#08101b]/95 p-6 shadow-[0_30px_100px_rgba(0,0,0,0.4)] backdrop-blur sm:p-8">
+          <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+            <div className="space-y-4">
+              <div className="inline-flex items-center gap-2 rounded-full border border-[#3CFF1A]/30 bg-[#07140b] px-3 py-1">
+                <span className="h-2.5 w-2.5 rounded-full bg-[#3CFF1A] shadow-[0_0_18px_rgba(60,255,26,0.85)]" />
+                <span className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[#c8ffd1]">
+                  {stats.status.toUpperCase()} / Round {stats.currentRound}
+                </span>
+              </div>
+              {stats.degraded && (
+                <div
+                  role="status"
+                  className="inline-flex items-center gap-2 rounded-full border border-amber-400/40 bg-amber-950/60 px-3 py-1"
+                >
+                  <span className="h-2 w-2 rounded-full bg-amber-400" />
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-amber-200">
+                    Delayed data{stats.ledgerSequence != null ? ` — as of ledger ${stats.ledgerSequence}` : ""}
+                  </span>
+                </div>
+              )}
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-white/45">
+                  Arena Lobby
+                </p>
+                <h1 className="mt-2 text-4xl font-black uppercase tracking-tight sm:text-5xl lg:text-6xl">
+                  {stats.arenaName}
+                </h1>
+                <p className="mt-3 max-w-3xl text-sm leading-7 text-white/70 sm:text-base">
+                  Live lobby for <span className="font-mono text-white">{arenaId}</span>. Track the player count, accumulated yield, and the countdown to the join deadline before you lock in your choice.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:min-w-[560px]">
+              <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/40">
+                  Player Count
+                </p>
+                <p className="mt-2 text-2xl font-black tabular-nums">
+                  {playerCapacity}
+                </p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/40">
+                  Current Pot
+                </p>
+                <p className="mt-2 text-2xl font-black tabular-nums">
+                  {formatCurrency(stats.currentPot, stats.stakeToken)}
+                </p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/40">
+                  Accrued Yield
+                </p>
+                <p className="mt-2 text-2xl font-black tabular-nums text-[#3CFF1A]">
+                  +{formatCurrency(stats.yieldAccrued, stats.stakeToken)}
+                </p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/40">
+                  Join Countdown
+                </p>
+                <p className="mt-2 text-2xl font-black tabular-nums">
+                  {formatCountdown(stats.joinDeadline)}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-6 flex flex-col gap-3 border-t border-white/10 pt-5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="space-y-1">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-white/40">
+                Lobby state
+              </p>
+              <p className="text-sm text-white/70">
+                {isOpen
+                  ? "Open for joins and active choice submission"
+                  : "Lobby is closed to new entries"}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              {canLeave && (
+                <button
+                  type="button"
+                  onClick={() => setShowLeaveModal(true)}
+                  className="rounded-full border border-white/20 bg-white/5 px-6 py-3 text-sm font-black uppercase tracking-[0.2em] text-white/70 transition hover:border-red-400/50 hover:text-red-300"
+                >
+                  Leave Arena
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={joinDisabled || isReserving}
+                onClick={() => void handleJoinClick()}
+                className="rounded-full border border-[#3CFF1A]/40 bg-[#3CFF1A] px-6 py-3 text-sm font-black uppercase tracking-[0.2em] text-black transition hover:brightness-95 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/10 disabled:text-white/40"
+              >
+                {isReserving ? "Reserving..." : joinLabel}
+              </button>
+            </div>
+          </div>
+          {reservationError && (
+            <p role="alert" className="mt-3 text-sm font-semibold text-red-400">
+              {reservationError}
+            </p>
+          )}
+          {assetGate.phase !== "ready" && assetGate.phase !== "idle" && (
+            <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-4 text-sm text-white/70">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/40">
+                Asset readiness
+              </p>
+              <p className="mt-2 text-left">{assetGate.message}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {assetGate.phase === "remediation_offered" && (
+                  <button
+                    type="button"
+                    onClick={() => setShowTrustline(true)}
+                    className="rounded-full border border-white/20 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white"
+                  >
+                    Set up trustline
+                  </button>
+                )}
+                {assetGate.canRetry && (
+                  <button
+                    type="button"
+                    onClick={() => void assetGate.check()}
+                    className="rounded-full border border-white/20 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white/70"
+                  >
+                    Check again
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+          <div className="rounded-[28px] border border-white/10 bg-[#08101b]/95 p-5 shadow-[0_24px_80px_rgba(0,0,0,0.35)] sm:p-6">
+            <div className="flex items-center justify-between border-b border-white/10 pb-4">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/45">
+                  Live Player Feed
+                </p>
+                <h2 className="mt-1 text-2xl font-black uppercase tracking-tight">
+                  {mergedParticipants.length} tracked participants
+                </h2>
+              </div>
+              <div className="text-right">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/40">
+                  Polling
+                </p>
+                <p className="text-sm text-white/70">
+                  {loadingParticipants ? "Refreshing..." : "Every 5s while open"}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 overflow-hidden rounded-2xl border border-white/10">
+              <div className="grid grid-cols-[1.4fr_0.7fr_0.7fr_0.7fr] bg-black/30 px-4 py-3 text-[10px] font-semibold uppercase tracking-[0.22em] text-white/40">
+                <span>Wallet</span>
+                <span>Choice</span>
+                <span>Stake</span>
+                <span>Status</span>
+              </div>
+
+              <div className="divide-y divide-white/10">
+                {mergedParticipants.length === 0 ? (
+                  <div className="px-4 py-8 text-sm text-white/55">
+                    No participant data has been recorded for this round yet.
+                  </div>
+                ) : (
+                  mergedParticipants.map((participant) => (
+                    <div
+                      key={participant.id}
+                      className="grid grid-cols-[1.4fr_0.7fr_0.7fr_0.7fr] items-center px-4 py-4 text-sm"
+                    >
+                      <span className="font-mono text-white">
+                        {shortAddress(participant.walletAddress)}
+                      </span>
+                      <span
+                        className={
+                          participant.choice === null
+                            ? "font-semibold text-white/40"
+                            : participant.choice === "heads"
+                              ? "font-semibold text-[#3CFF1A]"
+                              : "font-semibold text-[#FF0A54]"
+                        }
+                      >
+                        {participant.choice === null ? "HIDDEN" : participant.choice.toUpperCase()}
+                      </span>
+                      <span className="font-mono text-white/80">
+                        {participant.stake.toLocaleString()}
+                      </span>
+                      <span
+                        className={
+                          participant.status === "ELIMINATED"
+                            ? "font-semibold text-[#FF0A54]"
+                            : participant.status === "READY"
+                              ? "font-semibold text-[#3CFF1A]"
+                              : "font-semibold text-white/70"
+                        }
+                      >
+                        {participant.status}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="mt-4 flex items-center justify-between">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/40">
+                {hasMore ? "More participants available" : "End of list"}
+              </p>
+              {hasMore && (
+                <button
+                  type="button"
+                  onClick={() => void fetchParticipants(nextCursor ?? 0, false)}
+                  className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#3CFF1A] underline underline-offset-4"
+                >
+                  Load more
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-6">
+            <div id="choice-submission">
+              <ChoiceSubmission
+                arenaId={arenaId}
+                roundNumber={stats.currentRound}
+                deadline={stats.joinDeadline ?? ""}
+                arenaStatus={stats.status}
+                wallet={{
+                  publicKey: wallet.publicKey,
+                  isConnected: wallet.isConnected,
+                  status: wallet.status,
+                  signTransaction: wallet.signTransaction,
+                  // ChoiceSubmission expects connectWallet() to resolve with
+                  // the connected address (it falls back to the return value
+                  // when publicKey isn't set yet). The shared wallet
+                  // context's connect() resolves with that same address.
+                  connectWallet: async () => {
+                    const address = await wallet.connect();
+                    if (!address) {
+                      throw new Error("Wallet connection did not return an address.");
+                    }
+                    return address;
+                  },
+                }}
+              />
+            </div>
+
+            <div className="rounded-[28px] border border-white/10 bg-[#08101b]/95 p-5 shadow-[0_24px_80px_rgba(0,0,0,0.35)] sm:p-6">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/45">
+                Round Summary
+              </p>
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/40">
+                    Survivors
+                  </p>
+                  <p className="mt-2 text-3xl font-black tabular-nums text-[#3CFF1A]">
+                    {stats.survivorCount}
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/40">
+                    Entry Fee
+                  </p>
+                  <p className="mt-2 text-2xl font-black tabular-nums">
+                    {formatCurrency(stats.entryFee, stats.stakeToken)}
+                  </p>
+                </div>
+              </div>
+              {error && (
+                <p className="mt-4 rounded-2xl border border-[#FF0A54]/30 bg-[#16070d] px-4 py-3 text-sm text-[#FFB3C4]">
+                  {error}
+                </p>
+              )}
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <TransactionModal
+        isOpen={showJoinModal}
+        onClose={handleCloseJoinModal}
+        title="Join Arena"
+        description="Confirm your entry to this arena"
+        details={[
+          { label: "Arena", value: stats.arenaName },
+          { label: "Entry Fee", value: formatCurrency(stats.entryFee, stats.stakeToken) },
+        ]}
+        confirmLabel="Sign & Join"
+        onConfirm={handleConfirmJoin}
+      />
+      {joinError && (
+        <div className="mt-3 rounded-2xl border border-red-500/30 bg-red-900/60 p-4 text-sm text-red-300">
+          <p className="font-semibold uppercase tracking-[0.2em]">{joinError}</p>
+        </div>
+      )}
+
+      <TransactionModal
+        isOpen={showLeaveModal}
+        onClose={() => {
+          setShowLeaveModal(false);
+          setLeaveError(null);
+        }}
+        title="Leave Arena"
+        description="Leave the lobby and reclaim your entry fee. You can rejoin before the round starts."
+        details={[
+          { label: "Arena", value: stats.arenaName },
+          {
+            label: "Refund",
+            value: formatCurrency(stats.entryFee, stats.stakeToken),
+          },
+        ]}
+        confirmLabel="Sign & Leave"
+        onConfirm={handleConfirmLeave}
+      />
+      {leaveError && (
+        <div className="mt-3 rounded-2xl border border-red-500/30 bg-red-900/60 p-4 text-sm text-red-300">
+          <p className="font-semibold uppercase tracking-[0.2em]">{leaveError}</p>
+        </div>
+      )}
+
+      <AssetTrustlinePrompt
+        isOpen={showTrustline}
+        onClose={() => setShowTrustline(false)}
+        remediation={assetGate.remediation}
+        message={assetGate.message}
+        phase={
+          assetGate.phase === "remediating"
+            ? "remediating"
+            : assetGate.phase === "blocked"
+              ? "blocked"
+              : "remediation_offered"
+        }
+        onConfirm={async () => {
+          await assetGate.remediate();
+          if (assetGate.canProceed) setShowTrustline(false);
+        }}
+        onRetry={() => void assetGate.check()}
+        actionLabel="join this arena"
+      />
+    </div>
+  );
+}

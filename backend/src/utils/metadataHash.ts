@@ -3,7 +3,7 @@ import { createHash } from "crypto";
 /**
  * Canonical arena metadata hashing (#1577).
  *
- * Spec (shared with `frontend/src/shared-d/utils/metadata-hash.ts` and the Rust
+ * Spec (shared with `frontend/src/shared/lib/stellar/metadata-hash.ts` and the Rust
  * golden vector test):
  *  - UTF-8 JSON, object keys sorted lexicographically at every level.
  *  - No insignificant whitespace (no spaces after `:` or `,`).

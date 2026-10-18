@@ -1,7 +1,7 @@
 import pino from "pino";
 // @ts-ignore
 import * as Sentry from "@sentry/node";
-import { redactSecrets } from "../../../frontend/src/shared-d/security/redaction";
+import { redactSecrets } from "../../../frontend/src/shared/lib/security/redaction";
 import { getRequestId } from "./requestContext";
 
 const redactPaths = [
