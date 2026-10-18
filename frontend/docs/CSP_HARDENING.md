@@ -4,7 +4,7 @@
 
 The Content-Security-Policy is assembled per request in `src/proxy.ts`
 (`buildCsp`). Static (non-nonce) security headers live in
-`src/lib/csp.ts` (`STATIC_SECURITY_HEADERS`) and are re-applied by
+`src/shared/config/csp.ts` (`STATIC_SECURITY_HEADERS`) and are re-applied by
 `next.config.ts` to cover static-asset responses the proxy middleware
 does not reach.
 

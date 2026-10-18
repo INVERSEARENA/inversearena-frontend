@@ -18,7 +18,7 @@ jest.mock('next/navigation', () => {
 // The page reads the connected wallet for own-row highlighting (#1567). The
 // real WalletProvider pulls in the ESM-only wallet-kit package that Jest
 // cannot transform, so stub the context with no wallet connected.
-jest.mock('@/features/wallet/WalletProvider', () => {
+jest.mock('@/features/wallet/components/WalletProvider', () => {
     const { createContext } = jest.requireActual('react');
     return { WalletContext: createContext(null) };
 });

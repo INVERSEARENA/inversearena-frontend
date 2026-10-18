@@ -42,6 +42,7 @@ Current payload version: **1**
 | `UP_PROP`     | `propose_upgrade()`    | `(v, new_wasm_hash: BytesN<32>, execute_after: u64)` |
 | `UP_EXEC`     | `execute_upgrade()`    | `(v, new_wasm_hash: BytesN<32>)`         |
 | `UP_CANC`     | `cancel_upgrade()`     | `(v)`                                    |
+| `GPAUSE`      | `set_global_pause()` (#1583) | `(paused: bool, reason: Symbol)` — protocol-wide emergency pause set or cleared |
 
 ## Staking Contract
 

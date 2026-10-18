@@ -209,6 +209,80 @@ pub struct LeaderboardEntry {
     pub rounds_survived: u32,
 }
 
+/// Why a player is out of the game (#1582). `resolve_round` persists one of
+/// `Majority`, `NoReveal` or `NoCommit` at elimination time, because the
+/// round's commitments and choices are cleared when it resolves.
+///
+/// `NotEliminated` and `Unrecorded` exist so `PlayerStatus` can carry the
+/// reason without an `Option` of a custom type, which `#[contracttype]` does
+/// not support as a struct field.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EliminationReason {
+    /// The player is still in the game, or never joined.
+    NotEliminated,
+    /// Revealed the side chosen by the majority.
+    Majority,
+    /// Committed but did not reveal before the round resolved.
+    NoReveal,
+    /// Did not commit during the round.
+    NoCommit,
+    /// Eliminated before reasons were recorded.
+    Unrecorded,
+}
+
+/// Where the arena currently is in its lifecycle (#1582).
+///
+/// Derived from `GameState`, the round counter, and the ledger clock; never
+/// stored. `Open` is split into `Lobby` and `Intermission`, and `Active` into
+/// `Commit` and `Reveal`, because each pair gates different player actions.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArenaPhase {
+    /// Recruiting players; no round has been played yet.
+    Lobby,
+    /// A round is running and commitments are accepted.
+    Commit,
+    /// The commit deadline has passed; reveals are accepted until resolution.
+    Reveal,
+    /// Between rounds: more than one survivor remains and the next round has not started.
+    Intermission,
+    /// One survivor remains and the prize is unclaimed.
+    Finished,
+    /// The prize has been claimed.
+    Settled,
+    /// The arena was cancelled; joined players may claim refunds.
+    Cancelled,
+}
+
+/// Every per-player fact a client needs to gate arena actions, returned by
+/// `get_player_status` in a single read (#1582).
+///
+/// `committed` and `revealed` describe `current_round` and are only `true`
+/// while a round is running (`Commit`/`Reveal`).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayerStatus {
+    /// The address is on the roster.
+    pub joined: bool,
+    /// Joined and not eliminated.
+    pub active: bool,
+    /// Submitted a commitment for `current_round`.
+    pub committed: bool,
+    /// Revealed a choice for `current_round`.
+    pub revealed: bool,
+    /// Round in which the player was eliminated, if any.
+    pub eliminated_round: Option<u32>,
+    /// Why the player was eliminated; `NotEliminated` otherwise.
+    pub elimination_reason: EliminationReason,
+    pub refund_claimed: bool,
+    /// The player is the recorded winner.
+    pub winner: bool,
+    /// The round in progress, or the last completed round when none is running.
+    pub current_round: u32,
+    pub phase: ArenaPhase,
+}
+
 /// Error codes returned by arena contract functions.
 ///
 /// Must use `#[contracterror]` (not `#[contracttype]`) so the Soroban macro
@@ -387,6 +461,11 @@ pub enum ArenaError {
     /// the player's entry fee (#1580, #1581). The whole call reverts, so the
     /// player is neither removed nor refunded partially.
     VaultWithdrawFailed = 43,
+
+    /// Returned by fund-moving entry points while the protocol admin has set
+    /// the factory-wide emergency pause (#1583). Distinct from
+    /// `ContractPaused`, which is this arena's own host-controlled pause.
+    GloballyPaused = 44,
 }
 
 #[contracttype]

@@ -78,7 +78,7 @@ the rest of the 5-minute window.
 `contractCapability.ts` lazily (`await import(...)`) imports
 `onChainReader.getOnChainContractVersion` instead of importing it at module
 load time. This is not a style choice - `onChainReader.ts` transitively
-imports `frontend/src/shared-d/services/stellarRpcGateway.ts`, which uses the
+imports `frontend/src/shared/lib/stellar/stellarRpcGateway.ts`, which uses the
 frontend package's own `@/` path alias; the backend's `tsconfig`/jest/tsx
 configuration has no mapping for that alias, so any static top-level import
 of `onChainReader.ts` fails to resolve at both typecheck and runtime. This is

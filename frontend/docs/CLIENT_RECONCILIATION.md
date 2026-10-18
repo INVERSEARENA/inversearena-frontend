@@ -9,9 +9,9 @@ authoritative state. This document defines the ownership, state transitions,
 failure behavior, and compatibility constraints of the single enforced
 implementation of that capability.
 
-**Ownership:** `frontend/src/shared-d/utils/stellar-transactions.ts` owns the
+**Ownership:** `frontend/src/shared/lib/stellar/stellar-transactions.ts` owns the
 reconciliation engine (`captureTransactionOutcome`, `reconcileTransaction`).
-`frontend/src/features/arena/useArenaState.ts` owns the chain-state convergence
+`frontend/src/features/arena/hooks/useArenaState.ts` owns the chain-state convergence
 surface (`reconcile(publicKey)`, `lastSyncedAt`). Consumers never re-implement
 "what happens after a transaction confirms" — they map errors to an outcome and
 call `reconcileTransaction`, then converge their UI through the hook.

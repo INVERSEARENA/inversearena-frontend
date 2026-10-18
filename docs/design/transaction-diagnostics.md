@@ -29,7 +29,7 @@ A Soroban contract panic (`Error(Contract, #N)`) is decoded into a numeric
 `contractCode` and a sanitized, user-facing `remediation` string via a
 backend-local copy of the panic-code registry
 (`backend/src/utils/contractPanicCodes.ts`, mirroring
-`frontend/src/shared-d/utils/contract-error-registry.ts` — kept as a
+`frontend/src/shared/lib/stellar/contract-error-registry.ts` — kept as a
 local copy rather than a cross-package import; see the code comment on
 why). The raw RPC error string is never returned to the client, only the
 extracted code and mapped message.

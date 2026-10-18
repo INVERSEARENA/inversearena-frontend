@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect } from "react";
 import { Modal } from "@/components/ui/Modal";
-import { parseStellarError } from "@/shared-d/utils/stellar-transactions";
+import { parseStellarError } from "@/shared/lib/stellar/stellar-transactions";
 
 export type TransactionState = "REVIEW" | "SIGNING" | "SUBMITTING" | "SUCCESS" | "ERROR";
 

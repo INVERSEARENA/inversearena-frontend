@@ -31,7 +31,7 @@ independently recompute the outputs from the inputs and compare.
 | Bundle assembly (read-only, no on-chain calls, no writes) | `RoundProofBundleService` (`backend/src/services/roundProofBundleService.ts`) |
 | Persisting the raw inputs the bundle is assembled from | `RoundService.resolveRound` (`backend/src/services/roundService.ts`), via `RoundMetadata.allActivePlayerIds` |
 | HTTP exposure | `GET /api/rounds/:id/proof-bundle` (`backend/src/routes/roundProofBundle.ts`) |
-| Independent client-side recomputation (the actual "proof" step) | `recomputeSurvivorship` (`frontend/src/shared-d/utils/contract-state-parsers.ts`) — **not** the backend |
+| Independent client-side recomputation (the actual "proof" step) | `recomputeSurvivorship` (`frontend/src/shared/lib/stellar/contract-state-parsers.ts`) — **not** the backend |
 | Checksum / tamper-evidence verification | `verifyProofBundleChecksum` (same frontend file) |
 | Network-scope guard | `assertProofBundleNetwork` (same frontend file) |
 | Ground-truth elimination rule the bundle must faithfully mirror | `contract/arena/src/eliminations.rs` (`surviving_choice`, `is_eliminated`) + `contract/arena/src/lib.rs`'s `resolve_players` |
@@ -82,7 +82,7 @@ at least one non-revealer.
 ## 4. Bundle contents
 
 `RoundProofBundle` (`backend/src/types/round.ts`, mirrored in
-`frontend/src/shared-d/types/contract-state.ts`):
+`frontend/src/shared/lib/stellar/contract-state.ts`):
 
 | Field | Meaning |
 |---|---|
@@ -160,7 +160,7 @@ Round: OPEN/CLOSED ──resolve_round()──▶ RESOLVED ──(settlement)─
   parsing, in case a future change needs to add fields.
 - **`RoundProofBundle` schema versioning**: carries `ROUND_PROOF_BUNDLE_VERSION`.
   Both the backend (`backend/src/types/round.ts`) and the frontend mirror
-  (`frontend/src/shared-d/types/contract-state.ts`) must bump this in
+  (`frontend/src/shared/lib/stellar/contract-state.ts`) must bump this in
   lockstep on any breaking shape change — there is no shared types package
   between the two, so this is a manual, documented contract rather than an
   enforced one. `recomputeSurvivorship` throws `ProofBundleShapeError` if it
@@ -236,7 +236,7 @@ handled per §6 (refuse, don't guess).
   read across two requests) proving the cache-middleware wiring actually
   works end-to-end.
 - **Frontend unit**
-  (`frontend/src/shared-d/utils/__tests__/contract-state-parsers.proof-bundle.test.ts`):
+  (`frontend/src/shared/lib/stellar/__tests__/contract-state-parsers.proof-bundle.test.ts`):
   `computeSurvivingChoice` against the same boundary cases as the contract's
   own `eliminations.rs` test module, `recomputeSurvivorship`'s normal /
   boundary / mismatch-detection / invalid-shape paths, `assertProofBundleNetwork`,
@@ -272,6 +272,6 @@ handled per §6 (refuse, don't guess).
   rather than trusting the backend's HTTP response at all; the bundle's
   purpose is only to make the backend's claim checkable against inputs the
   client can see, not to eliminate the backend as a trust boundary entirely.
-- Salted commit-reveal secrecy (`frontend/src/shared-d/utils/commit-reveal.ts`)
+- Salted commit-reveal secrecy (`frontend/src/shared/lib/stellar/commit-reveal.ts`)
   is out of scope here — the bundle only ever carries *revealed* choices,
   which are already public on-chain by the time a round resolves.

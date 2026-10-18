@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from 'react';
-import { useQueryState } from '@/shared-d/hooks/useQueryState';
-import { useDebouncedValue } from '@/shared-d/hooks/useDebouncedValue';
+import { useQueryState } from '@/shared/lib/hooks/useQueryState';
+import { useDebouncedValue } from '@/shared/lib/hooks/useDebouncedValue';
 
 type FilterType = "all" | "high-stakes" | "fast-rounds";
 

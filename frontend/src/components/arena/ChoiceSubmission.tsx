@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { buildSubmitCommitmentTransaction, submitSignedTransaction } from "@/shared-d/utils/stellar-transactions";
-import { useAutoReveal } from "@/features/arena/useAutoReveal";
+import { buildSubmitCommitmentTransaction, submitSignedTransaction } from "@/shared/lib/stellar/stellar-transactions";
+import { useAutoReveal } from "@/features/arena/hooks/useAutoReveal";
 import {
   evaluateSigningRequest,
   // Imported as a value, not a type: these call sites narrow policy
@@ -10,8 +10,8 @@ import {
   // erases to `any` and silently turns into a dead branch.
   SigningPolicyError,
   type DecodedEnvelope,
-} from "@/shared-d/security/policy";
-import type { WalletHook } from "@/features/wallet/useStellarWallet";
+} from "@/shared/lib/security/policy";
+import type { WalletHook } from "@/features/wallet/hooks/useStellarWallet";
 
 type Choice = "Heads" | "Tails";
 

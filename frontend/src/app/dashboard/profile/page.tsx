@@ -2,19 +2,18 @@
 
 import React, { useState } from "react";
 import { Button } from "@/components/ui/Button";
-import { useArenaSettings } from "@/shared-d/hooks/useArenaSettings";
+import { useArenaSettings } from "@/features/arena/hooks/useArenaSettings";
 import { SettingsToggle } from "@/components/arena-v2/settings/SettingsToggle";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LayoutGrid, History } from "lucide-react";
-import { useProfile } from "@/shared-d/features/profile/hooks/useProfile";
-import { MyArenasFilter } from "@/shared-d/features/profile/types";
-import { useWallet } from "@/features/wallet/useWallet";
+import { useProfile, type MyArenasFilter } from "@/features/profile";
+import { useWallet } from "@/features/wallet/hooks/useWallet";
 // Issue #1414 — alias management
 import { AliasManager } from "./AliasManager";
 // Issue #1571 — Web Push opt-in for round-phase alerts
 import { PushSubscribeButton } from "@/features/notifications";
-import StakingPositionPanel from "@/features/staking/StakingPositionPanel";
+import StakingPositionPanel from "@/features/staking/components/StakingPositionPanel";
 
 const truncateAddress = (address: string) => {
   if (!address) return "";

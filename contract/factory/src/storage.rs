@@ -23,6 +23,8 @@ pub enum DataKey {
     Paused,
     SupportedToken(Address),
     SupportedTokens,
+    /// Instance-storage flag for the protocol-wide emergency pause (#1583).
+    GlobalPaused,
 }
 
 #[contracttype]
@@ -246,6 +248,26 @@ impl FactoryStorage {
     pub fn set_paused(env: &Env, paused: bool) {
         Self::extend_persistent_ttl(env, &DataKey::Paused);
         env.storage().persistent().set(&DataKey::Paused, &paused);
+    }
+
+    /// Protocol-wide emergency pause read by every arena (#1583).
+    ///
+    /// Kept in instance storage: invoking the factory already loads its
+    /// instance entry, so an arena's cross-contract check adds no further
+    /// ledger entry. The read never extends a TTL.
+    pub fn is_globally_paused(env: &Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::GlobalPaused)
+            .unwrap_or(false)
+    }
+
+    pub fn set_globally_paused(env: &Env, paused: bool) {
+        env.storage().instance().set(&DataKey::GlobalPaused, &paused);
+        env.storage().instance().extend_ttl(
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
     }
 
     // ── Pool Metadata ─────────────────────────────────────────────────────

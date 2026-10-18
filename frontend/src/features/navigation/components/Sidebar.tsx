@@ -1,8 +1,8 @@
 "use client";
 
-import { dashboardNavItems } from "../navItems";
+import { dashboardNavItems } from "../model/navItems";
 import { SidebarNavLink } from "./SidebarNavLink";
-import { useWallet } from "@/features/wallet/useWallet";
+import { useWallet } from "@/features/wallet";
 import { ConnectWalletButton } from "@/components/wallet/ConnectWalletButton";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 

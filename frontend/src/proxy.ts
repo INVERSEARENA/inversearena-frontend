@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { parseAllowedOrigins } from "@/shared-d/utils/security-validation";
-import { HSTS_HEADER_VALUE, generateNonce } from "@/lib/csp";
+import { parseAllowedOrigins } from "@/shared/lib/security-validation";
+import { HSTS_HEADER_VALUE, generateNonce } from "@/shared/config/csp";
 
 const DEFAULT_TESTNET_HORIZON_URL = "https://horizon-testnet.stellar.org";
 const DEFAULT_TESTNET_SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";

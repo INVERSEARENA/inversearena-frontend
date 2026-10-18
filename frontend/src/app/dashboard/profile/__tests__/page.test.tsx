@@ -12,7 +12,7 @@ import React from "react";
 import { render, screen } from "@testing-library/react";
 import ProfilePage from "../page";
 
-jest.mock("@/shared-d/hooks/useArenaSettings", () => ({
+jest.mock("@/features/arena/hooks/useArenaSettings", () => ({
   useArenaSettings: () => ({
     settings: { notificationsEnabled: true },
     updateSetting: jest.fn(),
@@ -21,11 +21,11 @@ jest.mock("@/shared-d/hooks/useArenaSettings", () => ({
   }),
 }));
 
-jest.mock("@/features/wallet/useWallet", () => ({
+jest.mock("@/features/wallet/hooks/useWallet", () => ({
   useWallet: () => ({ address: "GLADESIMZE000000000000000000000000000000000000000000000001" }),
 }));
 
-jest.mock("@/shared-d/features/profile/hooks/useProfile", () => ({
+jest.mock("@/features/profile/hooks/useProfile", () => ({
   useProfile: () => ({
     profile: {
       identity: { id: "AGENT-007", rank: 12 },

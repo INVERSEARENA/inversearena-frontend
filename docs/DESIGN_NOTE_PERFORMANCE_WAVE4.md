@@ -7,7 +7,7 @@ Issues: #1440, #1441, #1442, #1443.
 - `contract/arena/src/storage.rs` owns the v2 all-player and active-survivor page indexes. `ArenaConfig` counts remain authoritative. Pages preserve join order; survivor pages are compacted after resolution.
 - `backend/src/cache/cacheService.ts` owns typed Redis command execution, bounded retries, per-key TTL validation, and structured pipeline telemetry. `SessionStore` owns session command layout.
 - `backend/src/queues/txQueue.ts` owns read-only BullMQ snapshots. `txReconciler.ts` owns job-attempt outcomes. `metrics.ts` owns Prometheus publication.
-- `frontend/src/features/arena/arenaStore.ts` owns immutable arena snapshots. The live page starts polling/reconciliation through `useArenaStateActions` without subscribing its parent tree; panels subscribe through `useArenaState` or selectors. `Timer` remains local to its component.
+- `frontend/src/features/arena/model/arenaStore.ts` owns immutable arena snapshots. The live page starts polling/reconciliation through `useArenaStateActions` without subscribing its parent tree; panels subscribe through `useArenaState` or selectors. `Timer` remains local to its component.
 
 ## Transitions and signals
 

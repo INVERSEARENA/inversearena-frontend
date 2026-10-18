@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { z } from "zod";
-import type { Survivor } from "../types";
+import type { Survivor } from "../model/types";
 
 // ── Zod schemas for runtime validation ─────────────────────────────
 const apiPlayerSchema = z.object({

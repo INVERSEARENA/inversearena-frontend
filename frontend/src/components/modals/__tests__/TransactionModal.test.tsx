@@ -12,7 +12,7 @@ import { act, render, screen, fireEvent } from "@testing-library/react";
 
 import { TransactionModal, type TransactionProgress } from "../TransactionModal";
 
-jest.mock("@/shared-d/utils/stellar-transactions", () => ({
+jest.mock("@/shared/lib/stellar/stellar-transactions", () => ({
     parseStellarError: (err: unknown) => String(err),
 }));
 

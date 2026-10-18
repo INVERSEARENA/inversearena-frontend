@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useWallet } from "@/features/wallet/useWallet";
+import { useWallet } from "@/features/wallet/hooks/useWallet";
 import {
   Play,
   XCircle,

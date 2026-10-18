@@ -119,9 +119,10 @@ inversearena-frontend/
 ├── frontend/               # Next.js 15 application
 │   ├── src/
 │   │   ├── app/            # Next.js App Router pages
-│   │   ├── features/       # Feature modules (arena, wallet, leaderboard…)
+│   │   ├── features/       # Domain modules: api/ hooks/ components/ model/ + index.ts
 │   │   ├── components/     # Shared UI components
-│   │   └── lib/            # Utilities and SDK wrappers
+│   │   ├── shared/         # config/ and lib/ (incl. the Stellar access layer)
+│   │   └── test/           # Test doubles and fixtures (see ARCHITECTURE.md §8)
 │   ├── public/             # Static assets
 │   └── .env.example        # Frontend environment variable template
 │

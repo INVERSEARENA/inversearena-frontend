@@ -8,8 +8,8 @@
 'use client';
 
 import { useState } from 'react';
-import { fetchArenaState } from '@/shared-d/utils/stellar-transactions';
-import { useArenaState } from '@/features/arena/useArenaState';
+import { fetchArenaState } from '@/shared/lib/stellar/stellar-transactions';
+import { useArenaState } from '@/features/arena/hooks/useArenaState';
 
 /**
  * Example 1: Direct function call

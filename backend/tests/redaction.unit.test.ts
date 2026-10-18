@@ -1,4 +1,4 @@
-import { redactForExport } from "../../frontend/src/shared-d/security/redaction";
+import { redactForExport } from "../../frontend/src/shared/lib/security/redaction";
 
 describe("shared redaction policy (#1531)", () => {
   it("redacts JWT-like strings and authorization headers", () => {

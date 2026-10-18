@@ -1,7 +1,7 @@
 {
   "contract": "arena",
-  "contract_version": 2,
-  "schema_checksum": "arena-storage-v2-canonical",
+  "contract_version": 4,
+  "schema_checksum": "arena-storage-v3-canonical",
   "ledger": {
     "sequence": 12345678,
     "protocol": 22,
@@ -25,6 +25,18 @@
       "storage_class": "persistent",
       "key_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr",
       "value_xdr_hex": ""
+    },
+    {
+      "name": "DataKey::EliminationReason",
+      "storage_class": "persistent",
+      "key_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr",
+      "value_xdr_hex": ""
+    },
+    {
+      "name": "EliminationReason::Majority",
+      "storage_class": "persistent",
+      "key_xdr_hex": "",
+      "value_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr"
     },
     {
       "name": "ArenaConfig",

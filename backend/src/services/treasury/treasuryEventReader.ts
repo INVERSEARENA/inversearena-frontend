@@ -9,7 +9,7 @@
  * call per page; batching/looping belongs to the caller).
  */
 
-import { StellarRpcGateway } from "../../../../frontend/src/shared-d/services/stellarRpcGateway";
+import { StellarRpcGateway } from "../../../../frontend/src/shared/lib/stellar/stellarRpcGateway";
 import { getStellarConfig } from "../../config/stellarConfig";
 import { toTreasuryEvent } from "../../domain/treasuryEventDecoder";
 import type { TreasuryEvent } from "../../domain/treasuryEventDecoder";

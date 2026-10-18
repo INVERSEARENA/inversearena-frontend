@@ -9,7 +9,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useState, useEffect } from "react";
 import { Search } from "lucide-react";
-import type { Arena } from "@/features/games/types";
+import type { Arena } from "@/features/games/model/types";
 
 function GamesPageContent() {
   const searchParams = useSearchParams();

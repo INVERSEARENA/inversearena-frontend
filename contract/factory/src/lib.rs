@@ -11,7 +11,8 @@ use storage::{CreatorStakeRecord, FactoryStorage};
 use types::{ArenaMetadata, ArenaStatus, FactoryError, PoolConfig};
 
 use soroban_sdk::{
-    Address, BytesN, Env, Vec, contract, contractclient, contractimpl, symbol_short, token,
+    Address, BytesN, Env, Symbol, Vec, contract, contractclient, contractimpl, symbol_short,
+    token,
 };
 
 /// Must match `arena::MAX_PLAYERS_ALLOWED` (contract/arena/src/lib.rs) exactly
@@ -64,7 +65,8 @@ const MAX_START_DELAY_SECONDS: u64 = 2_592_000;
 /// Factory contract ABI/storage version, for client-side capability
 /// negotiation across mixed deployment versions (see arena::CONTRACT_VERSION
 /// for the sibling contract's own counter — these are independent).
-const CONTRACT_VERSION: u32 = 1;
+/// Bumped to 2 for #1583: adds `set_global_pause` and `is_globally_paused`.
+const CONTRACT_VERSION: u32 = 2;
 
 /// The decimal precision `min_stake` is denominated in, matching Stellar's
 /// native asset (and the staking contract's own `MIN_INITIAL_STAKE`
@@ -228,6 +230,31 @@ impl FactoryContract {
         FactoryStorage::set_paused(&env, false);
         env.events().publish((symbol_short!("UNPAUS"),), ());
         Ok(())
+    }
+
+    /// Set or clear the protocol-wide emergency pause (#1583).
+    ///
+    /// While set, every arena deployed by this factory rejects its
+    /// fund-moving entry points with `ArenaError::GloballyPaused`, on top of
+    /// (not instead of) each arena's own host-controlled pause. Only the
+    /// protocol admin may call this. The admin is expected to be a Stellar
+    /// multisig account whose medium threshold needs two signers, so the
+    /// call carries two-person approval through `require_auth`.
+    ///
+    /// # Events
+    /// Emits `GPAUSE` with `(paused, reason)`.
+    pub fn set_global_pause(env: Env, paused: bool, reason: Symbol) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        FactoryStorage::set_globally_paused(&env, paused);
+        env.events()
+            .publish((symbol_short!("GPAUSE"),), (paused, reason));
+        Ok(())
+    }
+
+    /// Whether the protocol-wide emergency pause is set (#1583). Read by every
+    /// arena's fund-moving entry points.
+    pub fn is_globally_paused(env: Env) -> bool {
+        FactoryStorage::is_globally_paused(&env)
     }
 
     /// Release an arena from a creator's active pool count.
@@ -1209,6 +1236,50 @@ mod test {
             .expect("entry_fee far below the decimal-scaled minimum must error")
             .expect("error must be a contract error");
         assert_eq!(err, FactoryError::StakeBelowMinimum);
+    }
+
+    // ── #1583: protocol-wide emergency pause ─────────────────────────────────
+
+    #[test]
+    fn set_global_pause_toggles_the_flag_and_emits_an_event() {
+        use soroban_sdk::{IntoVal, testutils::Events as _};
+
+        let (env, client, _admin, _host) = setup();
+        assert!(!client.is_globally_paused());
+
+        let reason = Symbol::new(&env, "vault_exploit");
+        client.set_global_pause(&true, &reason);
+        let (contract, topics, data) = env.events().all().last().unwrap();
+        assert_eq!(contract, client.address);
+        assert_eq!(topics, (symbol_short!("GPAUSE"),).into_val(&env));
+        let data: (bool, Symbol) = data.into_val(&env);
+        assert_eq!(data, (true, reason.clone()));
+        assert!(client.is_globally_paused());
+
+        client.set_global_pause(&false, &reason);
+        assert!(!client.is_globally_paused());
+    }
+
+    #[test]
+    fn set_global_pause_requires_the_protocol_admin() {
+        let (env, client, _admin, _host) = setup();
+        env.set_auths(&[]);
+        assert!(
+            client
+                .try_set_global_pause(&true, &Symbol::new(&env, "x"))
+                .is_err()
+        );
+        assert!(!client.is_globally_paused());
+    }
+
+    #[test]
+    fn global_pause_is_independent_of_the_pool_creation_pause() {
+        let (env, client, _admin, _host) = setup();
+        client.pause();
+        assert!(!client.is_globally_paused());
+        client.unpause();
+        client.set_global_pause(&true, &Symbol::new(&env, "incident"));
+        assert!(client.is_globally_paused());
     }
 
     #[test]

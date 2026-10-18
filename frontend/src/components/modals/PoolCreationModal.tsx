@@ -2,37 +2,37 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Modal } from "@/components/ui/Modal";
-import { useWallet } from "@/features/wallet/useWallet";
+import { useWallet } from "@/features/wallet/hooks/useWallet";
 import { TransactionModal } from "@/components/modals/TransactionModal";
 import {
   evaluateSigningRequest,
   type DecodedEnvelope,
   type SigningPolicyError,
-} from "@/shared-d/security/policy";
-import { buildCreatePoolTransaction, submitSignedTransaction, NETWORK_PASSPHRASE } from "@/shared-d/utils/stellar-transactions";
-import { useTransactionIntent } from "@/shared-d/hooks/useTransactionIntent";
+} from "@/shared/lib/security/policy";
+import { buildCreatePoolTransaction, submitSignedTransaction, NETWORK_PASSPHRASE } from "@/shared/lib/stellar/stellar-transactions";
+import { useTransactionIntent } from "@/shared/lib/hooks/useTransactionIntent";
 import {
   formatCurrencyInput,
   sanitizeNumericInput,
   type Currency,
-} from "@/shared-d/utils/form-validation";
+} from "@/shared/lib/form-validation";
 import {
   estimateCreatePoolFee,
   formatFeeDisplay,
   formatTotalCostDisplay,
-} from "@/shared-d/utils/stellar-fees";
+} from "@/shared/lib/stellar/stellar-fees";
 import {
   poolSchema,
   MIN_CAPACITY,
   MAX_CAPACITY,
   MIN_STAKE,
   type RoundSpeed,
-} from "@/shared-d/utils/pool-schema";
+} from "@/features/pools/model/pool-schema";
 import {
   loadPoolDraft,
   savePoolDraft,
   clearPoolDraft,
-} from "@/shared-d/utils/pool-draft";
+} from "@/features/pools/model/pool-draft";
 
 interface PoolCreationModalProps {
   isOpen: boolean;

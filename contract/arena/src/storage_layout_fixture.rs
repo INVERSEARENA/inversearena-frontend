@@ -6,7 +6,8 @@
 mod tests {
     use crate::storage::DataKey;
     use crate::types::{
-        ArenaConfig, Choice, GameState, PendingAdmin, PlayerState, RoundResult, YieldSnapshot,
+        ArenaConfig, Choice, EliminationReason, GameState, PendingAdmin, PlayerState, RoundResult,
+        YieldSnapshot,
     };
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::xdr::{ReadXdr, ScVal, ToXdr};
@@ -36,7 +37,7 @@ mod tests {
         let admin = fixed_address(&env, 1);
         let player = fixed_address(&env, 2);
 
-        let samples: [(&str, soroban_sdk::Bytes); 7] = [
+        let samples: [(&str, soroban_sdk::Bytes); 9] = [
             ("Choice::Heads", to_xdr(&env, Choice::Heads)),
             (
                 "PlayerState",
@@ -48,7 +49,15 @@ mod tests {
                     },
                 ),
             ),
-            ("DataKey::Player", to_xdr(&env, DataKey::Player(player))),
+            ("DataKey::Player", to_xdr(&env, DataKey::Player(player.clone()))),
+            (
+                "DataKey::EliminationReason",
+                to_xdr(&env, DataKey::EliminationReason(player)),
+            ),
+            (
+                "EliminationReason::Majority",
+                to_xdr(&env, EliminationReason::Majority),
+            ),
             (
                 "ArenaConfig",
                 to_xdr(

@@ -2,7 +2,7 @@
 
 import React, { Component, ErrorInfo, ReactNode } from "react";
 import { ErrorFallback } from "./ErrorFallback";
-import { captureReactError } from "@/lib/sentry";
+import { captureReactError } from "@/shared/lib/sentry";
 
 interface ErrorBoundaryProps {
   children: ReactNode;

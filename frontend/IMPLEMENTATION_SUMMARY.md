@@ -7,7 +7,7 @@ Successfully replaced the mock implementation of `fetchArenaState` with real Sor
 
 ### What Was Changed
 
-#### 1. Core Implementation (`src/shared-d/utils/stellar-transactions.ts`)
+#### 1. Core Implementation (`src/shared/lib/stellar/stellar-transactions.ts`)
 
 **Before:**
 ```typescript
@@ -79,7 +79,7 @@ const stateSimulation = await server.simulateTransaction(stateTx);
   - Full page with all examples
 
 **Created tests:**
-- `src/shared-d/utils/__tests__/fetchArenaState.test.ts`
+- `src/shared/lib/stellar/__tests__/fetchArenaState.test.ts`
   - Input validation tests
   - Response shape verification
   - Error handling tests
@@ -149,14 +149,14 @@ User Call → Input Validation → Contract Query → Response Parsing → Retur
 ### Files Changed
 
 1. **Modified:**
-   - `src/shared-d/utils/stellar-transactions.ts` - Core implementation
+   - `src/shared/lib/stellar/stellar-transactions.ts` - Core implementation
    - `tsconfig.json` - ES2020 target for BigInt
    - `package-lock.json` - Dependencies installed
 
 2. **Created:**
    - `docs/ARENA_STATE_INTEGRATION.md` - Documentation
    - `examples/arena-state-usage.tsx` - Usage examples
-   - `src/shared-d/utils/__tests__/fetchArenaState.test.ts` - Tests
+   - `src/shared/lib/stellar/__tests__/fetchArenaState.test.ts` - Tests
 
 ### Testing Recommendations
 
@@ -249,7 +249,7 @@ The implementation is designed to be easily customizable:
 For questions or issues:
 1. Check `docs/ARENA_STATE_INTEGRATION.md` for detailed documentation
 2. Review `examples/arena-state-usage.tsx` for usage patterns
-3. Run tests in `src/shared-d/utils/__tests__/fetchArenaState.test.ts`
+3. Run tests in `src/shared/lib/stellar/__tests__/fetchArenaState.test.ts`
 
 ---
 

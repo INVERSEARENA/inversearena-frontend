@@ -136,7 +136,7 @@ match the frontend's `NEXT_PUBLIC_USDC_ISSUER` / `NEXT_PUBLIC_EURC_ISSUER`.
 service's TypeScript interfaces, and asserts at compile time that the two
 describe the same shape. The assertion is bidirectional, so a field added to
 only one side fails the build. The client mirrors the same schemas in
-`frontend/src/features/claim-inbox/types.ts` and validates responses with
+`frontend/src/features/claim-inbox/model/types.ts` and validates responses with
 `safeParse`, so a mismatch surfaces as an explicit parse error instead of
 `undefined` rendered into a balance.
 

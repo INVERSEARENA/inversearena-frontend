@@ -1,7 +1,7 @@
 use crate::types::PendingUpgrade;
 use crate::types::{
-    ArenaConfig, ArenaError, Choice, GameState, OracleFreshnessPolicy, PendingAdmin, PlayerState,
-    RoundResult, YieldSnapshot,
+    ArenaConfig, ArenaError, Choice, EliminationReason, GameState, OracleFreshnessPolicy,
+    PendingAdmin, PlayerState, RoundResult, YieldSnapshot,
 };
 use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, Vec, contracttype, symbol_short};
 
@@ -53,6 +53,8 @@ pub(crate) enum DataKey {
     OracleFreshnessPolicy,
     /// Lobby start deadline (#1579). `0` means no deadline is configured.
     StartDeadline,
+    /// Why a player was eliminated (#1582). Written once by `resolve_round`.
+    EliminationReason(Address),
 }
 
 pub struct ArenaRepository<'a> {
@@ -1176,6 +1178,59 @@ impl ArenaStorage {
 
     pub fn clear_pending_upgrade(env: &Env) {
         env.storage().persistent().remove(&symbol_short!("UPGRADE"));
+    }
+
+    pub fn save_elimination_reason(env: &Env, player: &Address, reason: &EliminationReason) {
+        let key = DataKey::EliminationReason(player.clone());
+        Self::extend_persistent_ttl(env, &key);
+        env.storage().persistent().set(&key, reason);
+    }
+
+    // ── Read-only accessors (#1582) ─────────────────────────────────────────
+    //
+    // Unlike the `load_*` helpers, these never extend TTLs or migrate the
+    // roster, so a view composed only of them performs no ledger writes.
+
+    pub fn peek_config(env: &Env) -> Result<ArenaConfig, ArenaError> {
+        env.storage()
+            .persistent()
+            .get(&symbol_short!("CONFIG"))
+            .ok_or(ArenaError::NotInitialized)
+    }
+
+    pub fn peek_player(env: &Env, player: &Address) -> Option<PlayerState> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Player(player.clone()))
+    }
+
+    pub fn has_commitment(env: &Env, player: &Address, round: u32) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::CommitmentForRound(player.clone(), round))
+    }
+
+    pub fn has_choice(env: &Env, player: &Address, round: u32) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::ChoiceForRound(player.clone(), round))
+    }
+
+    pub fn peek_elimination_reason(env: &Env, player: &Address) -> Option<EliminationReason> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::EliminationReason(player.clone()))
+    }
+
+    pub fn peek_refund_claimed(env: &Env, player: &Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RefundClaimed(player.clone()))
+            .unwrap_or(false)
+    }
+
+    pub fn peek_winner(env: &Env) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::Winner)
     }
 
     /// Clear all players' choices and commitments for the specified round.

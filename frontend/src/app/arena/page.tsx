@@ -11,17 +11,17 @@ import {
   ChooseYourFate,
   TotalYieldPot,
 } from "@/components/arena/core";
-import { useWallet } from "@/features/wallet/useWallet";
+import { useWallet } from "@/features/wallet/hooks/useWallet";
 import { TransactionModal } from "@/components/modals/TransactionModal";
 import { AssetTrustlinePrompt } from "@/components/modals/AssetTrustlinePrompt";
-import { useAssetReadinessGate } from "@/features/asset-readiness/useAssetReadinessGate";
-import { displayAmountToStroops } from "@/shared-d/utils/stellar-asset-reader";
+import { useAssetReadinessGate } from "@/features/asset-readiness/hooks/useAssetReadinessGate";
+import { displayAmountToStroops } from "@/shared/lib/stellar/stellar-asset-reader";
 import {
   evaluateSigningRequest,
   // A value import, not a type: `instanceof` narrows to `any` under a
   // type-only import and the rejection branch becomes dead code.
   SigningPolicyError,
-} from "@/shared-d/security/policy";
+} from "@/shared/lib/security/policy";
 import { ArenaStatsSkeleton } from "@/components/arena/ArenaStatsSkeleton";
 import { ArenaStateSummary } from "@/components/arena/ArenaStateSummary";
 import {
@@ -36,10 +36,10 @@ import {
   reconcileTransaction,
   type TransactionOutcome,
   NETWORK_PASSPHRASE,
-} from "@/shared-d/utils/stellar-transactions";
-import { useArenaStream } from "@/features/arena/useArenaStream";
-import { useArenaStateActions } from "@/features/arena/useArenaState";
-import { useTransactionIntent, type IntentKind } from "@/shared-d/hooks/useTransactionIntent";
+} from "@/shared/lib/stellar/stellar-transactions";
+import { useArenaStream } from "@/features/arena/hooks/useArenaStream";
+import { useArenaState } from "@/features/arena/hooks/useArenaState";
+import { useTransactionIntent, type IntentKind } from "@/shared/lib/hooks/useTransactionIntent";
 import type { Transaction } from "@stellar/stellar-sdk";
 
 const API_BASE =
@@ -155,7 +155,13 @@ function ArenaGameView() {
 
   // Demo arena identifier; when unset the page falls back to the static mock view.
   const ARENA_ID = process.env.NEXT_PUBLIC_DEMO_ARENA_ID ?? "";
-  const { reconcile: reconcileArenaState } = useArenaStateActions(ARENA_ID);
+  // On-chain player status (#1582) is the source of truth for which actions
+  // the contract would accept; the local timer below only drives the countdown.
+  const {
+    playerStatus,
+    actions: arenaActions,
+    reconcile: reconcileArenaState,
+  } = useArenaState(ARENA_ID, address ?? undefined);
   const { status: streamStatus, snapshot, feed: streamFeed } = useArenaStream(ARENA_ID);
 
   const headsPercentage = 42;
@@ -389,8 +395,8 @@ function ArenaGameView() {
                   type="heads"
                   estimatedYield={headsYield}
                   isSelected={selectedChoice === "heads"}
-                  disabled={roundPhase !== "commit"}
-                  onSelect={() => roundPhase === "commit" && setSelectedChoice("heads")}
+                  disabled={!arenaActions.canCommit}
+                  onSelect={() => arenaActions.canCommit && setSelectedChoice("heads")}
                 />
 
                 {isLoadingYield ? (
@@ -404,15 +410,15 @@ function ArenaGameView() {
                       type="tails"
                       estimatedYield={tailsYield}
                       isSelected={selectedChoice === "tails"}
-                      disabled={roundPhase !== "commit"}
-                      onSelect={() => roundPhase === "commit" && setSelectedChoice("tails")}
+                      disabled={!arenaActions.canCommit}
+                      onSelect={() => arenaActions.canCommit && setSelectedChoice("tails")}
                     />
                   </>
                 )}
               </div>
 
               {/* Commit Button */}
-              {selectedChoice && isJoined && roundPhase === "commit" && (
+              {selectedChoice && arenaActions.canCommit && (
                 <div className="mt-4 flex justify-center">
                   <button
                     onClick={() => {
@@ -432,8 +438,9 @@ function ArenaGameView() {
                 </div>
               )}
 
-              {/* Reveal Button */}
-              {isJoined && roundPhase === "reveal" && hasCommittedForRound && (
+              {/* Reveal Button — the contract must accept a reveal and this
+                  device must hold the salt for the committed choice. */}
+              {arenaActions.canReveal && hasCommittedForRound && (
                 <div className="mt-4 flex justify-center">
                   <button
                     onClick={() => {
@@ -452,7 +459,7 @@ function ArenaGameView() {
                 </div>
               )}
 
-              {isJoined && roundPhase === "reveal" && !hasCommittedForRound && (
+              {playerStatus?.phase === "Reveal" && playerStatus.active && !playerStatus.committed && (
                 <div className="mt-4 flex justify-center">
                   <p className="font-pixel text-[10px] text-white/40 uppercase tracking-wider">
                     No commitment made this round — nothing to reveal.
@@ -570,7 +577,7 @@ function ArenaGameView() {
                     </div>
                   </div>
                 )}
-                {hasWon && claimReady ? (
+                {arenaActions.canClaim && claimReady ? (
                   <button
                     onClick={() => {
                       if (!ARENA_ID) return;

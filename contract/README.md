@@ -68,6 +68,18 @@ ABI snapshots live at `<contract>/abi_snapshot.json` and are generated from comp
 
 After regenerating, commit the updated snapshot file and document the interface change in your PR.
 
+### Error Mappings
+
+The error tables in `ERRORS.md` and the frontend's `contract-errors.generated.ts` are generated from each contract's `#[contracterror]` enum in its compiled spec (#1597). Regenerate them whenever a variant is added or renumbered:
+
+```bash
+cargo build --workspace --target wasm32v1-none --release
+node scripts/generate-contract-errors.mjs          # needs frontend/node_modules
+
+# Verify they match the WASM (runs in CI)
+node scripts/generate-contract-errors.mjs --check
+```
+
 ## Contributing
 
 1. Pick an issue from the tracker.

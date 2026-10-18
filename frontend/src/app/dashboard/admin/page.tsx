@@ -2,9 +2,9 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { useWallet } from "@/features/wallet/useWallet";
-import { useAdminRole } from "@/features/wallet/useAdminRole";
-import { useCapability } from "@/shared-d/hooks/useCompatibility";
+import { useWallet } from "@/features/wallet/hooks/useWallet";
+import { useAdminRole } from "@/features/wallet/hooks/useAdminRole";
+import { useCapability } from "@/shared/lib/hooks/useCompatibility";
 import { PoolCreationModal } from "@/components/modals/PoolCreationModal";
 
 // ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ import {
   formatCurrency,
   type Survivor,
 } from "@/features/leaderboard";
-import { WalletContext } from "@/features/wallet/WalletProvider";
+import { WalletContext } from "@/features/wallet/components/WalletProvider";
 import { PoolCreationModal } from "@/components/modals/PoolCreationModal";
 import { Skeleton } from "@/components/ui/Skeleton";
 

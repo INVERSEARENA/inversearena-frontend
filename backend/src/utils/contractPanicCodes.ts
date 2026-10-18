@@ -1,14 +1,14 @@
 /**
  * Backend-local copy of the arena contract's panic-code -> user message
  * mapping. Mirrors
- * frontend/src/shared-d/utils/contract-error-registry.ts, not imported
+ * frontend/src/shared/lib/stellar/contract-error-registry.ts, not imported
  * directly: this repo's backend tsconfig sets rootDir: "src" and rejects
  * any import outside it (confirmed — the existing cross-boundary import
  * in backend/src/services/onChainReader.ts already fails `tsc --noEmit`
  * and cannot even be loaded by ts-jest; that import is a pre-existing
  * defect, not a pattern to repeat).
  *
- * Keep in sync with frontend/src/shared-d/utils/contract-error-registry.ts
+ * Keep in sync with frontend/src/shared/lib/stellar/contract-error-registry.ts
  * and contract/ERRORS.md when a contract error code changes.
  */
 export const CONTRACT_PANIC_USER_MESSAGES: Readonly<Record<number, string>> = Object.freeze({

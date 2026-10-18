@@ -16,7 +16,7 @@
 //!
 //! `Cancelled` and `Settled` are terminal — no transitions leave them.
 
-use crate::types::{ArenaError, GameState};
+use crate::types::{ArenaError, ArenaPhase, GameState};
 
 /// Returns `true` if a direct transition from `from` to `to` is allowed.
 ///
@@ -63,10 +63,37 @@ pub fn ensure_transition(
     }
 }
 
+/// Derive the player-facing phase (#1582). `Open` is the lobby until the first
+/// round resolves and an intermission afterwards; `Active` accepts commitments
+/// strictly before `commit_deadline` and reveals from then on, matching the
+/// guards in `submit_commitment` and `reveal_choice`.
+pub fn phase(state: &GameState, round_count: u32, commit_deadline: u64, now: u64) -> ArenaPhase {
+    match state {
+        GameState::Open if round_count == 0 => ArenaPhase::Lobby,
+        GameState::Open => ArenaPhase::Intermission,
+        GameState::Active if now < commit_deadline => ArenaPhase::Commit,
+        GameState::Active => ArenaPhase::Reveal,
+        GameState::Finished => ArenaPhase::Finished,
+        GameState::Settled => ArenaPhase::Settled,
+        GameState::Cancelled => ArenaPhase::Cancelled,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::GameState::*;
+
+    #[test]
+    fn phase_splits_open_and_active_states() {
+        assert_eq!(phase(&Open, 0, 0, 0), ArenaPhase::Lobby);
+        assert_eq!(phase(&Open, 1, 0, 0), ArenaPhase::Intermission);
+        assert_eq!(phase(&Active, 0, 100, 99), ArenaPhase::Commit);
+        assert_eq!(phase(&Active, 0, 100, 100), ArenaPhase::Reveal);
+        assert_eq!(phase(&Finished, 3, 0, 0), ArenaPhase::Finished);
+        assert_eq!(phase(&Settled, 3, 0, 0), ArenaPhase::Settled);
+        assert_eq!(phase(&Cancelled, 0, 0, 0), ArenaPhase::Cancelled);
+    }
 
     #[test]
     fn legal_transitions() {

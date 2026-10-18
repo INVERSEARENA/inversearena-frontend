@@ -157,6 +157,47 @@ erDiagram
   }
 ```
 
+## 8. Frontend Layout
+
+`frontend/src` is organised by domain (#1598). Every module has one owner, and imports follow a fixed direction.
+
+```text
+frontend/src/
+  app/                    Next.js routes; compose features and shared code
+  components/             UI used across routes
+  features/<domain>/      one directory per domain: arena, wallet, profile, pools, …
+    api/                  RPC, HTTP and storage access
+    hooks/                React hooks
+    components/           domain UI
+    model/                types, stores, constants and pure domain logic
+    index.ts              public API: the only entry point other features may import
+  shared/
+    config/               runtime configuration (stellarConfig, csp, arenaConstants)
+    lib/                  framework-agnostic utilities and generic hooks
+    lib/stellar/          Soroban / Horizon access layer used by every feature
+  test/                   test doubles and fixtures (mock factories, sample data)
+  __mocks__/              Jest module mocks
+```
+
+```mermaid
+flowchart LR
+  APP[app/ + components/] --> F[features/*]
+  APP --> S[shared/]
+  F -->|index.ts only| F2[other features]
+  F --> S
+  T[tests] --> TD[test/ + __mocks__/]
+```
+
+Rules, enforced by `import/no-restricted-paths` in `frontend/eslint.config.mjs`:
+
+- A feature imports another feature only through `@/features/<name>` (its `index.ts`), never its `api/`, `hooks/`, `components/` or `model/` internals.
+- `shared/` never imports from `features/`.
+- Production code never imports `test/` or `__mocks__/`; tests may.
+
+Imports use the `@/` alias (`tsconfig.json` and Jest's `moduleNameMapper` both map it to `src/`), except for siblings in the same directory. Tests live in a `__tests__/` directory beside the module they cover. Data a production page renders in demo mode (for example `mockHome`, `mockProfile`, `mockNetworkStats`) is production code and stays in its feature or `shared/lib`; only test doubles move to `test/`.
+
+A module that nothing in production imports is removed unless it is recent work awaiting integration; `knip --production` lists the remainder. When adding a domain, create `features/<name>/` with the subdirectories it needs; the lint zones are derived from the directory, so no configuration changes.
+
 ## Related Files
 
 - [`backend/src/routes/arenas.ts`](backend/src/routes/arenas.ts)
@@ -164,4 +205,4 @@ erDiagram
 - [`backend/src/services/roundService.ts`](backend/src/services/roundService.ts)
 - [`backend/src/services/paymentService.ts`](backend/src/services/paymentService.ts)
 - [`frontend/src/app/arena/page.tsx`](frontend/src/app/arena/page.tsx)
-- [`frontend/src/features/arena/useArenaStream.ts`](frontend/src/features/arena/useArenaStream.ts)
+- [`frontend/src/features/arena/hooks/useArenaStream.ts`](frontend/src/features/arena/hooks/useArenaStream.ts)

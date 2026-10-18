@@ -1,7 +1,7 @@
 "use client";
 
-import { Survivor } from "../types";
-import { formatAgentId, formatCurrency } from "../utils/format";
+import { Survivor } from "../model/types";
+import { formatAgentId, formatCurrency } from "../model/format";
 import { RankBadge } from "./RankBadge";
 
 interface RankTableRowProps {
