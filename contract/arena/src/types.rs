@@ -466,6 +466,63 @@ pub enum ArenaError {
     /// the factory-wide emergency pause (#1583). Distinct from
     /// `ContractPaused`, which is this arena's own host-controlled pause.
     GloballyPaused = 44,
+
+    /// Returned by `configure_player_limits` once at least one player has
+    /// joined (#1640). Players joined under advertised limits, so those
+    /// limits are frozen for them: a host must not lower the minimum to
+    /// start with a smaller field than promised, nor the maximum below the
+    /// count already present.
+    ArenaAlreadyHasPlayers = 45,
+
+    /// Returned by `resolve_round_page` when `start` is ahead of the
+    /// persisted cursor (#1639). Tallying or applying out of order would
+    /// silently skip players, so the gap is refused; replaying a page at or
+    /// behind the cursor is a no-op instead.
+    ResolutionCursorMismatch = 46,
+
+    /// Returned by `finalize_resolution` before every resolution page has
+    /// been applied (#1639), or when no paged resolution has been started.
+    ResolutionIncomplete = 47,
+
+    /// Returned by the one-shot `resolve_round` while a paged resolution
+    /// (#1639) is in progress. Mixing the two would double-apply the round:
+    /// drive the existing resolution to completion first.
+    ResolutionInProgress = 48,
+}
+
+/// Stage of the paged `resolve_round` pipeline (#1639).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResolutionPhase {
+    /// Pages are reading choices to build the round-wide tally.
+    Tally,
+    /// The tally is final; pages are applying eliminations to the working
+    /// list and clearing each slice's round data.
+    Apply,
+    /// Everything is applied; if this round ends the game, pages are
+    /// reading the roster to build the leaderboard.
+    Leaderboard,
+    /// All pages are done; `finalize_resolution` may run.
+    Ready,
+}
+
+/// Progress of a paged resolution (#1639), returned by `resolve_round_page`.
+///
+/// `processed` is the idempotent cursor: the next call must pass it as
+/// `start`. `total` is the length of the current phase's list (the working
+/// list for `Tally`/`Apply`, the full roster for `Leaderboard`). A phase
+/// transition resets `processed` to 0 and switches `total`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolutionProgress {
+    pub round: u32,
+    pub phase: ResolutionPhase,
+    pub processed: u32,
+    pub total: u32,
+    pub heads: u32,
+    pub tails: u32,
+    pub eliminated: u32,
+    pub survivors: u32,
 }
 
 #[contracttype]

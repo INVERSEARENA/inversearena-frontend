@@ -240,6 +240,16 @@ impl ArenaContract {
     /// `min_players` must be at least 2 and cannot exceed `max_players`.
     /// Existing participation is left untouched; the max applies to future
     /// joins and the min applies to future `start_round` calls.
+    ///
+    /// Limits freeze once the first player joins (#1640): players entered
+    /// under advertised terms, so the admin cannot later promise a smaller
+    /// field than the one recruited, nor a maximum below the count already
+    /// present.
+    ///
+    /// # Errors
+    /// - `ArenaError::ArenaAlreadyHasPlayers` if `player_count > 0`.
+    /// - `ArenaError::InvalidPlayerLimits` if `min > max`, `min < 2`, or
+    ///   `max > MAX_PLAYERS_ALLOWED`.
     pub fn configure_player_limits(
         env: Env,
         min_players: u32,
@@ -248,6 +258,12 @@ impl ArenaContract {
         let config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
         Self::validate_player_limits(min_players, max_players)?;
+        if max_players < config.player_count {
+            return Err(ArenaError::InvalidPlayerLimits);
+        }
+        if config.player_count > 0 {
+            return Err(ArenaError::ArenaAlreadyHasPlayers);
+        }
         ArenaStorage::save_player_limits(&env, min_players, max_players);
         ArenaEvents::player_limits_configured(&env, min_players, max_players);
         Ok(())
@@ -3699,6 +3715,40 @@ mod test {
             client.try_configure_player_limits(&1, &2),
             Err(Ok(ArenaError::InvalidPlayerLimits))
         );
+    }
+
+    #[test]
+    fn configure_player_limits_freezes_once_players_have_joined() {
+        let (_, client) = setup(3);
+        assert_eq!(client.player_count(), 3);
+        // Valid-looking values still freeze: the roster joined under the
+        // advertised terms, so neither bound may change (#1640).
+        assert_eq!(
+            client.try_configure_player_limits(&2, &10),
+            Err(Ok(ArenaError::ArenaAlreadyHasPlayers))
+        );
+        assert_eq!(
+            client.try_configure_player_limits(&4, &10),
+            Err(Ok(ArenaError::ArenaAlreadyHasPlayers))
+        );
+    }
+
+    #[test]
+    fn configure_player_limits_rejects_max_below_player_count() {
+        let (_, client) = setup(3);
+        // `max_players` may never drop below the players already present,
+        // regardless of the freeze rule (#1640).
+        assert_eq!(
+            client.try_configure_player_limits(&2, &2),
+            Err(Ok(ArenaError::InvalidPlayerLimits))
+        );
+    }
+
+    #[test]
+    fn configure_player_limits_allowed_before_first_join() {
+        let (_, client) = setup(0);
+        client.configure_player_limits(&2, &4);
+        assert_eq!(client.player_count(), 0);
     }
 
     #[test]

@@ -85,6 +85,7 @@ A transaction invokes one contract, which may call others (the arena calls the f
 | 42 | `NoStartDeadline` | Returned by `cancel_unstarted` when this arena has no start deadline configured (#1579). Arenas deployed by a factory always have one; the explicit error keeps an unconfigured arena from being cancelled under the permissionless path. |
 | 43 | `VaultWithdrawFailed` | Returned by `leave_arena` or `ban_player` when the vault cannot release the player's entry fee (#1580, #1581). The whole call reverts, so the player is neither removed nor refunded partially. |
 | 44 | `GloballyPaused` | Returned by fund-moving entry points while the protocol admin has set the factory-wide emergency pause (#1583). Distinct from `ContractPaused`, which is this arena's own host-controlled pause. |
+| 45 | `ArenaAlreadyHasPlayers` | Returned by `configure_player_limits` once at least one player has joined (#1640). Players joined under advertised limits, so those limits are frozen: a host cannot later lower the minimum to start a smaller field than promised, nor the maximum below the count already present. |
 
 ### `factory` — `FactoryError`
 

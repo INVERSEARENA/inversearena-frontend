@@ -1,7 +1,8 @@
 use crate::types::PendingUpgrade;
 use crate::types::{
-    ArenaConfig, ArenaError, Choice, EliminationReason, GameState, OracleFreshnessPolicy,
-    PendingAdmin, PlayerState, RoundResult, YieldSnapshot,
+    ArenaConfig, ArenaError, Choice, EliminationReason, GameState, LeaderboardEntry,
+    OracleFreshnessPolicy, PendingAdmin, PlayerState, ResolutionProgress, RoundResult,
+    YieldSnapshot,
 };
 use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, Vec, contracttype, symbol_short};
 
@@ -65,6 +66,12 @@ pub(crate) enum DataKey {
     StartDeadline,
     /// Why a player was eliminated (#1582). Written once by `resolve_round`.
     EliminationReason(Address),
+    /// Paged-resolution progress + cursor (#1639).
+    Resolution,
+    /// Working list a paged resolution iterates over (#1639).
+    ResolutionPlayers,
+    /// Top-K leaderboard accumulator a paged resolution builds (#1639).
+    ResolutionLeaderboard,
 }
 
 pub struct ArenaRepository<'a> {
@@ -1286,6 +1293,58 @@ impl ArenaStorage {
                     .remove(&DataKey::CommitmentForRound(player.clone(), round));
             }
         }
+    }
+
+    // ── Paged resolution (#1639) ─────────────────────────────────────────────
+
+    pub fn save_resolution(env: &Env, progress: &ResolutionProgress) {
+        Self::extend_persistent_ttl(env, &DataKey::Resolution);
+        env.storage().persistent().set(&DataKey::Resolution, progress);
+    }
+
+    pub fn load_resolution(env: &Env) -> Option<ResolutionProgress> {
+        Self::extend_persistent_ttl(env, &DataKey::Resolution);
+        env.storage().persistent().get(&DataKey::Resolution)
+    }
+
+    pub fn save_resolution_players(env: &Env, players: &Vec<Address>) {
+        Self::extend_persistent_ttl(env, &DataKey::ResolutionPlayers);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ResolutionPlayers, players);
+    }
+
+    pub fn load_resolution_players(env: &Env) -> Vec<Address> {
+        Self::extend_persistent_ttl(env, &DataKey::ResolutionPlayers);
+        env.storage()
+            .persistent()
+            .get(&DataKey::ResolutionPlayers)
+            .unwrap_or(Vec::new(env))
+    }
+
+    pub fn save_resolution_leaderboard(env: &Env, entries: &Vec<LeaderboardEntry>) {
+        Self::extend_persistent_ttl(env, &DataKey::ResolutionLeaderboard);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ResolutionLeaderboard, entries);
+    }
+
+    pub fn load_resolution_leaderboard(env: &Env) -> Vec<LeaderboardEntry> {
+        Self::extend_persistent_ttl(env, &DataKey::ResolutionLeaderboard);
+        env.storage()
+            .persistent()
+            .get(&DataKey::ResolutionLeaderboard)
+            .unwrap_or(Vec::new(env))
+    }
+
+    /// Drop all paged-resolution state. Called by `finalize_resolution` once
+    /// the round is committed, and when a fresh resolution is created.
+    pub fn clear_resolution(env: &Env) {
+        env.storage().persistent().remove(&DataKey::Resolution);
+        env.storage().persistent().remove(&DataKey::ResolutionPlayers);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ResolutionLeaderboard);
     }
 }
 
