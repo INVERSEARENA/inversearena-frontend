@@ -145,6 +145,16 @@ Trust notes:
   - propose, execute, and cancel upgrades
 - Gameplay entrypoints like `start_round` and `timeout_round` are intentionally callable by non-admin actors, but still guarded by contract state.
 
+### Host inactivity liveness
+
+An active round remains host-controlled until its configured deadline plus
+`HOST_GRACE_SECONDS` (one hour). After that point, `resolve_round` is
+permissionless. Between rounds, `start_next_round(caller)` is permissionless
+after the same grace period and reuses the stored round duration. Both keeper
+paths remain blocked while the arena is paused, and transition events identify
+host versus keeper initiation. This lets a live arena reach its normal winner
+state even if its host disappears.
+
 ### Payout
 
 - Has its own admin key.

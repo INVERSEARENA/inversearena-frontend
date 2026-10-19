@@ -6,7 +6,8 @@ import {
     RoundStartedEvent,
     ChoiceSubmittedEvent,
     RoundResolvedEvent,
-    WinnersDeclaredEvent
+    WinnersDeclaredEvent,
+    PlayerEliminatedEvent
 } from '../../shared-d/types/arenaTypes';
 
 /**
@@ -39,6 +40,7 @@ export const EVENT_DECODER_REGISTRY: Readonly<Record<number, Readonly<Record<str
         finished: parseWinnersDeclaredEvent,
         claimed: parsePrizeClaimedEvent,
         elim: parsePlayerEliminatedEvent,
+        elim2: parsePlayerEliminatedEventV2,
     },
 };
 
@@ -193,7 +195,7 @@ function parsePrizeClaimedEvent(raw: RawContractEvent): WinnersDeclaredEvent | n
     };
 }
 
-function parsePlayerEliminatedEvent(raw: RawContractEvent): PlayerJoinedEvent | null {
+function parsePlayerEliminatedEvent(raw: RawContractEvent): PlayerEliminatedEvent | null {
     // Player address is in topic[1], round is in value (#1106)
     if (!raw.topic || raw.topic.length < 2) return null;
     
@@ -204,9 +206,32 @@ function parsePlayerEliminatedEvent(raw: RawContractEvent): PlayerJoinedEvent | 
     if (!value) return null;
 
     return {
-        type: 'PlayerJoined',
+        type: 'PlayerEliminated',
         arenaId: raw.contractId,
         playerWallet: player,
+        roundNumber: Number(value),
+        reason: null,
+        timestamp: getTimestamp(raw),
+    };
+}
+
+function parsePlayerEliminatedEventV2(raw: RawContractEvent): PlayerEliminatedEvent | null {
+    if (!raw.topic || raw.topic.length < 2) return null;
+    const player = scValToNative(xdr.ScVal.fromXDR(raw.topic[1]!, 'base64'));
+    const value = decodeValue(raw.value.xdr);
+    if (!value) return null;
+    const tuple = Array.isArray(value) ? value : null;
+    const rawReason = tuple ? tuple[1] : value.reason;
+    const names = ['Majority', 'NoReveal', 'NoCommit'];
+    const reason = typeof rawReason === 'string' && names.includes(rawReason)
+        ? rawReason as PlayerEliminatedEvent['reason']
+        : null;
+    return {
+        type: 'PlayerEliminated',
+        arenaId: raw.contractId,
+        playerWallet: player,
+        roundNumber: Number(tuple ? tuple[0] : value.round),
+        reason,
         timestamp: getTimestamp(raw),
     };
 }

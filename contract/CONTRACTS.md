@@ -40,6 +40,7 @@
 - `pub fn get_players(env: Env, page: u32) -> Vec<(Address, PlayerState)>`
 - `pub fn player_count(env: Env) -> u32`
 - `pub fn start_round(env: Env, duration_seconds: u64) -> Result<(), ArenaError>`
+- `pub fn start_next_round(env: Env, caller: Address) -> Result<(), ArenaError>`
 - `pub fn resolve_round(env: Env) -> Result<(), ArenaError>`
 - `pub fn claim(env: Env, winner: Address) -> Result<(), ArenaError>`
 - `pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), ArenaError>`

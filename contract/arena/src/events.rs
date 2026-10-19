@@ -1,4 +1,4 @@
-use crate::types::Choice;
+use crate::types::{Choice, EliminationReason, TransitionInitiator};
 use soroban_sdk::{Address, BytesN, Env, Symbol, symbol_short};
 
 /// Schema version for the `round_resolved_v2` (`rslvd2`) event payload
@@ -99,9 +99,21 @@ impl ArenaEvents {
             .publish((symbol_short!("tied"),), (round, survivors));
     }
 
+    pub fn round_tied_with_count(env: &Env, round: u32, survivors: u32, consecutive: u32) {
+        env.events().publish((symbol_short!("tied2"),), (round, survivors, consecutive, 1u32));
+    }
+
     pub fn player_eliminated(env: &Env, player: &Address, round: u32) {
         env.events()
             .publish((symbol_short!("elim"), player.clone()), round);
+    }
+
+    pub fn player_eliminated_v2(env: &Env, player: &Address, round: u32, reason: EliminationReason) {
+        env.events().publish((symbol_short!("elim2"), player.clone()), (round, reason, 1u32));
+    }
+
+    pub fn transition_initiated(env: &Env, round: u32, initiator: TransitionInitiator, starting: bool) {
+        env.events().publish((symbol_short!("trans"), round), (initiator, starting, 1u32));
     }
 
     pub fn game_finished(env: &Env, winner: &Address, round: u32) {
