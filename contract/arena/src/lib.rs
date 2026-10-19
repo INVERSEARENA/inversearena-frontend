@@ -21,7 +21,8 @@ use rwa_client::RwaAdapterClient;
 use storage::ArenaStorage;
 use types::{
     ArenaConfig, ArenaError, ArenaStatus, Choice, GameState, LeaderboardEntry,
-    OracleFreshnessPolicy, PendingAdmin, PendingUpgrade, PlayerState, RoundResult, YieldSnapshot,
+    OracleFreshnessPolicy, PendingAdmin, PendingUpgrade, PhaseDeadlines, PlayerState, RoundPhase,
+    RoundResult, SettlementBreakdown, YieldSnapshot,
 };
 
 #[soroban_sdk::contractclient(name = "FactoryClient")]
@@ -76,6 +77,24 @@ pub const MIN_ROUND_DURATION_SECONDS: u64 = 30;
 /// player funds indefinitely by starting a round with `u64::MAX`.
 pub const MAX_ROUND_DURATION_SECONDS: u64 = 3_600;
 
+// ── Reveal-window bounds (#1552) ──────────────────────────────────────────────
+
+/// Minimum length of the reveal phase (5 s). Even a minimal commit window must
+/// leave players a nonzero, contract-enforced window to reveal after commits
+/// close; without this a host could resolve in the very first ledger after the
+/// commit deadline and eliminate a field that never had a chance to reveal.
+pub const MIN_REVEAL_DURATION_SECONDS: u64 = 5;
+
+/// Maximum length of the reveal phase (1 hour = 3 600 s), matching the round
+/// duration ceiling. Prevents a misconfigured reveal window from locking funds.
+pub const MAX_REVEAL_DURATION_SECONDS: u64 = 3_600;
+
+/// Ledger-time grace period added on top of `reveal_deadline` before an arena
+/// is considered stuck and `expire_arena` may fire (#1552). Kept small: it
+/// exists to absorb ledger-timestamp granularity (~5 s) and a lagging resolve
+/// transaction, not to reintroduce the unbounded window expiry guards.
+pub const EXPIRY_GRACE_SECONDS: u64 = 300;
+
 #[contract]
 /// On-chain arena contract. Manages the full lifecycle of a single elimination
 /// game: player registration, commit-reveal rounds, yield accounting, winner
@@ -108,6 +127,9 @@ impl ArenaContract {
     ///   vault initialization state is enforced by later adapter calls.
     /// - `entry_fee`: Exact token amount every player must stake to join.
     /// - `oracle_contract`: On-chain oracle queried for the current yield rate on each round resolution.
+    /// - `treasury`: Protocol treasury that receives the platform-fee cut at
+    ///   settlement (#1554). Snapshotted into `ArenaConfig`; later changes to
+    ///   the factory's treasury do not affect already-deployed arenas.
     ///
     /// # Errors
     /// - `ArenaError::AlreadyInitialized` if `initialize` has already been called.
@@ -123,9 +145,9 @@ impl ArenaContract {
         oracle_contract: Address,
         factory: Address,
         pool_id: u32,
+        treasury: Address,
         min_players: u32,
         max_players: u32,
-        _round_duration: u64,
     ) -> Result<(), ArenaError> {
         admin.require_auth();
         if ArenaStorage::has_config(&env) {
@@ -163,11 +185,13 @@ impl ArenaContract {
             active_player_count: 0,
             cumulative_yield: 0,
             commit_deadline: 0,
+            reveal_deadline: 0,
             round_count: 0,
             oracle_contract,
             factory,
             pool_id,
             platform_fee_bps: ArenaStorage::load_platform_fee_bps(&env),
+            treasury,
         };
         ArenaStorage::save_config(&env, &config);
         ArenaStorage::initialize_paged_roster(&env);
@@ -407,6 +431,7 @@ impl ArenaContract {
     /// - `ArenaError::ContractPaused` if the contract is paused.
     /// - `ArenaError::ChoiceAlreadyRevealed` if this player has already revealed for the current round.
     /// - `ArenaError::RoundNotActive` if the `commit_deadline` has not yet elapsed.
+    /// - `ArenaError::RevealPhaseEnded` if the `reveal_deadline` has passed (#1552).
     /// - `ArenaError::MissingCommitment` if no commitment was submitted for this player.
     /// - `ArenaError::InvalidReveal` if the revealed choice and salt do not match the stored commitment.
     /// - `ArenaError::NotAPlayer` if the caller never joined the arena.
@@ -431,6 +456,13 @@ impl ArenaContract {
         }
         if env.ledger().timestamp() < config.commit_deadline {
             return Err(ArenaError::RoundNotActive);
+        }
+        // #1552: the reveal window closes at `reveal_deadline`. A reveal that
+        // lands at or after it is treated exactly like no reveal. Arenas
+        // deployed before this field existed store 0 and keep the legacy
+        // unbounded-reveal behaviour.
+        if config.reveal_deadline != 0 && env.ledger().timestamp() >= config.reveal_deadline {
+            return Err(ArenaError::RevealPhaseEnded);
         }
 
         let commitment = ArenaStorage::load_commitment(&env, &player, round)
@@ -514,7 +546,17 @@ impl ArenaContract {
         if config.state != GameState::Active {
             return Err(ArenaError::InvalidGameState);
         }
-        if env.ledger().timestamp() <= config.commit_deadline {
+        // #1552: an arena is only "stuck" once the reveal window plus a short
+        // grace period has elapsed. Measuring from `commit_deadline` (as
+        // before) would let expiry fire while reveals were still valid, the
+        // exact griefing window this feature closes. Legacy arenas with a 0
+        // reveal_deadline keep the old commit-deadline test.
+        let expires_at = if config.reveal_deadline != 0 {
+            config.reveal_deadline.saturating_add(EXPIRY_GRACE_SECONDS)
+        } else {
+            config.commit_deadline
+        };
+        if env.ledger().timestamp() <= expires_at {
             return Err(ArenaError::DeadlineTooSoon);
         }
 
@@ -594,7 +636,8 @@ impl ArenaContract {
     /// - `ArenaError::InvalidGameState` if the arena is not in the `Open` state.
     ///
     /// # Events
-    /// Emits `game_started` with the round number and duration.
+    /// Emits `game_started` with the round number and both phase deadlines
+    /// (`commit_deadline`, `reveal_deadline`) (#1552).
     pub fn start_round(env: Env, duration_seconds: u64) -> Result<(), ArenaError> {
         let mut config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
@@ -633,12 +676,24 @@ impl ArenaContract {
         ArenaStorage::save_last_vault_balance(&env, vault_balance);
 
         config.commit_deadline = env.ledger().timestamp().saturating_add(duration_seconds);
+        // #1552: split the round into a commit phase and a guaranteed reveal
+        // phase. `duration_seconds` is the commit window length; the reveal
+        // window is derived from it (same length, clamped to the reveal bounds)
+        // and recorded so off-chain readers and later entry points share one
+        // source of truth.
+        let reveal_duration = Self::reveal_duration_for(duration_seconds);
+        config.reveal_deadline = config.commit_deadline.saturating_add(reveal_duration);
         config.state = GameState::Active;
         ArenaStorage::save_config(&env, &config);
         ArenaStorage::save_round_start(&env, env.ledger().timestamp());
         ArenaStorage::save_round_duration(&env, duration_seconds);
 
-        ArenaEvents::game_started(&env, config.round_count.saturating_add(1), duration_seconds);
+        ArenaEvents::game_started(
+            &env,
+            config.round_count.saturating_add(1),
+            config.commit_deadline,
+            config.reveal_deadline,
+        );
         Ok(())
     }
 
@@ -657,7 +712,9 @@ impl ArenaContract {
     /// - `ArenaError::ContractPaused` if the contract is paused.
     /// - `ArenaError::RoundNotActive` if the arena is not in the `Active` state.
     /// - `ArenaError::RoundNotStarted` if no round start timestamp is recorded.
-    /// - `ArenaError::GracePeriodNotElapsed` if the round duration has not yet passed.
+    /// - `ArenaError::RevealPhaseActive` if `reveal_deadline` has not yet passed (#1552).
+    /// - `ArenaError::GracePeriodNotElapsed` if the round duration has not yet passed
+    ///   (legacy arenas with no `reveal_deadline` set).
     /// - `ArenaError::StaleOracleData` if the oracle's latest observation is older than
     ///   this arena's configured `max_age_secs` (#1512), or was never recorded. Recoverable:
     ///   retry once the oracle has published a fresh observation. Does not apply when the
@@ -682,7 +739,15 @@ impl ArenaContract {
         let round_start =
             ArenaStorage::load_round_start(&env).ok_or(ArenaError::RoundNotStarted)?;
         let grace = ArenaStorage::load_round_duration(&env);
-        if env.ledger().timestamp() < round_start.saturating_add(grace) {
+        // #1552: a round is resolvable only after its reveal window has fully
+        // elapsed. `reveal_deadline` is the single source of truth when set;
+        // arenas deployed before the field existed store 0 and fall back to the
+        // legacy `round_start + duration` gate.
+        if config.reveal_deadline != 0 {
+            if env.ledger().timestamp() < config.reveal_deadline {
+                return Err(ArenaError::RevealPhaseActive);
+            }
+        } else if env.ledger().timestamp() < round_start.saturating_add(grace) {
             return Err(ArenaError::GracePeriodNotElapsed);
         }
 
@@ -809,8 +874,13 @@ impl ArenaContract {
     /// malicious re-entrant call via the stake token sees the flag and fails
     /// with `ArenaError::PrizeAlreadyClaimed`.
     ///
-    /// Payout = staked principal + accumulated vault yield, capped to the
-    /// amount actually withdrawn from the vault.
+    /// Payout: the amount actually withdrawn from the vault (principal + yield,
+    /// or less on a shortfall) is split into a platform fee and the winner's
+    /// net. The fee is `yield * config.platform_fee_bps / 10_000` — charged on
+    /// yield only, using the rate snapshotted at `initialize` — and is routed
+    /// to `config.treasury`; the winner receives the remainder (#1554).
+    /// Integer division rounds the fee down, so rounding dust goes to the
+    /// winner, and a zero-yield or shortfall game charges no fee.
     ///
     /// # Parameters
     /// - `winner`: Address of the last surviving player. Must authorize this call.
@@ -823,7 +893,9 @@ impl ArenaContract {
     /// - `ArenaError::PlayerEliminated` if the caller was eliminated and is not the surviving winner.
     ///
     /// # Events
-    /// Emits `prize_claimed` with the winner address, total payout, and yield portion.
+    /// Emits `prize_claimed` with the winner address, gross withdrawn amount,
+    /// platform fee, net paid to the winner, gross yield, and treasury; and
+    /// `platform_fee_collected` when the fee is nonzero (#1554).
     pub fn claim(env: Env, winner: Address) -> Result<(), ArenaError> {
         ArenaStorage::enter_reentrancy_guard(&env)?;
         winner.require_auth();
@@ -855,17 +927,60 @@ impl ArenaContract {
         let principal = config
             .entry_fee
             .saturating_mul(i128::from(config.player_count));
-        let payout = principal.saturating_add(Self::total_yield(&env));
-        let withdrawn = rwa_client
+        let expected = principal.saturating_add(Self::total_yield(&env));
+        let gross = rwa_client
             .try_withdraw_all(&arena_addr)
-            .unwrap_or(Ok(payout))
-            .unwrap_or(payout);
-        let total = withdrawn;
+            .unwrap_or(Ok(expected))
+            .unwrap_or(expected);
+
+        // #1554: the platform fee is charged on the *yield only* — the gross
+        // amount beyond the staked principal, floored at 0 so a vault shortfall
+        // or zero-yield game charges nothing. The rate is the value snapshotted
+        // at `initialize` (`config.platform_fee_bps`), never the live mutable
+        // `get_platform_fee_bps` value. Integer division rounds the fee down, so
+        // any rounding dust flows to the winner as part of `net`.
+        let yield_amount = if gross > principal {
+            gross - principal
+        } else {
+            0
+        };
+        let fee = yield_amount
+            .saturating_mul(i128::from(config.platform_fee_bps))
+            / 10_000;
+        // Defence in depth: never let the fee exceed the funds actually on hand.
+        let fee = fee.min(gross);
+        let net = gross.saturating_sub(fee);
 
         let token_client = token::TokenClient::new(&env, &config.stake_token);
-        token_client.transfer(&arena_addr, &winner, &total);
+        if fee > 0 {
+            token_client.transfer(&arena_addr, &config.treasury, &fee);
+            ArenaEvents::platform_fee_collected(
+                &env,
+                &config.treasury,
+                fee,
+                config.platform_fee_bps,
+            );
+        }
+        token_client.transfer(&arena_addr, &winner, &net);
 
-        ArenaEvents::prize_claimed(&env, &winner, total, total.saturating_sub(principal));
+        let breakdown = SettlementBreakdown {
+            gross,
+            fee,
+            net,
+            yield_amount,
+            treasury: config.treasury.clone(),
+        };
+        ArenaStorage::save_settlement_breakdown(&env, &breakdown);
+
+        ArenaEvents::prize_claimed(
+            &env,
+            &winner,
+            gross,
+            fee,
+            net,
+            yield_amount,
+            &config.treasury,
+        );
         
         // Notify factory that prize has been claimed and game is settled
         let factory_client = FactoryClient::new(&env, &config.factory);
@@ -1075,12 +1190,11 @@ impl ArenaContract {
     /// the factory), so this only affects `get_platform_fee_bps` reads on
     /// *this* instance going forward — it does not retroactively change this
     /// arena's own `config.platform_fee_bps` (already snapshotted at
-    /// `initialize`), and has no effect on other arena instances, which each
-    /// have independent storage. A fee that should apply uniformly to every
+    /// `initialize`, and the value settlement actually applies — see
+    /// `claim`), and has no effect on other arena instances, which each have
+    /// independent storage. A fee that should apply uniformly to every
     /// newly-deployed arena would need to be threaded through the `factory`
-    /// contract's deploy call instead. This value is also not currently
-    /// deducted anywhere in `claim`'s payout calculation; it is stored and
-    /// exposed for a future payout integration.
+    /// contract's deploy call instead.
     pub fn update_platform_fee(env: Env, new_fee_bps: u32) -> Result<(), ArenaError> {
         let config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
@@ -1097,6 +1211,73 @@ impl ArenaContract {
     /// Return the current global platform fee in basis points.
     pub fn get_platform_fee_bps(env: Env) -> u32 {
         ArenaStorage::load_platform_fee_bps(&env)
+    }
+
+    /// Return the platform fee (bps) snapshotted into this arena at
+    /// `initialize`, i.e. the value settlement actually applies (#1554).
+    pub fn get_snapshotted_platform_fee_bps(env: Env) -> Result<u32, ArenaError> {
+        Ok(ArenaStorage::load_config(&env)?.platform_fee_bps)
+    }
+
+    /// Return the protocol treasury this arena routes its platform fee to
+    /// (#1554). Snapshotted at `initialize`.
+    pub fn get_treasury(env: Env) -> Result<Address, ArenaError> {
+        Ok(ArenaStorage::load_config(&env)?.treasury)
+    }
+
+    /// Ledger timestamp at which commitments close (#1552).
+    pub fn get_commit_deadline(env: Env) -> u64 {
+        ArenaStorage::load_config(&env)
+            .map(|c| c.commit_deadline)
+            .unwrap_or(0)
+    }
+
+    /// Ledger timestamp at which the reveal window closes and the round
+    /// becomes resolvable (#1552).
+    pub fn get_reveal_deadline(env: Env) -> u64 {
+        ArenaStorage::load_config(&env)
+            .map(|c| c.reveal_deadline)
+            .unwrap_or(0)
+    }
+
+    /// Both round-phase deadlines in a single call (#1552). Lets off-chain
+    /// clients schedule the commit/reveal windows with one simulation instead
+    /// of two; a missing/uninitialised config reports `(0, 0)`.
+    pub fn get_phase_deadlines(env: Env) -> PhaseDeadlines {
+        ArenaStorage::load_config(&env)
+            .map(|c| PhaseDeadlines {
+                commit_deadline: c.commit_deadline,
+                reveal_deadline: c.reveal_deadline,
+            })
+            .unwrap_or(PhaseDeadlines {
+                commit_deadline: 0,
+                reveal_deadline: 0,
+            })
+    }
+
+    /// Current three-phase round classification derived purely from chain
+    /// state and the ledger clock (#1552).
+    pub fn get_round_phase(env: Env) -> RoundPhase {
+        let Ok(config) = ArenaStorage::load_config(&env) else {
+            return RoundPhase::Lobby;
+        };
+        if config.state != GameState::Active || config.round_count == u32::MAX {
+            return RoundPhase::Lobby;
+        }
+        let now = env.ledger().timestamp();
+        if now < config.commit_deadline {
+            RoundPhase::Commit
+        } else if config.reveal_deadline == 0 || now < config.reveal_deadline {
+            RoundPhase::Reveal
+        } else {
+            RoundPhase::Resolvable
+        }
+    }
+
+    /// Return the settlement breakdown recorded when the winner claimed
+    /// (#1554), or `None` if settlement has not happened yet.
+    pub fn get_settlement_breakdown(env: Env) -> Option<SettlementBreakdown> {
+        ArenaStorage::load_settlement_breakdown(&env)
     }
 
     /// Configure this arena instance's oracle freshness policy (#1512). Admin only.
@@ -1211,6 +1392,16 @@ impl ArenaContract {
             return Err(ArenaError::InvalidPlayerLimits);
         }
         Ok(())
+    }
+
+    /// Derive the reveal-window length from the requested commit window (#1552).
+    ///
+    /// The reveal phase mirrors the commit phase, clamped into
+    /// `[MIN_REVEAL_DURATION_SECONDS, MAX_REVEAL_DURATION_SECONDS]` so every
+    /// round has a guaranteed, nonzero reveal window that can never exceed the
+    /// round-duration ceiling.
+    fn reveal_duration_for(commit_duration: u64) -> u64 {
+        commit_duration.clamp(MIN_REVEAL_DURATION_SECONDS, MAX_REVEAL_DURATION_SECONDS)
     }
 
     fn resolve_players(env: &Env, round: u32, expected_active: u32) -> RoundResolution {
@@ -1454,12 +1645,14 @@ mod test {
                 active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: u64::MAX,
+                reveal_deadline: 0,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: oracle_id,
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
+                treasury: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
             for _ in 0..n {
@@ -1628,12 +1821,14 @@ mod test {
                 active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
+                reveal_deadline: 0,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
+                treasury: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
@@ -1670,12 +1865,14 @@ mod test {
                 active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
+                reveal_deadline: 0,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
+                treasury: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::save_commitment(&env, &player, 1, &commitment);
@@ -1707,12 +1904,14 @@ mod test {
                 active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
+                reveal_deadline: 0,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
+                treasury: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
@@ -1752,12 +1951,14 @@ mod test {
                 active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
+                reveal_deadline: 0,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
+                treasury: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
@@ -1789,12 +1990,14 @@ mod test {
                 active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 1,
+                reveal_deadline: 0,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
+                treasury: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
@@ -1827,12 +2030,14 @@ mod test {
                 active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
+                reveal_deadline: 0,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
+                treasury: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::add_player(&env, &player);
@@ -1864,12 +2069,14 @@ mod test {
                 active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
+                reveal_deadline: 0,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
+                treasury: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
         });
@@ -1915,12 +2122,14 @@ mod test {
                 active_player_count: 2,
                 cumulative_yield: 0,
                 commit_deadline: 0,
+                reveal_deadline: 0,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: oracle_id,
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
+                treasury: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
             // Register 2 active players so active_count check in start_round passes.
@@ -1939,6 +2148,16 @@ mod test {
         env.as_contract(&client.address, || {
             ArenaStorage::load_config(env).unwrap().state
         })
+    }
+
+    /// Advance the ledger to the current round's `reveal_deadline` so that
+    /// `resolve_round` passes its #1552 "reveal phase active" guard. Tests
+    /// that reveal inside the window then resolve call this immediately before
+    /// `resolve_round`; resolutions that must fail use an explicit timestamp
+    /// instead.
+    fn close_reveal_window(env: &Env, client: &ArenaContractClient) {
+        let reveal_deadline = client.get_reveal_deadline();
+        env.ledger().with_mut(|li| li.timestamp = reveal_deadline);
     }
 
     fn paused_error<T>(
@@ -1976,12 +2195,14 @@ mod test {
                     active_player_count: 1,
                     cumulative_yield: 0,
                     commit_deadline: 0,
+                    reveal_deadline: 0,
                     yield_vault: Address::generate(&env),
                     round_count: 0,
                     oracle_contract: Address::generate(&env),
                     factory: Address::generate(&env),
                     pool_id: 0,
                     platform_fee_bps: 1000,
+                    treasury: Address::generate(&env),
                 },
             );
             ArenaStorage::save_player(
@@ -2051,9 +2272,9 @@ mod test {
             &oracle_id,
             &Address::generate(&env),
             &1,
+            &Address::generate(&env),
             &2,
             &10,
-            &60,
         );
 
         let p1 = Address::generate(&env);
@@ -2098,6 +2319,7 @@ mod test {
         // succeeds once the grace period has elapsed, not a specific outcome.
         let (env, client) = setup_started(60, 1_000);
         env.ledger().with_mut(|li| li.timestamp = 1_061);
+        close_reveal_window(&env, &client);
         client.resolve_round();
         assert_eq!(state_of(&env, &client), GameState::Cancelled);
     }
@@ -2114,12 +2336,16 @@ mod test {
         let oracle_id = env.register(MockOracleWithReading, ());
         let start_ts = 100_000u64;
         let duration = 60u64;
-        let resolve_ts = start_ts + duration + 1;
+
+        let (env, client) =
+            setup_started_with_oracle(env, duration, start_ts, oracle_id.clone());
+        // Resolve exactly when the #1552 reveal window closes, so the freshness
+        // guard is what decides the outcome, not the reveal-phase guard.
+        let resolve_ts = client.get_reveal_deadline();
         let observed_at = resolve_ts - age_secs;
 
         MockOracleWithReadingClient::new(&env, &oracle_id).set_reading(&500, &observed_at, &1);
 
-        let (env, client) = setup_started_with_oracle(env, duration, start_ts, oracle_id);
         env.ledger().with_mut(|li| li.timestamp = resolve_ts);
         (env, client, resolve_ts)
     }
@@ -2166,7 +2392,7 @@ mod test {
         let oracle_id = env.register(MockOracleWithReading, ());
         let start_ts = 100_000u64;
         let duration = 60u64;
-        let resolve_ts = start_ts + duration + 1;
+        let resolve_ts = start_ts + duration * 2 + 1;
         let future_observed_at = resolve_ts + 10_000;
 
         MockOracleWithReadingClient::new(&env, &oracle_id).set_reading(&500, &future_observed_at, &1);
@@ -2186,7 +2412,7 @@ mod test {
         let env = Env::default();
         let oracle_id = env.register(MockOracleWithReading, ());
         let (env, client) = setup_started_with_oracle(env, 60, 100_000, oracle_id);
-        env.ledger().with_mut(|li| li.timestamp = 100_061);
+        env.ledger().with_mut(|li| li.timestamp = 100_121);
 
         let result = client.try_resolve_round();
         assert_eq!(result, Err(Ok(ArenaError::StaleOracleData)));
@@ -2198,7 +2424,7 @@ mod test {
         // get_oracle_reading at all must not block resolution — this is the
         // existing liveness-first `fetch_yield_bps` fallback, unchanged.
         let (env, client) = setup_started(60, 1_000);
-        env.ledger().with_mut(|li| li.timestamp = 1_061);
+        env.ledger().with_mut(|li| li.timestamp = 1_121);
         let result = client.try_resolve_round();
         assert!(result.is_ok(), "an oracle with no freshness metadata must not block resolution");
         assert_eq!(state_of(&env, &client), GameState::Cancelled);
@@ -2212,7 +2438,7 @@ mod test {
         let oracle_id = env.register(MockOracleWithReading, ());
         let start_ts = 100_000u64;
         let duration = 60u64;
-        let resolve_ts = start_ts + duration + 1;
+        let resolve_ts = start_ts + duration * 2 + 1;
 
         MockOracleWithReadingClient::new(&env, &oracle_id).set_reading(&500, &resolve_ts, &99);
 
@@ -2266,12 +2492,14 @@ mod test {
                 active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
+                reveal_deadline: 0,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
+                treasury: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
         });
@@ -2288,11 +2516,11 @@ mod test {
         env.as_contract(&contract_id, || {
             ArenaEvents::initialized(&env, &admin);
             ArenaEvents::player_joined(&env, &player, 1);
-            ArenaEvents::game_started(&env, 1, 60);
+            ArenaEvents::game_started(&env, 1, 60, 120);
             ArenaEvents::round_resolved(&env, 1, 2, 1);
             ArenaEvents::player_eliminated(&env, &player, 1);
             ArenaEvents::game_finished(&env, &player, 1);
-            ArenaEvents::prize_claimed(&env, &player, 105, 5);
+            ArenaEvents::prize_claimed(&env, &player, 105, 5, 100, 5, &admin);
             ArenaEvents::admin_changed(&env, &admin, &player);
         });
 
@@ -2346,12 +2574,14 @@ mod test {
                     active_player_count: 0,
                     cumulative_yield: 0,
                     commit_deadline: 0,
+                    reveal_deadline: 0,
                     yield_vault: vault_id.clone(),
                     round_count: 0,
                     oracle_contract: oracle_id,
                     factory: Address::generate(&env),
                     pool_id: 0,
                     platform_fee_bps: 1000,
+                    treasury: Address::generate(&env),
                 },
             );
             ArenaStorage::add_player(&env, &p1);
@@ -2402,6 +2632,7 @@ mod test {
             // resolve_round's deadline check passes.
             env.ledger()
                 .with_mut(|li| li.timestamp = round_start_ts + MIN_ROUND_DURATION_SECONDS);
+            close_reveal_window(&env, &client);
             client.resolve_round();
         }
 
@@ -2459,9 +2690,9 @@ mod test {
             &oracle_id,
             &Address::generate(&env),
             &1,
+            &Address::generate(&env),
             &2,
             &10,
-            &60,
         );
 
         let set_vault_balance = |balance: i128| {
@@ -2523,6 +2754,7 @@ mod test {
         client.reveal_choice(&p2, &Choice::Heads, &salt2);
         client.reveal_choice(&p3, &Choice::Heads, &salt3);
 
+        close_reveal_window(&env, &client);
         client.resolve_round();
 
         // Accrued yield is 15 (real vault balance) - 0 (real baseline
@@ -2565,12 +2797,14 @@ mod test {
                     active_player_count: 1,
                     cumulative_yield: 0,
                     commit_deadline: 0,
+                    reveal_deadline: 0,
                     yield_vault: Address::generate(&env),
                     round_count: 0,
                     oracle_contract: Address::generate(&env),
                     factory: Address::generate(&env),
                     pool_id: 0,
                     platform_fee_bps: 1000,
+                    treasury: Address::generate(&env),
                 },
             );
             ArenaStorage::save_player(
@@ -2618,12 +2852,14 @@ mod test {
                     active_player_count: 1,
                     cumulative_yield: 0,
                     commit_deadline: 0,
+                    reveal_deadline: 0,
                     yield_vault: Address::generate(&env),
                     round_count: 0,
                     oracle_contract: Address::generate(&env),
                     factory: Address::generate(&env),
                     pool_id: 0,
                     platform_fee_bps: 1000,
+                    treasury: Address::generate(&env),
                 },
             );
             ArenaStorage::save_player(
@@ -2645,6 +2881,224 @@ mod test {
         assert_eq!(err, ArenaError::PlayerEliminated);
     }
 
+    // ── #1554: platform fee on yield, routed to treasury ──────────────────────
+
+    /// Build a claimable (`Finished`) arena with one winner, a real SAC stake
+    /// token, and `MockVault` reporting `gross` from `withdraw_all`. `fee_bps`
+    /// is snapshotted before `initialize` so the test controls the rate; the
+    /// arena is pre-funded with `gross` so the outgoing claim transfers succeed.
+    fn setup_claimable(
+        env: &Env,
+        fee_bps: u32,
+        gross: i128,
+        entry_fee: i128,
+        player_count: u32,
+    ) -> (
+        ArenaContractClient<'static>,
+        token::TokenClient<'static>,
+        Address,
+        Address,
+    ) {
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let token_admin = Address::generate(env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(env, &token_id);
+        let winner = Address::generate(env);
+        let treasury = Address::generate(env);
+        let admin = Address::generate(env);
+
+        env.as_contract(&contract_id, || {
+            ArenaStorage::save_platform_fee_bps(env, fee_bps);
+        });
+
+        let client = ArenaContractClient::new(env, &contract_id);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &entry_fee,
+            &Address::generate(env),
+            &Address::generate(env),
+            &1,
+            &treasury,
+            &2,
+            &10,
+        );
+
+        env.as_contract(&contract_id, || {
+            let mut cfg = ArenaStorage::load_config(env).unwrap();
+            cfg.state = GameState::Finished;
+            cfg.player_count = player_count;
+            cfg.active_player_count = 1;
+            ArenaStorage::save_config(env, &cfg);
+            ArenaStorage::set_winner(env, &winner);
+        });
+
+        // MockVault reports whatever is stored under its own "BAL" key.
+        env.as_contract(&vault_id, || {
+            env.storage().persistent().set(&symbol_short!("BAL"), &gross);
+        });
+
+        token_admin_client.mint(&contract_id, &gross);
+
+        let token_client = token::TokenClient::new(env, &token_id);
+        (client, token_client, winner, treasury)
+    }
+
+    #[test]
+    fn claim_zero_fee_bps_routes_full_gross_to_winner() {
+        let env = Env::default();
+        let (client, token, winner, treasury) = setup_claimable(&env, 0, 420, 100, 4);
+        client.claim(&winner);
+
+        assert_eq!(token.balance(&winner), 420, "0 bps must pay the full gross");
+        assert_eq!(token.balance(&treasury), 0);
+        let b = client.get_settlement_breakdown().unwrap();
+        assert_eq!((b.gross, b.fee, b.net, b.yield_amount), (420, 0, 420, 20));
+    }
+
+    #[test]
+    fn claim_max_fee_bps_charges_ten_percent_of_yield_only() {
+        let env = Env::default();
+        let (client, token, winner, treasury) = setup_claimable(&env, 1000, 420, 100, 4);
+        client.claim(&winner);
+
+        // yield = 420 - 400 = 20; fee = 10% of 20 = 2; net = 418.
+        assert_eq!(token.balance(&treasury), 2);
+        assert_eq!(token.balance(&winner), 418);
+        let b = client.get_settlement_breakdown().unwrap();
+        assert_eq!((b.gross, b.fee, b.net, b.yield_amount), (420, 2, 418, 20));
+        assert_eq!(b.treasury, treasury);
+    }
+
+    #[test]
+    fn claim_zero_yield_charges_no_fee() {
+        let env = Env::default();
+        // gross == principal (4 x 100) → no yield → no fee even at max bps.
+        let (client, token, winner, treasury) = setup_claimable(&env, 1000, 400, 100, 4);
+        client.claim(&winner);
+
+        assert_eq!(token.balance(&winner), 400);
+        assert_eq!(token.balance(&treasury), 0);
+        let b = client.get_settlement_breakdown().unwrap();
+        assert_eq!((b.gross, b.fee, b.net, b.yield_amount), (400, 0, 400, 0));
+    }
+
+    #[test]
+    fn claim_vault_shortfall_charges_no_fee() {
+        let env = Env::default();
+        // Vault returns less than the staked principal; the fee base floors at 0
+        // so the winner simply receives the (reduced) gross.
+        let (client, token, winner, treasury) = setup_claimable(&env, 1000, 350, 100, 4);
+        client.claim(&winner);
+
+        assert_eq!(token.balance(&winner), 350);
+        assert_eq!(token.balance(&treasury), 0);
+        let b = client.get_settlement_breakdown().unwrap();
+        assert_eq!((b.gross, b.fee, b.net, b.yield_amount), (350, 0, 350, 0));
+    }
+
+    // ── #1552: three-phase commit/reveal/resolvable window ───────────────────
+
+    fn first_player(client: &ArenaContractClient) -> Address {
+        client.get_players(&0).get(0).unwrap().0
+    }
+
+    #[test]
+    fn phase_reveal_before_commit_deadline_rejected() {
+        let (env, client) = setup_started(60, 1_000);
+        let p = first_player(&client);
+        let salt = BytesN::from_array(&env, &[7u8; 32]);
+        let comm = compute_commitment(&env, Choice::Heads, &salt);
+        client.submit_commitment(&p, &comm);
+
+        env.ledger().with_mut(|li| li.timestamp = 1_030);
+        assert_eq!(client.get_round_phase(), RoundPhase::Commit);
+        assert_eq!(
+            client.try_reveal_choice(&p, &Choice::Heads, &salt),
+            Err(Ok(ArenaError::RoundNotActive)),
+            "reveal before commit_deadline must be rejected",
+        );
+    }
+
+    #[test]
+    fn phase_submit_commitment_after_commit_deadline_rejected() {
+        let (env, client) = setup_started(60, 1_000);
+        let p = first_player(&client);
+        let salt = BytesN::from_array(&env, &[8u8; 32]);
+        let comm = compute_commitment(&env, Choice::Heads, &salt);
+
+        env.ledger().with_mut(|li| li.timestamp = 1_061);
+        assert_eq!(client.get_round_phase(), RoundPhase::Reveal);
+        assert_eq!(
+            client.try_submit_commitment(&p, &comm),
+            Err(Ok(ArenaError::CommitPhaseEnded)),
+        );
+    }
+
+    #[test]
+    fn phase_reveal_within_window_succeeds() {
+        let (env, client) = setup_started(60, 1_000);
+        let p = first_player(&client);
+        let salt = BytesN::from_array(&env, &[9u8; 32]);
+        let comm = compute_commitment(&env, Choice::Heads, &salt);
+        client.submit_commitment(&p, &comm);
+
+        env.ledger().with_mut(|li| li.timestamp = 1_061);
+        assert_eq!(client.get_round_phase(), RoundPhase::Reveal);
+        client.reveal_choice(&p, &Choice::Heads, &salt);
+    }
+
+    #[test]
+    fn phase_reveal_at_reveal_deadline_rejected() {
+        let (env, client) = setup_started(60, 1_000);
+        let p = first_player(&client);
+        let salt = BytesN::from_array(&env, &[10u8; 32]);
+        let comm = compute_commitment(&env, Choice::Heads, &salt);
+        client.submit_commitment(&p, &comm);
+
+        env.ledger().with_mut(|li| li.timestamp = 1_120);
+        assert_eq!(client.get_round_phase(), RoundPhase::Resolvable);
+        assert_eq!(
+            client.try_reveal_choice(&p, &Choice::Heads, &salt),
+            Err(Ok(ArenaError::RevealPhaseEnded)),
+            "reveal at reveal_deadline must be rejected",
+        );
+    }
+
+    #[test]
+    fn phase_resolve_during_reveal_window_rejected() {
+        let (env, client) = setup_started(60, 1_000);
+        env.ledger().with_mut(|li| li.timestamp = 1_100);
+        assert_eq!(client.get_round_phase(), RoundPhase::Reveal);
+        assert_eq!(
+            client.try_resolve_round(),
+            Err(Ok(ArenaError::RevealPhaseActive)),
+        );
+    }
+
+    #[test]
+    fn phase_resolve_exactly_at_reveal_deadline_succeeds() {
+        let (env, client) = setup_started(60, 1_000);
+        env.ledger().with_mut(|li| li.timestamp = 1_120);
+        assert_eq!(client.get_round_phase(), RoundPhase::Resolvable);
+        client.resolve_round();
+    }
+
+    #[test]
+    fn get_phase_deadlines_reports_both_windows() {
+        let (_env, client) = setup_started(60, 1_000);
+        let deadlines = client.get_phase_deadlines();
+        assert_eq!(deadlines.commit_deadline, client.get_commit_deadline());
+        assert_eq!(deadlines.reveal_deadline, client.get_reveal_deadline());
+        assert_eq!(deadlines.commit_deadline, 1_060);
+        assert_eq!(deadlines.reveal_deadline, 1_120);
+    }
+
     #[test]
     fn propose_then_accept_admin_changes_admin() {
         let env = Env::default();
@@ -2664,12 +3118,14 @@ mod test {
                 active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
+                reveal_deadline: 0,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
+                treasury: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
         });
@@ -2702,12 +3158,14 @@ mod test {
                 active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
+                reveal_deadline: 0,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
+                treasury: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
         });
@@ -2740,12 +3198,14 @@ mod test {
                 active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
+                reveal_deadline: 0,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
+                treasury: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
         });
@@ -2781,12 +3241,14 @@ mod test {
                 active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
+                reveal_deadline: 0,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
                 oracle_contract: Address::generate(&env),
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
+                treasury: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
         });
@@ -2835,12 +3297,14 @@ mod test {
                     active_player_count: 0,
                     cumulative_yield: 0,
                     commit_deadline: 0,
+                    reveal_deadline: 0,
                     yield_vault: Address::generate(&env),
                     round_count: 0,
                     oracle_contract: oracle_id,
                     factory: Address::generate(&env),
                     pool_id: 0,
                     platform_fee_bps: 1000,
+                    treasury: Address::generate(&env),
                 },
             );
         });
@@ -2868,12 +3332,14 @@ mod test {
                     active_player_count: 1,
                     cumulative_yield: 0,
                     commit_deadline: 0,
+                    reveal_deadline: 0,
                     yield_vault: Address::generate(&env),
                     round_count: 0,
                     oracle_contract: oracle_id,
                     factory: Address::generate(&env),
                     pool_id: 0,
                     platform_fee_bps: 1000,
+                    treasury: Address::generate(&env),
                 },
             );
         });
@@ -2902,12 +3368,14 @@ mod test {
                     active_player_count: 2,
                     cumulative_yield: 0,
                     commit_deadline: 0,
+                    reveal_deadline: 0,
                     yield_vault: Address::generate(&env),
                     round_count: 0,
                     oracle_contract: oracle_id,
                     factory: Address::generate(&env),
                     pool_id: 0,
                     platform_fee_bps: 1000,
+                    treasury: Address::generate(&env),
                 },
             );
             let p1 = Address::generate(&env);
@@ -2951,9 +3419,9 @@ mod test {
             &oracle_id,
             &Address::generate(&env),
             &1,
+            &Address::generate(&env),
             &2,
             &10,
-            &60,
         );
         client.join_arena(&p1);
         client.join_arena(&p2);
@@ -2969,6 +3437,7 @@ mod test {
         // Both reveal Heads — all same choice, both survive
         client.reveal_choice(&p1, &Choice::Heads, &salt);
         client.reveal_choice(&p2, &Choice::Heads, &salt);
+        close_reveal_window(&env, &client);
         client.resolve_round();
 
         // Start round 2 – should clear round 1 choices/commitments
@@ -2985,6 +3454,7 @@ mod test {
         // If stale commitment was present, reveal would succeed but use wrong commitment
         client.reveal_choice(&p1, &Choice::Heads, &salt2);
         client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        close_reveal_window(&env, &client);
         client.resolve_round();
     }
 
@@ -3020,9 +3490,9 @@ mod test {
             &oracle_id,
             &Address::generate(&env),
             &1,
+            &Address::generate(&env),
             &2,
             &10,
-            &60,
         );
         client.join_arena(&p1);
         client.join_arena(&p2);
@@ -3046,6 +3516,7 @@ mod test {
         client.reveal_choice(&p2, &Choice::Heads, &salt);
         // p3 does NOT reveal
 
+        close_reveal_window(&env, &client);
         client.resolve_round();
 
         // p3 should be eliminated (AFK)
@@ -3086,7 +3557,7 @@ mod test {
 
         let client = ArenaContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &Address::generate(&env), &2, &10);
         client.join_arena(&p1);
         client.join_arena(&p2);
 
@@ -3111,6 +3582,7 @@ mod test {
 
         // Neither player reveals — both are AFK.
 
+        close_reveal_window(&env, &client);
         client.resolve_round();
 
         // Both players eliminated, zero survivors.
@@ -3165,9 +3637,9 @@ mod test {
             &oracle_id,
             &Address::generate(&env),
             &1,
+            &Address::generate(&env),
             &2,
             &10,
-            &60,
         );
         client.join_arena(&p1);
         client.join_arena(&p2);
@@ -3193,6 +3665,7 @@ mod test {
         client.reveal_choice(&p2, &Choice::Heads, &salt2);
         client.reveal_choice(&p3, &Choice::Heads, &salt3);
 
+        close_reveal_window(&env, &client);
         client.resolve_round();
 
         // p1 (minority: Tails) should survive
@@ -3253,9 +3726,9 @@ mod test {
             &oracle_id,
             &Address::generate(&env),
             &1,
+            &Address::generate(&env),
             &2,
             &10,
-            &60,
         );
         client.join_arena(&p1);
         client.join_arena(&p2);
@@ -3280,6 +3753,7 @@ mod test {
         client.reveal_choice(&p2, &Choice::Heads, &salt2);
         client.reveal_choice(&p3, &Choice::Heads, &salt3);
 
+        close_reveal_window(&env, &client);
         client.resolve_round();
 
         // All three must survive: unanimous Heads has no opposing majority.
@@ -3351,9 +3825,9 @@ mod test {
             &oracle_id,
             &Address::generate(&env),
             &1,
+            &Address::generate(&env),
             &2,
             &10,
-            &60,
         );
         client.join_arena(&p1);
         client.join_arena(&p2);
@@ -3368,6 +3842,7 @@ mod test {
         env.ledger().with_mut(|li| li.timestamp = 1061);
         client.reveal_choice(&p1, &Choice::Heads, &salt);
         client.reveal_choice(&p2, &Choice::Heads, &salt);
+        close_reveal_window(&env, &client);
         client.resolve_round();
 
         // Round 2 starts – old commitments are cleared
@@ -3430,12 +3905,14 @@ mod test {
                     active_player_count: 0,
                     cumulative_yield: 0,
                     commit_deadline: 0,
+                    reveal_deadline: 0,
                     yield_vault: vault_id,
                     round_count: 0,
                     oracle_contract: oracle_id,
                     factory: Address::generate(&env),
                     pool_id: 0,
                     platform_fee_bps: 1000,
+                    treasury: Address::generate(&env),
                 },
             );
             ArenaStorage::save_player_limits(&env, 2, 2);
@@ -3488,9 +3965,9 @@ mod test {
             &oracle_id,
             &Address::generate(&env),
             &1,
+            &Address::generate(&env),
             &2,
             &10,
-            &60,
         );
 
         // Player joins
@@ -3550,9 +4027,9 @@ mod test {
             &oracle_id,
             &Address::generate(&env),
             &1,
+            &Address::generate(&env),
             &2,
             &10,
-            &60,
         );
 
         client.join_arena(&p1);
@@ -3696,11 +4173,13 @@ mod test {
                 active_player_count: 3,
                 cumulative_yield: 0,
                 commit_deadline: 0,
+                reveal_deadline: 0,
                 round_count: 0,
                 oracle_contract: oracle_id,
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
+                treasury: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
 
@@ -3781,11 +4260,13 @@ mod test {
                 active_player_count: 20,
                 cumulative_yield: 0,
                 commit_deadline: 0,
+                reveal_deadline: 0,
                 round_count: 0,
                 oracle_contract: oracle_id,
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
+                treasury: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
 
@@ -4013,9 +4494,9 @@ mod test {
             &oracle_id,
             &Address::generate(&env),
             &1u32,
+            &Address::generate(&env),
             &2u32,
             &10u32,
-            &60u64,
         );
         assert_eq!(result, Err(Ok(ArenaError::InvalidEntryFee)));
     }
@@ -4042,9 +4523,9 @@ mod test {
             &oracle_id,
             &Address::generate(&env),
             &1u32,
+            &Address::generate(&env),
             &2u32,
             &10u32,
-            &60u64,
         );
         assert_eq!(result, Err(Ok(ArenaError::InvalidEntryFee)));
     }
@@ -4073,9 +4554,9 @@ mod test {
                     &oracle_id,
                     &Address::generate(&env),
                     &1u32,
+                    &Address::generate(&env),
                     &2u32,
-                    &10u32,
-                    &60u64
+                    &10u32
                 )
                 .is_ok()
         );
@@ -4106,9 +4587,9 @@ mod test {
             &oracle_id,
             &Address::generate(&env),
             &1,
+            &Address::generate(&env),
             &2,
             &10,
-            &60,
         );
 
         // Add two real players and start round so state is Active
@@ -4151,9 +4632,9 @@ mod test {
             &oracle_id,
             &Address::generate(&env),
             &1,
+            &Address::generate(&env),
             &2,
             &10,
-            &60,
         );
 
         let p1 = Address::generate(&env);
@@ -4205,9 +4686,9 @@ mod test {
             &oracle_id,
             &Address::generate(&env),
             &1,
+            &Address::generate(&env),
             &2,
             &10,
-            &60,
         );
 
         let player = Address::generate(&env);
@@ -4243,9 +4724,9 @@ mod test {
             &oracle_id,
             &Address::generate(&env),
             &1,
+            &Address::generate(&env),
             &2,
             &10,
-            &60,
         );
 
         let p1 = Address::generate(&env);
@@ -4292,9 +4773,9 @@ mod test {
             &oracle_id,
             &Address::generate(&env),
             &1,
+            &Address::generate(&env),
             &2,
             &10,
-            &60,
         );
 
         let p1 = Address::generate(&env);
@@ -4344,9 +4825,9 @@ mod test {
             &oracle_id,
             &Address::generate(&env),
             &1,
+            &Address::generate(&env),
             &2,
             &10,
-            &60,
         );
 
         let p1 = Address::generate(&env);
@@ -4403,9 +4884,9 @@ mod test {
             &oracle_id,
             &Address::generate(&env),
             &1,
+            &Address::generate(&env),
             &2,
             &10,
-            &60,
         );
 
         let p1 = Address::generate(&env);
@@ -4451,9 +4932,9 @@ mod test {
             &oracle_id,
             &Address::generate(&env),
             &1,
+            &Address::generate(&env),
             &2,
             &10,
-            &60,
         );
 
         let p1 = Address::generate(&env);
@@ -4475,6 +4956,7 @@ mod test {
         client.reveal_choice(&p2, &Choice::Heads, &salt);
 
         // After resolve_round, choices and commitments should be cleared
+        close_reveal_window(&env, &client);
         client.resolve_round();
 
         env.as_contract(&contract_id, || {
@@ -4521,11 +5003,13 @@ mod test {
                         active_player_count: 0,
                         cumulative_yield: 0,
                         commit_deadline: 0,
+                        reveal_deadline: 0,
                         round_count: 0,
                         oracle_contract: oracle_id,
                         factory: Address::generate(&env),
                         pool_id: 0,
                         platform_fee_bps: 1000,
+                        treasury: Address::generate(&env),
                     },
                 );
                 ArenaStorage::save_leaderboard_limit(&env, LIMIT);
@@ -4657,12 +5141,14 @@ mod test {
                 active_player_count: 2,
                 cumulative_yield: 0,
                 commit_deadline: 0,
+                reveal_deadline: 0,
                 yield_vault: vault_id.clone(),
                 round_count: 0,
                 oracle_contract: oracle_id.clone(),
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
+                treasury: Address::generate(&env),
             };
             ArenaStorage::save_config(&env, &config);
             ArenaStorage::save_player_limits(&env, 2, 2);
@@ -4681,6 +5167,7 @@ mod test {
             .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
         
         // Resolve the round
+        close_reveal_window(&env, &client);
         client.resolve_round();
         
         // Get the arena config and verify it transitioned to Cancelled, not Finished
@@ -4701,6 +5188,8 @@ mod test {
         });
     }
 } // close mod test
+#[cfg(test)]
+mod fixtures;
 #[cfg(test)]
 mod integration_tests;
 #[cfg(test)]

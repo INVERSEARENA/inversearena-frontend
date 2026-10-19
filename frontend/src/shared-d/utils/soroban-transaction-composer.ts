@@ -170,6 +170,16 @@ export function buildGetArenaStateCallOperation(
   return arenaContract.call("get_arena_state");
 }
 
+/**
+ * Both round-phase deadlines in one call (#1552). Matches
+ * `contract/arena/src/lib.rs`'s `get_phase_deadlines()`.
+ */
+export function buildGetPhaseDeadlinesCallOperation(
+  arenaContract: Contract,
+): SorobanOperation {
+  return arenaContract.call("get_phase_deadlines");
+}
+
 
 export function buildGetFullStateCallOperation(
   arenaContract: Contract,

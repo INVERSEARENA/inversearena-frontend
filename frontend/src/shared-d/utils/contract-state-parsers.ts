@@ -1,5 +1,6 @@
 import type { xdr } from "@stellar/stellar-sdk";
 import type {
+  ArenaPhaseDeadlines,
   ArenaState,
   ContractArenaState,
   ContractUserState,
@@ -12,6 +13,7 @@ import {
   extractBoolFromScVal,
   extractI128FromScVal,
   extractU32FromScVal,
+  extractU64FromScVal,
   stroopsToDisplayAmount,
 } from "@/shared-d/utils/stellar-scval-extract";
 
@@ -29,6 +31,22 @@ export function parseUserStateFromScVal(userData: xdr.ScVal): ContractUserState 
   return {
     active: extractBoolFromScVal(userData, "is_active") ?? false,
     won: extractBoolFromScVal(userData, "has_won") ?? false,
+  };
+}
+
+/**
+ * Parse the arena contract's `get_phase_deadlines` return value (#1552).
+ *
+ * The view returns a `PhaseDeadlines` struct encoded as a field-name map with
+ * `commit_deadline` / `reveal_deadline` u64 fields. Missing fields degrade to
+ * `null` rather than throwing so a legacy deployment never breaks the read.
+ */
+export function parsePhaseDeadlinesFromScVal(
+  scVal: xdr.ScVal,
+): ArenaPhaseDeadlines {
+  return {
+    commitDeadline: extractU64FromScVal(scVal, "commit_deadline"),
+    revealDeadline: extractU64FromScVal(scVal, "reveal_deadline"),
   };
 }
 

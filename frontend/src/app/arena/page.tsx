@@ -38,21 +38,18 @@ import {
   NETWORK_PASSPHRASE,
 } from "@/shared-d/utils/stellar-transactions";
 import { useArenaStream } from "@/features/arena/useArenaStream";
-import { useArenaStateActions } from "@/features/arena/useArenaState";
+import { useArenaState } from "@/features/arena/useArenaState";
+import { useArenaTimer } from "@/shared-d/hooks/useArenaTimer";
 import { useTransactionIntent, type IntentKind } from "@/shared-d/hooks/useTransactionIntent";
 import type { Transaction } from "@stellar/stellar-sdk";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
 
-// Commit-reveal phase windows (#1137). These are local, client-side timers —
-// the contract's real commit_deadline isn't yet exposed to the frontend via
-// any view call or indexer field, so this mirrors the mock-timer pattern
-// already used elsewhere on this page rather than inventing a new
-// architecture. Syncing against the real on-chain deadline is a disclosed
-// follow-up, not part of this fix.
-const COMMIT_WINDOW_SECONDS = 60;
-const REVEAL_WINDOW_SECONDS = 30;
+// Commit-reveal phase windows (#1137, replaced by chain-driven deadlines in
+// #1552). The commit and reveal windows are no longer hardcoded here — they are
+// read from the contract's `get_phase_deadlines` view via `useArenaState` and
+// scheduled by `useArenaTimer`.
 
 const DEMO_ELIMINATION_FEED = [
   { id: "demo-1", label: "S-6782-5", roundNumber: 1, status: "OUT" as const, createdAt: "2026-05-29T00:00:00.000Z" },
@@ -111,8 +108,7 @@ function ArenaGameView() {
   const roundStatus: "survived" | "eliminated" = "survived";
   const [currentRound, setCurrentRound] = useState(1);
 
-  // Commit-reveal phase state (#1137)
-  const [roundPhase, setRoundPhase] = useState<"commit" | "reveal">("commit");
+  // Commit-reveal phase state (#1137, chain-driven since #1552)
   const [hasCommittedForRound, setHasCommittedForRound] = useState(false);
   const [commitTimeExpired, setCommitTimeExpired] = useState(false);
 
@@ -155,8 +151,22 @@ function ArenaGameView() {
 
   // Demo arena identifier; when unset the page falls back to the static mock view.
   const ARENA_ID = process.env.NEXT_PUBLIC_DEMO_ARENA_ID ?? "";
-  const { reconcile: reconcileArenaState } = useArenaStateActions(ARENA_ID);
+  const { state: arenaState, reconcile: reconcileArenaState } = useArenaState(ARENA_ID);
   const { status: streamStatus, snapshot, feed: streamFeed } = useArenaStream(ARENA_ID);
+
+  // #1552: derive the active round phase from the contract's commit/reveal
+  // deadlines instead of local hardcoded windows. `null` until the first
+  // successful state read; `reveal_deadline === 0` means an unbounded reveal
+  // window (legacy arena), which keeps the phase in "reveal" indefinitely.
+  const commitDeadline = arenaState?.commitDeadline ?? null;
+  const revealDeadline = arenaState?.revealDeadline ?? null;
+  const arenaTimer = useArenaTimer({
+    initialSeconds: 0,
+    commitDeadline,
+    revealDeadline,
+  });
+  const roundPhase: "commit" | "reveal" =
+    arenaTimer.phase === "commit" ? "commit" : "reveal";
 
   const headsPercentage = 42;
   const tailsPercentage = 58;
@@ -198,16 +208,25 @@ function ArenaGameView() {
     }
   }, [snapshot]);
 
-  // A new round always opens in the commit phase. Also recompute whether
-  // this device already has a commitment stored for it — relevant on
-  // remount/reload, since the commitment lives in localStorage, not state.
+  // A new round always opens in the commit phase — the phase itself is now
+  // derived from the chain deadlines (#1552), so this only resets the
+  // round-scoped, device-local state. It also recomputes whether this device
+  // already has a commitment stored for the round (relevant on remount/reload,
+  // since the commitment lives in localStorage, not React state).
   useEffect(() => {
     if (!ARENA_ID || !address) return;
-    setRoundPhase("commit");
     setSelectedChoice(null);
     setCommitTimeExpired(false);
     setHasCommittedForRound(hasStoredCommitmentForRound(ARENA_ID, currentRound, address));
   }, [ARENA_ID, currentRound, address]);
+
+  // Surface the "you missed the commit window" state once the chain reports the
+  // reveal phase (or later) and this player never committed (#1552).
+  useEffect(() => {
+    if (roundPhase !== "commit" && !hasCommittedForRound) {
+      setCommitTimeExpired(true);
+    }
+  }, [roundPhase, hasCommittedForRound]);
 
   useEffect(() => {
     if (!ARENA_ID || !snapshot) return;
@@ -345,27 +364,15 @@ function ArenaGameView() {
                 <ChooseYourFate />
                 <Timer
                   key={roundPhase}
-                  initialSeconds={
-                    roundPhase === "commit" ? COMMIT_WINDOW_SECONDS : REVEAL_WINDOW_SECONDS
-                  }
+                  // #1552: the countdown tracks the chain's active deadline
+                  // (commit or reveal) rather than a hardcoded window length.
+                  deadline={arenaTimer.activeDeadline}
+                  initialSeconds={Math.max(0, arenaTimer.rawSeconds)}
                   label={
                     roundPhase === "commit"
                       ? "Commit Window Closes In"
                       : "Reveal Window Closes In"
                   }
-                  onTimeUp={() => {
-                    if (roundPhase === "commit") {
-                      // Do not auto-submit — the player had the full window
-                      // to commit. Just lock the choice UI and, if they
-                      // never committed, surface a "time expired" state.
-                      if (!hasCommittedForRound) {
-                        setCommitTimeExpired(true);
-                      }
-                      setRoundPhase("reveal");
-                    }
-                    // Reveal window elapsing has no local action — the next
-                    // round arriving via the stream resets phase to "commit".
-                  }}
                 />
               </div>
 

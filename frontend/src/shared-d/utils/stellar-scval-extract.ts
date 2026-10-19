@@ -42,6 +42,25 @@ export function extractU32FromScVal(
   }
 }
 
+export function extractU64FromScVal(
+  scVal: xdr.ScVal,
+  fieldName?: string,
+): number | null {
+  try {
+    const value = findMapValue(scVal, fieldName);
+    if (value?.switch().name === "scvU64") {
+      const asBigInt = value.u64().toBigInt();
+      if (asBigInt > BigInt(Number.MAX_SAFE_INTEGER)) {
+        return null;
+      }
+      return Number(asBigInt);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function extractI128FromScVal(
   scVal: xdr.ScVal,
   fieldName?: string,

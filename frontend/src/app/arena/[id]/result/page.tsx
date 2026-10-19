@@ -16,7 +16,14 @@ interface ResultData {
   winnerAddress: string;
   entryFeesTotal: number;
   yieldEarned: number;
+  /** Gross withdrawn from the vault (entry fees + yield). */
   totalPrize: number;
+  /** Platform fee routed to the treasury (a cut of the yield only, #1554). */
+  platformFee: number;
+  /** Amount the winner actually receives (`totalPrize - platformFee`). */
+  netPrize: number;
+  /** Treasury address the platform fee was routed to. */
+  treasuryAddress: string;
   rounds: RoundSummary[];
   totalPlayers: number;
   userFinishPosition: number | null;
@@ -40,12 +47,21 @@ async function fetchResultData(arenaId: string, userAddress?: string | null): Pr
     { round: 4, eliminated: 64, survivors: 64 },
     { round: 5, eliminated: 63, survivors: 1 },
   ];
+  const entryFeesTotal = 102_400;
+  const yieldEarned = 3_280.5;
+  const totalPrize = entryFeesTotal + yieldEarned;
+  // #1554: the platform fee is a cut of the yield only (default 10%).
+  const platformFee = Math.round(yieldEarned * 0.1 * 100) / 100;
+  const netPrize = totalPrize - platformFee;
   return {
     arenaId,
     winnerAddress: "GDRXE2BQUC3AZNPVFSCEZ76NJ3WWL25FYFK6RIGLO47E2WU7CXZS7SB",
-    entryFeesTotal: 102_400,
-    yieldEarned: 3_280.5,
-    totalPrize: 105_680.5,
+    entryFeesTotal,
+    yieldEarned,
+    totalPrize,
+    platformFee,
+    netPrize,
+    treasuryAddress: "GTREASURYPROTOCOL00000000000000000000000000000000000",
     rounds,
     totalPlayers: 1024,
     userFinishPosition: userAddress ? 64 : null,
@@ -86,7 +102,7 @@ export default function ArenaResultPage() {
 
   const handleShare = (platform: "twitter" | "copy") => {
     if (!result) return;
-    const text = `I just witnessed Arena #${arenaId} end! Winner took home ${result.totalPrize.toLocaleString()} XLM on @InverseArena 🏆`;
+    const text = `I just witnessed Arena #${arenaId} end! Winner took home ${result.netPrize.toLocaleString()} XLM on @InverseArena 🏆`;
     if (platform === "twitter") {
       window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}`, "_blank");
     } else {
@@ -148,7 +164,7 @@ export default function ArenaResultPage() {
           <h2 className="font-pixel text-[10px] text-white/60 tracking-widest uppercase">
             PRIZE BREAKDOWN
           </h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="border border-white/10 p-4 space-y-1">
               <p className="font-pixel text-[8px] text-white/50 tracking-wider">ENTRY FEES</p>
               <p className="font-pixel text-lg text-white">
@@ -161,12 +177,37 @@ export default function ArenaResultPage() {
                 +{result.yieldEarned.toLocaleString()} XLM
               </p>
             </div>
-            <div className="border border-neon-green p-4 space-y-1">
-              <p className="font-pixel text-[8px] text-neon-green tracking-wider">TOTAL PRIZE</p>
-              <p className="font-pixel text-lg text-neon-green">
+          </div>
+
+          {/* Gross -> fee -> net (#1554). The fee is a cut of the yield only. */}
+          <div className="border-2 border-neon-green p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="font-pixel text-[9px] text-white/60 tracking-wider uppercase">
+                Gross withdrawn
+              </span>
+              <span className="font-mono text-sm text-white">
                 {result.totalPrize.toLocaleString()} XLM
-              </p>
+              </span>
             </div>
+            <div className="flex items-center justify-between">
+              <span className="font-pixel text-[9px] text-white/60 tracking-wider uppercase">
+                Platform fee (10% of yield)
+              </span>
+              <span className="font-mono text-sm text-neon-pink">
+                −{result.platformFee.toLocaleString()} XLM
+              </span>
+            </div>
+            <div className="flex items-center justify-between border-t border-white/10 pt-3">
+              <span className="font-pixel text-[9px] text-neon-green tracking-wider uppercase">
+                Net to winner
+              </span>
+              <span className="font-mono text-lg text-neon-green">
+                {result.netPrize.toLocaleString()} XLM
+              </span>
+            </div>
+            <p className="font-pixel text-[8px] text-white/40 tracking-wider break-all">
+              FEE ROUTED TO TREASURY {shortAddress(result.treasuryAddress)}
+            </p>
           </div>
         </section>
 

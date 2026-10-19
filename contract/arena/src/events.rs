@@ -52,9 +52,11 @@ impl ArenaEvents {
             .publish((symbol_short!("upgrade"),), new_wasm_hash.clone());
     }
 
-    pub fn game_started(env: &Env, round: u32, duration_seconds: u64) {
-        env.events()
-            .publish((symbol_short!("started"),), (round, duration_seconds));
+    pub fn game_started(env: &Env, round: u32, commit_deadline: u64, reveal_deadline: u64) {
+        env.events().publish(
+            (symbol_short!("started"),),
+            (round, commit_deadline, reveal_deadline),
+        );
     }
 
     pub fn round_resolved(env: &Env, round: u32, eliminated: u32, survivors: u32) {
@@ -109,10 +111,34 @@ impl ArenaEvents {
             .publish((symbol_short!("finished"),), (winner.clone(), round));
     }
 
-    pub fn prize_claimed(env: &Env, winner: &Address, amount: i128, yield_amount: i128) {
+    /// Emitted by `claim` with the full settlement breakdown (#1554).
+    ///
+    /// Payload: `(gross, fee, net, yield_amount, treasury)`. `gross` is what
+    /// was withdrawn from the vault, `fee` the platform cut routed to
+    /// `treasury`, `net` the amount paid to the winner, and `yield_amount`
+    /// the gross yield the fee was computed from.
+    pub fn prize_claimed(
+        env: &Env,
+        winner: &Address,
+        gross: i128,
+        fee: i128,
+        net: i128,
+        yield_amount: i128,
+        treasury: &Address,
+    ) {
         env.events().publish(
             (symbol_short!("claimed"), winner.clone()),
-            (amount, yield_amount),
+            (gross, fee, net, yield_amount, treasury.clone()),
+        );
+    }
+
+    /// Emitted at settlement when a nonzero platform fee is routed to the
+    /// treasury (#1554). Allows indexers to attribute protocol revenue without
+    /// re-parsing `prize_claimed`.
+    pub fn platform_fee_collected(env: &Env, treasury: &Address, fee: i128, fee_bps: u32) {
+        env.events().publish(
+            (symbol_short!("fee_coll"), treasury.clone()),
+            (fee, fee_bps),
         );
     }
 

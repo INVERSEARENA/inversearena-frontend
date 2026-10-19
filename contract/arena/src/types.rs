@@ -137,6 +137,12 @@ pub struct ArenaConfig {
     /// Ledger timestamp (seconds) after which commitments are no longer
     /// accepted and the reveal phase begins.
     pub commit_deadline: u64,
+    /// Ledger timestamp (seconds) at which the reveal phase closes and the
+    /// round becomes resolvable (#1552). The reveal window is exactly
+    /// `[commit_deadline, reveal_deadline)`; `resolve_round` rejects with
+    /// `RevealPhaseActive` before it and `reveal_choice` rejects with
+    /// `RevealPhaseEnded` at or after it.
+    pub reveal_deadline: u64,
     /// Number of completed rounds so far. Incremented when a round resolves.
     pub round_count: u32,
     /// On-chain oracle contract that supplies the current USDY yield rate in
@@ -147,10 +153,15 @@ pub struct ArenaConfig {
     pub pool_id: u32,
     /// Platform fee in basis points, snapshotted from the global admin-configured
     /// value at `initialize` time (see `ArenaContract::update_platform_fee`).
-    /// Max 1000 bps (10%). Not currently deducted anywhere in the payout path —
-    /// `claim` pays out principal + yield in full; wiring an actual fee cut into
-    /// that flow is a deliberate follow-up, not implied by this field's presence.
+    /// Max 1000 bps (10%). The snapshotted value — never the live mutable
+    /// `get_platform_fee_bps` value — is applied to the round's yield at
+    /// settlement (#1554).
     pub platform_fee_bps: u32,
+    /// Protocol treasury that receives the platform-fee cut at settlement
+    /// (#1554). Snapshotted from the factory at `initialize`; the remaining
+    /// principal plus net yield goes to the winner. May equal the winner, in
+    /// which case both legs are paid to the same address.
+    pub treasury: Address,
 }
 
 /// Wrapper for a pending admin transfer proposal.
@@ -370,6 +381,16 @@ pub enum ArenaError {
     /// `max_age_secs` via `set_oracle_freshness_policy` if the
     /// existing threshold is inappropriate for this arena.
     StaleOracleData = 40,
+
+    /// Returned by `resolve_round` while the round is in its reveal window,
+    /// i.e. `commit_deadline <= now < reveal_deadline` (#1552). Recoverable:
+    /// the admin can resolve once the reveal deadline has passed.
+    RevealPhaseActive = 41,
+
+    /// Returned by `reveal_choice` at or after `reveal_deadline`, after the
+    /// reveal window has closed (#1552). A commitment whose reveal lands late
+    /// is treated exactly like no reveal at all.
+    RevealPhaseEnded = 42,
 }
 
 #[contracttype]
@@ -379,4 +400,50 @@ pub enum ArenaStatus {
     Active,
     Finished,
     Cancelled,
+}
+
+/// Three-phase round lifecycle exposed to off-chain readers (#1552).
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoundPhase {
+    /// No round is running (arena `Open`/`Finished`/`Settled`/`Cancelled`).
+    Lobby,
+    /// Commitments accepted: `now < commit_deadline`.
+    Commit,
+    /// Reveals accepted: `commit_deadline <= now < reveal_deadline`.
+    Reveal,
+    /// Resolvable: `now >= reveal_deadline`.
+    Resolvable,
+}
+
+/// Both round-phase deadlines returned by a single view call (#1552).
+///
+/// Exists so off-chain clients (frontend countdown, indexer phase projection)
+/// can schedule the commit and reveal windows with one RPC simulation instead
+/// of two, and without re-deriving them from local timers.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PhaseDeadlines {
+    /// Ledger timestamp at which commitments close.
+    pub commit_deadline: u64,
+    /// Ledger timestamp at which the reveal window closes. `0` means the
+    /// arena predates #1552 and the reveal window is unbounded.
+    pub reveal_deadline: u64,
+}
+
+/// Settlement breakdown recorded when the winner claims (#1554).
+///
+/// `gross` is the amount actually withdrawn from the vault (principal + yield,
+/// or less on a shortfall); `fee` is the platform fee routed to `treasury`;
+/// `net` is the amount paid to the winner (`gross - fee`); `yield_amount` is
+/// the gross yield portion (`gross - principal`, floored at 0) that the fee
+/// was computed from.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SettlementBreakdown {
+    pub gross: i128,
+    pub fee: i128,
+    pub net: i128,
+    pub yield_amount: i128,
+    pub treasury: Address,
 }

@@ -54,6 +54,17 @@ export interface ArenaStateFromContract {
   revealDeadline: number | null;
 }
 
+/**
+ * Both round-phase deadlines from the arena contract's `get_phase_deadlines`
+ * view (#1552). `null` means the value was not present in the returned struct
+ * (e.g. an older deployment); `revealDeadline === 0` means the reveal window is
+ * unbounded (the arena predates the commit/reveal split).
+ */
+export interface ArenaPhaseDeadlines {
+  commitDeadline: number | null;
+  revealDeadline: number | null;
+}
+
 export interface FetchArenaStateResult {
   arenaId: string;
   arenaState: ArenaState;

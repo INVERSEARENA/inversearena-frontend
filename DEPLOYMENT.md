@@ -169,6 +169,56 @@ Query parameters: `limit` (1–200, default 50), `action`, `adminId`.
 
 ---
 
+## Release preflight (#1465)
+
+`make preflight` runs the offline release check before a deploy. It reads the
+repository only — no database, RPC, or compiled WASM — and prints a
+machine-readable JSON result (`pass`, per-check error/warning counts, and one
+entry per finding). It exits non-zero when any *incompatible release artifact*
+is present, so it can gate CI or a deploy script directly.
+
+```bash
+make preflight                       # production, human-readable JSON lines
+make preflight ENVIRONMENT=staging   # relax the production-only checks
+node scripts/release-preflight/preflight.mjs --root . --out preflight.json
+```
+
+It checks four artifact classes:
+
+| Check | Fails when |
+| --- | --- |
+| `migrations` | the Prisma provider is not `postgresql`, a migration directory has no `migration.sql`, a name is duplicated, or a destructive statement (`DROP`/`TRUNCATE`/`DELETE FROM`) has no rollback plan |
+| `abis` | a contract source has no readable `CONTRACT_VERSION`, or its `abi_snapshot.json` is missing or not a non-empty array |
+| `config` | a required key is not declared in `backend/.env.example`; in production, a real environment variable still holds a shipped placeholder secret |
+| `rollback` | `DEPLOYMENT.md` has no rollback section, or a migration is not referenced by the rollback documentation (warning) |
+
+`--allow <migration>:<kind>` (repeatable) accepts a reviewed destructive
+statement; the reason belongs in the rollback plan. See
+`docs/design/release-preflight.md` for the design and the CI wiring.
+
+### Release rollback
+
+Every migration is applied forward-only by `prisma migrate deploy`; rollback is
+a forward restore, not a schema undo:
+
+- **`20260222190000_init`**, **`20260222190537_add_round_state`**,
+  **`20260924081710_add_backfill_cursor`**,
+  **`20260924083748_add_arena_projection_checkpoint`**,
+  **`20260924084625_add_idempotent_commands`**,
+  **`20260926000000_normalize_round_metadata`**,
+  **`20260928000000_add_treasury_reconciliation`** are additive. Rolling back
+  the application image leaves them in place safely; the prior image ignores the
+  new columns/tables.
+- A release that *drops* a column or table must ship a `rollback.sql` beside
+  its `migration.sql` (the preflight requires it); apply it by hand after
+  restoring the prior image, and confirm the dropped shape is fully restored.
+- Backend rollback order is: stop workers, deploy the prior image, then restore
+  the database from the pre-release snapshot if a destructive migration ran.
+  Contract upgrades are never rolled back by a database restore — see the
+  client-compatibility rollback notes below.
+
+---
+
 ## Environment variables reference
 
 Copy `backend/.env.example` → `backend/.env` and `frontend/.env.example` →

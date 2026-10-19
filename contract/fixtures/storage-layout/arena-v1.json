@@ -1,7 +1,7 @@
 {
   "contract": "arena",
-  "contract_version": 2,
-  "schema_checksum": "arena-storage-v2-canonical",
+  "contract_version": 3,
+  "schema_checksum": "arena-storage-v3-canonical",
   "ledger": {
     "sequence": 12345678,
     "protocol": 22,
@@ -49,8 +49,15 @@
       "storage_class": "persistent",
       "key_xdr_hex": "",
       "value_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr"
+    },
+    {
+      "name": "SettlementBreakdown",
+      "storage_class": "persistent",
+      "key_xdr_hex": "",
+      "value_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr"
     }
   ],
-  "migration_boundary": null,
+  "migration_boundary": "arena-config-v2-to-v3",
+  "migration_notes": "ArenaConfig gained reveal_deadline (#1552) and treasury (#1554). Arenas persisted under the v2 layout are decoded and upgraded in place by ArenaStorage::load_config (see LegacyArenaConfigV2): reveal_deadline defaults to 0, preserving the legacy unbounded-reveal / resolve-at-commit-deadline timing, and treasury defaults to the arena admin. No player, round, or yield storage is reshaped.",
   "refresh_owners": ["@inversearena-contracts"]
 }

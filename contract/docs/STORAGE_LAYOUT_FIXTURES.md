@@ -16,3 +16,25 @@ ABI snapshots catch entrypoint drift; these fixtures document **persisted keys a
 ## CI
 
 Contract CI runs the full workspace test suite, including `storage_layout_*` tests. Storage/key/discriminant failures surface as contract test failures distinct from ABI snapshot scripts.
+
+## Upgrade note — ArenaConfig v2 → v3 (#1552 / #1554)
+
+`ArenaConfig` gained two fields:
+
+- `reveal_deadline: u64` (#1552) — commit and reveal phases are now distinct.
+- `treasury: Address` (#1554) — the platform-fee destination.
+
+`#[contracttype]` structs are encoded as field-name-keyed maps, and a map with the
+wrong number of entries aborts at the host level when decoded (it cannot be caught
+as a Rust `Err`), so `ArenaStorage::load_config` inspects the encoded map for the
+`reveal_deadline` key and selects a decoder:
+
+- **current layout** → `ArenaConfig`;
+- **v2 layout** → `LegacyArenaConfigV2`, migrated in place and re-saved. A legacy
+  arena has no reveal window (`reveal_deadline = 0`, preserving the old
+  "resolve at commit deadline / unbounded reveal" timing) and no treasury
+  (`treasury = admin`).
+
+This is additive-only; no player, round, yield, or roster storage is reshaped, so
+no `migration_boundary` player-data migration is required. Covered by
+`storage::tests::legacy_arena_config_is_migrated_in_place`.

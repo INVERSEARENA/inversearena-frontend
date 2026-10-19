@@ -20,11 +20,15 @@
  * pre-existing bug, flagged but intentionally not fixed here (see
  * `backend/docs/TREASURY_RECONCILIATION_DESIGN.md` §2).
  *
- * This module decodes only the two events treasury reconciliation needs:
- *  - `"claimed"` — `(amount: i128, yield_amount: i128)`, keyed by the winner
- *    address topic segment. Emitted once per arena, when the winner calls
- *    `claim()`. This is the one real, on-chain-verified money movement the
- *    reconciliation service has to work with.
+ * This module decodes only the treasury-relevant events:
+ *  - `"claimed"` — `(gross: i128, fee: i128, net: i128, yield_amount: i128,
+ *    treasury: Address)`, keyed by the winner address topic segment. Emitted
+ *    once per arena, when the winner calls `claim()`. `fee` is the platform
+ *    cut routed to `treasury` and `net` what the winner actually received
+ *    (#1554).
+ *  - `"fee_coll"` — `(fee: i128, fee_bps: u32)`, keyed by the treasury
+ *    address topic segment (#1554). Emitted at settlement whenever a nonzero
+ *    platform fee is routed, so treasury revenue is directly attributable.
  *  - `"fee_upd"` — `new_fee_bps: u32`, keyed by the admin address topic
  *    segment. Lets the service determine which `platform_fee_bps` was in
  *    effect at the ledger a given `claimed` event landed at.
@@ -32,7 +36,7 @@
 
 import { scValToNative, type rpc } from "@stellar/stellar-sdk";
 
-export const TREASURY_EVENT_TOPICS = ["claimed", "fee_upd"] as const;
+export const TREASURY_EVENT_TOPICS = ["claimed", "fee_coll", "fee_upd"] as const;
 export type TreasuryEventTopic = (typeof TREASURY_EVENT_TOPICS)[number];
 
 interface BaseTreasuryEvent {
@@ -47,10 +51,26 @@ interface BaseTreasuryEvent {
 export interface ClaimedTreasuryEvent extends BaseTreasuryEvent {
   topic: "claimed";
   winner: string;
-  /** Total transferred to the winner (principal + yield), in atomic units (stroops). */
-  amountAtomic: bigint;
-  /** The yield-only portion of `amountAtomic` — this is what a platform fee applies to. */
+  /** Total withdrawn from the yield vault (principal + yield), in stroops. */
+  grossAtomic: bigint;
+  /** Platform fee routed to `treasury`, in stroops. */
+  feeAtomic: bigint;
+  /** Amount actually paid to the winner (`gross - fee`), in stroops. */
+  netAtomic: bigint;
+  /** The yield-only portion of the gross — this is what a platform fee applies to. */
   yieldAmountAtomic: bigint;
+  /** Treasury address the fee was routed to, as published on the event. */
+  treasury: string;
+}
+
+export interface FeeCollectedTreasuryEvent extends BaseTreasuryEvent {
+  topic: "fee_coll";
+  /** Treasury address that received the fee. */
+  treasury: string;
+  /** Fee amount routed to the treasury, in stroops. */
+  feeAtomic: bigint;
+  /** The `platform_fee_bps` used to compute the fee. */
+  feeBps: number;
 }
 
 export interface FeeUpdatedTreasuryEvent extends BaseTreasuryEvent {
@@ -65,7 +85,11 @@ export interface UnknownTreasuryEvent extends BaseTreasuryEvent {
   reason: string;
 }
 
-export type TreasuryEvent = ClaimedTreasuryEvent | FeeUpdatedTreasuryEvent | UnknownTreasuryEvent;
+export type TreasuryEvent =
+  | ClaimedTreasuryEvent
+  | FeeCollectedTreasuryEvent
+  | FeeUpdatedTreasuryEvent
+  | UnknownTreasuryEvent;
 
 export function isTreasuryEventTopic(value: string): value is TreasuryEventTopic {
   return (TREASURY_EVENT_TOPICS as readonly string[]).includes(value);
@@ -112,14 +136,45 @@ export function toTreasuryEvent(raw: rpc.Api.EventResponse): TreasuryEvent {
     const value = scValToNative(raw.value);
 
     if (topicString === "claimed") {
-      // Published as `(amount, yield_amount)` — a 2-tuple, decoded as an array.
-      const [amount, yieldAmount] = Array.isArray(value) ? value : [value, 0n];
+      // Published as `(gross, fee, net, yield_amount, treasury)` (#1554).
+      if (!Array.isArray(value) || value.length !== 5) {
+        return {
+          ...base,
+          topic: "unknown",
+          rawTopic: topicString,
+          reason: `Expected a 5-tuple (gross, fee, net, yield_amount, treasury), got ${Array.isArray(value) ? `${value.length}-tuple` : typeof value}`,
+        };
+      }
+      const [gross, fee, net, yieldAmount, treasury] = value;
       return {
         ...base,
         topic: "claimed",
         winner: addressSegment,
-        amountAtomic: typeof amount === "bigint" ? amount : BigInt(amount as number),
-        yieldAmountAtomic: typeof yieldAmount === "bigint" ? yieldAmount : BigInt(yieldAmount as number),
+        grossAtomic: toAtomic(gross),
+        feeAtomic: toAtomic(fee),
+        netAtomic: toAtomic(net),
+        yieldAmountAtomic: toAtomic(yieldAmount),
+        treasury: typeof treasury === "string" ? treasury : String(treasury),
+      };
+    }
+
+    if (topicString === "fee_coll") {
+      // Published as `(fee, fee_bps)` (#1554).
+      if (!Array.isArray(value) || value.length !== 2) {
+        return {
+          ...base,
+          topic: "unknown",
+          rawTopic: topicString,
+          reason: `Expected a 2-tuple (fee, fee_bps), got ${Array.isArray(value) ? `${value.length}-tuple` : typeof value}`,
+        };
+      }
+      const [fee, feeBps] = value;
+      return {
+        ...base,
+        topic: "fee_coll",
+        treasury: addressSegment,
+        feeAtomic: toAtomic(fee),
+        feeBps: Number(feeBps),
       };
     }
 
@@ -138,4 +193,11 @@ export function toTreasuryEvent(raw: rpc.Api.EventResponse): TreasuryEvent {
       reason: `Failed to decode event payload: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
+}
+
+/** Coerce an `scValToNative` integer (bigint, number, or string) to bigint stroops. */
+function toAtomic(value: unknown): bigint {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number") return BigInt(value);
+  return BigInt(value as string);
 }

@@ -525,6 +525,50 @@ export async function getOnChainTotalYield(contractId: string): Promise<number> 
   }
 }
 
+/** Settlement breakdown, mirrors `contract/arena/src/types.rs`'s `SettlementBreakdown` (#1554). */
+export interface OnChainSettlementBreakdown {
+  grossStroops: bigint;
+  feeStroops: bigint;
+  netStroops: bigint;
+  yieldAmountStroops: bigint;
+  treasury: string;
+}
+
+/**
+ * Read an arena's settlement breakdown (#1554).
+ *
+ * Returns `null` — never throws — when the arena has not settled, has no
+ * snapshot, or the deployment predates `get_settlement_breakdown` (mixed
+ * deployment compatibility). Callers treat `null` as "breakdown unknown" and
+ * render without one, never as a zeroed breakdown.
+ */
+export async function getOnChainSettlementBreakdown(
+  contractId: string,
+): Promise<OnChainSettlementBreakdown | null> {
+  const stellarRpcGateway = new StellarRpcGateway();
+  try {
+    const result = await simulateViewCall(contractId, "get_settlement_breakdown", stellarRpcGateway);
+    if (result === null || result === undefined) return null;
+    const breakdown = result as {
+      gross: bigint | number;
+      fee: bigint | number;
+      net: bigint | number;
+      yield_amount: bigint | number;
+      treasury: string;
+    };
+    return {
+      grossStroops: BigInt(breakdown.gross),
+      feeStroops: BigInt(breakdown.fee),
+      netStroops: BigInt(breakdown.net),
+      yieldAmountStroops: BigInt(breakdown.yield_amount),
+      treasury: String(breakdown.treasury),
+    };
+  } catch {
+    // Best-effort: an unreadable breakdown is not an error the inbox acts on.
+    return null;
+  }
+}
+
 /** Rate plus observation provenance, mirrors `contract/oracle/src/lib.rs`'s `OracleReading` (#1512). */
 export interface OnChainOracleReading {
   rateBps: number;

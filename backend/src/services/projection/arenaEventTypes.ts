@@ -53,6 +53,14 @@ export interface ArenaConfiguredEvent extends BaseArenaEvent {
 
 export interface ArenaStartedEvent extends BaseArenaEvent {
   topic: "START";
+  /**
+   * Ledger timestamp at which commitments close (#1552). Optional so events
+   * decoded before the commit/reveal split (or test fixtures) remain valid;
+   * absent means the deadline is unknown.
+   */
+  commitDeadline?: number | null;
+  /** Ledger timestamp at which the reveal window closes (#1552). */
+  revealDeadline?: number | null;
 }
 
 export interface ArenaFinishedEvent extends BaseArenaEvent {

@@ -48,6 +48,7 @@ import {
   buildCreatePoolCallOperation,
   buildGetArenaStateCallOperation,
   buildGetFullStateCallOperation,
+  buildGetPhaseDeadlinesCallOperation,
   buildJoinCallOperation,
   buildRevealChoiceOperation,
   buildStakeCallOperation,
@@ -56,9 +57,13 @@ import {
   composeUnsignedTransaction,
 } from "@/shared-d/utils/soroban-transaction-composer";
 import { CreatePoolParamsSchema } from "@/shared-d/utils/stellar-transaction-schemas";
-import type { ArenaStateFromContract } from "@/shared-d/types/contract-state";
+import type {
+  ArenaPhaseDeadlines,
+  ArenaStateFromContract,
+} from "@/shared-d/types/contract-state";
 import {
   parseArenaStateFromScVal,
+  parsePhaseDeadlinesFromScVal,
   parseUserStateFromScVal,
   buildArenaDisplayState,
 } from "@/shared-d/utils/contract-state-parsers";
@@ -557,6 +562,40 @@ export async function fetchArenaState(
 
     const stateData = stateSimulation.result.retval;
 
+    // #1552: read both phase deadlines (commit + reveal) in a single
+    // `get_phase_deadlines` call so the frontend timer can schedule the
+    // windows from chain state rather than local, hardcoded durations. This is
+    // best-effort: a deployment without the view must not break the primary
+    // arena-state read, so a failure degrades to `null` deadlines.
+    let deadlines: ArenaPhaseDeadlines = {
+      commitDeadline: null,
+      revealDeadline: null,
+    };
+    try {
+      const deadlinesOperation =
+        buildGetPhaseDeadlinesCallOperation(arenaContract);
+      const deadlinesTx = composeUnsignedTransaction(dummyAccount, {
+        fee: getDefaultInvokeBaseFee(),
+        networkPassphrase: NETWORK_PASSPHRASE,
+        timeout: getShortTxTimeoutSeconds(),
+        operation: deadlinesOperation,
+      });
+      const deadlinesSimulation = await stellarRpcGateway.simulateTransaction(
+        deadlinesTx as SorobanRpcTransaction,
+      );
+      if (
+        !("error" in deadlinesSimulation) &&
+        "result" in deadlinesSimulation &&
+        deadlinesSimulation.result?.retval !== undefined
+      ) {
+        deadlines = parsePhaseDeadlinesFromScVal(
+          deadlinesSimulation.result.retval,
+        );
+      }
+    } catch {
+      // Intentionally ignored — see comment above.
+    }
+
     const arenaState = parseArenaStateFromScVal(stateData);
     const userState = validatedUserAddress ? parseUserStateFromScVal(stateData) : { active: false, won: false };
     const display = buildArenaDisplayState(arenaState);
@@ -568,8 +607,8 @@ export async function fetchArenaState(
       gameState: null,
       entryFee: null,
       playerCount: display.survivorsCount,
-      commitDeadline: null,
-      revealDeadline: null,
+      commitDeadline: deadlines.commitDeadline,
+      revealDeadline: deadlines.revealDeadline,
     };
   } catch (error) {
     throw parseContractError(error, FN);

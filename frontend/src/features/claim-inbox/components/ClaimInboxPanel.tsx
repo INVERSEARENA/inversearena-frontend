@@ -90,6 +90,33 @@ function ClaimInboxRow({
       </div>
 
       {/*
+        Settlement breakdown (#1554), shown only when the arena exposed one on
+        chain. `totalsByAsset` above is the net the wallet receives; this
+        discloses the gross the vault withdrew and the platform fee routed to
+        the treasury so the difference is never a surprise.
+      */}
+      {item.components.some(
+        (component) => component.kind === "winnings" && component.feeAmountStroops != null,
+      ) ? (
+        <dl className="mt-1 flex flex-wrap gap-x-3 text-[11px] text-zinc-500">
+          {item.components
+            .filter(
+              (component) => component.kind === "winnings" && component.feeAmountStroops != null,
+            )
+            .map((component, index) => (
+              <div key={component.payoutId ?? `winnings-${index}`} className="flex gap-x-2">
+                <dt className="sr-only">Settlement breakdown</dt>
+                <dd>
+                  gross {formatStroops(component.grossAmountStroops ?? component.amountStroops)}
+                </dd>
+                <dd>fee {formatStroops(component.feeAmountStroops ?? "0")}</dd>
+                <dd>net {formatStroops(component.netAmountStroops ?? component.amountStroops)}</dd>
+              </div>
+            ))}
+        </dl>
+      ) : null}
+
+      {/*
         Server-authored, and built without a wallet address, so it is safe to
         render verbatim. The app has no i18n layer.
       */}

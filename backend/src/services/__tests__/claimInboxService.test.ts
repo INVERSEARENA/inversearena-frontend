@@ -9,7 +9,11 @@
  */
 
 import type { ClaimInboxArenaState } from "../../types/claimInbox";
-import { ClaimInboxService, type ClaimInboxRefundCandidate } from "../claimInboxService";
+import {
+  ClaimInboxService,
+  type ClaimInboxRefundCandidate,
+  type ClaimInboxSettlementBreakdown,
+} from "../claimInboxService";
 import { InMemoryTransactionRepository } from "../../repositories/inMemoryTransactionRepository";
 import type { TransactionRecord, PaymentStatus } from "../../types/payment";
 
@@ -82,6 +86,7 @@ interface Harness {
   repo: InMemoryTransactionRepository;
   seed: (...records: TransactionRecord[]) => Promise<void>;
   setStates: (states: Map<string, ClaimInboxArenaState>) => void;
+  setSettlements: (settlements: Map<string, ClaimInboxSettlementBreakdown>) => void;
   setFailing: (fail: boolean | string[]) => void;
   now: () => number;
 }
@@ -91,6 +96,8 @@ function harness(opts: { now?: () => number } = {}): Harness {
   let states = new Map<string, ClaimInboxArenaState>();
   // Arena ids whose read fails. Empty means every read succeeds.
   let failing = new Set<string>();
+  // On-chain settlement breakdowns by arena (#1554).
+  let settlements = new Map<string, ClaimInboxSettlementBreakdown>();
   const now = opts.now ?? (() => T0.getTime() + 60_000);
 
   const service = new ClaimInboxService({
@@ -107,6 +114,13 @@ function harness(opts: { now?: () => number } = {}): Harness {
           .map((id) => [id, states.get(id) ?? "Finished"] as const),
       );
     },
+    // Mirrors `verifySettlementsOnChain`: only arenas with a breakdown appear.
+    verifySettlements: async (arenaIds) =>
+      new Map(
+        arenaIds
+          .filter((id) => settlements.has(id))
+          .map((id) => [id, settlements.get(id) as ClaimInboxSettlementBreakdown] as const),
+      ),
     findRefunds: async () => [],
   });
 
@@ -118,6 +132,9 @@ function harness(opts: { now?: () => number } = {}): Harness {
     },
     setStates: (next) => {
       states = next;
+    },
+    setSettlements: (next) => {
+      settlements = next;
     },
     setFailing: (next) => {
       // `"*"` reads as "omit everything", which is how a total RPC outage
@@ -781,5 +798,60 @@ describe("status classification table", () => {
     const [item] = (await h.service.getInbox(WALLET, 20)).items;
 
     expect(item?.state).toBe(expected);
+  });
+});
+
+describe("settlement breakdown (#1554)", () => {
+  const BREAKDOWN: ClaimInboxSettlementBreakdown = {
+    grossStroops: "110000000",
+    feeStroops: "5000000",
+    netStroops: "105000000",
+  };
+
+  it("attaches gross/fee/net to a winnings component when the arena exposes a breakdown", async () => {
+    const h = harness();
+    await h.seed(payout({ id: "p1", payoutId: ARENA_A, status: "submitted" }));
+    h.setStates(new Map([[ARENA_A, "Finished"]]));
+    h.setSettlements(new Map([[ARENA_A, BREAKDOWN]]));
+
+    const [item] = (await h.service.getInbox(WALLET, 20)).items;
+    const winnings = item?.components.find((c) => c.kind === "winnings");
+
+    expect(winnings?.grossAmountStroops).toBe("110000000");
+    expect(winnings?.feeAmountStroops).toBe("5000000");
+    expect(winnings?.netAmountStroops).toBe("105000000");
+  });
+
+  it("omits the breakdown fields when no breakdown is available", async () => {
+    const h = harness();
+    await h.seed(payout({ id: "p1", payoutId: ARENA_A, status: "submitted" }));
+    h.setStates(new Map([[ARENA_A, "Finished"]]));
+
+    const [item] = (await h.service.getInbox(WALLET, 20)).items;
+    const winnings = item?.components.find((c) => c.kind === "winnings");
+
+    expect(winnings?.grossAmountStroops).toBeUndefined();
+    expect(winnings?.feeAmountStroops).toBeUndefined();
+    expect(winnings?.netAmountStroops).toBeUndefined();
+  });
+
+  it("never downgrades a position to unavailable when the breakdown read fails", async () => {
+    const repo = new InMemoryTransactionRepository();
+    await repo.insert(payout({ id: "p1", payoutId: ARENA_A, status: "confirmed" }));
+    const service = new ClaimInboxService({
+      prisma: {} as never,
+      transactions: repo,
+      now: () => T0.getTime() + 60_000,
+      verifyArenas: async () => new Map([[ARENA_A, "Finished"]]),
+      verifySettlements: async () => {
+        throw new Error("rpc_unreachable");
+      },
+      findRefunds: async () => [],
+    });
+
+    const [item] = (await service.getInbox(WALLET, 20)).items;
+
+    expect(item?.state).toBe("completed");
+    expect(item?.components[0]?.grossAmountStroops).toBeUndefined();
   });
 });

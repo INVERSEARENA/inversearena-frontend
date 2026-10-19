@@ -101,6 +101,48 @@ describe("ClaimInboxPanel", () => {
     expect(screen.getByRole("button", { name: "CLAIM WINNINGS" })).toBeInTheDocument();
   });
 
+  it("shows the gross/fee/net settlement breakdown when the arena exposed one (#1554)", async () => {
+    mockFetch.mockResolvedValueOnce(
+      ok(
+        page([
+          item({
+            components: [
+              {
+                kind: "winnings",
+                asset: { code: "XLM", issuer: null, decimals: 7 },
+                amountStroops: "105000000",
+                payoutId: "p1",
+                status: "submitted",
+                txHash: null,
+                confirmedAt: null,
+                attempts: 1,
+                grossAmountStroops: "110000000",
+                feeAmountStroops: "5000000",
+                netAmountStroops: "105000000",
+              },
+            ],
+            totalsByAsset: [{ code: "XLM", issuer: null, amountStroops: "105000000" }],
+          }),
+        ]),
+      ),
+    );
+
+    render(<ClaimInboxPanel />);
+
+    expect(await screen.findByText(/gross 11\.0000000/)).toBeInTheDocument();
+    expect(screen.getByText(/fee 0\.5000000/)).toBeInTheDocument();
+    expect(screen.getByText(/net 10\.5000000/)).toBeInTheDocument();
+  });
+
+  it("omits the breakdown entirely when the arena exposed none", async () => {
+    mockFetch.mockResolvedValueOnce(ok(page([item()])));
+
+    render(<ClaimInboxPanel />);
+
+    await screen.findByText("Arena A");
+    expect(screen.queryByText(/gross/)).not.toBeInTheDocument();
+  });
+
   it("renders an unavailable position as an explicit unknown with a retry", async () => {
     // The failure this whole endpoint exists to prevent: a real payout shown as
     // "nothing to do" because a chain read failed.

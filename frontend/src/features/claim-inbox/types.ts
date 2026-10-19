@@ -81,6 +81,15 @@ export const claimInboxComponentSchema = z.object({
   txHash: z.string().nullable(),
   confirmedAt: z.string().nullable(),
   attempts: z.number().int().nonnegative(),
+  /**
+   * Settlement breakdown (#1554). Optional so the client tolerates an older
+   * server that predates it; render only when present. `amountStroops` is the
+   * net the winner receives, `grossAmountStroops` the vault withdrawal, and
+   * `feeAmountStroops` the platform cut routed to the treasury.
+   */
+  grossAmountStroops: stroopsSchema.nullable().optional(),
+  feeAmountStroops: stroopsSchema.nullable().optional(),
+  netAmountStroops: stroopsSchema.nullable().optional(),
 });
 
 export const claimInboxItemSchema = z.object({

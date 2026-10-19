@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use crate::types::PayoutError;
-use soroban_sdk::{Address, Env, contracttype, IntoVal, TryFromVal};
+use soroban_sdk::{Address, Env, contracttype};
 
 pub trait StorageRepository<K, V> {
     fn has(env: &Env, key: &K) -> bool;
@@ -104,17 +104,22 @@ pub struct PayoutStorage;
 
 impl PayoutStorage {
     fn extend_paid_ttl(env: &Env, payout_id: u64) {
-        PayoutRepository::new(env).extend_ttl(&DataKey::Paid(payout_id), PAYOUT_TTL_THRESHOLD, PAYOUT_TTL_EXTEND_TO);
+        <PayoutRepository as TtlRepository<DataKey>>::extend_ttl(
+            env,
+            &DataKey::Paid(payout_id),
+            PAYOUT_TTL_THRESHOLD,
+            PAYOUT_TTL_EXTEND_TO,
+        );
     }
 
     pub fn has_admin(env: &Env) -> bool {
-        PayoutRepository::new(env).has(&DataKey::Admin)
+        <PayoutRepository as StorageRepository<DataKey, Address>>::has(env, &DataKey::Admin)
     }
 
     pub fn set_admin(env: &Env, admin: &Address) {
-        let repo = PayoutRepository::new(env);
-        repo.set(&DataKey::Admin, admin);
-        repo.extend_ttl(
+        <PayoutRepository as StorageRepository<DataKey, Address>>::set(env, &DataKey::Admin, admin);
+        <PayoutRepository as TtlRepository<DataKey>>::extend_ttl(
+            env,
             &DataKey::Admin,
             PERSISTENT_TTL_THRESHOLD,
             PERSISTENT_TTL_TARGET,
@@ -122,12 +127,11 @@ impl PayoutStorage {
     }
 
     pub fn get_admin(env: &Env) -> Result<Address, PayoutError> {
-        let repo = PayoutRepository::new(env);
         let key = DataKey::Admin;
-        let admin = repo
-            .get(&key)
+        let admin = <PayoutRepository as StorageRepository<DataKey, Address>>::get(env, &key)
             .ok_or(PayoutError::NotInitialised)?;
-        repo.extend_ttl(
+        <PayoutRepository as TtlRepository<DataKey>>::extend_ttl(
+            env,
             &key,
             PERSISTENT_TTL_THRESHOLD,
             PERSISTENT_TTL_TARGET,
@@ -136,10 +140,10 @@ impl PayoutStorage {
     }
 
     pub fn save_pending_admin(env: &Env, admin: &Address) {
-        let repo = PayoutRepository::new(env);
         let key = DataKey::PendingAdmin;
-        repo.set(&key, admin);
-        repo.extend_ttl(
+        <PayoutRepository as StorageRepository<DataKey, Address>>::set(env, &key, admin);
+        <PayoutRepository as TtlRepository<DataKey>>::extend_ttl(
+            env,
             &key,
             PERSISTENT_TTL_THRESHOLD,
             PERSISTENT_TTL_TARGET,
@@ -147,11 +151,11 @@ impl PayoutStorage {
     }
 
     pub fn load_pending_admin(env: &Env) -> Option<Address> {
-        let repo = PayoutRepository::new(env);
         let key = DataKey::PendingAdmin;
-        let val = repo.get(&key);
+        let val = <PayoutRepository as StorageRepository<DataKey, Address>>::get(env, &key);
         if val.is_some() {
-            repo.extend_ttl(
+            <PayoutRepository as TtlRepository<DataKey>>::extend_ttl(
+                env,
                 &key,
                 PERSISTENT_TTL_THRESHOLD,
                 PERSISTENT_TTL_TARGET,
@@ -161,13 +165,16 @@ impl PayoutStorage {
     }
 
     pub fn delete_pending_admin(env: &Env) {
-        PayoutRepository::new(env).remove(&DataKey::PendingAdmin);
+        <PayoutRepository as StorageRepository<DataKey, Address>>::remove(
+            env,
+            &DataKey::PendingAdmin,
+        );
     }
 
     pub fn set_token(env: &Env, token: &Address) {
-        let repo = PayoutRepository::new(env);
-        repo.set(&DataKey::Token, token);
-        repo.extend_ttl(
+        <PayoutRepository as StorageRepository<DataKey, Address>>::set(env, &DataKey::Token, token);
+        <PayoutRepository as TtlRepository<DataKey>>::extend_ttl(
+            env,
             &DataKey::Token,
             PERSISTENT_TTL_THRESHOLD,
             PERSISTENT_TTL_TARGET,
@@ -175,12 +182,11 @@ impl PayoutStorage {
     }
 
     pub fn get_token(env: &Env) -> Result<Address, PayoutError> {
-        let repo = PayoutRepository::new(env);
         let key = DataKey::Token;
-        let token = repo
-            .get(&key)
+        let token = <PayoutRepository as StorageRepository<DataKey, Address>>::get(env, &key)
             .ok_or(PayoutError::NotInitialised)?;
-        repo.extend_ttl(
+        <PayoutRepository as TtlRepository<DataKey>>::extend_ttl(
+            env,
             &key,
             PERSISTENT_TTL_THRESHOLD,
             PERSISTENT_TTL_TARGET,
@@ -189,16 +195,20 @@ impl PayoutStorage {
     }
 
     pub fn is_paid(env: &Env, payout_id: u64) -> bool {
-        let repo = PayoutRepository::new(env);
-        repo.extend_ttl( &DataKey::Paid(payout_id), PAYOUT_TTL_THRESHOLD, PAYOUT_TTL_EXTEND_TO);
-        repo.has(&DataKey::Paid(payout_id))
+        <PayoutRepository as TtlRepository<DataKey>>::extend_ttl(
+            env,
+            &DataKey::Paid(payout_id),
+            PAYOUT_TTL_THRESHOLD,
+            PAYOUT_TTL_EXTEND_TO,
+        );
+        <PayoutRepository as StorageRepository<DataKey, bool>>::has(env, &DataKey::Paid(payout_id))
     }
 
     pub fn mark_paid(env: &Env, payout_id: u64) {
-        let repo = PayoutRepository::new(env);
         let key = DataKey::Paid(payout_id);
-        repo.set(&key, &true);
-        repo.extend_ttl(
+        <PayoutRepository as StorageRepository<DataKey, bool>>::set(env, &key, &true);
+        <PayoutRepository as TtlRepository<DataKey>>::extend_ttl(
+            env,
             &key,
             PERSISTENT_TTL_THRESHOLD,
             PERSISTENT_TTL_TARGET,

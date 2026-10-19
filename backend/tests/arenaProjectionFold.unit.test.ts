@@ -2,6 +2,7 @@ import {
   foldArenaProjectionEvent,
   foldArenaProjectionEvents,
   initialArenaProjection,
+  projectArenaPhase,
   type ArenaProjectionState,
 } from "../src/services/projection/arenaProjectionFold";
 import type { ArenaProjectionEvent } from "../src/services/projection/arenaEventTypes";
@@ -134,6 +135,8 @@ describe("initialArenaProjection", () => {
       winner: null,
       prizeClaimed: false,
       totalYieldStroops: "0",
+      commitDeadline: null,
+      revealDeadline: null,
       appliedEventIds: [],
       skippedEventIds: [],
     });
@@ -307,5 +310,53 @@ describe("foldArenaProjectionEvent — invalid input paths", () => {
     expect(result.skippedEventIds).toEqual(["u1", "u2", "u3"]);
     expect(result.lastLedgerSequence).toBe(3);
     expect(result.lastEventId).toBeNull(); // no *applied* event yet
+  });
+});
+
+describe("arena round phase projection (#1552)", () => {
+  function startedWithDeadlines(commitDeadline: number | null, revealDeadline: number | null) {
+    return foldArenaProjectionEvents(initialArenaProjection(ARENA_ID), [
+      initEvent("e1", 1, "GADMIN"),
+      joinEvent("e2", 2, "GPLAYER1"),
+      ev({
+        id: "e3",
+        contractId: ARENA_ID,
+        ledgerSequence: 3,
+        ledgerClosedAt: new Date(2026, 0, 1, 0, 0, 3).toISOString(),
+        txHash: "tx-e3",
+        topic: "START",
+        commitDeadline,
+        revealDeadline,
+      }),
+    ]);
+  }
+
+  it("carries the START event's deadlines into the projection", () => {
+    const state = startedWithDeadlines(1_000, 1_200);
+    expect(state.commitDeadline).toBe(1_000);
+    expect(state.revealDeadline).toBe(1_200);
+  });
+
+  it("reports lobby for a non-active game regardless of deadlines", () => {
+    const state = initialArenaProjection(ARENA_ID);
+    expect(projectArenaPhase(state, 1_000)).toBe("lobby");
+  });
+
+  it("classifies commit, reveal (bounded), and resolvable windows", () => {
+    const state = startedWithDeadlines(1_000, 1_200);
+    expect(projectArenaPhase(state, 999)).toBe("commit");
+    expect(projectArenaPhase(state, 1_000)).toBe("reveal");
+    expect(projectArenaPhase(state, 1_199)).toBe("reveal");
+    expect(projectArenaPhase(state, 1_200)).toBe("resolvable");
+  });
+
+  it("treats a zero/absent reveal deadline as an unbounded reveal window", () => {
+    expect(projectArenaPhase(startedWithDeadlines(1_000, 0), 10_000)).toBe("reveal");
+    expect(projectArenaPhase(startedWithDeadlines(1_000, null), 10_000)).toBe("reveal");
+  });
+
+  it("reports lobby (not commit) when the start event carried no commit deadline", () => {
+    const state = startedWithDeadlines(null, null);
+    expect(projectArenaPhase(state, 1_000)).toBe("lobby");
   });
 });

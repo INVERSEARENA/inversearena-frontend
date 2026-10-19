@@ -1,9 +1,11 @@
 use crate::types::PendingUpgrade;
 use crate::types::{
     ArenaConfig, ArenaError, Choice, GameState, OracleFreshnessPolicy, PendingAdmin, PlayerState,
-    RoundResult, YieldSnapshot,
+    RoundResult, SettlementBreakdown, YieldSnapshot,
 };
-use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, Vec, contracttype, symbol_short};
+use soroban_sdk::{
+    Address, BytesN, Env, IntoVal, Map, Symbol, TryFromVal, Val, Vec, contracttype, symbol_short,
+};
 
 pub trait StorageRepository<K, V> {
     fn has(env: &Env, key: &K) -> bool;
@@ -51,6 +53,61 @@ pub(crate) enum DataKey {
     /// Per-instance oracle freshness policy (#1512). See
     /// `ArenaRepository::load_oracle_freshness_policy`.
     OracleFreshnessPolicy,
+    /// Settlement breakdown recorded by `claim` (#1554).
+    SettlementBreakdown,
+}
+
+/// `ArenaConfig` layout as persisted before #1552/#1554 added
+/// `reveal_deadline` and `treasury`. Retained so arenas deployed under the old
+/// layout remain readable and are upgraded in place by
+/// `ArenaStorage::load_config` instead of failing to decode.
+#[contracttype]
+pub(crate) struct LegacyArenaConfigV2 {
+    pub admin: Address,
+    pub stake_token: Address,
+    pub yield_vault: Address,
+    pub entry_fee: i128,
+    pub state: GameState,
+    pub paused: bool,
+    pub player_count: u32,
+    pub active_player_count: u32,
+    pub cumulative_yield: i128,
+    pub commit_deadline: u64,
+    pub round_count: u32,
+    pub oracle_contract: Address,
+    pub factory: Address,
+    pub pool_id: u32,
+    pub platform_fee_bps: u32,
+}
+
+impl LegacyArenaConfigV2 {
+    /// Upgrade to the current layout: a legacy arena has no dedicated reveal
+    /// window (the old behaviour was unbounded reveal + resolve at the commit
+    /// deadline) and no treasury (protocol revenue defaulted nowhere), so both
+    /// are filled with compatibility defaults — `reveal_deadline = 0` preserves
+    /// the legacy timing, and `treasury` defaults to the admin.
+    fn into_current(self) -> ArenaConfig {
+        let treasury = self.admin.clone();
+        ArenaConfig {
+            admin: self.admin,
+            stake_token: self.stake_token,
+            yield_vault: self.yield_vault,
+            entry_fee: self.entry_fee,
+            state: self.state,
+            paused: self.paused,
+            player_count: self.player_count,
+            active_player_count: self.active_player_count,
+            cumulative_yield: self.cumulative_yield,
+            commit_deadline: self.commit_deadline,
+            reveal_deadline: 0,
+            round_count: self.round_count,
+            oracle_contract: self.oracle_contract,
+            factory: self.factory,
+            pool_id: self.pool_id,
+            platform_fee_bps: self.platform_fee_bps,
+            treasury,
+        }
+    }
 }
 
 pub struct ArenaRepository<'a> {
@@ -369,11 +426,29 @@ impl ArenaStorage {
     }
 
     pub fn load_config(env: &Env) -> Result<ArenaConfig, ArenaError> {
-        Self::extend_persistent_ttl(env, &symbol_short!("CONFIG"));
-        env.storage()
-            .persistent()
-            .get(&symbol_short!("CONFIG"))
-            .ok_or(ArenaError::NotInitialized)
+        let key = symbol_short!("CONFIG");
+        Self::extend_persistent_ttl(env, &key);
+        let raw: Option<Val> = env.storage().persistent().get(&key);
+        let raw = raw.ok_or(ArenaError::NotInitialized)?;
+
+        // `#[contracttype]` structs are encoded as a map keyed by field name.
+        // Decoding a mismatched shape into `ArenaConfig` aborts at the host
+        // level (it cannot be caught), so inspect the encoded map for the
+        // #1552 `reveal_deadline` field *before* choosing a decoder.
+        let fields = Map::<Symbol, Val>::try_from_val(env, &raw)
+            .map_err(|_| ArenaError::NotInitialized)?;
+        let current_layout = fields.contains_key(Symbol::new(env, "reveal_deadline"));
+        if current_layout {
+            return ArenaConfig::try_from_val(env, &raw).map_err(|_| ArenaError::NotInitialized);
+        }
+        // Compatibility path (#1552/#1554): decode the pre-upgrade layout,
+        // migrate it to the current shape, and persist the upgrade so the fast
+        // path is hit on every subsequent read.
+        let legacy =
+            LegacyArenaConfigV2::try_from_val(env, &raw).map_err(|_| ArenaError::NotInitialized)?;
+        let migrated = legacy.into_current();
+        Self::save_config(env, &migrated);
+        Ok(migrated)
     }
 
     pub fn save_config(env: &Env, config: &ArenaConfig) {
@@ -1099,6 +1174,22 @@ impl ArenaStorage {
             .set(&DataKey::OracleFreshnessPolicy, policy);
     }
 
+    /// Persist the settlement breakdown computed by `claim` (#1554) so
+    /// off-chain readers can report gross/fee/net without replaying events.
+    pub fn save_settlement_breakdown(env: &Env, breakdown: &SettlementBreakdown) {
+        Self::extend_persistent_ttl(env, &DataKey::SettlementBreakdown);
+        env.storage()
+            .persistent()
+            .set(&DataKey::SettlementBreakdown, breakdown);
+    }
+
+    pub fn load_settlement_breakdown(env: &Env) -> Option<SettlementBreakdown> {
+        Self::extend_persistent_ttl(env, &DataKey::SettlementBreakdown);
+        env.storage()
+            .persistent()
+            .get(&DataKey::SettlementBreakdown)
+    }
+
     pub fn save_pending_upgrade(env: &Env, upgrade: &PendingUpgrade) {
         Self::extend_persistent_ttl(env, &symbol_short!("UPGRADE"));
         env.storage()
@@ -1153,11 +1244,13 @@ mod tests {
             active_player_count: 0,
             cumulative_yield: 0,
             commit_deadline: 0,
+            reveal_deadline: 0,
             round_count: 0,
             oracle_contract: Address::generate(env),
             factory: Address::generate(env),
             pool_id: 0,
             platform_fee_bps: 1000,
+            treasury: Address::generate(env),
         }
     }
 
@@ -1231,6 +1324,53 @@ mod tests {
             let before = ArenaStorage::load_roster_page(&env, 0);
             ArenaStorage::migrate_legacy_players(&env);
             assert_eq!(ArenaStorage::load_roster_page(&env, 0), before);
+        });
+    }
+
+    #[test]
+    fn legacy_arena_config_is_migrated_in_place() {
+        let env = Env::default();
+        let contract_id = env.register(ArenaContract, ());
+        let admin = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            let legacy = LegacyArenaConfigV2 {
+                admin: admin.clone(),
+                stake_token: Address::generate(&env),
+                yield_vault: Address::generate(&env),
+                entry_fee: 100,
+                state: GameState::Active,
+                paused: false,
+                player_count: 3,
+                active_player_count: 2,
+                cumulative_yield: 7,
+                commit_deadline: 1_700_000_000,
+                round_count: 2,
+                oracle_contract: Address::generate(&env),
+                factory: Address::generate(&env),
+                pool_id: 9,
+                platform_fee_bps: 500,
+            };
+            env.storage()
+                .persistent()
+                .set(&symbol_short!("CONFIG"), &legacy);
+
+            let migrated = ArenaStorage::load_config(&env).unwrap();
+            assert_eq!(migrated.admin, admin);
+            assert_eq!(
+                migrated.reveal_deadline, 0,
+                "legacy arenas keep the unbounded-reveal behaviour"
+            );
+            assert_eq!(migrated.treasury, admin, "treasury defaults to the admin");
+            assert_eq!(migrated.platform_fee_bps, 500);
+            assert_eq!(migrated.commit_deadline, 1_700_000_000);
+            assert_eq!(migrated.round_count, 2);
+            assert_eq!(migrated.pool_id, 9);
+
+            // A second read hits the fast path on the now-current layout.
+            let again = ArenaStorage::load_config(&env).unwrap();
+            assert_eq!(again.reveal_deadline, 0);
+            assert_eq!(again.treasury, admin);
         });
     }
 }

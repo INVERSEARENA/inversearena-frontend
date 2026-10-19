@@ -74,9 +74,9 @@ fn full_game_lifecycle_commit_reveal() {
         &oracle_id,
         &Address::generate(&env),
         &1,
+        &Address::generate(&env),
         &2,
         &10,
-        &60,
     );
     all_events.extend(env.events().all().iter());
 
@@ -139,6 +139,9 @@ fn full_game_lifecycle_commit_reveal() {
     //     (eliminates majority, so p2, p3, p4 are eliminated)
     env.ledger()
         .with_mut(|li| li.timestamp = start_ts + 31_536_000);
+    // #1512: record a fresh observation at resolve time so the freshness guard
+    // does not reject the round as stale (initialize ran at ledger time 0).
+    oracle_client.set_yield_bps(&500);
     arena_client.resolve_round();
     all_events.extend(env.events().all().iter());
 
@@ -178,8 +181,9 @@ fn full_game_lifecycle_commit_reveal() {
     all_events.extend(env.events().all().iter());
 
     // 14. Verify final balances
-    // Player 1 (winner) gets 420 tokens
-    assert_eq!(token_client.balance(&p1), 420);
+    // Winner gets gross (420) minus the platform fee on yield only
+    // (10% of 20 = 2), so 418 — the principal is never taxed (#1554).
+    assert_eq!(token_client.balance(&p1), 418);
     // Eliminated players get 0 tokens
     assert_eq!(token_client.balance(&p2), 0);
     assert_eq!(token_client.balance(&p3), 0);
@@ -361,6 +365,9 @@ fn factory_arena_payout_full_lifecycle() {
     // ── 10. Admin resolves round (oracle provides 5% yield) ────────────
     // Advance time so vault yield accrues.
     env.ledger().with_mut(|li| li.timestamp = start_ts + 31_536_000);
+    // #1512: refresh the oracle observation at resolve time (see the lifecycle
+    // test above) so freshness does not reject the round as stale.
+    oracle_client.set_yield_bps(&500);
     arena_client.resolve_round();
 
     // Verify on-chain player states: p1 (minority) survives; p2/p3 eliminated.
@@ -395,6 +402,8 @@ fn factory_arena_payout_full_lifecycle() {
     let prize: i128 = 315;
     token_admin_client.mint(&payout_id, &prize);
 
+    // #1450: the destination must be pre-registered before distribution.
+    payout_client.register_destination(&1, &p1);
     // distribute_winnings is idempotent on payout_id; payout_id = 1.
     payout_client.distribute_winnings(&1, &p1, &prize);
 
@@ -458,9 +467,9 @@ fn arena_after_one_elimination_round(
         &oracle_id,
         &Address::generate(env),
         &1,
+        &Address::generate(&env),
         &2,
         &10,
-        &60,
     );
 
     for p in &players {
@@ -490,6 +499,11 @@ fn arena_after_one_elimination_round(
     for i in 0..5 {
         arena_client.reveal_choice(&players[i], &choices[i], &salts[i]);
     }
+    // #1552: wait out the reveal window before resolving.
+    let reveal_deadline = arena_client.get_reveal_deadline();
+    env.ledger().with_mut(|li| li.timestamp = reveal_deadline);
+    // #1512: refresh the observation at resolve time (initialize ran at 0).
+    OracleContractClient::new(env, &oracle_id).set_yield_bps(&0);
     arena_client.resolve_round();
 
     (arena_client, token_client, arena_id, players)
@@ -504,7 +518,7 @@ fn expire_arena_lets_every_joined_player_reclaim_their_stake() {
 
     // Another round is under way and nobody resolves it — the arena is stuck.
     arena_client.start_round(&3600);
-    env.ledger().with_mut(|li| li.timestamp = 1000 + 3601 + 3601);
+    env.ledger().with_mut(|li| li.timestamp = 1000 + 3600 * 4 + 301);
     arena_client.expire_arena();
 
     for p in &players {
@@ -528,7 +542,7 @@ fn expire_arena_and_force_cancel_arena_pay_out_identically() {
     let (expire_client, expire_token, _, expire_players) =
         arena_after_one_elimination_round(&expire_env);
     expire_client.start_round(&3600);
-    expire_env.ledger().with_mut(|li| li.timestamp = 1000 + 3601 + 3601);
+    expire_env.ledger().with_mut(|li| li.timestamp = 1000 + 3600 * 4 + 301);
     expire_client.expire_arena();
     for p in &expire_players {
         let _ = expire_client.try_claim_refund(p);
@@ -598,9 +612,9 @@ fn zero_survivor_resolve_round_claim_refund_succeeds() {
         &oracle_id,
         &Address::generate(&env),
         &1,
+        &Address::generate(&env),
         &2,
         &10,
-        &60,
     );
 
     arena_client.join_arena(&p1);
@@ -614,6 +628,10 @@ fn zero_survivor_resolve_round_claim_refund_succeeds() {
     env.ledger().with_mut(|li| li.timestamp = 1000);
     arena_client.start_round(&3600);
     env.ledger().with_mut(|li| li.timestamp = 1000 + 3601);
+    let reveal_deadline = arena_client.get_reveal_deadline();
+    env.ledger().with_mut(|li| li.timestamp = reveal_deadline);
+    // #1512: refresh the observation at resolve time (initialize ran at 0).
+    OracleContractClient::new(&env, &oracle_id).set_yield_bps(&0);
 
     arena_client.resolve_round();
 
@@ -643,7 +661,7 @@ fn expire_arena_does_not_strand_eliminated_players_principal() {
     let (arena_client, token_client, arena_id, players) = arena_after_one_elimination_round(&env);
 
     arena_client.start_round(&3600);
-    env.ledger().with_mut(|li| li.timestamp = 1000 + 3601 + 3601);
+    env.ledger().with_mut(|li| li.timestamp = 1000 + 3600 * 4 + 301);
     arena_client.expire_arena();
 
     for p in &players {

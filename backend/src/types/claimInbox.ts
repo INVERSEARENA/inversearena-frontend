@@ -133,6 +133,16 @@ export interface ClaimInboxComponent {
   confirmedAt: string | null;
   /** Attempts made, for a `payout_failed` explanation. */
   attempts: number;
+  /**
+   * Settlement breakdown (#1554), present only for `winnings` components whose
+   * arena has an on-chain `get_settlement_breakdown`. `amountStroops` is the
+   * net the winner receives; `grossAmountStroops` is what was withdrawn from
+   * the vault and `feeAmountStroops` the platform cut routed to the treasury.
+   * `null`/absent for refunds and for arenas settled before the fee existed.
+   */
+  grossAmountStroops?: string | null | undefined;
+  feeAmountStroops?: string | null | undefined;
+  netAmountStroops?: string | null | undefined;
 }
 
 /** Freshness of the underlying records, and of the chain read. */
@@ -345,6 +355,9 @@ export const ClaimInboxComponentSchema = z.object({
   txHash: z.string().nullable(),
   confirmedAt: z.string().nullable(),
   attempts: z.number().int().nonnegative(),
+  grossAmountStroops: StroversSchema.nullable().optional(),
+  feeAmountStroops: StroversSchema.nullable().optional(),
+  netAmountStroops: StroversSchema.nullable().optional(),
 });
 
 export const ClaimInboxFreshnessSchema = z.object({

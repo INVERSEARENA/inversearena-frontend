@@ -30,6 +30,14 @@ export type ArenaProjectionGameState =
   | "finished"
   | "cancelled";
 
+/**
+ * Time-dependent round phase (#1552), derived from the folded deadlines and
+ * the current ledger clock. Not stored in the projection itself — it is a
+ * function of `(deadlines, now)`, so it is computed at read time to keep the
+ * fold deterministic and replayable.
+ */
+export type ArenaProjectionPhase = "lobby" | "commit" | "reveal" | "resolvable";
+
 export interface ArenaProjectionState {
   arenaId: string;
   /** Highest ledger sequence folded into this projection so far, or null pre-genesis. */
@@ -48,6 +56,13 @@ export interface ArenaProjectionState {
   prizeClaimed: boolean;
   /** Cumulative RWA yield received, in stroops, as a decimal string to avoid float precision loss. */
   totalYieldStroops: string;
+  /**
+   * Ledger timestamp at which commitments close (#1552), or null if the START
+   * event did not carry it (legacy arena / pre-#1552 event).
+   */
+  commitDeadline: number | null;
+  /** Ledger timestamp at which the reveal window closes (#1552), or null. `0` means unbounded. */
+  revealDeadline: number | null;
   /**
    * Event ids already folded, used to make folding idempotent under
    * duplicate delivery. Bounded by the number of events in the arena's
@@ -74,9 +89,37 @@ export function initialArenaProjection(arenaId: string): ArenaProjectionState {
     winner: null,
     prizeClaimed: false,
     totalYieldStroops: "0",
+    commitDeadline: null,
+    revealDeadline: null,
     appliedEventIds: [],
     skippedEventIds: [],
   };
+}
+
+/**
+ * Derive the round phase (#1552) from the folded deadlines and a ledger
+ * timestamp. Any state other than an active round is `lobby`; a null
+ * `commitDeadline` (legacy/pre-#1552) also reports `lobby` rather than
+ * guessing a phase the projection cannot support.
+ */
+export function projectArenaPhase(
+  state: Pick<ArenaProjectionState, "gameState" | "commitDeadline" | "revealDeadline">,
+  nowSeconds: number,
+): ArenaProjectionPhase {
+  if (state.gameState !== "in_progress") {
+    return "lobby";
+  }
+  const { commitDeadline, revealDeadline } = state;
+  if (commitDeadline === null) {
+    return "lobby";
+  }
+  if (nowSeconds < commitDeadline) {
+    return "commit";
+  }
+  if (revealDeadline === null || revealDeadline === 0 || nowSeconds < revealDeadline) {
+    return "reveal";
+  }
+  return "resolvable";
 }
 
 function addStroops(a: string, b: string): string {
@@ -144,6 +187,10 @@ export function foldArenaProjectionEvent(
       return {
         ...advanced,
         gameState: "in_progress",
+        // #1552: carry the commit/reveal window deadlines published with the
+        // start event so the phase can be derived at read time.
+        commitDeadline: event.commitDeadline ?? null,
+        revealDeadline: event.revealDeadline ?? null,
         lastEventId: event.id,
         appliedEventIds: [...advanced.appliedEventIds, event.id],
       };

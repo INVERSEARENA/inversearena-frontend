@@ -22,6 +22,10 @@ pub enum DataKey {
     Pool(u32),
     Paused,
     SupportedToken(Address),
+    /// Protocol treasury that receives platform fees from deployed arenas (#1554).
+    Treasury,
+    /// Pending two-step treasury-transfer proposal (#1554).
+    PendingTreasury,
 }
 
 #[contracttype]
@@ -320,5 +324,42 @@ impl FactoryStorage {
             .persistent()
             .get(&DataKey::SupportedToken(token.clone()))
             .unwrap_or(false)
+    }
+
+    // ── Protocol Treasury (#1554) ─────────────────────────────────────────
+
+    pub fn has_treasury(env: &Env) -> bool {
+        Self::extend_persistent_ttl(env, &DataKey::Treasury);
+        env.storage().persistent().has(&DataKey::Treasury)
+    }
+
+    pub fn save_treasury(env: &Env, treasury: &Address) {
+        Self::extend_persistent_ttl(env, &DataKey::Treasury);
+        env.storage().persistent().set(&DataKey::Treasury, treasury);
+    }
+
+    /// Returns the configured treasury, or `None` when unset (pre-#1554
+    /// deploy); callers fall back to the admin.
+    pub fn load_treasury(env: &Env) -> Option<Address> {
+        Self::extend_persistent_ttl(env, &DataKey::Treasury);
+        env.storage().persistent().get(&DataKey::Treasury)
+    }
+
+    pub fn save_pending_treasury(env: &Env, treasury: &Address) {
+        Self::extend_persistent_ttl(env, &DataKey::PendingTreasury);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingTreasury, treasury);
+    }
+
+    pub fn load_pending_treasury(env: &Env) -> Option<Address> {
+        Self::extend_persistent_ttl(env, &DataKey::PendingTreasury);
+        env.storage().persistent().get(&DataKey::PendingTreasury)
+    }
+
+    pub fn delete_pending_treasury(env: &Env) {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PendingTreasury);
     }
 }

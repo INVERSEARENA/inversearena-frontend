@@ -20,6 +20,9 @@ Current payload version: **1**
 | `R_START`     | `start_round()`        | `(round_number: u32, round_start_ledger: u32, round_deadline_ledger: u32, v)` |
 | `R_TOUT`      | `timeout_round()`      | `(round_number: u32, total_submissions: u32, v)` |
 | `RSLVD`       | `resolve_round()`      | `(round_number: u32, heads_count: u32, tails_count: u32, outcome: Symbol, eliminated_count: u32, survivor_count: u32, v)` |
+| `started`     | `start_round()` (#1552) | `(round: u32, commit_deadline: u64, reveal_deadline: u64)` — commits close at `commit_deadline`; the round is only resolvable at/after `reveal_deadline` |
+| `claimed`     | `claim()` (#1554)      | `(winner: Address, gross: i128, fee: i128, net: i128, yield_amount: i128, treasury: Address)` — `gross` is the vault withdrawal, `fee` the platform cut routed to `treasury`, `net` the winner's payout, `yield_amount` the fee base (yield only) |
+| `fee_coll`    | `claim()` (#1554)      | `(treasury: Address, fee: i128, fee_bps: u32)` — emitted only when the fee is nonzero |
 | `WIN_SET`     | `set_winner()`         | `(player: Address, stake: i128, yield_comp: i128, v)` |
 | `CLAIM`       | `claim()`              | `(winner: Address, prize: i128, v)`      |
 | `frsh_pol`    | `set_oracle_freshness_policy()` (#1512) | `(admin: Address, max_age_secs: u64, warn_age_secs: u64)` |
@@ -37,6 +40,8 @@ Current payload version: **1**
 | `WL_ADD`      | `add_to_whitelist()`   | `(v, host: Address)`                     |
 | `WL_REM`      | `remove_from_whitelist()` | `(v, host: Address)`                  |
 | `POOL_CRE`    | `create_pool()`        | `(v, pool_id: u32, creator: Address, capacity: u32, stake_amount: i128)` |
+| `TRS_PROP`    | `propose_treasury()` (#1554) | `(new_treasury: Address)` — two-step proposal; no effect until accepted |
+| `TRS_CHG`     | `accept_treasury()` (#1554) | `(treasury: Address)` — emitted when the pending treasury becomes active |
 | `UP_PROP`     | `propose_upgrade()`    | `(v, new_wasm_hash: BytesN<32>, execute_after: u64)` |
 | `UP_EXEC`     | `execute_upgrade()`    | `(v, new_wasm_hash: BytesN<32>)`         |
 | `UP_CANC`     | `cancel_upgrade()`     | `(v)`                                    |

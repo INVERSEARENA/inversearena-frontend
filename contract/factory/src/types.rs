@@ -70,4 +70,6 @@ pub enum FactoryError {
     NoPendingAdmin = 19,
     /// Scaling `min_stake` to a token's decimals overflowed i128 (#1361).
     ArithmeticOverflow = 20,
+    /// `accept_treasury` called without a prior `propose_treasury` (#1554).
+    NoPendingTreasury = 21,
 }

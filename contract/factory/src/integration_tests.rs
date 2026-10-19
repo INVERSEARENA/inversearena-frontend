@@ -83,9 +83,9 @@ fn factory_deploys_arena_and_full_game_plays() {
         &oracle_id,
         &factory_id,
         &1,
+        &Address::generate(&env),
         &2,
         &10,
-        &60,
     );
 
     // Manually register the stake record and pool in factory storage
@@ -170,6 +170,11 @@ fn factory_deploys_arena_and_full_game_plays() {
     arena_client.reveal_choice(&p3, &arena::types::Choice::Heads, &salt3);
 
     // ── 9. Resolve round ────────────────────────────────────────────────
+    // #1552: wait out the reveal window; #1512: refresh the oracle
+    // observation at resolve time (initialize ran at ledger time 0).
+    let reveal_deadline = arena_client.get_reveal_deadline();
+    env.ledger().with_mut(|li| li.timestamp = reveal_deadline);
+    oracle_client.set_yield_bps(&500);
     arena_client.resolve_round();
 
     // Verify round result

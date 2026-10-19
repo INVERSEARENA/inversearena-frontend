@@ -18,7 +18,7 @@ import { ClaimInboxService, type ClaimInboxRefundCandidate } from "../services/c
 import { CancellationRecoveryService } from "../services/cancellationRecoveryService";
 import { getStellarConfig } from "../config/stellarConfig";
 import { maskWalletAddress } from "../utils/logger";
-import { verifyArenasOnChain } from "../services/claimInboxVerifier";
+import { verifyArenasOnChain, verifySettlementsOnChain } from "../services/claimInboxVerifier";
 import type { TransactionRepository } from "../repositories/transactionRepository";
 import { logger } from "../utils/logger";
 
@@ -106,6 +106,7 @@ export function createClaimInboxRouter(
     prisma,
     transactions,
     verifyArenas: verifyArenasOnChain,
+    verifySettlements: verifySettlementsOnChain,
     findRefunds,
     assetIssuers,
   });

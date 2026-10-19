@@ -33,6 +33,7 @@ ownership, the state machine, and operational requirements.
 | Mongo payouts | Winnings in flight, settled, failed | Page fails |
 | Cancellation recovery (Postgres) | Refundable and refunded stakes | Logged, page served from payouts alone |
 | On-chain arena state | Whether winnings are due at all | Affected positions become `unavailable` |
+| On-chain settlement breakdown (#1554) | Gross/fee/net for a winnings component | Best-effort: the position renders without a breakdown, never `unavailable` |
 
 `summary` counts every position found, not only the ones on this page, so the
 dashboard can render totals without paging through the inbox.
@@ -54,6 +55,18 @@ twice.
 
 Amounts are stroop **strings**, never numbers. A pot above 2^53 stroops is
 representable as a string and silently wrong as a double, and this is a balance.
+
+### Settlement breakdown (#1554)
+
+A winnings component may also carry `grossAmountStroops`, `feeAmountStroops`,
+and `netAmountStroops`, read from the arena's on-chain
+`get_settlement_breakdown`. These are **display-only**: `amountStroops` remains
+the net the winner receives and is what the totals sum. The fields are absent
+for refunds, for arenas that have not settled, and for deployments predating
+the view. Crucially, a failed or missing breakdown read never downgrades a
+position — it is a supplement, not the fact that decides claimability, so
+`safeVerifySettlements` swallows it and the component simply renders without a
+breakdown.
 
 ### Why an unread chain is not an empty inbox
 

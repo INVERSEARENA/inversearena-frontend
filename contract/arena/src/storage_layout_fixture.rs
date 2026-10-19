@@ -4,13 +4,17 @@
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use crate::storage::DataKey;
     use crate::types::{
         ArenaConfig, Choice, GameState, PendingAdmin, PlayerState, RoundResult, YieldSnapshot,
     };
     use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::xdr::{ScVal, ToXdr};
+    use soroban_sdk::xdr::{Hash, ScAddress, ScVal, ToXdr};
     use soroban_sdk::{Address, Env, TryFromVal, TryIntoVal};
+    use std::vec;
+    use std::vec::Vec;
 
     const FIXTURE_MANIFEST: &str = include_str!("../../fixtures/storage-layout/arena-v1.json");
 
@@ -22,7 +26,7 @@ mod tests {
     fn fixed_address(env: &Env, seed: u8) -> Address {
         let mut arr = [0u8; 32];
         arr[31] = seed;
-        Address::from_contract_id(&soroban_sdk::BytesN::from_array(env, &arr))
+        Address::try_from_val(env, &ScAddress::Contract(Hash(arr))).expect("address")
     }
 
     #[test]
@@ -66,11 +70,13 @@ mod tests {
                         active_player_count: 2,
                         cumulative_yield: 0,
                         commit_deadline: 1_730_000_000,
+                        reveal_deadline: 0,
                         round_count: 0,
                         oracle_contract: fixed_address(&env, 5),
                         factory: fixed_address(&env, 6),
                         pool_id: 1,
                         platform_fee_bps: 100,
+                        treasury: Address::generate(&env),
                     },
                 ),
             ),
@@ -119,8 +125,8 @@ mod tests {
 
     #[test]
     fn storage_layout_corrupted_xdr_fails_decode() {
-        let env = Env::default();
-        let garbage = soroban_sdk::Bytes::from_slice(&env, &[0xde, 0xad, 0xbe, 0xef]);
-        assert!(ScVal::try_from_val(&env, &garbage).is_err());
+        use soroban_sdk::xdr::{Limits, ReadXdr};
+        let garbage = [0xdeu8, 0xad, 0xbe, 0xef];
+        assert!(ScVal::from_xdr(&garbage, Limits::none()).is_err());
     }
 }

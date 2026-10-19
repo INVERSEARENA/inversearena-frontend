@@ -44,9 +44,9 @@ pub trait ArenaInterface {
         oracle_contract: Address,
         factory: Address,
         pool_id: u32,
+        treasury: Address,
         min_players: u32,
         max_players: u32,
-        round_duration: u64,
     );
 }
 
@@ -56,7 +56,9 @@ const MIN_PLAYERS: u32 = 2;
 /// Factory contract ABI/storage version, for client-side capability
 /// negotiation across mixed deployment versions (see arena::CONTRACT_VERSION
 /// for the sibling contract's own counter — these are independent).
-const CONTRACT_VERSION: u32 = 1;
+/// Bumped to 2 for #1554: `create_pool` now threads a protocol treasury into
+/// each arena's `initialize`, and the two-step treasury setters exist.
+const CONTRACT_VERSION: u32 = 2;
 
 /// The decimal precision `min_stake` is denominated in, matching Stellar's
 /// native asset (and the staking contract's own `MIN_INITIAL_STAKE`
@@ -85,6 +87,12 @@ impl FactoryContract {
 
         FactoryStorage::save_admin(&env, &admin);
         FactoryStorage::save_min_stake(&env, min_stake);
+        // #1554: default the protocol treasury to the admin until the admin
+        // proposes/accepts a dedicated treasury. This keeps factory deploys
+        // working unchanged while giving every arena a real fee destination.
+        if !FactoryStorage::has_treasury(&env) {
+            FactoryStorage::save_treasury(&env, &admin);
+        }
         env.events()
             .publish((symbol_short!("INIT"),), (admin, min_stake));
         Ok(())
@@ -201,6 +209,42 @@ impl FactoryContract {
         FactoryStorage::load_max_active_pools(&env)
     }
 
+    /// Propose a new protocol treasury (#1554). Admin only; two-step.
+    ///
+    /// The proposal takes effect only when the nominated address calls
+    /// `accept_treasury`, protecting against a typo sending protocol revenue
+    /// to an unrecoverable address. New arenas snapshot the treasury at deploy
+    /// time; existing arenas keep the treasury they were deployed with.
+    pub fn propose_treasury(env: Env, new_treasury: Address) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        FactoryStorage::save_pending_treasury(&env, &new_treasury);
+        env.events()
+            .publish((symbol_short!("TRS_PROP"),), (new_treasury,));
+        Ok(())
+    }
+
+    /// Accept a pending treasury transfer (#1554). Callable only by the
+    /// nominated address.
+    pub fn accept_treasury(env: Env) -> Result<(), FactoryError> {
+        let pending =
+            FactoryStorage::load_pending_treasury(&env).ok_or(FactoryError::NoPendingTreasury)?;
+        pending.require_auth();
+        FactoryStorage::save_treasury(&env, &pending);
+        FactoryStorage::delete_pending_treasury(&env);
+        env.events()
+            .publish((symbol_short!("TRS_CHG"),), (pending,));
+        Ok(())
+    }
+
+    /// Return the configured protocol treasury, defaulting to the admin when
+    /// no dedicated treasury has been set (#1554).
+    pub fn get_treasury(env: Env) -> Result<Address, FactoryError> {
+        if let Some(treasury) = FactoryStorage::load_treasury(&env) {
+            return Ok(treasury);
+        }
+        FactoryStorage::load_admin(&env)
+    }
+
     /// Pause the factory, blocking new pool creation.
     pub fn pause(env: Env) -> Result<(), FactoryError> {
         Self::require_admin(&env)?;
@@ -310,6 +354,12 @@ impl FactoryContract {
             .with_current_contract(Self::salt_for_pool(&env, pool_id))
             .deploy_v2(wasm_hash, ());
 
+        // #1554: snapshot the protocol treasury into the new arena. Falls back
+        // to the admin for factories deployed before the treasury field existed.
+        let treasury = FactoryStorage::load_treasury(&env)
+            .or_else(|| FactoryStorage::load_admin(&env).ok())
+            .ok_or(FactoryError::NotInitialized)?;
+
         ArenaClient::new(&env, &arena).initialize(
             &host,
             &config.stake_token,
@@ -318,9 +368,9 @@ impl FactoryContract {
             &config.oracle_contract,
             &env.current_contract_address(),
             &pool_id,
+            &treasury,
             &config.min_players,
             &config.max_players,
-            &config.round_duration,
         );
 
         FactoryStorage::save_creator_stake(

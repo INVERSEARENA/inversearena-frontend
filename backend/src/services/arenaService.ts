@@ -18,7 +18,7 @@ import { getStellarConfig } from "../config/stellarConfig";
 import { ArenaStatsService } from "./arenaStatsService";
 import { enforcePayloadLimits } from "../validation/payloadLimits";
 import { ArenaProjectionCheckpointStore } from "./projection/arenaProjectionCheckpointStore";
-import { initialArenaProjection, type ArenaProjectionState } from "./projection/arenaProjectionFold";
+import { initialArenaProjection, projectArenaPhase, type ArenaProjectionPhase, type ArenaProjectionState } from "./projection/arenaProjectionFold";
 import { replayArenaProjection, type ArenaReplayOptions } from "./projection/arenaProjectionReplay";
 
 const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
@@ -127,6 +127,12 @@ export interface ArenaProjectionResponse {
   /** "not_started" means no checkpoint row exists yet — replay has never run for this arena/network. */
   status: "not_started" | "idle" | "replaying" | "caught_up" | "failed";
   lastLedgerSequence: number | null;
+  /**
+   * Round phase (#1552) derived from the folded commit/reveal deadlines and
+   * the current ledger clock. Not persisted — recomputed on every read so it
+   * reflects wall-clock time without mutating the deterministic projection.
+   */
+  phase: ArenaProjectionPhase;
   projection: ArenaProjectionState;
 }
 
@@ -290,15 +296,18 @@ export class ArenaService {
         network,
         status: "not_started",
         lastLedgerSequence: null,
+        phase: "lobby",
         projection: initialArenaProjection(arenaId),
       };
     }
 
+    const nowSeconds = Math.floor(Date.now() / 1000);
     return {
       arenaId,
       network,
       status: checkpoint.status,
       lastLedgerSequence: checkpoint.lastLedgerSequence,
+      phase: projectArenaPhase(checkpoint.projectionState, nowSeconds),
       projection: checkpoint.projectionState,
     };
   }

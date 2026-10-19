@@ -1,9 +1,11 @@
 .PHONY: dev test build migrate migrate-prod infra monitoring clean help \
         contracts-build contracts-deploy contracts-init-factory contracts-abi-check \
-        backend-dev backend-test frontend-dev deps-gate deps-gate-test
+        backend-dev backend-test frontend-dev deps-gate deps-gate-test \
+        preflight preflight-test
 
 NETWORK ?= testnet
 SOURCE  ?= deployer
+ENVIRONMENT ?= production
 
 ## ── Convenience shortcuts ──────────────────────────────────────────────────
 
@@ -74,3 +76,11 @@ deps-gate: ## Audit all lockfiles and apply the dependency threat gate locally
 	-cd frontend && pnpm audit --json > ../audit/frontend.json
 	-cd contract && cargo audit --json > ../audit/contract.json
 	node scripts/dependency-gate/gate.mjs --npm backend=audit/backend.json --pnpm frontend=audit/frontend.json --cargo contract=audit/contract.json --exceptions .github/dependency-exceptions.json
+
+## ── Release preflight (#1465) ──────────────────────────────────────────────
+
+preflight: ## Machine-readable release check (migrations, ABIs, config, rollback)
+	node scripts/release-preflight/preflight.mjs --root . --environment $(ENVIRONMENT)
+
+preflight-test: ## Run the release preflight's own tests
+	node --test scripts/release-preflight/preflight.test.mjs

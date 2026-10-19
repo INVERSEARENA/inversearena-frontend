@@ -1,0 +1,58 @@
+name: Release Preflight
+
+# #1465 — a read-only, offline check of the artifacts a release ships
+# together: Prisma migrations, contract ABI snapshots, runtime config, and the
+# rollback plan. Fails on any incompatible artifact. Design note:
+# docs/design/release-preflight.md
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "backend/prisma/migrations/**"
+      - "backend/.env.example"
+      - "contract/*/abi_snapshot.json"
+      - "contract/*/src/lib.rs"
+      - "DEPLOYMENT.md"
+      - "Makefile"
+      - "scripts/release-preflight/**"
+      - ".github/workflows/release-preflight.yml"
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-preflight-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+
+      - name: Preflight policy unit + integration tests
+        run: node --test scripts/release-preflight/preflight.test.mjs
+
+      # Staging relaxes only the production-only placeholder-secret check; the
+      # migration, ABI, and rollback rules are identical in every environment.
+      - name: Run release preflight
+        run: >
+          node scripts/release-preflight/preflight.mjs
+          --root .
+          --environment staging
+          --out preflight.json
+
+      - name: Upload preflight result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-preflight-result
+          path: preflight.json
+          if-no-files-found: warn

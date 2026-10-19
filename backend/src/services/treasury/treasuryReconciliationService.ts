@@ -1,12 +1,13 @@
 /**
  * Treasury fee reconciliation ingestion (#1511).
  *
- * For a single arena, scans its on-chain `claimed`/`fee_upd` event history
- * (via `treasuryEventReader.ts` — NOT the mismatched #1382 decoder, see that
- * module's doc comment) and derives one `TreasuryFeeRecord` per `claimed`
- * event: the platform fee the protocol's own configuration implies for that
- * claim, reconciled against whatever actual on-chain transfer (today: none
- * — see `backend/docs/TREASURY_RECONCILIATION_DESIGN.md` §1) can be found.
+ * For a single arena, scans its on-chain `claimed`/`fee_coll`/`fee_upd`
+ * event history (via `treasuryEventReader.ts` — NOT the mismatched #1382
+ * decoder, see that module's doc comment) and derives one
+ * `TreasuryFeeRecord` per `claimed` event: the platform fee the protocol's
+ * own configuration implies for that claim, reconciled against the actual
+ * on-chain fee transfer the contract now records on the `claimed` event's
+ * `fee`/`treasury` fields (#1554).
  *
  * Read-only over on-chain state: this service never submits a transaction
  * and never moves funds — see the issue's explicit "out of scope" note.
@@ -65,8 +66,24 @@ interface ClaimedEventLike {
   ledgerClosedAt: string;
   txHash: string;
   winner: string;
-  amountAtomic: bigint;
+  grossAtomic: bigint;
+  /** Platform fee the contract actually routed to `treasury` (#1554). */
+  feeAtomic: bigint;
+  netAtomic: bigint;
   yieldAmountAtomic: bigint;
+  /** Treasury address the contract routed the fee to, as published on the event. */
+  treasury: string;
+}
+
+interface FeeCollectedEventLike {
+  topic: "fee_coll";
+  id: string;
+  ledgerSequence: number;
+  ledgerClosedAt: string;
+  txHash: string;
+  treasury: string;
+  feeAtomic: bigint;
+  feeBps: number;
 }
 
 interface FeeUpdatedEventLike {
@@ -87,7 +104,11 @@ interface UnknownEventLike {
   txHash: string;
 }
 
-type TreasuryEventLike = ClaimedEventLike | FeeUpdatedEventLike | UnknownEventLike;
+type TreasuryEventLike =
+  | ClaimedEventLike
+  | FeeCollectedEventLike
+  | FeeUpdatedEventLike
+  | UnknownEventLike;
 
 interface TreasuryEventPageLike {
   events: TreasuryEventLike[];
@@ -253,15 +274,20 @@ export class TreasuryReconciliationService {
       !getRollbackGuard().isQuarantined() &&
       isLedgerFinalized(ledgerClosedAt, new Date(), this.config.finalityGraceSeconds);
 
-    // No on-chain fee-collection transfer mechanism exists today (see design
-    // note §1) — `claim()` transfers the full amount to the winner, never to
-    // a treasury destination. There is therefore never an "actual transfer"
-    // to find for the fee specifically; this always classifies honestly as
-    // `missing_transfer` once a nonzero fee is expected and finalized.
+    // #1554: the contract now routes the platform fee to the arena's treasury
+    // at settlement, so the `claimed` event's own `fee`/`treasury` fields are
+    // the actual, on-chain-verified transfer to reconcile against. A zero fee
+    // means no transfer was made (nothing to find), which classification
+    // treats as balanced when the expectation is also zero.
+    const actualTransfer =
+      event.feeAtomic > 0n
+        ? { amountAtomic: event.feeAtomic, destination: event.treasury, txHash: event.txHash }
+        : null;
+
     const { status, discrepancyType } = classifyReconciliation({
       expectedAmountAtomic,
       expectedDestination: this.config.treasuryDestination,
-      actualTransfer: null,
+      actualTransfer,
       ledgerFinalized,
     });
 

@@ -7,9 +7,21 @@ protocol fees from authoritative on-chain arena outcomes and reports whether
 actual on-chain movement matches, without moving funds or changing fee
 percentages (both explicitly out of scope for this issue).
 
-## 1. Background: there is currently no on-chain fee transfer at all
+## 1. Background: the on-chain fee transfer (#1554 update)
 
-`contract/arena/src/lib.rs`'s `claim()` transfers the full
+> **Update (#1554):** the "no on-chain fee transfer" limitation described
+> below was closed by #1554. `claim()` now computes the fee on the yield and
+> routes it to a factory-configured treasury, and publishes the breakdown via
+> the extended `claimed` payload and a new `fee_coll` event. The
+> reconciliation service now reconciles the expected fee against the actual
+> `fee`/`treasury` the contract reports (see §3 and §5), so a correctly
+> settled arena is `balanced` rather than `missing_transfer`. The original
+> text is retained because it explains why the service is structured the way
+> it is, and because arenas deployed before the treasury existed still settle
+> the old way — for those, every nonzero-fee record still reconciles as
+> `missing_transfer`, which remains an accurate finding.
+
+Historically, `contract/arena/src/lib.rs`'s `claim()` transferred the full
 `principal + total_yield` to the winner in **one** token transfer:
 
 ```rust
@@ -18,20 +30,18 @@ token_client.transfer(&arena_addr, &winner, &total);
 ArenaEvents::prize_claimed(&env, &winner, total, total.saturating_sub(principal));
 ```
 
-`ArenaConfig.platform_fee_bps` (settable via `update_platform_fee`) is
-accounting metadata only; nothing in the contract deducts it or sends it
-anywhere. There is also no treasury/fee-destination address concept anywhere
-in `contract/` — no `treasury`/`fee_wallet`/`fee_recipient` field on any
-contract.
+`ArenaConfig.platform_fee_bps` (settable via `update_platform_fee`) was
+accounting metadata only; nothing in the contract deducted it or sent it
+anywhere, and there was no treasury/fee-destination address anywhere in
+`contract/`.
 
-This means: whenever an arena's configured fee is nonzero, this service's
-"expected fee" will **always** reconcile as `missing_transfer` — there is
-structurally no other transfer for it to find. This is not a bug in the
-reconciliation service; it is an accurate, valuable finding the service
-exists to surface (the protocol has configured a fee with no working
-collection mechanism yet). Wiring an actual on-chain fee transfer is
-explicitly out of scope for #1511 ("Out of scope: Moving treasury funds or
-changing fee percentages").
+That meant: whenever an arena's configured fee was nonzero, this service's
+"expected fee" would **always** reconcile as `missing_transfer` — there was
+structurally no other transfer for it to find. That was not a bug in the
+reconciliation service; it was an accurate, valuable finding the service
+exists to surface (the protocol had configured a fee with no working
+collection mechanism). Wiring an actual on-chain fee transfer was explicitly
+out of scope for #1511 and is what #1554 delivers.
 
 `backend/src/domain/settlement.ts`'s `computeSettlementBreakdown` computes
 its own `platformFee` from `process.env.PLATFORM_FEE_BPS` — a **second**,
@@ -74,8 +84,11 @@ the repo owner before proceeding). Instead:
 
 ## 3. Where "expected fee" comes from
 
-`ArenaEvents::prize_claimed` (`"claimed"` event) carries `(amount, yield_amount)`
-— the actual, on-chain-verified total transfer and its yield-only portion.
+Since #1554, `ArenaEvents::prize_claimed` (the `"claimed"` event) carries
+`(gross, fee, net, yield_amount, treasury)` — the actual, on-chain-verified
+vault withdrawal, the platform fee routed to `treasury`, the net paid to the
+winner, and the yield portion the fee was computed from. A companion
+`"fee_coll"` event carries `(fee, fee_bps)` keyed by the treasury address.
 The expected platform fee for a `claimed` event is:
 
 ```
@@ -84,6 +97,14 @@ expectedFee = floor(yieldAmountAtomic * feeBpsAtClaimTime / 10000)
 
 computed with `BigInt` throughout (`domain/treasuryFeeMath.ts`'s
 `computeExpectedPlatformFee`) — never floating point.
+
+The **actual** fee is no longer "none": it is the `fee`/`treasury` pair the
+`claimed` event itself reports
+(`treasuryReconciliationService.upsertFeeRecord`). A zero fee means no
+transfer was made, which classification treats as `balanced` when the
+expectation is also zero. For a pre-#1554 arena the event still carries a
+`fee` of zero, so a nonzero expectation correctly reconciles as
+`missing_transfer`.
 
 `feeBpsAtClaimTime` comes from replaying `"fee_upd"` events (published by
 `update_platform_fee`) in ledger order alongside `"claimed"` events, carried
@@ -133,9 +154,11 @@ unit-tested):
 | Amount matches but destination differs from the configured treasury address | `discrepant` | `destination_mismatch` |
 | Amount and destination both match | `balanced` | — |
 
-Given §1, every nonzero-fee record today reconciles as `missing_transfer`
-once finalized — this is the expected, honest state of the system, not a
-service defect.
+For a post-#1554 arena, the contract's own `fee`/`treasury` is the actual
+transfer, so a correct settlement reconciles `balanced`. For an arena deployed
+before the treasury existed (§1), every nonzero-fee record still reconciles as
+`missing_transfer` once finalized — that remains the expected, honest state of
+the system for those arenas, not a service defect.
 
 ## 6. Maintainer endpoint
 
@@ -183,13 +206,14 @@ Alerting thresholds and the investigation/replay procedure are in
 - **Zero-fee configuration**: `feeBps == 0` always reconciles `balanced`
   (unless an unexpected transfer somehow exists) — covered explicitly in
   tests.
-- **Contract upgrades**: this service reads only the two event topics it
-  needs; an arena contract upgrade that changes unrelated entrypoints or
-  events doesn't affect it as long as `"claimed"`/`"fee_upd"`'s payload shape
-  is unchanged. A payload shape change would need a new decoder case (see
-  `treasuryEventDecoder.ts`'s doc comment) — the decoder never throws on an
-  unrecognized shape, so a future shape change degrades to `unknown` rather
-  than crashing ingestion.
+- **Contract upgrades**: this service reads only the event topics it needs
+  (`"claimed"`, `"fee_coll"`, `"fee_upd"`); an arena contract upgrade that
+  changes unrelated entrypoints or events doesn't affect it as long as those
+  payload shapes are unchanged. A payload shape change would need a new
+  decoder case (see `treasuryEventDecoder.ts`'s doc comment) — the decoder
+  never throws on an unrecognized shape, so a future shape change degrades to
+  `unknown` rather than crashing ingestion. The #1554 change itself is exactly
+  such a case: `"claimed"` widened from a 2-tuple to a 5-tuple, handled here.
 - **Transaction fee bumps**: irrelevant to this service — it reads
   `EventResponse.txHash`, which identifies the *inner* transaction regardless
   of fee-bump wrapping; Soroban RPC's event stream already resolves this.
@@ -204,8 +228,9 @@ Alerting thresholds and the investigation/replay procedure are in
 
 ## 9. Compatibility
 
-Purely additive: two new Prisma models
+Purely additive on the backend: two new Prisma models
 (`TreasuryFeeRecord`, `TreasuryReconciliationCheckpoint`), a new route, new
-services. No existing table, endpoint, or contract entrypoint changes. No
-contract changes at all — this is a backend-only reporting feature reading
-existing on-chain events.
+services. No existing table or endpoint changes. The event shapes it reads
+were extended by #1554 (see §1/§3) — the decoder was updated in lockstep, and
+because it degrades unrecognized shapes to `unknown` rather than throwing, a
+mixed-version deployment (old arena, new backend) stays ingestible.

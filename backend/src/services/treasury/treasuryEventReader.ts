@@ -60,6 +60,7 @@ export {
   toTreasuryEvent,
   type TreasuryEventTopic,
   type ClaimedTreasuryEvent,
+  type FeeCollectedTreasuryEvent,
   type FeeUpdatedTreasuryEvent,
   type UnknownTreasuryEvent,
   type TreasuryEvent,

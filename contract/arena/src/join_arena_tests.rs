@@ -63,11 +63,13 @@ fn setup_arena(state: GameState) -> (Env, ArenaContractClient<'static>, Address)
             active_player_count: 0,
             cumulative_yield: 0,
             commit_deadline: u64::MAX,
+            reveal_deadline: 0,
             round_count: 0,
             oracle_contract: oracle,
             factory: Address::generate(&env),
             pool_id: 0,
             platform_fee_bps: 1000,
+            treasury: Address::generate(&env),
         };
         ArenaStorage::save_config(&env, &config);
         ArenaStorage::save_last_vault_balance(&env, 0);
@@ -309,11 +311,13 @@ fn setup_arena_failing_vault() -> (Env, ArenaContractClient<'static>, Address) {
             active_player_count: 0,
             cumulative_yield: 0,
             commit_deadline: u64::MAX,
+            reveal_deadline: 0,
             round_count: 0,
             oracle_contract: oracle,
             factory: Address::generate(&env),
             pool_id: 0,
             platform_fee_bps: 1000,
+            treasury: Address::generate(&env),
         };
         ArenaStorage::save_config(&env, &config);
         ArenaStorage::save_last_vault_balance(&env, 0);

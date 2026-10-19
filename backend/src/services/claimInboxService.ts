@@ -127,6 +127,24 @@ export type ClaimInboxVerifier = (
   arenaIds: readonly string[],
 ) => Promise<Map<string, ClaimInboxArenaState>>;
 
+/**
+ * The on-chain settlement breakdown for one arena (#1554), as stroop strings.
+ *
+ * Supplementary data: unlike arena state it never decides whether a position
+ * is actionable, so a missing entry degrades to "no breakdown shown", never to
+ * `unavailable`.
+ */
+export interface ClaimInboxSettlementBreakdown {
+  grossStroops: string;
+  feeStroops: string;
+  netStroops: string;
+}
+
+/** On-chain settlement-breakdown lookup, injected so the service is testable without RPC. */
+export type ClaimInboxSettlementVerifier = (
+  arenaIds: readonly string[],
+) => Promise<Map<string, ClaimInboxSettlementBreakdown>>;
+
 /** Source of refundable stakes. */
 export type ClaimInboxRefundSource = (
   walletAddress: string,
@@ -136,6 +154,7 @@ export interface ClaimInboxDeps {
   prisma: PrismaClient;
   transactions: TransactionRepository;
   verifyArenas?: ClaimInboxVerifier;
+  verifySettlements?: ClaimInboxSettlementVerifier;
   findRefunds?: ClaimInboxRefundSource;
   now?: () => number;
   maxVerify?: number;
@@ -167,12 +186,14 @@ const NATIVE_ASSET_CODE = "XLM";
 
 export class ClaimInboxService {
   private readonly verifyArenas: ClaimInboxVerifier;
+  private readonly verifySettlements: ClaimInboxSettlementVerifier;
   private readonly findRefunds: ClaimInboxRefundSource;
   private readonly now: () => number;
 
   constructor(private readonly deps: ClaimInboxDeps) {
     this.now = deps.now ?? Date.now;
     this.verifyArenas = deps.verifyArenas ?? defaultNoVerify;
+    this.verifySettlements = deps.verifySettlements ?? defaultNoSettlements;
     this.findRefunds = deps.findRefunds ?? defaultNoRefunds;
   }
 
@@ -214,6 +235,10 @@ export class ClaimInboxService {
     // ── Bounded on-chain verification ─────────────────────────────────────
     const candidates = positions.slice(0, this.deps.maxVerify ?? CLAIM_INBOX_MAX_VERIFY);
     const chainStates = await this.safeVerify(candidates.map((p) => p.arenaId));
+    // Supplementary breakdown read (#1554): best-effort, never downgrades a
+    // position's state. Fetched concurrently with nothing else because
+    // `safeVerify` has already awaited; a failure simply yields no breakdown.
+    const settlements = await this.safeVerifySettlements(candidates.map((p) => p.arenaId));
     const verifiedAt = new Date(this.now()).toISOString();
     // Unverified for two distinct reasons, and the page must not imply
     // otherwise: reads that failed, and positions past the verification cap
@@ -226,6 +251,7 @@ export class ClaimInboxService {
       buildItem({
         position,
         chainState: chainStates.states.get(position.arenaId) ?? null,
+        settlement: settlements.get(position.arenaId) ?? null,
         verifiedAt,
         nowMs,
         staleAfterMs: CLAIM_INBOX_STALE_AFTER_MS,
@@ -350,6 +376,46 @@ export class ClaimInboxService {
       if (timer) clearTimeout(timer);
     }
   }
+
+  /**
+   * Best-effort on-chain settlement breakdown (#1554).
+   *
+   * Never fails the request and never marks anything `unavailable`: the
+   * breakdown is display-only, so an arena without one simply renders without
+   * a fee breakdown. A timeout or RPC error therefore degrades silently (with
+   * a structured debug log) rather than corrupting a position's state.
+   */
+  private async safeVerifySettlements(
+    arenaIds: string[],
+  ): Promise<Map<string, ClaimInboxSettlementBreakdown>> {
+    const settlements = new Map<string, ClaimInboxSettlementBreakdown>();
+    if (arenaIds.length === 0) return settlements;
+
+    const budget = this.deps.verifyBudgetMs ?? CLAIM_INBOX_VERIFY_BUDGET_MS;
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("claim_inbox_settlement_timeout")), budget);
+    });
+
+    try {
+      const found = await Promise.race([this.verifySettlements(arenaIds), deadline]);
+      for (const [arenaId, breakdown] of found) settlements.set(arenaId, breakdown);
+      return settlements;
+    } catch (error) {
+      logger.debug(
+        {
+          subsystem: "claim-inbox",
+          stage: "verify-settlements",
+          error: error instanceof Error ? error.message : "unknown",
+          requested: arenaIds.length,
+        },
+        "Settlement breakdown unavailable; positions render without a fee breakdown",
+      );
+      return settlements;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -422,6 +488,7 @@ function aggregate(
 interface BuildItemInput {
   position: Position;
   chainState: ClaimInboxArenaState | null;
+  settlement: ClaimInboxSettlementBreakdown | null;
   verifiedAt: string;
   nowMs: number;
   assetIssuers: Record<string, string>;
@@ -448,7 +515,7 @@ interface BuildItemInput {
  *  5. Only then does a finished arena with no payout become `actionable`.
  */
 function buildItem(input: BuildItemInput): ClaimInboxItem {
-  const { position, chainState, verifiedAt, nowMs, staleAfterMs, assetIssuers } = input;
+  const { position, chainState, settlement, verifiedAt, nowMs, staleAfterMs, assetIssuers } = input;
 
   const components: ClaimInboxComponent[] = [
     ...newestFirst(position.payouts).map((payout) => ({
@@ -460,6 +527,15 @@ function buildItem(input: BuildItemInput): ClaimInboxItem {
       txHash: payout.txHash ?? null,
       confirmedAt: payout.confirmedAt ? payout.confirmedAt.toISOString() : null,
       attempts: payout.attempts,
+      // #1554: only a winnings component carries a settlement breakdown, and
+      // only when the arena exposed one on chain.
+      ...(settlement
+        ? {
+            grossAmountStroops: settlement.grossStroops,
+            feeAmountStroops: settlement.feeStroops,
+            netAmountStroops: settlement.netStroops,
+          }
+        : {}),
     })),
     ...position.refunds.map((refund) => ({
       kind: "refund" as const,
@@ -831,5 +907,12 @@ const defaultNoRefunds: ClaimInboxRefundSource = async () => [];
  * alone. A wrong answer here would present real money as unclaimable.
  */
 const defaultNoVerify: ClaimInboxVerifier = async () => new Map();
+
+/**
+ * Used when the caller supplies no settlement verifier: positions render
+ * without a fee breakdown. Unlike `defaultNoVerify`, this is a benign default
+ * — the breakdown is display-only and never gates an action.
+ */
+const defaultNoSettlements: ClaimInboxSettlementVerifier = async () => new Map();
 
 export { encodeCursor, decodeCursor };
