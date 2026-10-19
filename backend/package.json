@@ -13,6 +13,7 @@
     "test:migration": "jest --selectProjects integration --testPathPattern=migration.test.ts --runInBand",
     "test:ci": "prisma generate && npm run test:unit && npm run test:node:validation && npm run test:node",
     "typecheck": "tsc --noEmit",
+    "lint": "node scripts/check-env-access.mjs",
     "migrate": "prisma migrate deploy",
     "migrate:dev": "prisma migrate dev",
     "ttl:plan": "tsx src/scripts/ttlKeeperPlan.ts",

@@ -21,6 +21,7 @@ import { ArenaProjectionCheckpointStore } from "./projection/arenaProjectionChec
 import { initialArenaProjection, type ArenaProjectionState } from "./projection/arenaProjectionFold";
 import { replayArenaProjection, type ArenaReplayOptions } from "./projection/arenaProjectionReplay";
 import { cache, invalidateArena, tags } from "../cache/cacheService";
+import { env } from "../config/env";
 
 const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
 const TX_HASH_REGEX = /^[0-9a-f]{64}$/i;
@@ -161,7 +162,7 @@ export class ArenaService {
       throw new Error("Invalid transaction hash");
     }
 
-    const factoryContractId = process.env.ARENA_FACTORY_CONTRACT_ID ?? null;
+    const factoryContractId = env.ARENA_FACTORY_CONTRACT_ID ?? null;
     if (!factoryContractId || !CONTRACT_ID_REGEX.test(factoryContractId)) {
       throw new Error(
         "ARENA_FACTORY_CONTRACT_ID is not configured with a valid Soroban contract ID",

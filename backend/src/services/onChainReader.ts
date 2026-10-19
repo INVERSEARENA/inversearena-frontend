@@ -39,6 +39,7 @@ import {
 } from "../types/onChainRead";
 import { onChainReadOutcomesTotal } from "../utils/metrics";
 import { decodePlayerStatus, type OnChainPlayerStatus } from "./playerStatus";
+import { env } from "../config/env";
 
 let sourcePublicKey: string | null = null;
 
@@ -120,7 +121,7 @@ function getSourcePublicKey(): string {
   if (!sourcePublicKey) {
     // Derive a deterministic public key from an env var or generate a random one.
     // The key itself is irrelevant for simulation — it just needs to be valid.
-    const secret = process.env.ARENA_SIM_SOURCE_SECRET;
+    const secret = env.ARENA_SIM_SOURCE_SECRET;
     if (secret) {
       sourcePublicKey = Keypair.fromSecret(secret).publicKey();
     } else {

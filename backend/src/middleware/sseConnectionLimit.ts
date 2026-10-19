@@ -1,5 +1,6 @@
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import { apiError } from "../utils/apiError";
+import { env, type EnvKey } from "../config/env";
 
 const DEFAULT_MAX_CONNECTIONS_PER_IP = 5;
 const DEFAULT_MAX_CONNECTIONS_PER_ARENA = 100;
@@ -7,8 +8,8 @@ const DEFAULT_MAX_CONNECTIONS_PER_ARENA = 100;
 const connectionsByIp = new Map<string, number>();
 const connectionsByArena = new Map<string, number>();
 
-function readPositiveInt(name: string, fallback: number): number {
-  const raw = process.env[name];
+function readPositiveInt(name: EnvKey, fallback: number): number {
+  const raw = env[name];
   if (!raw) return fallback;
   const parsed = Number(raw);
   return Number.isInteger(parsed) && parsed >= 1 ? parsed : fallback;

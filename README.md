@@ -213,34 +213,7 @@ npm run dev            # Start API server on port 3001
 
 ## Environment Variables
 
-### Frontend (`frontend/.env.local`)
-
-| Variable | Required | Description |
-|---|---|---|
-| `NEXT_PUBLIC_STELLAR_NETWORK` | No | `testnet` (default) or `mainnet` |
-| `NEXT_PUBLIC_SOROBAN_RPC_URL` | Yes | Soroban RPC endpoint |
-| `NEXT_PUBLIC_HORIZON_URL` | Yes | Stellar Horizon endpoint |
-| `NEXT_PUBLIC_FACTORY_CONTRACT_ID` | Yes | Arena factory contract address |
-| `NEXT_PUBLIC_USDC_CONTRACT_ID` | Yes | USDC token contract address |
-| `NEXT_PUBLIC_APP_ORIGIN` | Yes | Canonical app URL (used for CORS) |
-| `ALLOWED_ORIGINS` | Yes | Comma-separated allowed CORS origins |
-| `REDIS_URL` | Yes | Redis connection string (rate limiting) |
-| `NEXT_PUBLIC_SENTRY_DSN` | No | Sentry DSN — leave blank to disable error reporting |
-
-### Backend (`backend/.env`)
-
-| Variable | Required | Description |
-|---|---|---|
-| `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `REDIS_URL` | Yes | Redis connection string |
-| `JWT_SECRET` | Yes | Minimum 32-character secret for JWT signing |
-| `SOROBAN_RPC_URL` | Yes | Soroban RPC endpoint |
-| `STELLAR_NETWORK_PASSPHRASE` | Yes | Network passphrase |
-| `PAYOUT_CONTRACT_ID` | Yes | Payout contract address |
-| `PAYOUT_SOURCE_ACCOUNT` | Yes | Stellar account that submits payout transactions |
-| `PAYOUTS_LIVE_EXECUTION` | No | `false` (default) — set `true` to submit real transactions |
-| `PAYOUTS_SIGN_WITH_HOT_KEY` | No | `false` recommended in production; use external KMS |
-| `ADMIN_API_KEY` | Yes | Secret key for admin endpoints |
+Every variable is declared in a typed schema, and `frontend/.env.example` and `backend/.env.example` are generated from it, with a description, default and format for each. The backend refuses to boot, and `next build` refuses to build, when a variable is missing or malformed, listing every problem at once. See [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) for how to add a variable.
 
 > Never commit `.env` files. Use a secrets manager (AWS Secrets Manager, HashiCorp Vault, etc.) for production credentials.
 

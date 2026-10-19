@@ -41,6 +41,7 @@ import type { AuthService } from "./services/authService";
 import type { RoundService } from "./services/roundService";
 import type { RoundProofBundleService } from "./services/roundProofBundleService";
 import { prisma } from "./db/prisma";
+import { env } from "./config/env";
 
 export interface AppDependencies {
   paymentService: PaymentService;
@@ -88,7 +89,7 @@ export function createApp(deps: AppDependencies): express.Application {
       },
     })
   );
-  const allowedOrigins = (process.env.ALLOWED_ORIGINS || "").split(",").filter(Boolean);
+  const allowedOrigins = (env.ALLOWED_ORIGINS || "").split(",").filter(Boolean);
   app.use(cors({
     origin: allowedOrigins.length > 0 ? allowedOrigins : undefined,
     credentials: true,

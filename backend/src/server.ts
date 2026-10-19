@@ -1,4 +1,6 @@
 import "dotenv/config";
+// Validate the whole environment before any module below opens a connection (#1650).
+import "./config/bootEnv";
 // import { db } from "./db/client";
 import { redis } from "./cache/redisClient";
 import { prisma } from "./db/prisma";
@@ -24,8 +26,9 @@ import { initLedgerContinuity } from "./services/ledgerContinuity";
 
 import { initSentry } from "./utils/sentry";
 import { logger } from "./utils/logger";
+import { env } from "./config/env";
 
-const PORT = Number(process.env.PORT ?? 3001);
+const PORT = Number(env.PORT ?? 3001);
 const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
 
 async function main() {
@@ -55,7 +58,7 @@ async function main() {
   // #1391: reconciles the Arena table against the factory contract's
   // authoritative get_arenas state. Same env var confirmArenaDeployment
   // already requires — fail fast at boot rather than on first triggered run.
-  const arenaFactoryContractId = process.env.ARENA_FACTORY_CONTRACT_ID ?? "";
+  const arenaFactoryContractId = env.ARENA_FACTORY_CONTRACT_ID ?? "";
   if (!CONTRACT_ID_REGEX.test(arenaFactoryContractId)) {
     throw new Error(
       "ARENA_FACTORY_CONTRACT_ID is not configured with a valid Soroban contract ID",

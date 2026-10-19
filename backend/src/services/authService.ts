@@ -9,6 +9,7 @@ import { SessionStore, sessionStore as defaultSessionStore } from "../cache/sess
 import type { AuthUser, DeviceMetadata, JwtPayload, SessionView, TokenPair } from "../types/auth";
 import { getKeyring, recordVerification, verificationCandidates, type SecretKeyring } from "../config/secretKeyring";
 import { getStellarConfig } from "../config/stellarConfig";
+import { env } from "../config/env";
 
 const NONCE_PREFIX = "Sign this message to authenticate with InverseArena:\n";
 
@@ -51,19 +52,19 @@ function verifyJwt(token: string): JwtPayload {
 }
 
 function nonceTtlSeconds(): number {
-  const val = Number(process.env.NONCE_TTL_SECONDS);
+  const val = Number(env.NONCE_TTL_SECONDS);
   return Number.isFinite(val) && val > 0 ? val : 300;
 }
 
 function refreshTokenTtlSeconds(): number {
-  const val = Number(process.env.JWT_REFRESH_EXPIRES_IN);
+  const val = Number(env.JWT_REFRESH_EXPIRES_IN);
   if (typeof val === "number" && Number.isFinite(val) && val > 0) return val;
   // Default 7 days
   return 7 * 24 * 60 * 60;
 }
 
 function accessTokenTtlSeconds(): number {
-  const val = Number(process.env.JWT_ACCESS_EXPIRES_IN);
+  const val = Number(env.JWT_ACCESS_EXPIRES_IN);
   if (typeof val === "number" && Number.isFinite(val) && val > 0) return val;
   // Default 15 minutes
   return 15 * 60;
@@ -90,7 +91,7 @@ export class AuthService {
     const expiresAt = new Date(Date.now() + nonceTtlSeconds() * 1000);
     // Signature is bound to origin, network, nonce and expiry (#1445): a
     // capture from another origin/network no longer verifies here.
-    const origin = process.env.PUBLIC_WEB_ORIGIN ?? "https://app.inversearena.com";
+    const origin = env.PUBLIC_WEB_ORIGIN ?? "https://app.inversearena.com";
     const nonce = `${NONCE_PREFIX}origin=${origin}\nnetwork=${getStellarConfig().networkPassphrase}\nnonce=${rawHex}\nexpires=${expiresAt.toISOString()}`;
 
     await NonceModel.updateMany(

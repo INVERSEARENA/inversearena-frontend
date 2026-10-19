@@ -3,6 +3,7 @@ import type { PrismaClient } from "@prisma/client";
 import jwt from "jsonwebtoken";
 import { NotificationPreferencesService } from "./notificationPreferencesService";
 import { logger } from "../utils/logger";
+import { env } from "../config/env";
 
 /**
  * Web Push delivery for time-critical round phase alerts (#1571).
@@ -99,15 +100,15 @@ interface PushServiceDeps {
 const ENCRYPTION_PREFIX = "v1";
 
 function vapidConfigFromEnv(): PushServiceDeps["vapid"] {
-  const publicKey = process.env.VAPID_PUBLIC_KEY;
-  const privateKey = process.env.VAPID_PRIVATE_KEY;
-  const subject = process.env.VAPID_SUBJECT;
+  const publicKey = env.VAPID_PUBLIC_KEY;
+  const privateKey = env.VAPID_PRIVATE_KEY;
+  const subject = env.VAPID_SUBJECT;
   if (!publicKey || !privateKey || !subject) return undefined;
   return { publicKey, privateKey, subject };
 }
 
 function encryptionKeyFromEnv(): Buffer | undefined {
-  const raw = process.env.PUSH_ENCRYPTION_KEY;
+  const raw = env.PUSH_ENCRYPTION_KEY;
   if (!raw) return undefined;
   if (!/^[0-9a-fA-F]{64}$/.test(raw)) {
     throw new PushNotConfiguredError(

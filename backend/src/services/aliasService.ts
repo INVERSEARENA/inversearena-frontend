@@ -28,6 +28,7 @@ import { logger } from "../utils/logger";
 import { aliasUpdateTotal } from "../utils/metrics";
 import { UserModel } from "../db/models/user.model";
 import { apiError } from "../utils/apiError";
+import { env } from "../config/env";
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -60,7 +61,7 @@ const BUILT_IN_BLOCK_LIST = [
 ];
 
 function buildBlockList(): Set<string> {
-  const extra = (process.env.ALIAS_BLOCK_LIST ?? "")
+  const extra = (env.ALIAS_BLOCK_LIST ?? "")
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);

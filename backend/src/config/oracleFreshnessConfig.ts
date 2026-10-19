@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { processEnv } from "./env";
 
 /**
  * Oracle freshness policy config (#1512).
@@ -52,7 +53,7 @@ export interface OracleFreshnessConfig {
  * enforcement for the process's whole lifetime.
  */
 export function getOracleFreshnessConfig(
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv = processEnv,
 ): OracleFreshnessConfig {
   const parsed = OracleFreshnessEnvSchema.parse({
     ORACLE_MAX_AGE_SECONDS: env.ORACLE_MAX_AGE_SECONDS,

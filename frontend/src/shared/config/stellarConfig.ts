@@ -1,6 +1,8 @@
 import { Networks } from "@creit-tech/stellar-wallets-kit";
 import { z } from "zod";
 
+import { clientEnv } from "./env/client";
+
 const TESTNET_PASSPHRASE = "Test SDF Network ; September 2015";
 const MAINNET_PASSPHRASE = "Public Global Stellar Network ; September 2015";
 const DEFAULT_XLM_CONTRACT_ID =
@@ -58,25 +60,10 @@ export interface StellarConfig {
 function buildStellarConfig():
   | { config: StellarConfig; error: null }
   | { config: null; error: string } {
+  // zod drops the keys StellarEnvSchema does not declare.
   const result = StellarEnvSchema.safeParse({
-    NEXT_PUBLIC_STELLAR_NETWORK:
-      process.env.NEXT_PUBLIC_STELLAR_NETWORK?.toLowerCase(),
-    NEXT_PUBLIC_SOROBAN_RPC_URL: process.env.NEXT_PUBLIC_SOROBAN_RPC_URL,
-    NEXT_PUBLIC_HORIZON_URL: process.env.NEXT_PUBLIC_HORIZON_URL,
-    NEXT_PUBLIC_FACTORY_CONTRACT_ID:
-      process.env.NEXT_PUBLIC_FACTORY_CONTRACT_ID,
-    NEXT_PUBLIC_USDC_CONTRACT_ID: process.env.NEXT_PUBLIC_USDC_CONTRACT_ID,
-    NEXT_PUBLIC_XLM_CONTRACT_ID: process.env.NEXT_PUBLIC_XLM_CONTRACT_ID,
-    NEXT_PUBLIC_STAKING_CONTRACT_ID:
-      process.env.NEXT_PUBLIC_STAKING_CONTRACT_ID,
-    NEXT_PUBLIC_STELLAR_NETWORK_PASSPHRASE:
-      process.env.NEXT_PUBLIC_STELLAR_NETWORK_PASSPHRASE,
-    NEXT_PUBLIC_RWA_VAULT_CONTRACT_ID:
-      process.env.NEXT_PUBLIC_RWA_VAULT_CONTRACT_ID,
-    NEXT_PUBLIC_ORACLE_CONTRACT_ID:
-      process.env.NEXT_PUBLIC_ORACLE_CONTRACT_ID,
-    NEXT_PUBLIC_USDC_ISSUER: process.env.NEXT_PUBLIC_USDC_ISSUER,
-    NEXT_PUBLIC_EURC_ISSUER: process.env.NEXT_PUBLIC_EURC_ISSUER,
+    ...clientEnv,
+    NEXT_PUBLIC_STELLAR_NETWORK: clientEnv.NEXT_PUBLIC_STELLAR_NETWORK?.toLowerCase(),
   });
 
   if (!result.success) {

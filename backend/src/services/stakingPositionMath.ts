@@ -9,6 +9,7 @@
  */
 
 import { getStellarConfig } from "../config/stellarConfig";
+import { processEnv } from "../config/env";
 
 const CONTRACT_ID_RE = /^C[A-Z2-7]{55}$/;
 
@@ -31,7 +32,7 @@ export class StakingNotConfiguredError extends Error {
  * contract id is a hard error (mirrors `stellarConfig.ts`): silently treating
  * it as unset would hide a typo as "staking not deployed".
  */
-export function resolveStakingConfig(env: NodeJS.ProcessEnv = process.env): StakingConfig {
+export function resolveStakingConfig(env: NodeJS.ProcessEnv = processEnv): StakingConfig {
   const raw = env.STAKING_CONTRACT_ID?.trim();
   const contractId = raw ? raw : null;
   if (contractId && !CONTRACT_ID_RE.test(contractId)) {

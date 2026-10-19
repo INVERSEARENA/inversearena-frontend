@@ -5,11 +5,13 @@ on:
     branches: ["main"]
     paths:
       - "frontend/**"
+      - "scripts/env-example*.ts"
       - ".github/workflows/frontend-ci.yml"
   pull_request:
     branches: ["main"]
     paths:
       - "frontend/**"
+      - "scripts/env-example*.ts"
       - ".github/workflows/frontend-ci.yml"
 
 jobs:
@@ -36,6 +38,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
 
+      - name: Check .env.example matches the env schema (#1650)
+        # tsx pinned to the version backend/ locks, so both checks render alike.
+        run: pnpm dlx tsx@4.21.0 ../scripts/env-example.ts frontend --check
+
       - name: TypeScript typecheck
         run: pnpm exec tsc --noEmit
 
@@ -55,7 +61,9 @@ jobs:
             ${{ runner.os }}-nextjs-${{ hashFiles('frontend/pnpm-lock.yaml') }}-
             ${{ runner.os }}-nextjs-
 
-      # Production build validates server/client boundaries and route config.
+      # Production build validates server/client boundaries and route config,
+      # and `next build` validates the env schema (#1650): give it public
+      # testnet endpoints and placeholder contract ids.
       # SENTRY_AUTH_TOKEN="" disables source-map upload in CI (no secrets needed).
       # NEXT_TELEMETRY_DISABLED=1 avoids network calls during the build step.
       - name: Production build — issue #1642
@@ -65,9 +73,10 @@ jobs:
           SENTRY_ORG: "placeholder"
           SENTRY_PROJECT: "placeholder"
           NEXT_PUBLIC_STELLAR_NETWORK: "testnet"
-          NEXT_PUBLIC_RPC_URL: "https://soroban-testnet.stellar.org"
+          NEXT_PUBLIC_SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org"
           NEXT_PUBLIC_HORIZON_URL: "https://horizon-testnet.stellar.org"
           NEXT_PUBLIC_FACTORY_CONTRACT_ID: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4"
+          NEXT_PUBLIC_USDC_CONTRACT_ID: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
           DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci"
         run: pnpm build
 

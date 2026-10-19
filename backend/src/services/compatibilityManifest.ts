@@ -24,6 +24,7 @@ import {
   type ContractKind,
 } from "./contractCapability";
 import { getCurrentLedgerSequence } from "./ledgerClock";
+import { env } from "../config/env";
 
 export const COMPATIBILITY_MANIFEST_SCHEMA_VERSION = 1 as const;
 
@@ -63,8 +64,8 @@ const defaultDeps: CompatibilityManifestDeps = {
   configRevision: getCurrentLedgerSequence,
   negotiate: negotiateCapability,
   requiredVersion: getRequiredCapabilityVersion,
-  factoryContractId: () => process.env.ARENA_FACTORY_CONTRACT_ID || undefined,
-  payoutContractId: () => process.env.PAYOUT_CONTRACT_ID || undefined,
+  factoryContractId: () => env.ARENA_FACTORY_CONTRACT_ID || undefined,
+  payoutContractId: () => env.PAYOUT_CONTRACT_ID || undefined,
   now: () => new Date(),
 };
 

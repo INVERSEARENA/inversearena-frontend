@@ -8,11 +8,13 @@ on:
     branches: ["main"]
     paths:
       - "backend/**"
+      - "scripts/env-example*.ts"
       - ".github/workflows/backend-ci.yml"
   pull_request:
     branches: ["main"]
     paths:
       - "backend/**"
+      - "scripts/env-example*.ts"
       - ".github/workflows/backend-ci.yml"
 
 jobs:
@@ -36,6 +38,18 @@ jobs:
 
       - name: Verify redaction policy (#1531)
         run: node scripts/verify-redaction.mjs
+
+      - name: Lint env access (#1650)
+        working-directory: ./backend
+        run: |
+          npm run lint
+          node --test scripts/check-env-access.test.mjs
+
+      - name: Check .env.example matches the env schema (#1650)
+        working-directory: ./backend
+        run: |
+          npx tsx --test ../scripts/env-example.test.ts
+          npx tsx ../scripts/env-example.ts backend --check
 
       - name: Unit tests (no services)
         working-directory: ./backend

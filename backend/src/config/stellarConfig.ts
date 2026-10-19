@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { processEnv } from "./env";
 
 const TESTNET_RPC_URL = "https://soroban-testnet.stellar.org";
 const TESTNET_PASSPHRASE = "Test SDF Network ; September 2015";
@@ -20,9 +21,9 @@ const StellarEnvSchema = z.object({
 });
 
 /** Outbound RPC allowlist + response cap (#1447). Empty allowlist = allow all. */
-export const RPC_MAX_RESPONSE_BYTES = Number(process.env.RPC_MAX_RESPONSE_BYTES ?? 1_048_576);
+export const RPC_MAX_RESPONSE_BYTES = Number(processEnv.RPC_MAX_RESPONSE_BYTES ?? 1_048_576);
 export function assertAllowedRpcUrl(url: string): boolean {
-  const hosts = (process.env.RPC_URL_ALLOWLIST ?? "").split(",").map((h) => h.trim()).filter(Boolean);
+  const hosts = (processEnv.RPC_URL_ALLOWLIST ?? "").split(",").map((h) => h.trim()).filter(Boolean);
   return hosts.length === 0 || hosts.includes(new URL(url).hostname);
 }
 
@@ -88,7 +89,7 @@ export type StellarConfig = {
 };
 
 export function getStellarConfig(
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv = processEnv,
 ): StellarConfig {
   const allowTestDefaults = env.NODE_ENV === "test";
   const parsed = StellarEnvSchema.parse({

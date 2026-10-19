@@ -40,6 +40,7 @@ import { getStellarConfig, type StellarConfig } from '../config/stellarConfig';
 import { buildRoundResolution } from '../domain/roundResolution';
 import { contextLogger, maskWalletAddress } from '../utils/logger';
 import { OracleFreshnessService, StaleOracleDataError, type OracleReading } from './oracleFreshnessService';
+import { env } from "../config/env";
 
 export interface OnChainRoundState {
   roundId: string;
@@ -173,7 +174,7 @@ export class RoundService {
   ): Promise<void> {
     try {
       if (!this.pushService) {
-        if (!process.env.VAPID_PUBLIC_KEY) return;
+        if (!env.VAPID_PUBLIC_KEY) return;
         this.pushService = new PushService(
           this.prisma,
           new NotificationPreferencesService(this.prisma),
@@ -225,7 +226,7 @@ export class RoundService {
     contractId: string,
     roundNumber: number,
   ): Promise<number> {
-    const signerSecret = process.env.ARENA_ADMIN_SECRET;
+    const signerSecret = env.ARENA_ADMIN_SECRET;
 
     if (!signerSecret) {
       throw new Error("ARENA_ADMIN_SECRET is not configured. Cannot submit on-chain resolve_round.");
