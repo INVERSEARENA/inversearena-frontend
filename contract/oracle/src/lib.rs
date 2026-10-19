@@ -1,4 +1,5 @@
 #![no_std]
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 use soroban_sdk::{
     Address, BytesN, Env, contract, contracterror, contractimpl, contracttype,
     symbol_short,
@@ -542,6 +543,7 @@ impl OracleContract {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use soroban_sdk::{Env, testutils::{Address as _, Ledger as _}};

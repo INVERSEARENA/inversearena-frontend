@@ -203,6 +203,7 @@ pub fn fetch_rate_schedule(env: &Env, oracle_contract: &Address) -> Option<RateS
 // the oracle crate with soroban-sdk testutils features enabled.
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use soroban_sdk::testutils::Events as _;
     use soroban_sdk::{Env, contract, contractimpl};

@@ -1,4 +1,5 @@
 #![no_std]
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 use soroban_sdk::{Address, Env, contract, contractimpl, token};
 
 const SECONDS_PER_YEAR: u64 = 31_536_000;
@@ -398,6 +399,7 @@ impl RwaAdapter {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod test {
     extern crate std;
 

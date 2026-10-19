@@ -80,6 +80,7 @@ pub fn phase(state: &GameState, round_count: u32, commit_deadline: u64, now: u64
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::types::GameState::*;

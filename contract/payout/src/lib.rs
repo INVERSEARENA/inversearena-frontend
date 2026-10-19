@@ -1,4 +1,5 @@
 #![no_std]
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 mod snapshot_tests;
 mod storage;
 mod types;
@@ -465,6 +466,7 @@ pub(crate) mod test_support {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod test {
     use super::*;
     use crate::test_support::{LegacyArena, MockArena, MockArenaClient, MockFactory, MockFactoryClient};

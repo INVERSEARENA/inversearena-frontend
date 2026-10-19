@@ -13,6 +13,11 @@ members = [
 [workspace.dependencies]
 soroban-sdk = "22"
 
+# cargo-llvm-cov sets `coverage_nightly` on nightly toolchains; inline test
+# modules use it to opt out of coverage metrics (#1651, docs/COVERAGE.md).
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
+
 [profile.release]
 opt-level = "z"
 lto = true

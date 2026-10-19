@@ -3,6 +3,7 @@
 //! Manages the full game lifecycle: player registration, commit-reveal rounds,
 //! yield accounting via an RWA vault adapter, winner payout, and admin controls.
 #![no_std]
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 use soroban_sdk::{
     Address, Bytes, BytesN, Env, IntoVal, Symbol, Vec,
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
@@ -1749,6 +1750,7 @@ fn build_leaderboard(env: &Env) {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod test {
     use super::*;
     use soroban_sdk::{
@@ -5160,6 +5162,7 @@ mod player_status_tests;
 #[cfg(test)]
 mod global_pause_tests;
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod commitment_vectors;
 #[cfg(test)]
 mod temp_storage_tests;
