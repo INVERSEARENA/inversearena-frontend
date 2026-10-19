@@ -16,6 +16,7 @@
 
 #![cfg(test)]
 
+// The arena crate is no_std; this host-only test reads files, so it opts in.
 extern crate std;
 
 use sha2::{Digest, Sha256};

@@ -54,6 +54,10 @@ export const CONTRACT_ERRORS = {
       42: "NoStartDeadline",
       43: "VaultWithdrawFailed",
       44: "GloballyPaused",
+      45: "ArenaAlreadyHasPlayers",
+      46: "ResolutionCursorMismatch",
+      47: "ResolutionIncomplete",
+      48: "ResolutionInProgress",
     },
   },
   factory: {

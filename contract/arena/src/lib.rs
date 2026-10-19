@@ -2641,6 +2641,7 @@ mod test {
         let (env, client, _resolve_ts) = setup_started_with_oracle_age(0);
         client.resolve_round();
         let events = env.events().all();
+        // #1607: topic = ("arena", "orc_fresh"); data = (v, round, class, age).
         let has_freshness_event = events
             .iter()
             .any(|(contract, topics, _data)| {
