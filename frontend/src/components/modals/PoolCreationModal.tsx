@@ -65,6 +65,7 @@ export function PoolCreationModal({
   const [stakeError, setStakeError] = useState<string>("");
   const [capacityError, setCapacityError] = useState<string>("");
   const [errorMessage, setErrorMessage] = useState<string>("");
+  const [whitelistState, setWhitelistState] = useState<"unknown" | "checking" | "allowed" | "required">("unknown");
   const [isFormValid, setIsFormValid] = useState(false);
   const [isDeploying, setIsDeploying] = useState(false);
   const [draftRestored, setDraftRestored] = useState(false);
@@ -89,6 +90,19 @@ export function PoolCreationModal({
   const totalPotentialPool = stakeAmount * arenaCapacity;
   const dynamicYield = 8.42;
   const minorityWinCap = 14.5;
+
+  useEffect(() => {
+    if (!isOpen || !isConnected || !address) return;
+    let cancelled = false;
+    setWhitelistState("checking");
+    fetch("/api/whitelist/status", { credentials: "include" })
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error("status unavailable")))
+      .then((data: { isWhitelisted?: boolean }) => {
+        if (!cancelled) setWhitelistState(data.isWhitelisted ? "allowed" : "required");
+      })
+      .catch(() => { if (!cancelled) setWhitelistState("unknown"); });
+    return () => { cancelled = true; };
+  }, [isOpen, isConnected, address]);
 
   const getMaxStake = useCallback(() => {
     if (!isConnected) return Infinity;
@@ -282,6 +296,13 @@ export function PoolCreationModal({
               >
                 Discard draft
               </button>
+            </div>
+          )}
+
+          {isConnected && whitelistState === "required" && (
+            <div className="mb-6 border-2 border-primary bg-primary/10 p-4 text-sm font-bold text-primary" role="status">
+              <p className="uppercase">Host access approval required before pool creation.</p>
+              <a className="mt-2 inline-block underline" href="/dashboard/host-whitelist">Submit a whitelist application</a>
             </div>
           )}
 
@@ -518,7 +539,7 @@ export function PoolCreationModal({
                     setShowTxModal(true);
                   }
                 }}
-                disabled={isConnected && !isFormValid}
+                disabled={isConnected && (!isFormValid || whitelistState === "checking" || whitelistState === "required")}
                 className="w-full bg-primary text-black border-3 border-black py-6 text-2xl lg:text-3xl font-black uppercase italic tracking-tighter shadow-[4px_4px_0px_0px_#000] hover:translate-x-1 hover:translate-y-1 hover:shadow-none transition-all flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-x-0 disabled:hover:translate-y-0 disabled:hover:shadow-[4px_4px_0px_0px_#000]"
                 aria-label={isConnected ? "Initialize arena" : "Connect wallet"}
               >

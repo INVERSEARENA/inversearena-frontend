@@ -36,9 +36,26 @@ model Arena {
 
   pools       Pool[]
   rounds      Round[]
+  stats       ArenaStats?
 
   @@index([createdAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
   @@map("arenas")
+}
+
+model ArenaStats {
+  id             String   @id @default(uuid())
+  arenaId        String   @unique @map("arena_id")
+  players        Int      @default(0)
+  rounds         Int      @default(0)
+  eliminations   Int      @default(0)
+  yieldAccrued   Float    @default(0) @map("yield_accrued")
+  version        Int      @default(0)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  arena          Arena    @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+
+  @@map("arena_stats")
 }
 
 model Pool {
@@ -176,6 +193,26 @@ model PushSubscription {
 
   @@index([userId])
   @@map("push_subscriptions")
+}
+
+model HostWhitelistApplication {
+  id          String   @id @default(uuid())
+  wallet      String
+  contact     String
+  intent      String
+  status      String   @default("PENDING") // PENDING | APPROVED | REJECTED | CONFIRMED
+  reviewer    String?
+  reviewNote  String?  @map("review_note")
+  unsignedXdr String?  @map("unsigned_xdr")
+  txHash      String?  @map("tx_hash")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  reviewedAt  DateTime? @map("reviewed_at")
+  confirmedAt DateTime? @map("confirmed_at")
+
+  @@index([wallet, status])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("host_whitelist_applications")
 }
 
 // Checkpointed on-chain arena projection state (#1382).

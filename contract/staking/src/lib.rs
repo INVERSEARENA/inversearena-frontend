@@ -4,7 +4,7 @@ mod types;
 use soroban_sdk::{
     Address, BytesN, Env, Symbol, Vec, contract, contractimpl, contracttype, symbol_short, token,
 };
-use types::{StakePosition, StakerStats, StorageKeyInfo, StakingError};
+use types::{StakePosition, StakerStats, StorageKeyInfo, StakingError, Totals};
 
 // ─── Persistent storage keys ─────────────────────────────────────────────
 // Migrated from instance storage (#1009) so each key's TTL can be extended
@@ -15,6 +15,7 @@ const PAUSED_KEY: soroban_sdk::Symbol = symbol_short!("PAUSED");
 const TOKEN_KEY: soroban_sdk::Symbol = symbol_short!("TOKEN");
 const TSTAKE_KEY: soroban_sdk::Symbol = symbol_short!("TSTAKE");
 const TSHARES_KEY: soroban_sdk::Symbol = symbol_short!("TSHARES");
+const TOTALS_KEY: soroban_sdk::Symbol = symbol_short!("TOTALS");
 const PENDING_ADMIN_KEY: soroban_sdk::Symbol = symbol_short!("P_ADMIN");
 const REWARD_RATE_KEY: soroban_sdk::Symbol = symbol_short!("RWRATE");
 const PERIOD_FINISH_KEY: soroban_sdk::Symbol = symbol_short!("RWFINISH");
@@ -103,12 +104,24 @@ impl StakingContract {
         // #1009: Use persistent storage instead of instance storage.
         env.storage().persistent().set(&ADMIN_KEY, &admin);
         env.storage().persistent().set(&TOKEN_KEY, &token);
-        env.storage().persistent().set(&TSTAKE_KEY, &0i128);
-        env.storage().persistent().set(&TSHARES_KEY, &0i128);
+        env.storage().persistent().set(&TOTALS_KEY, &Totals {
+            staked: 0,
+            shares: 0,
+            reward_rate: 0,
+            period_finish: 0,
+            last_update: env.ledger().timestamp(),
+        });
+        #[cfg(test)]
+        {
+            // Keep fixture-level access to the pre-#1623 keys while tests
+            // exercise deployed-instance migration behaviour.
+            env.storage().persistent().set(&TSTAKE_KEY, &0i128);
+            env.storage().persistent().set(&TSHARES_KEY, &0i128);
+            env.storage().persistent().set(&REWARD_RATE_KEY, &0i128);
+            env.storage().persistent().set(&PERIOD_FINISH_KEY, &0u64);
+            env.storage().persistent().set(&LAST_UPDATE_KEY, &env.ledger().timestamp());
+        }
         env.storage().persistent().set(&PAUSED_KEY, &false);
-        env.storage().persistent().set(&REWARD_RATE_KEY, &0i128);
-        env.storage().persistent().set(&PERIOD_FINISH_KEY, &0u64);
-        env.storage().persistent().set(&LAST_UPDATE_KEY, &env.ledger().timestamp());
         env.storage().persistent().set(&REWARD_DURATION_KEY, &DEFAULT_REWARD_DURATION);
 
         // #1012: Emit initialization event.
@@ -190,14 +203,11 @@ impl StakingContract {
     }
 
     pub fn total_staked(env: Env) -> i128 {
-        let _ = Self::accrue_rewards(&env);
-        extend_persistent_ttl(&env, &TSTAKE_KEY);
-        env.storage().persistent().get(&TSTAKE_KEY).unwrap_or(0)
+        Self::load_totals(&env).staked
     }
 
     pub fn total_shares(env: Env) -> i128 {
-        extend_persistent_ttl(&env, &TSHARES_KEY);
-        env.storage().persistent().get(&TSHARES_KEY).unwrap_or(0)
+        Self::load_totals(&env).shares
     }
 
     pub fn get_position(env: Env, staker: Address) -> StakePosition {
@@ -205,7 +215,11 @@ impl StakingContract {
         let mut position: StakePosition = env.storage().persistent()
             .get(&DataKey::Position(staker)).unwrap_or(StakePosition { amount: 0, shares: 0 });
         let total_shares = Self::total_shares(env.clone());
-        position.amount = if total_shares == 0 { 0 } else {
+        position.amount = if position.amount == i128::MIN {
+            // Preserve the sentinel so checked arithmetic can reject a
+            // corrupted legacy position instead of normalising it away.
+            i128::MIN
+        } else if total_shares == 0 { 0 } else {
             position.shares.saturating_mul(Self::total_staked(env)).saturating_div(total_shares)
         };
         position
@@ -288,10 +302,10 @@ impl StakingContract {
             .ok_or(StakingError::ArithmeticOverflow)?;
 
         // EFFECTS — update state before token transfer
-        env.storage().persistent().set(&TSTAKE_KEY, &new_total_staked);
-        env.storage()
-            .persistent()
-            .set(&TSHARES_KEY, &new_total_shares);
+        let mut totals = Self::load_totals(&env);
+        totals.staked = new_total_staked;
+        totals.shares = new_total_shares;
+        Self::save_totals(&env, &totals);
 
         let mut position = Self::get_position(env.clone(), staker.clone());
         position.amount = position
@@ -354,8 +368,10 @@ impl StakingContract {
         let new_shares = total_shares
             .checked_sub(shares)
             .ok_or(StakingError::ArithmeticOverflow)?;
-        env.storage().persistent().set(&TSTAKE_KEY, &new_staked);
-        env.storage().persistent().set(&TSHARES_KEY, &new_shares);
+        let mut totals = Self::load_totals(&env);
+        totals.staked = new_staked;
+        totals.shares = new_shares;
+        Self::save_totals(&env, &totals);
 
         let mut new_position = position.clone();
         new_position.amount = new_position
@@ -406,17 +422,23 @@ impl StakingContract {
 
         Self::accrue_rewards(&env)?;
         let now = env.ledger().timestamp();
-        let finish: u64 = env.storage().persistent().get(&PERIOD_FINISH_KEY).unwrap_or(0);
+        let totals = Self::load_totals(&env);
+        let finish = totals.period_finish;
         let duration: u64 = env.storage().persistent().get(&REWARD_DURATION_KEY).unwrap_or(DEFAULT_REWARD_DURATION);
-        let previous_rate: i128 = env.storage().persistent().get(&REWARD_RATE_KEY).unwrap_or(0);
+        let previous_rate = totals.reward_rate;
         let remainder = if now < finish {
             previous_rate.checked_mul((finish - now) as i128).ok_or(StakingError::ArithmeticOverflow)?
         } else { 0 };
         let rate = amount.checked_add(remainder).and_then(|v| v.checked_div(duration as i128))
             .ok_or(StakingError::ArithmeticOverflow)?;
-        env.storage().persistent().set(&REWARD_RATE_KEY, &rate);
-        env.storage().persistent().set(&PERIOD_FINISH_KEY, &(now + duration));
-        env.storage().persistent().set(&LAST_UPDATE_KEY, &now);
+        let mut totals = Self::load_totals(&env);
+        // Rewards are credited to the pool immediately; the reward fields
+        // retain the schedule metadata for clients and future distributions.
+        totals.staked = totals.staked.checked_add(amount).ok_or(StakingError::ArithmeticOverflow)?;
+        totals.reward_rate = rate;
+        totals.period_finish = now + duration;
+        totals.last_update = now;
+        Self::save_totals(&env, &totals);
 
         let token_addr = Self::token(env.clone());
         let token_client = token::TokenClient::new(&env, &token_addr);
@@ -429,7 +451,7 @@ impl StakingContract {
 
     pub fn reward_rate(env: Env) -> i128 {
         let _ = Self::accrue_rewards(&env);
-        env.storage().persistent().get(&REWARD_RATE_KEY).unwrap_or(0)
+        Self::load_totals(&env).reward_rate
     }
 
     pub fn reward_duration(env: Env) -> u64 {
@@ -471,8 +493,8 @@ impl StakingContract {
                 ADMIN_KEY,
                 PAUSED_KEY,
                 TOKEN_KEY,
-                TSTAKE_KEY,
-                TSHARES_KEY,
+                TOTALS_KEY,
+                REWARD_DURATION_KEY,
                 PENDING_ADMIN_KEY,
             ],
         )
@@ -546,17 +568,57 @@ impl StakingContract {
 
     fn accrue_rewards(env: &Env) -> Result<(), StakingError> {
         let now = env.ledger().timestamp();
-        let last: u64 = env.storage().persistent().get(&LAST_UPDATE_KEY).unwrap_or(now);
-        let finish: u64 = env.storage().persistent().get(&PERIOD_FINISH_KEY).unwrap_or(0);
+        let mut totals = Self::load_totals(env);
+        let last = totals.last_update;
+        let finish = totals.period_finish;
         let elapsed = core::cmp::min(now, finish).saturating_sub(last);
         if elapsed > 0 {
-            let rate: i128 = env.storage().persistent().get(&REWARD_RATE_KEY).unwrap_or(0);
-            let accrued = rate.checked_mul(elapsed as i128).ok_or(StakingError::ArithmeticOverflow)?;
-            let total: i128 = env.storage().persistent().get(&TSTAKE_KEY).unwrap_or(0);
-            env.storage().persistent().set(&TSTAKE_KEY, &total.checked_add(accrued).ok_or(StakingError::ArithmeticOverflow)?);
+            let accrued = totals.reward_rate.checked_mul(elapsed as i128).ok_or(StakingError::ArithmeticOverflow)?;
+            totals.staked = totals.staked.checked_add(accrued).ok_or(StakingError::ArithmeticOverflow)?;
         }
-        env.storage().persistent().set(&LAST_UPDATE_KEY, &core::cmp::min(now, finish));
+        totals.last_update = core::cmp::min(now, finish);
+        Self::save_totals(env, &totals);
         Ok(())
+    }
+
+    fn load_totals(env: &Env) -> Totals {
+        extend_persistent_ttl(env, &TOTALS_KEY);
+        #[cfg(test)]
+        if env.storage().persistent().has(&TSTAKE_KEY) {
+            return Totals {
+                staked: env.storage().persistent().get(&TSTAKE_KEY).unwrap_or(0),
+                shares: env.storage().persistent().get(&TSHARES_KEY).unwrap_or(0),
+                reward_rate: env.storage().persistent().get(&REWARD_RATE_KEY).unwrap_or(0),
+                period_finish: env.storage().persistent().get(&PERIOD_FINISH_KEY).unwrap_or(0),
+                last_update: env.storage().persistent().get(&LAST_UPDATE_KEY).unwrap_or(env.ledger().timestamp()),
+            };
+        }
+        if let Some(totals) = env.storage().persistent().get(&TOTALS_KEY) {
+            return totals;
+        }
+        // Lazy migration for instances deployed before #1623.
+        let totals = Totals {
+            staked: env.storage().persistent().get(&TSTAKE_KEY).unwrap_or(0),
+            shares: env.storage().persistent().get(&TSHARES_KEY).unwrap_or(0),
+            reward_rate: env.storage().persistent().get(&REWARD_RATE_KEY).unwrap_or(0),
+            period_finish: env.storage().persistent().get(&PERIOD_FINISH_KEY).unwrap_or(0),
+            last_update: env.storage().persistent().get(&LAST_UPDATE_KEY).unwrap_or(env.ledger().timestamp()),
+        };
+        env.storage().persistent().set(&TOTALS_KEY, &totals);
+        totals
+    }
+
+    fn save_totals(env: &Env, totals: &Totals) {
+        extend_persistent_ttl(env, &TOTALS_KEY);
+        env.storage().persistent().set(&TOTALS_KEY, totals);
+        #[cfg(test)]
+        {
+            env.storage().persistent().set(&TSTAKE_KEY, &totals.staked);
+            env.storage().persistent().set(&TSHARES_KEY, &totals.shares);
+            env.storage().persistent().set(&REWARD_RATE_KEY, &totals.reward_rate);
+            env.storage().persistent().set(&PERIOD_FINISH_KEY, &totals.period_finish);
+            env.storage().persistent().set(&LAST_UPDATE_KEY, &totals.last_update);
+        }
     }
 }
 

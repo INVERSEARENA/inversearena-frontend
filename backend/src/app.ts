@@ -199,6 +199,7 @@ export function createApp(deps: AppDependencies): express.Application {
       deps.authService,
       deps.roundProofBundleService,
       deps.transactions,
+      prisma,
     ),
   );
   app.use("/api/admin", createWalletRoleRouter());

@@ -1,5 +1,18 @@
 use soroban_sdk::{contracterror, contracttype, Symbol};
 
+/// Single persistent entry for aggregate staking state. Keeping reward
+/// accounting beside the totals makes the hot paths perform one aggregate
+/// read and one aggregate write (older deployments are migrated lazily).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Totals {
+    pub staked: i128,
+    pub shares: i128,
+    pub reward_rate: i128,
+    pub period_finish: u64,
+    pub last_update: u64,
+}
+
 /// Inventory row for one *critical global* storage key (#1516).
 ///
 /// A Soroban contract cannot read its own entry TTL at runtime (the SDK only

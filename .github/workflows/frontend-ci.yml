@@ -40,3 +40,9 @@ jobs:
 
       - name: Jest unit tests
         run: pnpm exec jest --ci --runInBand --passWithNoTests
+
+      - name: Build production bundle
+        run: pnpm build
+
+      - name: Lighthouse performance budgets
+        run: pnpm dlx @lhci/cli@0.15.x autorun --config=../.lighthouserc.json

@@ -16,11 +16,15 @@ export class RoundRepository {
   constructor(private prisma: PrismaClient) {}
 
   async create(arenaId: string, roundNumber: number): Promise<RoundData> {
-    const round = await this.prisma.round.create({
-      data: {
-        arenaId,
-        roundNumber,
-      },
+    const round = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.round.create({ data: { arenaId, roundNumber } });
+      const players = await tx.pool.count({ where: { arenaId } });
+      await tx.arenaStats.upsert({
+        where: { arenaId },
+        create: { arenaId, rounds: 1, players },
+        update: { rounds: { increment: 1 }, players, version: { increment: 1 } },
+      });
+      return created;
     });
 
     return this.mapRound(round);
@@ -186,6 +190,24 @@ export class RoundRepository {
           })),
         });
       }
+
+      const arenaId = (await tx.round.findUniqueOrThrow({ where: { id: roundId }, select: { arenaId: true } })).arenaId;
+      const players = await tx.pool.count({ where: { arenaId } });
+      await tx.arenaStats.upsert({
+        where: { arenaId },
+        create: {
+          arenaId,
+          players,
+          eliminations: resolution.eliminatedPlayers.length,
+          yieldAccrued: metadata.oracleYield ?? 0,
+        },
+        update: {
+          eliminations: { increment: resolution.eliminatedPlayers.length },
+          players,
+          yieldAccrued: { increment: metadata.oracleYield ?? 0 },
+          version: { increment: 1 },
+        },
+      });
     });
   }
 
