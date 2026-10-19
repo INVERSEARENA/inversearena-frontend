@@ -1,6 +1,6 @@
 .PHONY: dev dev-reset dev-seed test build migrate migrate-prod infra monitoring clean help \
         contracts-build contracts-deploy contracts-init-factory contracts-abi-check \
-        contracts-coverage \
+        contracts-coverage contracts-cost-bench \
         backend-dev backend-test frontend-dev deps-gate deps-gate-test
 
 NETWORK ?= testnet
@@ -69,6 +69,9 @@ contracts-coverage: ## Per-crate line/branch coverage + thresholds (#1651)
 	cd contract && cargo +$(COVERAGE_NIGHTLY) llvm-cov report --branch --html --output-dir target/coverage --ignore-filename-regex '$(COVERAGE_IGNORE)'
 	cd contract && cargo +$(COVERAGE_NIGHTLY) llvm-cov report --branch --json --summary-only --output-path target/coverage/summary.json --ignore-filename-regex '$(COVERAGE_IGNORE)'
 	node contract/scripts/coverage.mjs
+
+contracts-cost-bench: ## Per-entry-point resource costs vs baseline (#1649)
+	node contract/scripts/cost-bench.mjs
 
 ## ── Granular targets (kept for backwards compatibility) ────────────────────
 

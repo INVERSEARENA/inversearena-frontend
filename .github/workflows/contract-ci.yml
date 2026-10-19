@@ -199,3 +199,45 @@ jobs:
             contract/target/coverage/summary.md
           if-no-files-found: warn
 
+  # #1649: per-entry-point resource costs compared against contract/cost-baseline.json.
+  # Costs depend on the rustc that compiled the WASM, so this job pins the
+  # toolchain the baseline was recorded with (see the baseline's "toolchain").
+  cost-bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+          targets: wasm32v1-none
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contract -> target
+          shared-key: cost-bench
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+
+      - name: Cost benchmark script tests
+        run: node --test contract/scripts/cost-bench.test.mjs
+
+      - name: Run benchmarks and compare with baseline
+        run: node contract/scripts/cost-bench.mjs
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-cost-bench
+          path: contract/target/cost-bench/
+          if-no-files-found: warn
