@@ -138,6 +138,8 @@ inversearena-frontend/
 │   ├── tests/              # Integration and unit tests
 │   └── .env.example        # Backend environment variable template
 │
+├── tools/ops-cli/          # inverse-ops: operator CLI for contract inspection and lifecycle ops
+│
 └── CONTRIBUTING.md         # Contribution guide (snapshot tests, XDR serialization)
 ```
 
@@ -248,6 +250,20 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for snapshot testing requirements.
 cargo test --manifest-path contract/arena/Cargo.toml
 cargo test --manifest-path contract/payout/Cargo.toml
 ```
+
+---
+
+## Operator CLI
+
+`inverse-ops` (`tools/ops-cli`) reads the deployment manifest and each contract's spec to inspect arenas, decode events and run lifecycle operations. State-changing commands are dry runs unless `--submit`, and mainnet submits need confirmation:
+
+```bash
+inverse-ops arena show 7
+inverse-ops arena events 7 --round 2 --json
+inverse-ops --signer ledger --submit arena resolve 7
+```
+
+See [tools/ops-cli/README.md](tools/ops-cli/README.md).
 
 ---
 
