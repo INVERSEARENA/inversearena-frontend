@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseAllowedOrigins } from "@/shared/lib/security-validation";
 import { HSTS_HEADER_VALUE, generateNonce } from "@/shared/config/csp";
+import { isDevGalleryEnabled, isDevGalleryPath } from "@/shared/lib/dev-gallery";
 
 const DEFAULT_TESTNET_HORIZON_URL = "https://horizon-testnet.stellar.org";
 const DEFAULT_TESTNET_SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
@@ -182,6 +183,14 @@ export function proxy(request: NextRequest) {
   // next-themes so its inline anti-flash <script> is allowed without
   // 'unsafe-inline'.
   const nonce = generateNonce();
+
+  // Dev-gallery routes (#1645) are 404'd in production before they reach the
+  // app router, so demo pages never ship in the production route surface.
+  if (!isDevGalleryEnabled() && isDevGalleryPath(request.nextUrl.pathname)) {
+    const notFound = new NextResponse(null, { status: 404 });
+    applySecurityHeaders(notFound, allowedOrigins, nonce);
+    return notFound;
+  }
 
   if (isApiRoute && requestOrigin && !allowedOrigins.includes(requestOrigin)) {
     const forbidden = NextResponse.json(

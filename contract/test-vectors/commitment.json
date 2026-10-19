@@ -1,0 +1,121 @@
+{
+  "$comment": "Golden test vectors shared by Rust (contract/arena) and TypeScript (frontend) tests. Regenerate with: cd contract && cargo test -p arena commitment_vectors -- --nocapture, or see contract/test-vectors/README.md. Do not hand-edit hashes.",
+  "version": 1,
+  "spec": {
+    "commitment": "SHA256([choice_byte] ++ salt_32_bytes) where Heads=0, Tails=1. Matches contract/arena/src/lib.rs compute_commitment and frontend/src/shared/lib/stellar/commit-reveal.ts computeCommitment.",
+    "metadataHash": "SHA256(canonical_json_utf8) with lexicographically sorted keys, no insignificant whitespace. Matches frontend/src/shared/lib/stellar/metadata-hash.ts and backend/src/utils/metadataHash.ts.",
+    "amountEncoding": "Integer amounts map 1:1 to i128; non-integers are rejected. The vector documents the decimal string form that both sides must accept/reject identically."
+  },
+  "commitment": [
+    {
+      "name": "heads-zero-salt",
+      "choice": "Heads",
+      "choiceByte": 0,
+      "salt": "0000000000000000000000000000000000000000000000000000000000000000",
+      "context": { "arena": 1, "round": 1, "player": "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H" },
+      "preimage": "000000000000000000000000000000000000000000000000000000000000000000",
+      "commitment": "7f9c9e31ac8256ca2f258583df262dbc7d6f68f2a03043d5c99a4ae5a7396ce9"
+    },
+    {
+      "name": "tails-zero-salt",
+      "choice": "Tails",
+      "choiceByte": 1,
+      "salt": "0000000000000000000000000000000000000000000000000000000000000000",
+      "context": { "arena": 1, "round": 1, "player": "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H" },
+      "preimage": "010000000000000000000000000000000000000000000000000000000000000000",
+      "commitment": "1a7dfdeaffeedac489287e85be5e9c049a2ff6470f55cf30260f55395ac1b159"
+    },
+    {
+      "name": "heads-ff-salt",
+      "choice": "Heads",
+      "choiceByte": 0,
+      "salt": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "context": { "arena": 7, "round": 3, "player": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+      "preimage": "00ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "commitment": "5e16d316ecd5773e50c3b02737d424192b02f25b4245822079181c557aafda7d"
+    },
+    {
+      "name": "tails-ff-salt",
+      "choice": "Tails",
+      "choiceByte": 1,
+      "salt": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "context": { "arena": 7, "round": 3, "player": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+      "preimage": "01ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "commitment": "29fb7cd3be48a8d76bb031f0abce26caa9e092c000cd16bb101d30f63c4c1bc1"
+    },
+    {
+      "name": "heads-42-salt",
+      "choice": "Heads",
+      "choiceByte": 0,
+      "salt": "4242424242424242424242424242424242424242424242424242424242424242",
+      "context": { "arena": 2, "round": 10, "player": "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H" },
+      "preimage": "004242424242424242424242424242424242424242424242424242424242424242",
+      "commitment": "3dd7b1ad7e64470b3522ca44f304704d92367adce2c4e0d5bc5e5167fac09bdd"
+    },
+    {
+      "name": "tails-07-salt",
+      "choice": "Tails",
+      "choiceByte": 1,
+      "salt": "0707070707070707070707070707070707070707070707070707070707070707",
+      "context": { "arena": 2, "round": 10, "player": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+      "preimage": "010707070707070707070707070707070707070707070707070707070707070707",
+      "commitment": "d3907c0247e7e98b72338a00d87244248df71eb313589da290d45adfba44e6d2"
+    },
+    {
+      "name": "heads-mixed-salt",
+      "choice": "Heads",
+      "choiceByte": 0,
+      "salt": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": { "arena": 42, "round": 7, "player": "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H" },
+      "preimage": "00000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "commitment": "699cacdb4c39d8e0bb1223352765a7f7acdc51dec6694f7b54c3d0a47f0cc409"
+    },
+    {
+      "name": "tails-mixed-salt",
+      "choice": "Tails",
+      "choiceByte": 1,
+      "salt": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": { "arena": 42, "round": 7, "player": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+      "preimage": "01000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "commitment": "491176b0f443c65a7c7d72df47d6cbc0d04e111fb5a619f60d3e77677ab6f919"
+    }
+  ],
+  "metadataHash": [
+    {
+      "name": "basic-arena",
+      "metadata": {
+        "name": "Alpha Arena",
+        "description": "Fast rounds",
+        "rules": "Reveal before the deadline.",
+        "banner": "https://example.com/banner.png"
+      },
+      "canonical": "{\"banner\":\"https://example.com/banner.png\",\"description\":\"Fast rounds\",\"name\":\"Alpha Arena\",\"rules\":\"Reveal before the deadline.\"}",
+      "hash": "05f1a22d4e08e7e4cdde2423a6e59f3470fddc279e7dd33f98973a21fc6385e7"
+    },
+    {
+      "name": "empty-object",
+      "metadata": {},
+      "canonical": "{}",
+      "hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "name": "nested-and-array",
+      "metadata": {
+        "name": "Nested",
+        "tags": ["a", "b"],
+        "meta": { "z": 1, "a": 2 },
+        "optional": null
+      },
+      "canonical": "{\"meta\":{\"a\":2,\"z\":1},\"name\":\"Nested\",\"optional\":null,\"tags\":[\"a\",\"b\"]}",
+      "hash": "221136423ae3589ff49cd5b8dce9bce5ffa9d428216c3b51969b9a88636a7ce8"
+    }
+  ],
+  "amountEncoding": [
+    { "name": "zero", "decimal": "0", "i128": "0", "valid": true },
+    { "name": "one-lamport", "decimal": "1", "i128": "1", "valid": true },
+    { "name": "million", "decimal": "1000000", "i128": "1000000", "valid": true },
+    { "name": "max-u64", "decimal": "18446744073709551615", "i128": "18446744073709551615", "valid": true },
+    { "name": "fractional-rejected", "decimal": "1.5", "i128": null, "valid": false },
+    { "name": "negative-rejected", "decimal": "-1", "i128": null, "valid": false }
+  ]
+}
