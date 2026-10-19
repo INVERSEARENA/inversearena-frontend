@@ -1,190 +1,76 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import {
-  RateLimiterMemory,
-  RateLimiterRedis,
-  type RateLimiterAbstract,
-} from "rate-limiter-flexible";
+  type RateLimitPolicyConfig,
+  type RouteClass,
+  DEFAULT_POLICY_TABLE,
+  getRoutePolicy,
+  resolveClientIp,
+  buildRateLimitKeys,
+  getRateLimiter,
+  consumeRateLimitKeys,
+  clearLimiterCache as clearSharedLimiterCache,
+  setSharedRedisClient,
+} from "@inversearena/rate-limit";
 import { redis } from "../cache/redisClient";
 import { apiError } from "../utils/apiError";
 
-export interface RateLimitConfig {
-  keyPrefix: string;
-  points: number;
-  durationSeconds: number;
-  /** When true, enforce separate IP and wallet buckets (wallet from req.body.walletAddress). */
-  dualScope?: boolean;
-}
+// Configure shared limiter with backend's Redis instance
+setSharedRedisClient(redis);
 
-function readPositiveInt(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (!raw) return fallback;
-  const parsed = Number(raw);
-  return Number.isInteger(parsed) && parsed >= 1 ? parsed : fallback;
-}
+export type RateLimitConfig = RateLimitPolicyConfig;
 
 export function getNonceRateLimitConfig(): RateLimitConfig {
-  return {
-    keyPrefix: process.env.RATE_LIMIT_NONCE_PREFIX ?? "rl:auth:nonce",
-    points: readPositiveInt("RATE_LIMIT_NONCE_POINTS", 5),
-    durationSeconds: readPositiveInt("RATE_LIMIT_NONCE_WINDOW_SECONDS", 60),
-  };
+  return getRoutePolicy("AUTH_NONCE");
 }
 
 export function getPoolsRateLimitConfig(): RateLimitConfig {
-  return {
-    keyPrefix: process.env.RATE_LIMIT_POOLS_PREFIX ?? "rl:pools:create",
-    points: readPositiveInt("RATE_LIMIT_POOLS_POINTS", 3),
-    durationSeconds: readPositiveInt("RATE_LIMIT_POOLS_WINDOW_SECONDS", 60),
-  };
+  return getRoutePolicy("POOLS_CREATE");
 }
 
-/**
- * Limiter for POST /api/arenas/:id/sync-players (#1351).
- *
- * Same shape and default budget as pool creation — the route reaches Soroban RPC
- * on every call — but its own bucket, so syncing players cannot eat a user's
- * pool-creation allowance or vice versa.
- */
 export function getSyncPlayersRateLimitConfig(): RateLimitConfig {
-  return {
-    keyPrefix: process.env.RATE_LIMIT_SYNC_PLAYERS_PREFIX ?? "rl:arenas:sync-players",
-    points: readPositiveInt("RATE_LIMIT_SYNC_PLAYERS_POINTS", 3),
-    durationSeconds: readPositiveInt("RATE_LIMIT_SYNC_PLAYERS_WINDOW_SECONDS", 60),
-  };
+  return getRoutePolicy("ARENAS_SYNC_PLAYERS");
 }
 
-/**
- * Limiter for POST /api/arenas/:id/reservation (#1406). A generous budget:
- * legitimate use re-reserves on every render of the join modal's
- * confirmation step, not just once per join attempt.
- */
 export function getLobbyReservationRateLimitConfig(): RateLimitConfig {
-  return {
-    keyPrefix: process.env.RATE_LIMIT_RESERVATION_PREFIX ?? "rl:arenas:reservation",
-    points: readPositiveInt("RATE_LIMIT_RESERVATION_POINTS", 10),
-    durationSeconds: readPositiveInt("RATE_LIMIT_RESERVATION_WINDOW_SECONDS", 60),
-  };
+  return getRoutePolicy("ARENAS_RESERVATION");
 }
 
 export function getVerifyRateLimitConfig(): RateLimitConfig {
-  return {
-    keyPrefix: process.env.RATE_LIMIT_VERIFY_PREFIX ?? "rl:auth:verify",
-    points: readPositiveInt("RATE_LIMIT_VERIFY_POINTS", 10),
-    durationSeconds: readPositiveInt("RATE_LIMIT_VERIFY_WINDOW_SECONDS", 60),
-    dualScope: true,
-  };
+  return getRoutePolicy("AUTH_VERIFY");
 }
 
-/** Expensive simulations (#1448): independent per-IP and per-wallet budgets. */
 export function getSimulationRateLimitConfig(): RateLimitConfig {
-  return { keyPrefix: process.env.RATE_LIMIT_SIMULATION_PREFIX ?? "rl:simulations", points: readPositiveInt("RATE_LIMIT_SIMULATION_POINTS", 5), durationSeconds: readPositiveInt("RATE_LIMIT_SIMULATION_WINDOW_SECONDS", 60), dualScope: true };
+  return getRoutePolicy("SIMULATIONS");
 }
 
 export function getRefreshRateLimitConfig(): RateLimitConfig {
-  return {
-    keyPrefix: process.env.RATE_LIMIT_REFRESH_PREFIX ?? "rl:auth:refresh",
-    points: readPositiveInt("RATE_LIMIT_REFRESH_POINTS", 20),
-    durationSeconds: readPositiveInt("RATE_LIMIT_REFRESH_WINDOW_SECONDS", 60),
-  };
+  return getRoutePolicy("AUTH_REFRESH");
 }
 
 export function getWalletRoleRateLimitConfig(): RateLimitConfig {
-  return {
-    keyPrefix: process.env.RATE_LIMIT_WALLET_ROLE_PREFIX ?? "rl:admin:wallet-role",
-    points: readPositiveInt("RATE_LIMIT_WALLET_ROLE_POINTS", 20),
-    durationSeconds: readPositiveInt("RATE_LIMIT_WALLET_ROLE_WINDOW_SECONDS", 60),
-  };
-}
-
-const limiterCache = new Map<string, RateLimiterAbstract>();
-
-function getLimiter(config: RateLimitConfig): RateLimiterAbstract {
-  const cacheKey = `${config.keyPrefix}:${config.points}:${config.durationSeconds}`;
-  const existing = limiterCache.get(cacheKey);
-  if (existing) return existing;
-
-  const baseOptions = {
-    keyPrefix: config.keyPrefix,
-    points: config.points,
-    duration: config.durationSeconds,
-  };
-
-  const redisUrl = process.env.REDIS_URL;
-  const limiter = redisUrl
-    ? new RateLimiterRedis({
-        ...baseOptions,
-        storeClient: redis,
-        insuranceLimiter: new RateLimiterMemory(baseOptions),
-      })
-    : new RateLimiterMemory(baseOptions);
-
-  limiterCache.set(cacheKey, limiter);
-  return limiter;
-}
-
-function resolveIp(req: Request): string {
-  const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string") {
-    const first = forwarded.split(",")[0]?.trim();
-    if (first) return first;
-  }
-  return req.ip ?? "unknown";
-}
-
-function buildRateLimitKeys(
-  ip: string,
-  walletAddress: string | null,
-  dualScope: boolean,
-): string[] {
-  if (dualScope && walletAddress) {
-    return [`ip:${ip}`, `wallet:${walletAddress}`];
-  }
-  if (walletAddress) {
-    return [`ip:${ip}:wallet:${walletAddress}`];
-  }
-  return [`ip:${ip}`];
-}
-
-async function consumeKeys(
-  limiter: RateLimiterAbstract,
-  keys: string[],
-): Promise<{ msBeforeNext?: number } | null> {
-  for (const key of keys) {
-    try {
-      await limiter.consume(key, 1);
-    } catch (err) {
-      const typed = err as { msBeforeNext?: number };
-      if (typed.msBeforeNext !== undefined) {
-        return { msBeforeNext: typed.msBeforeNext };
-      }
-      return {};
-    }
-  }
-  return null;
+  return getRoutePolicy("ADMIN_WALLET_ROLE");
 }
 
 export function createRateLimitMiddleware(
   config: RateLimitConfig,
 ): RequestHandler {
   return async (req: Request, res: Response, next: NextFunction) => {
-    const ip = resolveIp(req);
+    // Resolve IP using the shared secure algorithm behind N proxies
+    const ip = resolveClientIp(req.headers);
     const walletAddress =
-      typeof req.body?.walletAddress === "string"
-        ? req.body.walletAddress
-        : null;
+      typeof req.body?.walletAddress === "string" ? req.body.walletAddress : null;
 
-    const keys = buildRateLimitKeys(ip, walletAddress, config.dualScope === true);
-    const limiter = getLimiter(config);
+    const keys = buildRateLimitKeys({
+      ip,
+      walletAddress,
+      dualScope: config.dualScope === true,
+    });
 
-    const rejection = await consumeKeys(limiter, keys);
-    if (rejection) {
-      const retryAfter = Math.max(
-        1,
-        Math.ceil(
-          (rejection.msBeforeNext ?? config.durationSeconds * 1_000) / 1_000,
-        ),
-      );
-      res.set("Retry-After", String(retryAfter));
+    const limiter = getRateLimiter(config, redis);
+    const result = await consumeRateLimitKeys(limiter, keys, config.durationSeconds);
+
+    if (!result.allowed) {
+      res.set("Retry-After", String(result.retryAfterSeconds));
       next(apiError(429, "RATE_LIMITED", "Too many requests. Please retry later."));
       return;
     }
@@ -195,5 +81,5 @@ export function createRateLimitMiddleware(
 
 /** Expose limiter cache for test teardown (reset between suites). */
 export function clearLimiterCache(): void {
-  limiterCache.clear();
+  clearSharedLimiterCache();
 }

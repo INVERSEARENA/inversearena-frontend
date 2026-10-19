@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { Contract, Keypair, TransactionBuilder, xdr } from "@stellar/stellar-sdk";
-import { StellarRpcGateway } from "../../../frontend/src/shared-d/services/stellarRpcGateway";
+import { StellarRpcGateway } from "../../../frontend/src/shared/lib/stellar/stellarRpcGateway";
 
 import { RoundRepository } from '../repositories/roundRepository';
 import {
@@ -26,13 +26,16 @@ import {
   lifecycleCommandOutcomeTotal,
   lifecycleCommandDurationSeconds,
 } from '../utils/metrics';
-import { invalidateArenaStats } from '../cache/cacheService';
+import { invalidateArenaStats, invalidateRound } from '../cache/cacheService';
 import {
   getOnChainActivePlayerIds,
   getOnChainWinner,
+  getOnChainRoundResult,
   getArenaOracleContract,
   getOracleReading,
 } from './onChainReader';
+import { NotificationPreferencesService } from './notificationPreferencesService';
+import { PushService } from './pushService';
 import { getStellarConfig, type StellarConfig } from '../config/stellarConfig';
 import { buildRoundResolution } from '../domain/roundResolution';
 import { contextLogger, maskWalletAddress } from '../utils/logger';
@@ -40,15 +43,17 @@ import { OracleFreshnessService, StaleOracleDataError, type OracleReading } from
 
 export interface OnChainRoundState {
   roundId: string;
-  oracleYield: number;
+  oracleYield: bigint;
   isFinalized: boolean;
+  eliminated?: bigint;
+  survivors?: bigint;
 }
 
 // TODO(#1508): derive authoritative phase from contract + signature time.
 export const PHASE_PRECONDITION = "preflight:phase-check";
 
 export interface OnChainReader {
-  getRoundState(roundId: string): Promise<OnChainRoundState>;
+  getRoundState(contractId: string, round: number): Promise<OnChainRoundState>;
   /** Returns wallet addresses of players still active after the latest resolve_round. */
   getActivePlayers(contractId: string): Promise<string[]>;
   /** Returns the single on-chain winner address once the game is finished, or null. */
@@ -60,8 +65,8 @@ export interface OnChainReader {
 }
 
 export class NoOpOnChainReader implements OnChainReader {
-  async getRoundState(roundId: string): Promise<OnChainRoundState> {
-    return { roundId, oracleYield: 0, isFinalized: false };
+  async getRoundState(_contractId: string, round: number): Promise<OnChainRoundState> {
+    return { roundId: String(round), oracleYield: 0n, isFinalized: false };
   }
   async getActivePlayers(_contractId: string): Promise<string[]> {
     return [];
@@ -79,8 +84,16 @@ export class NoOpOnChainReader implements OnChainReader {
 
 /** Production implementation backed by the Soroban simulation helpers. */
 export class SorobanOnChainReader implements OnChainReader {
-  async getRoundState(roundId: string): Promise<OnChainRoundState> {
-    return { roundId, oracleYield: 0, isFinalized: false };
+  async getRoundState(contractId: string, round: number): Promise<OnChainRoundState> {
+    const result = await getOnChainRoundResult(contractId, round);
+    if (!result) return { roundId: String(round), oracleYield: 0n, isFinalized: false };
+    return {
+      roundId: String(round),
+      oracleYield: result.yieldSnapshot,
+      isFinalized: true,
+      eliminated: result.eliminated,
+      survivors: result.survivors,
+    };
   }
   async getActivePlayers(contractId: string): Promise<string[]> {
     return getOnChainActivePlayerIds(contractId);
@@ -128,11 +141,14 @@ export class RoundService {
   private resolvedStellarConfig: StellarConfig | undefined;
   private idempotentCommands: IdempotentCommandRepository;
 
+  private pushService: PushService | null = null;
+
   constructor(
     private prisma: PrismaClient,
     stellarConfig?: StellarConfig,
     onChainReader?: OnChainReader,
     private stellarRpcGateway: StellarRpcGateway = new StellarRpcGateway(),
+    pushService?: PushService,
   ) {
     this.roundRepo = new RoundRepository(prisma);
     this.onChainReader = onChainReader ?? new SorobanOnChainReader();
@@ -141,6 +157,43 @@ export class RoundService {
     this.oracleFreshnessService = new OracleFreshnessService(this.onChainReader);
     this.explicitStellarConfig = stellarConfig;
     this.idempotentCommands = new IdempotentCommandRepository(prisma);
+    if (pushService) this.pushService = pushService;
+  }
+
+
+  /**
+   * Best-effort Web Push fan-out after a round resolves (#1571): alerts the
+   * round's players that the next commit window is opening. Never throws —
+   * resolution must not fail because push is unconfigured or unreachable.
+   */
+  private async notifyRoundResolved(
+    arenaId: string,
+    roundNumber: number,
+    userIds: string[],
+  ): Promise<void> {
+    try {
+      if (!this.pushService) {
+        if (!process.env.VAPID_PUBLIC_KEY) return;
+        this.pushService = new PushService(
+          this.prisma,
+          new NotificationPreferencesService(this.prisma),
+        );
+      }
+      await this.pushService.scheduleRoundPhasePushes({
+        arenaId,
+        roundNumber,
+        type: "round-started",
+        message: {
+          title: "Round resolved",
+          body: `Round ${roundNumber} resolved — the next commit window is opening.`,
+          url: `/arena/${arenaId}`,
+          tag: `arena-${arenaId}-round-${roundNumber}-started`,
+        },
+        userIds,
+      });
+    } catch {
+      // Push is advisory; resolution already succeeded.
+    }
   }
 
   /**
@@ -161,6 +214,7 @@ export class RoundService {
       this.resolvedStellarConfig = this.explicitStellarConfig ?? getStellarConfig();
     }
     return this.resolvedStellarConfig;
+
   }
 
   /**
@@ -413,6 +467,10 @@ export class RoundService {
       // immediately rather than after the TTL. Best-effort — a Redis outage
       // must not fail an otherwise-successful resolution.
       await invalidateArenaStats(round.arenaId).catch(() => {});
+      await invalidateRound(round.id).catch(() => {});
+
+      // Best-effort round phase push fan-out (#1571); never fails resolution.
+      void this.notifyRoundResolved(round.arenaId, round.roundNumber, input.allActivePlayerIds).catch(() => {});
 
       const duration = (Date.now() - start) / 1000;
       roundResolutionDuration.observe(duration);

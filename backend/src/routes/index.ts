@@ -12,13 +12,18 @@ import { createPoolsRouter } from "./pools";
 import { createDocsRouter } from "./docs";
 import { createArenaReplayRouter } from "./arenaReplay";
 import { createNotificationPreferencesRouter } from "./notificationPreferences";
+import { createPushSubscriptionsRouter } from "./pushSubscriptions";
 import { createPortfolioExposureRouter } from "./portfolioExposure";
+import { createStakingPositionsRouter } from "./stakingPositions";
 import { createCancellationRecoveryRouter } from "./cancellationRecovery";
 import { createConfigRouter } from "./config";
 import { createInvitationsRouter } from "./invitations";
 import { createRoundProofBundleRouter } from "./roundProofBundle";
 import { createLobbyReservationRouter } from "./lobbyReservation";
 import { createDashboardRouter } from "./dashboard";
+import { createCreatorRouter } from "./creator";
+import { createHostWhitelistRouter } from "./hostWhitelist";
+import type { PrismaClient } from "@prisma/client";
 import type { PayoutsController } from "../controllers/payouts.controller";
 import type { WorkerController } from "../controllers/worker.controller";
 import type { AuthController } from "../controllers/auth.controller";
@@ -43,6 +48,7 @@ export function createApiRouter(
   authService: AuthService,
   roundProofBundleService: RoundProofBundleService,
   transactions: TransactionRepository,
+  prisma?: PrismaClient,
 ): Router {
   const router = Router();
 
@@ -73,12 +79,18 @@ export function createApiRouter(
   router.use("/pools", createPoolsRouter(requireAuth));
   router.use("/rounds", createRoundProofBundleRouter(requireAuth, roundProofBundleService));
   router.use("/users", createNotificationPreferencesRouter(requireAuth));
+  router.use("/users", createPushSubscriptionsRouter(requireAuth));
   router.use("/users", createPortfolioExposureRouter(requireAuth));
+  router.use("/users", createStakingPositionsRouter(requireAuth));
   router.use(
     "/leaderboard",
     createLeaderboardRouter(leaderboardController, requireAuth),
   );
   router.use("/dashboard", createDashboardRouter(requireAuth));
+  router.use("/creator", createCreatorRouter(requireAuth));
+  if (prisma) {
+    router.use(createHostWhitelistRouter(prisma, requireAuth, adminAuthMiddleware));
+  }
 
   return router;
 }

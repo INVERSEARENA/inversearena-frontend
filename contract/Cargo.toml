@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "arena",
     "factory",
+    "fee-router",
     "oracle",
     "payout",
     "rwa-adapter",

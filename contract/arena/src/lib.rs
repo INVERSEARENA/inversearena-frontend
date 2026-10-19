@@ -20,9 +20,9 @@ use events::ArenaEvents;
 use rwa_client::RwaAdapterClient;
 use storage::ArenaStorage;
 use types::{
-    ArenaConfig, ArenaError, ArenaStatus, Choice, GameState, LeaderboardEntry,
-    EliminationReason, OracleFreshnessPolicy, PendingAdmin, PendingUpgrade, PlayerState,
-    RoundResult, TransitionInitiator, YieldSnapshot,
+    ArenaConfig, ArenaError, ArenaStatus, Choice, EliminationReason, GameState, LeaderboardEntry,
+    OracleFreshnessPolicy, PendingAdmin, PendingUpgrade, PlayerState, PlayerStatus, RoundResult,
+    TransitionInitiator, YieldSnapshot,
 };
 
 #[soroban_sdk::contractclient(name = "FactoryClient")]
@@ -30,6 +30,7 @@ pub trait FactoryInterface {
     fn release_arena(env: Env, arena: Address);
     fn reclaim_creator_stake(env: Env, arena: Address);
     fn update_arena_status(env: Env, pool_id: u32, status: ArenaStatus);
+    fn is_globally_paused(env: Env) -> bool;
 }
 
 pub(crate) const PAGE_SIZE: u32 = 50;
@@ -42,7 +43,9 @@ pub const MAX_PLAYERS_ALLOWED: u32 = 100;
 /// the version still moves so `contractCapability.ts`'s negotiation can
 /// gate UI/tooling that specifically wants the new freshness-policy
 /// entrypoints on older, already-deployed arena instances.
-const CONTRACT_VERSION: u32 = 3;
+/// Bumped to 4 for #1582 (`get_player_status`) and #1583 (fund-moving entry
+/// points now honour the factory-wide pause and may return `GloballyPaused`).
+const CONTRACT_VERSION: u32 = 4;
 const UPGRADE_TIMELOCK_SECONDS: u64 = 86_400; // 1 day
 /// Maximum allowed platform fee: 1000 bps (10%). Enforced by `update_platform_fee`.
 const MAX_PLATFORM_FEE_BPS: u32 = 1000;
@@ -239,6 +242,16 @@ impl ArenaContract {
     /// `min_players` must be at least 2 and cannot exceed `max_players`.
     /// Existing participation is left untouched; the max applies to future
     /// joins and the min applies to future `start_round` calls.
+    ///
+    /// Limits freeze once the first player joins (#1640): players entered
+    /// under advertised terms, so the admin cannot later promise a smaller
+    /// field than the one recruited, nor a maximum below the count already
+    /// present.
+    ///
+    /// # Errors
+    /// - `ArenaError::ArenaAlreadyHasPlayers` if `player_count > 0`.
+    /// - `ArenaError::InvalidPlayerLimits` if `min > max`, `min < 2`, or
+    ///   `max > MAX_PLAYERS_ALLOWED`.
     pub fn configure_player_limits(
         env: Env,
         min_players: u32,
@@ -247,20 +260,80 @@ impl ArenaContract {
         let config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
         Self::validate_player_limits(min_players, max_players)?;
+        if max_players < config.player_count {
+            return Err(ArenaError::InvalidPlayerLimits);
+        }
+        if config.player_count > 0 {
+            return Err(ArenaError::ArenaAlreadyHasPlayers);
+        }
         ArenaStorage::save_player_limits(&env, min_players, max_players);
         ArenaEvents::player_limits_configured(&env, min_players, max_players);
         Ok(())
     }
 
+    /// Set the lobby start deadline (#1579).
+    ///
+    /// Only the deploying factory may call this, immediately after
+    /// `initialize`, as part of `create_pool`. It is a separate entry point
+    /// because `initialize` already sits at Soroban's ten-parameter limit. Once
+    /// the deadline passes, `join_arena` rejects new entries and anyone may
+    /// call `cancel_unstarted`.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    /// - `ArenaError::InvalidGameState` if the lobby is no longer open.
+    pub fn set_start_deadline(env: Env, deadline: u64) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        config.factory.require_auth();
+        if config.state != GameState::Open || config.round_count > 0 {
+            return Err(ArenaError::InvalidGameState);
+        }
+        ArenaStorage::save_start_deadline(&env, deadline);
+        Ok(())
+    }
+
+    /// Return the lobby start deadline (#1579), or `0` if none is configured.
+    /// The lobby UI uses this for its countdown and refund-availability state.
+    pub fn get_start_deadline(env: Env) -> u64 {
+        ArenaStorage::load_start_deadline(&env)
+    }
+
     /// Ban a player from joining this arena.
     ///
-    /// Existing player state is not modified, so a ban does not eliminate a
-    /// player who has already joined.
+    /// While the arena is still in its lobby (`round_count == 0`), a player who
+    /// has already joined is removed from the roster and refunded their entry
+    /// fee atomically (#1581). The ban flag persists so a future join attempt
+    /// is rejected with `PlayerBanned`.
+    ///
+    /// Once the first round has started, banning is rejected with
+    /// `ArenaAlreadyStarted`. Allowing it would give the host a way to
+    /// eliminate players mid-game by removing them from an in-progress
+    /// roster, which the game's commit-reveal model must not permit.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    /// - `ArenaError::ArenaAlreadyStarted` if at least one round has resolved.
+    /// - `ArenaError::VaultWithdrawFailed` if a joined player's refund cannot
+    ///   be released; the whole call reverts.
     pub fn ban_player(env: Env, player: Address) -> Result<(), ArenaError> {
         let config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
+        // Refunds move funds, so the protocol-wide pause applies (#1583); the
+        // host's own pause deliberately does not gate host moderation.
+        Self::require_not_globally_paused(&env, &config)?;
+
+        if config.round_count > 0 {
+            return Err(ArenaError::ArenaAlreadyStarted);
+        }
+
         ArenaStorage::set_player_banned(&env, &player, true);
         ArenaEvents::player_banned(&env, &config.admin, &player);
+
+        if ArenaStorage::load_player(&env, &player).is_some() {
+            let refund = Self::refund_lobby_player(&env, &config, &player)?;
+            ArenaStorage::remove_player(&env, &player);
+            ArenaEvents::player_refunded(&env, &player, refund);
+        }
         Ok(())
     }
 
@@ -300,7 +373,7 @@ impl ArenaContract {
         ArenaStorage::enter_reentrancy_guard(&env)?;
         player.require_auth();
         let config = ArenaStorage::load_config(&env)?;
-        Self::require_not_paused(&config)?;
+        Self::require_not_paused(&env, &config)?;
         if config.state != GameState::Open {
             return Err(ArenaError::InvalidGameState);
         }
@@ -312,6 +385,13 @@ impl ArenaContract {
         // exactly the edge the minority-wins model is meant to deny (#1358).
         if config.round_count > 0 {
             return Err(ArenaError::ArenaAlreadyStarted);
+        }
+        // #1579: the lobby closes at `start_deadline`. Once it has passed and
+        // the first round has not started, entry is refused and anyone can
+        // cancel the arena to unlock refunds.
+        let start_deadline = ArenaStorage::load_start_deadline(&env);
+        if start_deadline != 0 && env.ledger().timestamp() >= start_deadline {
+            return Err(ArenaError::StartDeadlinePassed);
         }
         if player == config.admin {
             return Err(ArenaError::CreatorCannotJoin);
@@ -356,6 +436,55 @@ impl ArenaContract {
         Ok(())
     }
 
+    /// Leave an arena lobby before the first round and reclaim the entry fee
+    /// (#1580).
+    ///
+    /// Allowed only while the arena is `Open` and no round has resolved. The
+    /// player's entry fee is released from the yield vault, the roster and
+    /// counters are updated, and the player state is removed so they may join
+    /// again later.
+    ///
+    /// Yield policy: any yield accrued in the lobby on the departing player's
+    /// principal is forfeited to the pool and is not paid out. The refund is
+    /// therefore exactly `entry_fee`, matching the amount the player staked.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    /// - `ArenaError::ContractPaused` if the contract is paused.
+    /// - `ArenaError::InvalidGameState` if the arena is not in the `Open` state.
+    /// - `ArenaError::ArenaAlreadyStarted` if at least one round has resolved.
+    /// - `ArenaError::NotAPlayer` if the caller never joined.
+    /// - `ArenaError::VaultWithdrawFailed` if the vault cannot release the fee.
+    ///
+    /// # Events
+    /// Emits `player_left` and `player_refunded`.
+    pub fn leave_arena(env: Env, player: Address) -> Result<(), ArenaError> {
+        ArenaStorage::enter_reentrancy_guard(&env)?;
+        player.require_auth();
+        let config = ArenaStorage::load_config(&env)?;
+        Self::require_not_paused(&env, &config)?;
+        if config.state != GameState::Open {
+            return Err(ArenaError::InvalidGameState);
+        }
+        if config.round_count > 0 {
+            return Err(ArenaError::ArenaAlreadyStarted);
+        }
+        if ArenaStorage::load_player(&env, &player).is_none() {
+            return Err(ArenaError::NotAPlayer);
+        }
+
+        // Effects first: the roster and counters no longer include the player
+        // before any token movement. A failing vault call reverts everything.
+        ArenaStorage::remove_player(&env, &player);
+        let refund = Self::refund_lobby_player(&env, &config, &player)?;
+        let count = ArenaStorage::load_roster_count(&env);
+
+        ArenaEvents::player_left(&env, &player, count);
+        ArenaEvents::player_refunded(&env, &player, refund);
+        ArenaStorage::exit_reentrancy_guard(&env);
+        Ok(())
+    }
+
     /// Submit a blinded commitment to a coin-flip choice.
     ///
     /// The player hashes their choice together with a secret salt and submits
@@ -376,7 +505,7 @@ impl ArenaContract {
     ) -> Result<(), ArenaError> {
         player.require_auth();
         let config = ArenaStorage::load_config(&env)?;
-        Self::require_not_paused(&config)?;
+        Self::require_not_paused(&env, &config)?;
         if config.state != GameState::Active {
             return Err(ArenaError::RoundNotActive);
         }
@@ -422,7 +551,7 @@ impl ArenaContract {
     ) -> Result<(), ArenaError> {
         player.require_auth();
         let config = ArenaStorage::load_config(&env)?;
-        Self::require_not_paused(&config)?;
+        Self::require_not_paused(&env, &config)?;
         let player_state =
             ArenaStorage::load_player(&env, &player).ok_or(ArenaError::NotAPlayer)?;
         if !player_state.active {
@@ -460,30 +589,61 @@ impl ArenaContract {
         ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
-        Self::require_not_paused(&config)?;
+        Self::require_not_paused(&env, &config)?;
         state_machine::ensure_state(
             &config.state,
             &GameState::Open,
             ArenaError::InvalidGameState,
         )?;
 
-        config.state = GameState::Cancelled;
-        ArenaStorage::save_config(&env, &config);
+        Self::transition_to_cancelled(&env, &mut config);
+        ArenaEvents::arena_cancelled(&env, &config.admin);
 
-        let arena_addr = env.current_contract_address();
-        if config.player_count > 0 {
-            let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
-            let _ = rwa_client.withdraw_all(&arena_addr);
+        ArenaStorage::exit_reentrancy_guard(&env);
+        Ok(())
+    }
+
+    /// Cancel an arena that never started once its start deadline has passed
+    /// (#1579).
+    ///
+    /// Permissionless: any caller may trigger this after `start_deadline` while
+    /// the first round has not resolved. It reuses the normal cancellation
+    /// path, so the arena becomes `Cancelled`, every joined player can claim a
+    /// refund, and the creator stake is returned to the host. Without this,
+    /// entry fees would stay locked forever in an arena that never reaches
+    /// `min_players`.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    /// - `ArenaError::ContractPaused` if the contract is paused.
+    /// - `ArenaError::InvalidGameState` if the arena is not in the `Open` state.
+    /// - `ArenaError::ArenaAlreadyStarted` if at least one round has resolved.
+    /// - `ArenaError::NoStartDeadline` if this arena has no deadline configured.
+    /// - `ArenaError::DeadlineTooSoon` if the deadline has not been reached.
+    ///
+    /// # Events
+    /// Emits `arena_cancelled`.
+    pub fn cancel_unstarted(env: Env) -> Result<(), ArenaError> {
+        ArenaStorage::enter_reentrancy_guard(&env)?;
+        let mut config = ArenaStorage::load_config(&env)?;
+        Self::require_not_paused(&env, &config)?;
+        if config.state != GameState::Open {
+            return Err(ArenaError::InvalidGameState);
+        }
+        if config.round_count > 0 {
+            return Err(ArenaError::ArenaAlreadyStarted);
+        }
+        let deadline = ArenaStorage::load_start_deadline(&env);
+        if deadline == 0 {
+            return Err(ArenaError::NoStartDeadline);
+        }
+        if env.ledger().timestamp() < deadline {
+            return Err(ArenaError::DeadlineTooSoon);
         }
 
+        Self::transition_to_cancelled(&env, &mut config);
         ArenaEvents::arena_cancelled(&env, &config.admin);
-        
-        // Notify factory of cancellation: release active pool slot and refund creator stake
-        let factory_client = FactoryClient::new(&env, &config.factory);
-        let _ = factory_client.try_release_arena(&arena_addr);
-        let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
-        let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Cancelled);
-        
+
         ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
     }
@@ -513,7 +673,7 @@ impl ArenaContract {
     pub fn expire_arena(env: Env) -> Result<(), ArenaError> {
         ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
-        Self::require_not_paused(&config)?;
+        Self::require_not_paused(&env, &config)?;
         if config.state != GameState::Active {
             return Err(ArenaError::InvalidGameState);
         }
@@ -576,6 +736,64 @@ impl ArenaContract {
             .unwrap_or(0)
     }
 
+    /// Return every per-player fact needed to gate arena actions in one read
+    /// (#1582): roster membership, liveness, commit/reveal status for the
+    /// current round, elimination round and reason, refund and winner flags,
+    /// and the current round and phase.
+    ///
+    /// An address that never joined (or left the lobby) yields
+    /// `joined: false` rather than an error. The read writes nothing, does not
+    /// extend TTLs, and touches at most four storage entries.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    pub fn get_player_status(env: Env, player: Address) -> Result<PlayerStatus, ArenaError> {
+        let config = ArenaStorage::peek_config(&env)?;
+        let round_running = config.state == GameState::Active;
+        let current_round = if round_running {
+            config.round_count.saturating_add(1)
+        } else {
+            config.round_count
+        };
+
+        let stored = ArenaStorage::peek_player(&env, &player);
+        let joined = stored.is_some();
+        let state = stored.unwrap_or_default();
+        let eliminated = joined && !state.active;
+        let playing_round = round_running && state.active;
+
+        Ok(PlayerStatus {
+            joined,
+            active: state.active,
+            committed: playing_round
+                && ArenaStorage::has_commitment(&env, &player, current_round),
+            revealed: playing_round && ArenaStorage::has_choice(&env, &player, current_round),
+            // A player eliminated in round `r` survived exactly `r - 1` rounds:
+            // only lobby joins are allowed, and every resolution visits every
+            // active player.
+            eliminated_round: eliminated.then(|| state.rounds_survived.saturating_add(1)),
+            elimination_reason: if eliminated {
+                ArenaStorage::peek_elimination_reason(&env, &player)
+                    .unwrap_or(EliminationReason::Unrecorded)
+            } else {
+                EliminationReason::NotEliminated
+            },
+            refund_claimed: joined
+                && config.state == GameState::Cancelled
+                && ArenaStorage::peek_refund_claimed(&env, &player),
+            winner: joined
+                && matches!(config.state, GameState::Finished | GameState::Settled)
+                && ArenaStorage::peek_winner(&env).is_some_and(|winner| winner == player),
+            current_round,
+            phase: state_machine::phase(
+                &config.state,
+                config.round_count,
+                config.commit_deadline,
+                env.ledger().timestamp(),
+            ),
+        })
+    }
+
     /// Start a new commit-reveal round.
     ///
     /// Only callable by the admin while the arena is `Open`.
@@ -601,7 +819,7 @@ impl ArenaContract {
     pub fn start_round(env: Env, duration_seconds: u64) -> Result<(), ArenaError> {
         let mut config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
-        Self::require_not_paused(&config)?;
+        Self::require_not_paused(&env, &config)?;
 
         if duration_seconds < MIN_ROUND_DURATION_SECONDS || duration_seconds > MAX_ROUND_DURATION_SECONDS {
             return Err(ArenaError::InvalidDuration);
@@ -656,7 +874,7 @@ impl ArenaContract {
     pub fn start_next_round(env: Env, caller: Address) -> Result<(), ArenaError> {
         caller.require_auth();
         let mut config = ArenaStorage::load_config(&env)?;
-        Self::require_not_paused(&config)?;
+        Self::require_not_paused(&env, &config)?;
         if config.state != GameState::Open || config.round_count == 0 {
             return Err(ArenaError::InvalidGameState);
         }
@@ -715,7 +933,7 @@ impl ArenaContract {
     pub fn resolve_round(env: Env) -> Result<(), ArenaError> {
         ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
-        Self::require_not_paused(&config)?;
+        Self::require_not_paused(&env, &config)?;
 
         if config.state != GameState::Active {
             return Err(ArenaError::RoundNotActive);
@@ -843,7 +1061,11 @@ impl ArenaContract {
         let factory_client = FactoryClient::new(&env, &config.factory);
         if config.state == GameState::Finished {
             let _ = factory_client.try_release_arena(&arena_addr);
-            let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Active);
+            // Settlement is terminal even if the winner never submits a claim.
+            // Reclaim the creator stake here, before any winner-controlled action,
+            // and persist the matching factory lifecycle state.
+            let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
+            let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Finished);
         } else if config.state == GameState::Cancelled {
             let _ = rwa_client.try_withdraw_all(&arena_addr);
             let _ = factory_client.try_release_arena(&arena_addr);
@@ -881,7 +1103,7 @@ impl ArenaContract {
         ArenaStorage::enter_reentrancy_guard(&env)?;
         winner.require_auth();
         let mut config = ArenaStorage::load_config(&env)?;
-        Self::require_not_paused(&config)?;
+        Self::require_not_paused(&env, &config)?;
 
         // CHECKS — validate caller and arena state before doing anything else.
         if config.state != GameState::Finished {
@@ -920,7 +1142,9 @@ impl ArenaContract {
 
         ArenaEvents::prize_claimed(&env, &winner, total, total.saturating_sub(principal));
         
-        // Notify factory that prize has been claimed and game is settled
+        // The factory was already transitioned to Finished and the creator
+        // stake reclaimed when the final round resolved. Repeating the status
+        // write is harmless and keeps older factory deployments convergent.
         let factory_client = FactoryClient::new(&env, &config.factory);
         let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Finished);
         
@@ -943,7 +1167,7 @@ impl ArenaContract {
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), ArenaError> {
         let config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
-        Self::require_not_paused(&config)?;
+        Self::require_not_paused(&env, &config)?;
         ArenaStorage::save_pending_admin(&env, &PendingAdmin { new_admin });
         Ok(())
     }
@@ -964,7 +1188,7 @@ impl ArenaContract {
         let pending = ArenaStorage::load_pending_admin(&env).ok_or(ArenaError::NoPendingAdmin)?;
         pending.new_admin.require_auth();
         let mut config = ArenaStorage::load_config(&env)?;
-        Self::require_not_paused(&config)?;
+        Self::require_not_paused(&env, &config)?;
         let old_admin = config.admin.clone();
         config.admin = pending.new_admin;
         ArenaStorage::save_config(&env, &config);
@@ -993,6 +1217,9 @@ impl ArenaContract {
     /// While paused, calls to `join_arena`, `submit_commitment`, `reveal_choice`,
     /// `resolve_round`, and `claim` all fail with `ArenaError::ContractPaused`.
     /// Read-only queries are unaffected. Only the admin can pause.
+    ///
+    /// Independent of the factory-wide pause (#1583): unpausing here does not
+    /// lift a protocol-wide pause, which surfaces as `ArenaError::GloballyPaused`.
     ///
     /// # Parameters
     /// - `reason`: Short symbol describing why the contract is being paused
@@ -1034,10 +1261,15 @@ impl ArenaContract {
 
     /// Force-cancel the arena (admin only).
     /// Can be called at any state except Finished or Settled.
+    ///
+    /// Allowed while this arena is locally paused, but not while the
+    /// protocol-wide pause is set (#1583): cancelling drains the yield vault,
+    /// which an incident response may need to keep untouched.
     pub fn force_cancel_arena(env: Env) -> Result<(), ArenaError> {
         ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
+        Self::require_not_globally_paused(&env, &config)?;
 
         if config.state == GameState::Finished || config.state == GameState::Settled {
             ArenaStorage::exit_reentrancy_guard(&env);
@@ -1079,7 +1311,7 @@ impl ArenaContract {
         // too, so it's checked before any other guard here — including the
         // cancellation-state check below. This masks ArenaNotCancelled and
         // RefundAlreadyClaimed while paused, by design.
-        Self::require_not_paused(&config)?;
+        Self::require_not_paused(&env, &config)?;
 
         if config.state != GameState::Cancelled {
             return Err(ArenaError::ArenaNotCancelled);
@@ -1249,11 +1481,79 @@ impl ArenaContract {
         env.crypto().sha256(&preimage).into()
     }
 
-    fn require_not_paused(config: &ArenaConfig) -> Result<(), ArenaError> {
+    /// Gameplay runs only while neither this arena's own pause nor the
+    /// factory-wide emergency pause (#1583) is set. The two flags are
+    /// independent: clearing one never clears the other.
+    fn require_not_paused(env: &Env, config: &ArenaConfig) -> Result<(), ArenaError> {
         if config.paused {
             return Err(ArenaError::ContractPaused);
         }
-        Ok(())
+        Self::require_not_globally_paused(env, config)
+    }
+
+    /// Reject while the deploying factory reports the protocol-wide pause.
+    ///
+    /// Fails open when the factory cannot answer (not a contract, or a factory
+    /// version that predates `is_globally_paused`): such a factory has no way
+    /// to set the pause, so there is nothing to enforce, and failing closed
+    /// would freeze every arena — refunds included — on a deployment-ordering
+    /// mistake. Budget exhaustion still aborts the whole transaction, so a
+    /// caller cannot force the open path.
+    fn require_not_globally_paused(env: &Env, config: &ArenaConfig) -> Result<(), ArenaError> {
+        match FactoryClient::new(env, &config.factory).try_is_globally_paused() {
+            Ok(Ok(true)) => Err(ArenaError::GloballyPaused),
+            _ => Ok(()),
+        }
+    }
+
+    /// Shared cancellation path: mark the arena `Cancelled`, release the pooled
+    /// principal, and tell the factory to free the pool slot and refund the
+    /// creator stake. Callers own the preconditions and the cancellation event.
+    fn transition_to_cancelled(env: &Env, config: &mut ArenaConfig) {
+        config.state = GameState::Cancelled;
+        ArenaStorage::save_config(env, config);
+
+        let arena_addr = env.current_contract_address();
+        if config.player_count > 0 {
+            let rwa_client = RwaAdapterClient::new(env, &config.yield_vault);
+            let _ = rwa_client.withdraw_all(&arena_addr);
+        }
+
+        let factory_client = FactoryClient::new(env, &config.factory);
+        let _ = factory_client.try_release_arena(&arena_addr);
+        let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
+        let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Cancelled);
+    }
+
+    /// Release one lobby player's entry fee from the vault and transfer it back
+    /// to them. Used by `leave_arena` and `ban_player` (#1580, #1581).
+    ///
+    /// Yield accrued on the refunded principal is intentionally left in the
+    /// vault for the remaining pool.
+    fn refund_lobby_player(
+        env: &Env,
+        config: &ArenaConfig,
+        player: &Address,
+    ) -> Result<i128, ArenaError> {
+        let arena_addr = env.current_contract_address();
+        let rwa_client = RwaAdapterClient::new(env, &config.yield_vault);
+        let withdrawn = rwa_client
+            .try_withdraw(&arena_addr, &config.entry_fee)
+            .map_err(|_| ArenaError::VaultWithdrawFailed)?
+            .map_err(|_| ArenaError::VaultWithdrawFailed)?;
+        let refund = if withdrawn > config.entry_fee {
+            config.entry_fee
+        } else {
+            withdrawn
+        };
+
+        let token_client = token::TokenClient::new(env, &config.stake_token);
+        token_client.transfer(&arena_addr, player, &refund);
+
+        let baseline = ArenaStorage::load_last_vault_balance(env);
+        ArenaStorage::save_last_vault_balance(env, baseline.saturating_sub(config.entry_fee));
+
+        Ok(refund)
     }
 
     fn validate_player_limits(min_players: u32, max_players: u32) -> Result<(), ArenaError> {
@@ -1303,24 +1603,22 @@ impl ArenaContract {
             if !state.active {
                 continue;
             }
-            let choice = ArenaStorage::load_choice(env, &player, round);
-            let should_eliminate = choice
-                .map(|c| eliminations::is_eliminated(c, &tally))
-                .unwrap_or(true);
+            let elimination = match ArenaStorage::load_choice(env, &player, round) {
+                Some(choice) if eliminations::is_eliminated(choice, &tally) => {
+                    Some(EliminationReason::Majority)
+                }
+                Some(_) => None,
+                None if ArenaStorage::load_commitment(env, &player, round).is_some() => {
+                    Some(EliminationReason::NoReveal)
+                }
+                None => Some(EliminationReason::NoCommit),
+            };
 
-            if should_eliminate {
+            if let Some(reason) = elimination {
                 state.active = false;
-                state.eliminated_round = Some(round);
-                let reason = if choice.is_some() {
-                    EliminationReason::Majority
-                } else if ArenaStorage::load_commitment(env, &player, round).is_some() {
-                    EliminationReason::NoReveal
-                } else {
-                    EliminationReason::NoCommit
-                };
-                state.elimination_reason = Some(reason);
                 eliminated += 1;
                 ArenaStorage::remove_player_choice(env, &player, round);
+                ArenaStorage::save_elimination_reason(env, &player, &reason);
                 ArenaEvents::player_eliminated(env, &player, round);
                 ArenaEvents::player_eliminated_v2(env, &player, round, reason);
             } else {
@@ -1494,6 +1792,10 @@ mod test {
         }
 
         pub fn deposit(_env: Env, _from: Address, _amount: i128) {}
+
+        pub fn withdraw(_env: Env, _user: Address, amount: i128) -> i128 {
+            amount
+        }
 
         pub fn withdraw_all(env: Env, user: Address) -> i128 {
             Self::balance_of(env, user)
@@ -3469,6 +3771,40 @@ mod test {
     }
 
     #[test]
+    fn configure_player_limits_freezes_once_players_have_joined() {
+        let (_, client) = setup(3);
+        assert_eq!(client.player_count(), 3);
+        // Valid-looking values still freeze: the roster joined under the
+        // advertised terms, so neither bound may change (#1640).
+        assert_eq!(
+            client.try_configure_player_limits(&2, &10),
+            Err(Ok(ArenaError::ArenaAlreadyHasPlayers))
+        );
+        assert_eq!(
+            client.try_configure_player_limits(&4, &10),
+            Err(Ok(ArenaError::ArenaAlreadyHasPlayers))
+        );
+    }
+
+    #[test]
+    fn configure_player_limits_rejects_max_below_player_count() {
+        let (_, client) = setup(3);
+        // `max_players` may never drop below the players already present,
+        // regardless of the freeze rule (#1640).
+        assert_eq!(
+            client.try_configure_player_limits(&2, &2),
+            Err(Ok(ArenaError::InvalidPlayerLimits))
+        );
+    }
+
+    #[test]
+    fn configure_player_limits_allowed_before_first_join() {
+        let (_, client) = setup(0);
+        client.configure_player_limits(&2, &4);
+        assert_eq!(client.player_count(), 0);
+    }
+
+    #[test]
     fn join_respects_configured_max_players() {
         let env = Env::default();
         env.mock_all_auths();
@@ -4768,3 +5104,11 @@ mod test {
 mod integration_tests;
 #[cfg(test)]
 mod join_arena_tests;
+#[cfg(test)]
+mod lobby_tests;
+#[cfg(test)]
+mod player_status_tests;
+#[cfg(test)]
+mod global_pause_tests;
+#[cfg(test)]
+mod commitment_vectors;

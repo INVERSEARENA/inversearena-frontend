@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { asyncHandler } from "../middleware/validate";
 import { cacheMiddleware } from "../middleware/cache";
-import { cacheKeys, cacheTTL } from "../cache/cacheService";
+import { CacheKeys, cacheTTL } from "../cache/cacheService";
 import type { LeaderboardController } from "../controllers/leaderboard.controller";
 import type { RequestHandler } from "express";
 
@@ -32,7 +32,10 @@ export function createLeaderboardRouter(
     authMiddleware,
     cacheMiddleware(
       (req) =>
-        `${cacheKeys.leaderboard()}:${req.query.limit ?? 20}:${req.query.cursor ?? "0"}`,
+        CacheKeys.leaderboard(
+          (req.query.limit as string) ?? 20,
+          (req.query.cursor as string) ?? "0",
+        ),
       cacheTTL.LEADERBOARD,
     ),
     asyncHandler(controller.getLeaderboard),

@@ -46,6 +46,28 @@ GET /oracle/yield-rate
 
 The oracle price is **display-only**. The authoritative price used for payout is fetched on-chain at the moment the payout contract executes the USDY → USDC swap.
 
+### Bounded, delayed on-chain rate updates (#1570)
+
+The on-chain oracle (`contract/oracle`) no longer applies arbitrary instant
+rate jumps. Each `set_yield_bps` call may move the rate by at most
+`max_delta_bps` against the currently effective rate, and — when an
+`activation_delay` is configured — takes effect at `effective_at`
+(`now + activation_delay`) as a scheduled `pending_rate` instead of
+immediately. `max_delta_bps` and `activation_delay` are themselves
+admin-configurable within hard bounds (rate ≤ 10,000 bps, delay ≤ 7 days)
+and subject to the same delay. An emergency `set_rate_to_zero` path zeroes
+the rate immediately (explicitly evented as `zeroed`) for incident response.
+
+Consequences for consumers:
+
+- `arena.resolve_round` and the `rwa-adapter` vault read
+  `get_current_yield_bps`, which already returns the *effective* rate at the
+  current ledger time — no consumer changes were needed for correctness.
+- Keepers and frontends can read `get_rate_schedule()` (current, pending,
+  `effective_at`, bounds) to warn before a scheduled change activates; the
+  arena and adapter also expose `fetch_rate_schedule()` helpers that return
+  `None` against older oracle deployments.
+
 ---
 
 ## 4. Yield Attribution
@@ -154,6 +176,70 @@ The `rwa_adapter` contract enforces a minimum acceptable swap price (slippage gu
 | `rwa_adapter.rs` | Executes USDC↔USDY swaps via Stellar DEX |
 | `payout.rs` | Triggers final withdrawal and winner transfer |
 | `random_engine.rs` | Tie-breaking; does not interact with yield |
+
+---
+
+## 9. Platform Fee Revenue-Share (Fee Router)
+
+### 9.1 Overview
+
+Arena contracts collect a platform fee at settlement. The **fee router contract** (`contract/fee-router`) bridges these fees to stakers and the protocol treasury, closing the revenue-share loop that previously had no on-chain path.
+
+```
+Arena settle
+  → arena transfers platform fee to FeeRouter (receive_fees)
+  → Anyone calls flush(token)
+  → FeeRouter splits by staking_share_bps:
+      staking share  → StakingContract.distribute_rewards(amount)
+      treasury share → treasury address transfer
+```
+
+### 9.2 Fee Router Contract
+
+| Parameter | Description |
+|---|---|
+| `staking_share_bps` | Basis-point share routed to staking (0–10 000). Governed via propose/commit with a 7-day timelock. |
+| `treasury` | Address receiving the non-staking share. |
+| `staking_contract` | Address of the staking contract (`distribute_rewards` target). |
+
+### 9.3 `flush(token)` Mechanics
+
+`flush` is callable by anyone:
+
+1. **Dust guard** — if the accumulated balance for `token` is below `MIN_FLUSH_AMOUNT` (1 000 000 base units ≈ 0.1 token at 7 decimals), the call returns `BelowMinFlushAmount` and the balance is preserved. This prevents dust-flush griefing.
+2. **Staking-token routing** — only when `staking_share_bps > 0` does the staking share go to `distribute_rewards`. All other fee tokens route entirely to the treasury.
+3. **Zero-shares deferral** — if the staking pool holds zero shares (nobody staked yet), the call returns `StakingPoolEmpty` without consuming the balance. Once stakers exist the next `flush` call succeeds normally.
+
+### 9.4 Governance
+
+The `staking_share_bps` setting is protected by a two-step timelocked governance flow:
+
+```
+admin calls propose_staking_share(new_bps)
+  ↓  (7-day timelock)
+anyone calls commit_staking_share()
+  → new_bps takes effect
+```
+
+### 9.5 Contract Responsibilities
+
+| Contract | Role in Fee Flow |
+|---|---|
+| `arena_manager.rs` | Transfers platform fee to the fee router at settlement |
+| `fee-router` | Holds fees, splits by governed ratio, calls staking and treasury |
+| `staking/lib.rs` | Receives `distribute_rewards` call; increases reward rate for stakers |
+
+### 9.6 Events
+
+| Topic | Emitting Function | Data Fields |
+|---|---|---|
+| `INIT` | `initialize()` | `(admin, staking_contract, treasury, staking_share_bps)` |
+| `FEE_IN` | `receive_fees()` | `(sender, token, amount)` |
+| `FEE_FLSH` | `flush()` | `(token, total, staking_amount, treasury_amount)` |
+| `FEE_DEFR` | `flush()` (pool empty) | `(token, deferred_amount)` |
+| `SHPR_PRO` | `propose_staking_share()` | `(new_bps, execute_after)` |
+| `SHPR_SET` | `commit_staking_share()` | `(new_bps)` |
+| `SHPR_CNC` | `cancel_staking_share()` | `()` |
 
 ---
 

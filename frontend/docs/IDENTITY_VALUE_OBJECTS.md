@@ -11,7 +11,7 @@ testnet arena ID could collide with a mainnet one in a shared Redis instance.
 
 ## Solution
 
-`frontend/src/shared-d/utils/identity-value-objects.ts` exports **branded
+`frontend/src/shared/lib/identity-value-objects.ts` exports **branded
 value types** and their constructors. A branded type is a plain `string` (or
 `number`) at runtime, but its TypeScript type carries a phantom brand so it is
 not assignable to a different branded type without an explicit parse call.
@@ -131,14 +131,14 @@ match across network segments during rollback invalidation.
 `getNetworkIdentity()` is exported for tests; `_resetNetworkIdentityForTest()`
 resets the lazily-cached identity between test cases.
 
-### Frontend — `frontend/src/shared-d/utils/contract-client-factory.ts`
+### Frontend — `frontend/src/shared/lib/stellar/contract-client-factory.ts`
 
 `createContract(id, opts)` now calls `parseSorobanContractId` before
 constructing a `Contract` instance, rejecting malformed IDs at the factory
 boundary. `createNetworkBoundContract(bound)` additionally checks that the
 contract's `NetworkIdentity` matches the factory's configured passphrase.
 
-### Frontend — `frontend/src/shared-d/utils/security-validation.ts`
+### Frontend — `frontend/src/shared/lib/security-validation.ts`
 
 `StellarPublicKeySchema`, `StellarContractIdSchema`, and
 `NetworkPassphraseSchema` now delegate to the value-object parsers, so Zod

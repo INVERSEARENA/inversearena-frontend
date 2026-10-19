@@ -25,6 +25,9 @@ Current payload version: **1**
 | `frsh_pol`    | `set_oracle_freshness_policy()` (#1512) | `(admin: Address, max_age_secs: u64, warn_age_secs: u64)` |
 | `oracle_freshness_observed` | `resolve_round()` (#1512) | `(round: u32, classification_code: u32, age_secs: u64)` — emitted on every attempt, success or rejection; `classification_code`: 0=Fresh, 1=Warning, 2=Stale, 3=Unavailable |
 | `oracle_stale_rejected` | `resolve_round()` (#1512) | `(round: u32, age_secs: u64)` — emitted only when resolution is refused for staleness |
+| `left`        | `leave_arena()` (#1580) | `(player_count: u32)` — topics `(left, player)` |
+| `refunded`    | `leave_arena()`, `ban_player()` (#1580, #1581) | `(amount: i128)` — topics `(refunded, player)`; emitted alongside `left`/`ban` |
+| `limits`      | `configure_player_limits()` (#1640) | `(min_players: u32, max_players: u32)` — topics `(limits)`; emitted only on success. Calls fail with `ArenaAlreadyHasPlayers` (45) once `player_count > 0`, so the event never fires for a post-join change. |
 
 > Note (#1512): several rows in this table (e.g. `fee_upd`, `vault_oracle_failed`)
 > predate this table and were never added to it — pre-existing drift, not
@@ -36,10 +39,11 @@ Current payload version: **1**
 |---------------|------------------------|------------------------------------------|
 | `WL_ADD`      | `add_to_whitelist()`   | `(v, host: Address)`                     |
 | `WL_REM`      | `remove_from_whitelist()` | `(v, host: Address)`                  |
-| `POOL_CRE`    | `create_pool()`        | `(v, pool_id: u32, creator: Address, capacity: u32, stake_amount: i128)` |
+| `POOL_CRE`    | `create_pool()`        | `(pool_id: u32, host: Address, entry_fee: i128, arena: Address, min_players: u32, max_players: u32, round_duration: u64, metadata_hash: BytesN<32>)` — the metadata hash is appended by #1577 |
 | `UP_PROP`     | `propose_upgrade()`    | `(v, new_wasm_hash: BytesN<32>, execute_after: u64)` |
 | `UP_EXEC`     | `execute_upgrade()`    | `(v, new_wasm_hash: BytesN<32>)`         |
 | `UP_CANC`     | `cancel_upgrade()`     | `(v)`                                    |
+| `GPAUSE`      | `set_global_pause()` (#1583) | `(paused: bool, reason: Symbol)` — protocol-wide emergency pause set or cleared |
 
 ## Staking Contract
 
@@ -62,6 +66,26 @@ address, amounts) is in the data payload so indexers can filter on `STAKED` /
 | Topic         | Emitting Function         | Data Fields                           |
 |---------------|---------------------------|---------------------------------------|
 | `PAYOUT`      | `distribute_winnings()`   | `(v, winner: Address, amount: i128, currency: Symbol)` |
+
+## Oracle Contract (#1570)
+
+Bounded, delayed rate updates. `rate_sch` / `par_sched` carry the scheduled
+value plus its `effective_at`; `rate_appl` / `par_appl` fire when a due
+schedule is persisted by the next admin write.
+
+| Topic       | Emitting Function      | Data Fields                                      |
+|-------------|------------------------|--------------------------------------------------|
+| `rate_set`  | `set_yield_bps()`      | `(rate_bps: u32)` — applied immediately (delay 0) |
+| `rate_sch`  | `set_yield_bps()`      | `(rate_bps: u32, effective_at: u64)` — scheduled |
+| `rate_appl` | (settle on next write) | `(rate_bps: u32)` — due schedule applied        |
+| `rate_obs`  | every application      | `(rate_bps: u32, observed_at: u64)` — freshness provenance (#1512); fires on immediate set, scheduled apply, and emergency zero |
+| `maxd_set`  | `set_max_delta_bps()`  | `(max_delta_bps: u32)` — applied immediately     |
+| `dly_set`   | `set_activation_delay()` | `(delay_secs: u64)` — applied immediately       |
+| `max_set`   | `set_max_rate()`       | `(max_rate_bps: u32)` — applied immediately      |
+| `par_sched` | `set_max_delta_bps()` / `set_activation_delay()` / `set_max_rate()` | `((which: Symbol, value, effective_at: u64))` with `which` in `max_delta` / `delay` / `max_rate` |
+| `par_appl`  | (settle on next write) | `(params_effective_at: u64)` — due params applied |
+| `zeroed`    | `set_rate_to_zero()`   | `(0u32)` — emergency zero                        |
+| `adm_chg`   | `accept_admin()`       | `(old_admin: Address, new_admin: Address)`       |
 
 ---
 

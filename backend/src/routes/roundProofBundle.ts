@@ -16,7 +16,7 @@ import {
 import { apiError } from "../utils/apiError";
 import { asyncHandler } from "../middleware/validate";
 import { cacheMiddleware } from "../middleware/cache";
-import { cacheKeys, cacheTTL } from "../cache/cacheService";
+import { CacheKeys, cacheTTL } from "../cache/cacheService";
 
 export function createRoundProofBundleRouter(
   authMiddleware: RequestHandler,
@@ -37,7 +37,7 @@ export function createRoundProofBundleRouter(
     "/:id/proof-bundle",
     authMiddleware,
     cacheMiddleware(
-      (req) => cacheKeys.roundProofBundle(req.params.id ?? ""),
+      (req) => CacheKeys.round.proofBundle(req.params.id ?? ""),
       cacheTTL.ROUND_PROOF_BUNDLE,
     ),
     async (req, res, next) => {

@@ -19,10 +19,10 @@
 
 import { useCallback, useState } from "react";
 
-import { stroopsToAmount } from "@/shared-d/utils/stellar-asset-reader";
+import { stroopsToAmount } from "@/shared/lib/stellar/stellar-asset-reader";
 
-import { useClaimInbox } from "../useClaimInbox";
-import type { ClaimInboxItem, ClaimInboxState } from "../types";
+import { useClaimInbox } from "../hooks/useClaimInbox";
+import type { ClaimInboxItem, ClaimInboxState } from "../model/types";
 
 /** Tailwind classes per state. Kept as a lookup so a new state cannot slip in unstyled. */
 const STATE_STYLES: Record<ClaimInboxState, { label: string; text: string; border: string }> = {

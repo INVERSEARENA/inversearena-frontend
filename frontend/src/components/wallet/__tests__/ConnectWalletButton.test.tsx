@@ -1,12 +1,12 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ConnectWalletButton } from "../ConnectWalletButton";
-import { useWallet } from "@/features/wallet/useWallet";
-import { usePasskeyWallet } from "@/features/wallet/usePasskeyWallet";
+import { useWallet } from "@/features/wallet/hooks/useWallet";
+import { usePasskeyWallet } from "@/features/wallet/hooks/usePasskeyWallet";
 
-jest.mock("@/features/wallet/useWallet", () => ({
+jest.mock("@/features/wallet/hooks/useWallet", () => ({
   useWallet: jest.fn(),
 }));
-jest.mock("@/features/wallet/usePasskeyWallet", () => ({
+jest.mock("@/features/wallet/hooks/usePasskeyWallet", () => ({
   usePasskeyWallet: jest.fn(),
 }));
 

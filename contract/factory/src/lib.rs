@@ -1,8 +1,12 @@
 #![no_std]
 
+mod events;
 mod snapshot_tests;
 mod storage;
 pub mod types;
+
+#[cfg(test)]
+mod index_tests;
 
 #[cfg(test)]
 mod integration_tests;
@@ -11,7 +15,8 @@ use storage::{CreatorStakeRecord, FactoryStorage};
 use types::{ArenaMetadata, ArenaStatus, FactoryError, PoolConfig};
 
 use soroban_sdk::{
-    Address, BytesN, Env, Vec, contract, contractclient, contractimpl, symbol_short, token,
+    Address, BytesN, Env, Symbol, Vec, contract, contractclient, contractimpl, symbol_short,
+    token,
 };
 
 /// Must match `arena::MAX_PLAYERS_ALLOWED` (contract/arena/src/lib.rs) exactly
@@ -48,15 +53,24 @@ pub trait ArenaInterface {
         max_players: u32,
         round_duration: u64,
     );
+    /// Set right after `initialize`; see arena's `set_start_deadline` (#1579).
+    fn set_start_deadline(env: Env, deadline: u64);
 }
 
 const MIN_ROUND_DURATION: u64 = 60;
 const MAX_ROUND_DURATION: u64 = 604_800;
 const MIN_PLAYERS: u32 = 2;
+/// The lobby must stay open for at least this long after pool creation, so a
+/// host cannot create an arena that is effectively already expired (#1579).
+const MIN_START_DELAY_SECONDS: u64 = 300;
+/// Upper bound for `PoolConfig.start_deadline` (30 days). A longer window
+/// would let entry fees sit locked with no realistic cancellation path.
+const MAX_START_DELAY_SECONDS: u64 = 2_592_000;
 /// Factory contract ABI/storage version, for client-side capability
 /// negotiation across mixed deployment versions (see arena::CONTRACT_VERSION
 /// for the sibling contract's own counter — these are independent).
-const CONTRACT_VERSION: u32 = 1;
+/// Bumped to 2 for #1583: adds `set_global_pause` and `is_globally_paused`.
+const CONTRACT_VERSION: u32 = 2;
 
 /// The decimal precision `min_stake` is denominated in, matching Stellar's
 /// native asset (and the staking contract's own `MIN_INITIAL_STAKE`
@@ -186,6 +200,11 @@ impl FactoryContract {
         FactoryStorage::is_supported_token(&env, &token)
     }
 
+    /// Returns up to 50 supported tokens starting at the requested offset.
+    pub fn list_supported_tokens(env: Env, offset: u32, limit: u32) -> Vec<Address> {
+        FactoryStorage::list_supported_tokens(&env, offset, limit)
+    }
+
     pub fn get_min_stake(env: Env) -> Result<i128, FactoryError> {
         FactoryStorage::load_min_stake(&env)
     }
@@ -215,6 +234,31 @@ impl FactoryContract {
         FactoryStorage::set_paused(&env, false);
         env.events().publish((symbol_short!("UNPAUS"),), ());
         Ok(())
+    }
+
+    /// Set or clear the protocol-wide emergency pause (#1583).
+    ///
+    /// While set, every arena deployed by this factory rejects its
+    /// fund-moving entry points with `ArenaError::GloballyPaused`, on top of
+    /// (not instead of) each arena's own host-controlled pause. Only the
+    /// protocol admin may call this. The admin is expected to be a Stellar
+    /// multisig account whose medium threshold needs two signers, so the
+    /// call carries two-person approval through `require_auth`.
+    ///
+    /// # Events
+    /// Emits `GPAUSE` with `(paused, reason)`.
+    pub fn set_global_pause(env: Env, paused: bool, reason: Symbol) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        FactoryStorage::set_globally_paused(&env, paused);
+        env.events()
+            .publish((symbol_short!("GPAUSE"),), (paused, reason));
+        Ok(())
+    }
+
+    /// Whether the protocol-wide emergency pause is set (#1583). Read by every
+    /// arena's fund-moving entry points.
+    pub fn is_globally_paused(env: Env) -> bool {
+        FactoryStorage::is_globally_paused(&env)
     }
 
     /// Release an arena from a creator's active pool count.
@@ -254,6 +298,7 @@ impl FactoryContract {
         env: Env,
         host: Address,
         config: PoolConfig,
+        metadata_hash: BytesN<32>,
     ) -> Result<Address, FactoryError> {
         if FactoryStorage::is_paused(&env) {
             return Err(FactoryError::ContractPaused);
@@ -268,6 +313,16 @@ impl FactoryContract {
             || config.max_players > MAX_PLAYERS_ALLOWED
         {
             return Err(FactoryError::InvalidConfig);
+        }
+
+        // #1579: bound the lobby lifetime relative to creation. Too short and
+        // the pool is stillborn; too long and entry fees are locked for an
+        // unreasonable period.
+        let now = env.ledger().timestamp();
+        if config.start_deadline < now.saturating_add(MIN_START_DELAY_SECONDS)
+            || config.start_deadline > now.saturating_add(MAX_START_DELAY_SECONDS)
+        {
+            return Err(FactoryError::InvalidStartDeadline);
         }
         if !FactoryStorage::is_whitelisted(&env, &host) {
             return Err(FactoryError::HostNotWhitelisted);
@@ -322,6 +377,7 @@ impl FactoryContract {
             &config.max_players,
             &config.round_duration,
         );
+        ArenaClient::new(&env, &arena).set_start_deadline(&config.start_deadline);
 
         FactoryStorage::save_creator_stake(
             &env,
@@ -341,20 +397,28 @@ impl FactoryContract {
             entry_fee: config.entry_fee,
             status: ArenaStatus::Active,
             created_at: env.ledger().timestamp(),
+            metadata_hash: metadata_hash.clone(),
         };
         FactoryStorage::save_pool(&env, pool_id, &pool_metadata);
         FactoryStorage::increment_pool_count(&env);
 
+        // #1613: update secondary indexes atomically with pool creation.
+        FactoryStorage::index_host_pool(&env, &host, pool_id);
+        FactoryStorage::index_pool_status(&env, pool_id, &ArenaStatus::Active);
+
+        // #1607: emit via typed helper with normalized topics + versioned payload.
+        events::pool_created(&env, &host, pool_id, &arena, config.entry_fee);
         env.events().publish(
             (symbol_short!("POOL_CRE"),),
             (
                 pool_id,
-                host,
+                host.clone(),
                 config.entry_fee,
                 arena.clone(),
                 config.min_players,
                 config.max_players,
                 config.round_duration,
+                metadata_hash,
             ),
         );
         Ok(arena)
@@ -452,7 +516,16 @@ impl FactoryContract {
     ) -> Result<(), FactoryError> {
         let meta = FactoryStorage::load_pool(&env, pool_id).ok_or(FactoryError::PoolNotFound)?;
         meta.arena_address.require_auth();
+        let old_status = meta.status.clone();
         FactoryStorage::update_pool_status(&env, pool_id, &status);
+
+        // #1613: O(1) swap-remove from old bucket, append to new bucket.
+        if old_status != status {
+            FactoryStorage::transition_pool_status(&env, pool_id, &old_status, &status);
+        }
+
+        // #1607: emit via typed helper with normalized topics + versioned payload.
+        events::pool_status_updated(&env, &meta.arena_address, pool_id, FactoryStorage::arena_status_ordinal(&status));
         env.events()
             .publish((symbol_short!("POOL_ST"),), (pool_id, status));
         Ok(())
@@ -476,6 +549,45 @@ impl FactoryContract {
         let end = core::cmp::min(total, offset.saturating_add(limit));
         if start <= end {
             for pool_id in start..=end {
+                if let Some(meta) = FactoryStorage::load_pool(&env, pool_id) {
+                    result.push_back(meta);
+                }
+            }
+        }
+        result
+    }
+
+    /// #1613: Return pools created by `host`, paged by `page` (0-indexed).
+    ///
+    /// Each page contains up to `HOST_POOLS_PAGE_SIZE` pool IDs.  The caller
+    /// iterates pages until an empty page is returned.
+    pub fn get_arenas_by_host(env: Env, host: Address, page: u32) -> Vec<ArenaMetadata> {
+        let pool_ids = FactoryStorage::get_host_pools_page(&env, &host, page);
+        let mut result: Vec<ArenaMetadata> = Vec::new(&env);
+        for i in 0..pool_ids.len() {
+            if let Some(pool_id) = pool_ids.get(i) {
+                if let Some(meta) = FactoryStorage::load_pool(&env, pool_id) {
+                    result.push_back(meta);
+                }
+            }
+        }
+        result
+    }
+
+    /// #1613: Return pools in `status`, paged by `offset` / `limit`.
+    ///
+    /// Uses the StatusBucket secondary index.  Stable ordering is NOT
+    /// guaranteed across status transitions (swap-remove may reorder IDs).
+    pub fn get_arenas_by_status(
+        env: Env,
+        status: ArenaStatus,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<ArenaMetadata> {
+        let pool_ids = FactoryStorage::get_pools_by_status(&env, &status, offset, limit);
+        let mut result: Vec<ArenaMetadata> = Vec::new(&env);
+        for i in 0..pool_ids.len() {
+            if let Some(pool_id) = pool_ids.get(i) {
                 if let Some(meta) = FactoryStorage::load_pool(&env, pool_id) {
                     result.push_back(meta);
                 }
@@ -547,7 +659,12 @@ mod test {
             min_players: 2,
             max_players: 10,
             round_duration: 60,
+            start_deadline: env.ledger().timestamp() + 86_400,
         }
+    }
+
+    fn metadata_hash(env: &Env) -> BytesN<32> {
+        BytesN::from_array(env, &[7u8; 32])
     }
 
     /// A `pool_config` whose `stake_token` is a real deployed token contract
@@ -602,7 +719,7 @@ mod test {
     fn create_pool_rejects_unwhitelisted_host() {
         let (env, client, _admin, host) = setup();
         let err = client
-            .try_create_pool(&host, &pool_config(&env, 100))
+            .try_create_pool(&host, &pool_config(&env, 100), &metadata_hash(&env))
             .err()
             .expect("unwhitelisted host must error")
             .expect("error must be a contract error");
@@ -615,7 +732,7 @@ mod test {
         let mut config = pool_config(&env, 100);
         update(&mut config);
         let error = client
-            .try_create_pool(&host, &config)
+            .try_create_pool(&host, &config, &metadata_hash(&env))
             .err()
             .expect("invalid config must be rejected")
             .expect("error must be a contract error");
@@ -631,6 +748,32 @@ mod test {
     fn create_pool_rejects_round_duration_above_maximum() {
         assert_invalid_config(|config| {
             config.round_duration = 604_801
+        });
+    }
+
+    fn assert_invalid_start_deadline(update: impl FnOnce(&mut PoolConfig)) {
+        let (env, client, _admin, host) = setup();
+        let mut config = pool_config(&env, 100);
+        update(&mut config);
+        let error = client
+            .try_create_pool(&host, &config, &metadata_hash(&env))
+            .err()
+            .expect("invalid start deadline must be rejected")
+            .expect("error must be a contract error");
+        assert_eq!(error, FactoryError::InvalidStartDeadline);
+    }
+
+    #[test]
+    fn create_pool_rejects_start_deadline_below_minimum() {
+        assert_invalid_start_deadline(|config| {
+            config.start_deadline = MIN_START_DELAY_SECONDS - 1
+        });
+    }
+
+    #[test]
+    fn create_pool_rejects_start_deadline_above_maximum() {
+        assert_invalid_start_deadline(|config| {
+            config.start_deadline = MAX_START_DELAY_SECONDS + 1
         });
     }
 
@@ -666,7 +809,7 @@ mod test {
             let mut config = pool_config(&env, 100);
             config.max_players = *max_players;
             let err = client
-                .try_create_pool(&host, &config)
+                .try_create_pool(&host, &config, &metadata_hash(&env))
                 .err()
                 .expect("max_players > 100 must be rejected")
                 .expect("error must be a contract error");
@@ -687,7 +830,7 @@ mod test {
         client.pause();
 
         let err = client
-            .try_create_pool(&host, &pool_config(&env, 100))
+            .try_create_pool(&host, &pool_config(&env, 100), &metadata_hash(&env))
             .err()
             .expect("paused factory must error")
             .expect("error must be a contract error");
@@ -702,7 +845,7 @@ mod test {
         // proceeds past the pause check — fails on missing WASM hash).
         client.unpause();
         let err_after = client
-            .try_create_pool(&host, &pool_config(&env, 100))
+            .try_create_pool(&host, &pool_config(&env, 100), &metadata_hash(&env))
             .err()
             .expect("must still error (no wasm hash configured)")
             .expect("error must be a contract error");
@@ -723,7 +866,7 @@ mod test {
         client.add_supported_token(&cfg.stake_token);
 
         let err = client
-            .try_create_pool(&host, &cfg)
+            .try_create_pool(&host, &cfg, &metadata_hash(&env))
             .err()
             .expect("stake below minimum must error")
             .expect("error must be a contract error");
@@ -739,7 +882,7 @@ mod test {
         // No token registered — must be rejected.
         let cfg = pool_config_with_real_token(&env, 100);
         let err = client
-            .try_create_pool(&host, &cfg)
+            .try_create_pool(&host, &cfg, &metadata_hash(&env))
             .err()
             .expect("unsupported token must error")
             .expect("error must be a contract error");
@@ -749,7 +892,7 @@ mod test {
         // missing WASM hash, not on token validation).
         client.add_supported_token(&cfg.stake_token);
         let err_after = client
-            .try_create_pool(&host, &cfg)
+            .try_create_pool(&host, &cfg, &metadata_hash(&env))
             .err()
             .expect("must still error (no wasm hash configured)")
             .expect("error must be a contract error");
@@ -908,7 +1051,7 @@ mod test {
         client.add_approved_oracle(&cfg.oracle_contract);
 
         let err = client
-            .try_create_pool(&host, &cfg)
+            .try_create_pool(&host, &cfg, &metadata_hash(&env))
             .err()
             .expect("unapproved vault must error")
             .expect("error must be a contract error");
@@ -925,7 +1068,7 @@ mod test {
         client.add_approved_vault(&cfg.yield_vault);
 
         let err = client
-            .try_create_pool(&host, &cfg)
+            .try_create_pool(&host, &cfg, &metadata_hash(&env))
             .err()
             .expect("unapproved oracle must error")
             .expect("error must be a contract error");
@@ -1019,7 +1162,7 @@ mod test {
         // Removing the gate from release_arena must not weaken the pause switch
         // where it actually matters.
         let err = client
-            .try_create_pool(&host, &pool_config(&env, 100))
+            .try_create_pool(&host, &pool_config(&env, 100), &metadata_hash(&env))
             .err()
             .expect("paused factory must still refuse new pools")
             .expect("error must be a contract error");
@@ -1146,11 +1289,55 @@ mod test {
         client.add_supported_token(&token_id);
 
         let err = client
-            .try_create_pool(&host, &cfg)
+            .try_create_pool(&host, &cfg, &metadata_hash(&env))
             .err()
             .expect("entry_fee far below the decimal-scaled minimum must error")
             .expect("error must be a contract error");
         assert_eq!(err, FactoryError::StakeBelowMinimum);
+    }
+
+    // ── #1583: protocol-wide emergency pause ─────────────────────────────────
+
+    #[test]
+    fn set_global_pause_toggles_the_flag_and_emits_an_event() {
+        use soroban_sdk::{IntoVal, testutils::Events as _};
+
+        let (env, client, _admin, _host) = setup();
+        assert!(!client.is_globally_paused());
+
+        let reason = Symbol::new(&env, "vault_exploit");
+        client.set_global_pause(&true, &reason);
+        let (contract, topics, data) = env.events().all().last().unwrap();
+        assert_eq!(contract, client.address);
+        assert_eq!(topics, (symbol_short!("GPAUSE"),).into_val(&env));
+        let data: (bool, Symbol) = data.into_val(&env);
+        assert_eq!(data, (true, reason.clone()));
+        assert!(client.is_globally_paused());
+
+        client.set_global_pause(&false, &reason);
+        assert!(!client.is_globally_paused());
+    }
+
+    #[test]
+    fn set_global_pause_requires_the_protocol_admin() {
+        let (env, client, _admin, _host) = setup();
+        env.set_auths(&[]);
+        assert!(
+            client
+                .try_set_global_pause(&true, &Symbol::new(&env, "x"))
+                .is_err()
+        );
+        assert!(!client.is_globally_paused());
+    }
+
+    #[test]
+    fn global_pause_is_independent_of_the_pool_creation_pause() {
+        let (env, client, _admin, _host) = setup();
+        client.pause();
+        assert!(!client.is_globally_paused());
+        client.unpause();
+        client.set_global_pause(&true, &Symbol::new(&env, "incident"));
+        assert!(client.is_globally_paused());
     }
 
     #[test]

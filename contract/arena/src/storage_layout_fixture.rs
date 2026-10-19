@@ -6,10 +6,11 @@
 mod tests {
     use crate::storage::DataKey;
     use crate::types::{
-        ArenaConfig, Choice, GameState, PendingAdmin, PlayerState, RoundResult, YieldSnapshot,
+        ArenaConfig, Choice, EliminationReason, GameState, PendingAdmin, PlayerState, RoundResult,
+        YieldSnapshot,
     };
     use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::xdr::{ScVal, ToXdr};
+    use soroban_sdk::xdr::{ReadXdr, ScVal, ToXdr};
     use soroban_sdk::{Address, Env, TryFromVal, TryIntoVal};
 
     const FIXTURE_MANIFEST: &str = include_str!("../../fixtures/storage-layout/arena-v1.json");
@@ -19,10 +20,8 @@ mod tests {
         ScVal::try_from_val(env, &v).expect("ScVal").to_xdr(env)
     }
 
-    fn fixed_address(env: &Env, seed: u8) -> Address {
-        let mut arr = [0u8; 32];
-        arr[31] = seed;
-        Address::from_contract_id(&soroban_sdk::BytesN::from_array(env, &arr))
+    fn fixed_address(env: &Env, _seed: u8) -> Address {
+        Address::generate(env)
     }
 
     #[test]
@@ -38,7 +37,7 @@ mod tests {
         let admin = fixed_address(&env, 1);
         let player = fixed_address(&env, 2);
 
-        let samples: Vec<(&str, soroban_sdk::Bytes)> = vec![
+        let samples: [(&str, soroban_sdk::Bytes); 9] = [
             ("Choice::Heads", to_xdr(&env, Choice::Heads)),
             (
                 "PlayerState",
@@ -50,7 +49,15 @@ mod tests {
                     },
                 ),
             ),
-            ("DataKey::Player", to_xdr(&env, DataKey::Player(player))),
+            ("DataKey::Player", to_xdr(&env, DataKey::Player(player.clone()))),
+            (
+                "DataKey::EliminationReason",
+                to_xdr(&env, DataKey::EliminationReason(player)),
+            ),
+            (
+                "EliminationReason::Majority",
+                to_xdr(&env, EliminationReason::Majority),
+            ),
             (
                 "ArenaConfig",
                 to_xdr(
@@ -119,8 +126,8 @@ mod tests {
 
     #[test]
     fn storage_layout_corrupted_xdr_fails_decode() {
-        let env = Env::default();
-        let garbage = soroban_sdk::Bytes::from_slice(&env, &[0xde, 0xad, 0xbe, 0xef]);
-        assert!(ScVal::try_from_val(&env, &garbage).is_err());
+        let _env = Env::default();
+        let garbage = [0xdeu8, 0xad, 0xbe, 0xef];
+        assert!(ScVal::from_xdr(&garbage, soroban_sdk::xdr::Limits::none()).is_err());
     }
 }

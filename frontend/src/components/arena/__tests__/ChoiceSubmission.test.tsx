@@ -4,9 +4,9 @@ import { ChoiceSubmission } from "../ChoiceSubmission";
 import {
   buildSubmitCommitmentTransaction,
   submitSignedTransaction,
-} from "@/shared-d/utils/stellar-transactions";
+} from "@/shared/lib/stellar/stellar-transactions";
 
-jest.mock("@/shared-d/utils/stellar-transactions", () => ({
+jest.mock("@/shared/lib/stellar/stellar-transactions", () => ({
   buildSubmitCommitmentTransaction: jest.fn(),
   submitSignedTransaction: jest.fn(),
 }));
@@ -18,11 +18,11 @@ jest.mock("@/shared-d/utils/stellar-transactions", () => ({
  * these tests are about click → validate → sign → submit ordering, not about
  * XDR. The real policy rejects a placeholder as malformed, which is correct:
  * it cannot tell a placeholder from a tampered envelope. The firewall's own
- * behaviour is covered directly in `src/shared-d/security/__tests__/policy.test.ts`,
+ * behaviour is covered directly in `src/shared/lib/security/__tests__/policy.test.ts`,
  * against real signed envelopes. Do not "fix" a failure here by loosening the
  * policy — fix the fixture, or test the real envelope.
  */
-jest.mock("@/shared-d/security/policy", () => ({
+jest.mock("@/shared/lib/security/policy", () => ({
   evaluateSigningRequest: jest.fn(() => ({
     type: "COMMIT",
     operations: [{ type: "invokeHostFunction" }],

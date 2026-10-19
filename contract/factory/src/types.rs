@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, contracterror, contracttype};
+use soroban_sdk::{Address, BytesN, contracterror, contracttype};
 
 /// Schema-level limits for untrusted, size-variable inputs (#1455).
 ///
@@ -24,6 +24,10 @@ pub struct PoolConfig {
     pub min_players: u32,
     pub max_players: u32,
     pub round_duration: u64,
+    /// Unix timestamp after which the lobby no longer accepts joins and may be
+    /// cancelled permissionlessly via `cancel_unstarted` (#1579). Bounded by
+    /// the factory relative to the creation ledger.
+    pub start_deadline: u64,
 }
 
 #[contracttype]
@@ -44,6 +48,10 @@ pub struct ArenaMetadata {
     pub entry_fee: i128,
     pub status: ArenaStatus,
     pub created_at: u64,
+    /// SHA-256 of the canonical metadata JSON committed at creation (#1577).
+    /// Lets clients verify that off-chain name/description/rules/banner match
+    /// what the host published on-chain.
+    pub metadata_hash: BytesN<32>,
 }
 
 #[contracterror]
@@ -70,4 +78,7 @@ pub enum FactoryError {
     NoPendingAdmin = 19,
     /// Scaling `min_stake` to a token's decimals overflowed i128 (#1361).
     ArithmeticOverflow = 20,
+    /// `PoolConfig.start_deadline` was outside the allowed window relative to
+    /// the creation ledger (#1579).
+    InvalidStartDeadline = 21,
 }

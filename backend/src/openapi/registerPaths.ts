@@ -7,6 +7,8 @@ import {
   ArenaIdParamSchema,
   ArenaParticipantsResponseSchema,
   ArenaStatsSchema,
+  ArenaYieldQuerySchema,
+  ArenaYieldResponseSchema,
   AuthUserResponseSchema,
   ClaimInboxPageSchema,
   CreatePayoutBodySchema,
@@ -163,6 +165,29 @@ function registerArenaPaths(registry: OpenAPIRegistry): void {
         content: {
           "application/json": { schema: ArenaParticipantsResponseSchema },
         },
+      },
+    },
+  });
+
+  registry.registerPath({
+    method: "get",
+    path: "/api/arenas/{id}/yield",
+    summary: "Per-round yield time-series for an arena",
+    request: {
+      params: ArenaIdParamSchema,
+      query: ArenaYieldQuerySchema,
+    },
+    responses: {
+      200: {
+        description:
+          "Ordered yield snapshots (round, timestamp, rate, accrued, cumulative); amounts are decimal strings in the arena stake asset",
+        content: {
+          "application/json": { schema: ArenaYieldResponseSchema },
+        },
+      },
+      404: {
+        description: "Arena not found",
+        content: { "application/json": { schema: ApiErrorSchema } },
       },
     },
   });

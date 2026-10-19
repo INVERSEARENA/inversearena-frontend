@@ -16,8 +16,39 @@ on:
       - ".github/workflows/backend-ci.yml"
 
 jobs:
-  test:
+  # Fast tier (#1644): unit tests + node:test runners. No service containers.
+  unit:
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: "npm"
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install Dependencies
+        working-directory: ./backend
+        run: npm ci
+
+      - name: Verify redaction policy (#1531)
+        run: node scripts/verify-redaction.mjs
+
+      - name: Unit tests (no services)
+        working-directory: ./backend
+        run: npm run test:unit
+
+      - name: node:test suites
+        working-directory: ./backend
+        run: npm run test:node:validation && npm run test:node
+
+  # Integration tier (#1644): needs Postgres + Redis service containers.
+  integration:
+    runs-on: ubuntu-latest
+    needs: unit
 
     services:
       postgres:
@@ -59,16 +90,13 @@ jobs:
         working-directory: ./backend
         run: npm ci
 
-      - name: Verify redaction policy (#1531)
-        run: node scripts/verify-redaction.mjs
-
       - name: Run Prisma Migrations
         working-directory: ./backend
         env:
           DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest
         run: npx prisma migrate deploy
 
-      - name: Run Integration Tests
+      - name: Integration tests
         working-directory: ./backend
         env:
           DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest
@@ -77,4 +105,4 @@ jobs:
           ADMIN_API_KEY: test-admin-key
           PAYOUT_CONTRACT_ID: CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
           PAYOUT_SOURCE_ACCOUNT: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
-        run: npm run test:ci
+        run: npm run test:ci:integration

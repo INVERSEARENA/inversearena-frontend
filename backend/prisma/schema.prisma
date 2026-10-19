@@ -21,6 +21,9 @@ model User {
 
   transactions   Transaction[]
   eliminationLogs EliminationLog[]
+  notificationPreference NotificationPreference?
+  notificationDeliveries NotificationDelivery[]
+  pushSubscriptions PushSubscription[]
 
   @@map("users")
 }
@@ -33,8 +36,26 @@ model Arena {
 
   pools       Pool[]
   rounds      Round[]
+  stats       ArenaStats?
 
+  @@index([createdAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
   @@map("arenas")
+}
+
+model ArenaStats {
+  id             String   @id @default(uuid())
+  arenaId        String   @unique @map("arena_id")
+  players        Int      @default(0)
+  rounds         Int      @default(0)
+  eliminations   Int      @default(0)
+  yieldAccrued   Float    @default(0) @map("yield_accrued")
+  version        Int      @default(0)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  arena          Arena    @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+
+  @@map("arena_stats")
 }
 
 model Pool {
@@ -47,6 +68,7 @@ model Pool {
   arena       Arena    @relation(fields: [arenaId], references: [id])
 
   @@index([arenaId]) // Index to quickly find pools for an arena
+  @@index([arenaId, createdAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
   @@map("pools")
 }
 
@@ -69,6 +91,7 @@ model Round {
 
   @@unique([arenaId, roundNumber]) // Each round is unique per arena
   @@index([arenaId])
+  @@index([arenaId, roundNumber(sort: Asc), id(sort: Asc)]) // Keyset pagination index (#1520)
   @@index([state])
   @@map("rounds")
 }
@@ -112,8 +135,84 @@ model EliminationLog {
   user        User     @relation(fields: [userId], references: [id])
 
   @@index([roundId])
+  @@index([roundId, eliminatedAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
   @@index([userId])
   @@map("elimination_logs")
+}
+
+model NotificationPreference {
+  id          String   @id @default(uuid())
+  userId      String   @unique @map("user_id")
+  emailEnabled Boolean @default(false) @map("email_enabled")
+  pushEnabled Boolean @default(false) @map("push_enabled")
+  inAppEnabled Boolean @default(true) @map("in_app_enabled")
+  roundNotifications Boolean @default(true) @map("round_notifications")
+  payoutNotifications Boolean @default(true) @map("payout_notifications")
+  eliminationNotifications Boolean @default(true) @map("elimination_notifications")
+  email       String?
+  pushToken   String?  @map("push_token")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@map("notification_preferences")
+}
+
+model NotificationDelivery {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  type        String   // "round" | "payout" | "elimination"
+  channel     String   // "email" | "push" | "in_app"
+  status      String   // "pending" | "sent" | "delivered" | "failed"
+  dedupeKey   String   @map("dedupe_key")
+  sentAt      DateTime? @map("sent_at")
+  error       String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([userId, dedupeKey, channel])
+  @@map("notification_deliveries")
+}
+
+// Web Push subscriptions, one row per (user, device endpoint) (#1571).
+// p256dh/auth are AES-256-GCM encrypted at rest (see pushService);
+// the service never returns them to clients.
+model PushSubscription {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  endpoint    String   @unique
+  p256dh      String
+  auth        String
+  userAgent   String?  @map("user_agent")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("push_subscriptions")
+}
+
+model HostWhitelistApplication {
+  id          String   @id @default(uuid())
+  wallet      String
+  contact     String
+  intent      String
+  status      String   @default("PENDING") // PENDING | APPROVED | REJECTED | CONFIRMED
+  reviewer    String?
+  reviewNote  String?  @map("review_note")
+  unsignedXdr String?  @map("unsigned_xdr")
+  txHash      String?  @map("tx_hash")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  reviewedAt  DateTime? @map("reviewed_at")
+  confirmedAt DateTime? @map("confirmed_at")
+
+  @@index([wallet, status])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("host_whitelist_applications")
 }
 
 // Checkpointed on-chain arena projection state (#1382).

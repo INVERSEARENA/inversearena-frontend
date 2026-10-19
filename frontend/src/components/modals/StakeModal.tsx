@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { TrendingUp, CheckSquare, Zap, Info, Loader2, TerminalSquare, ShieldCheck, AlertTriangle } from "lucide-react";
-import { useWallet } from "@/features/wallet/useWallet";
+import { useWallet } from "@/features/wallet/hooks/useWallet";
 import {
   evaluateSigningRequest,
   // Imported as a value, not a type: these call sites narrow policy
@@ -10,7 +10,7 @@ import {
   // erases to `any` and silently turns into a dead branch.
   SigningPolicyError,
   type DecodedEnvelope,
-} from "@/shared-d/security/policy";
+} from "@/shared/lib/security/policy";
 import {
   buildStakeProtocolTransaction,
   submitSignedTransaction,
@@ -18,16 +18,16 @@ import {
   STAKING_CONTRACT_ID,
   STELLAR_PLACEHOLDERS,
   NETWORK_PASSPHRASE,
-} from "@/shared-d/utils/stellar-transactions";
+} from "@/shared/lib/stellar/stellar-transactions";
 import {
   formatCurrencyInput,
   sanitizeNumericInput,
   type Currency,
-} from "@/shared-d/utils/form-validation";
-import { useAssetReadinessGate } from "@/features/asset-readiness/useAssetReadinessGate";
-import { displayAmountToStroops } from "@/shared-d/utils/stellar-asset-reader";
+} from "@/shared/lib/form-validation";
+import { useAssetReadinessGate } from "@/features/asset-readiness/hooks/useAssetReadinessGate";
+import { displayAmountToStroops } from "@/shared/lib/stellar/stellar-asset-reader";
 import { AssetTrustlinePrompt } from "@/components/modals/AssetTrustlinePrompt";
-import { useTransactionIntent } from "@/shared-d/hooks/useTransactionIntent";
+import { useTransactionIntent } from "@/shared/lib/hooks/useTransactionIntent";
 
 // Stakes here are denominated in XLM (the modal validates against
 // balance.xlm), so the shared helpers use XLM's 7-decimal precision.

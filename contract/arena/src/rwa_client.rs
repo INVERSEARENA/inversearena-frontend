@@ -10,6 +10,8 @@ use soroban_sdk::{Address, Env, contractclient};
 #[contractclient(name = "RwaAdapterClient")]
 pub trait RwaAdapterInterface {
     fn deposit(env: Env, from: Address, amount: i128);
+    /// Partial withdrawal of `amount`, returning what was actually paid (#1580).
+    fn withdraw(env: Env, from: Address, amount: i128) -> i128;
     fn withdraw_all(env: Env, from: Address) -> i128;
     fn balance_of(env: Env, user: Address) -> i128;
     fn get_total_deposited(env: Env) -> i128;

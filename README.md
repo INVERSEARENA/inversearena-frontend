@@ -119,9 +119,10 @@ inversearena-frontend/
 ├── frontend/               # Next.js 15 application
 │   ├── src/
 │   │   ├── app/            # Next.js App Router pages
-│   │   ├── features/       # Feature modules (arena, wallet, leaderboard…)
+│   │   ├── features/       # Domain modules: api/ hooks/ components/ model/ + index.ts
 │   │   ├── components/     # Shared UI components
-│   │   └── lib/            # Utilities and SDK wrappers
+│   │   ├── shared/         # config/ and lib/ (incl. the Stellar access layer)
+│   │   └── test/           # Test doubles and fixtures (see ARCHITECTURE.md §8)
 │   ├── public/             # Static assets
 │   └── .env.example        # Frontend environment variable template
 │
@@ -148,9 +149,9 @@ inversearena-frontend/
 
 - Node.js 20+
 - pnpm 9+ (`npm install -g pnpm`)
-- PostgreSQL 15+
-- Redis 7+
-- Docker (optional, for monitoring stack)
+- Docker (for the one-command local stack)
+- Stellar CLI (`cargo install --locked stellar-cli`) — only needed if you want
+  to build/deploy the contracts yourself; `make dev` warns and skips without it
 
 ### 1. Clone the Repository
 
@@ -159,21 +160,33 @@ git clone https://github.com/your-org/inversearena-frontend.git
 cd inversearena-frontend
 ```
 
-### 2. Quick Start with Make
+### 2. One-command local stack (#1647)
 
-A root-level `Makefile` provides a single discoverable entry point for all common tasks:
+```bash
+make dev         # quickstart + contracts + seed + backend + frontend
+make dev-reset   # clean slate (wipe volumes, manifests, build artifacts)
+make dev-seed    # re-seed open/active/finished/cancelled arenas
+```
+
+`make dev` brings up a **local Stellar standalone network** (`stellar/quickstart`),
+Postgres, Redis, and Mongo; builds and deploys the Soroban contracts; writes
+`contract/deployment-manifest.json` plus the `.env` files the backend and
+frontend auto-load; seeds arenas in every lifecycle state; and starts both apps.
+
+**Manual setup** (if you prefer running against testnet or your own services):
 
 ```bash
 make help          # List all available targets
-make dev           # Start frontend + backend in development mode
+make infra         # Start PostgreSQL + Redis via Docker Compose
+make migrate       # Apply pending Prisma migrations (development)
+make backend-dev   # Start backend in watch mode
+make frontend-dev  # Start Next.js dev server
 make test          # Run all tests (backend + frontend)
 make build         # Build both services for production
-make migrate       # Apply pending Prisma migrations (development)
-make migrate-prod  # Apply migrations in production (no seed)
-make infra         # Start PostgreSQL + Redis via Docker Compose
-make monitoring    # Start Prometheus + Grafana monitoring stack
-make clean         # Remove build artifacts and node_modules
 ```
+
+The full stack (including a cold Docker pull) is designed to be working in
+**under 10 minutes** from a clean clone.
 
 ### 3. Set Up the Frontend
 

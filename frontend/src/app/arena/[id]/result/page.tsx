@@ -2,7 +2,7 @@
 
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { useWallet } from "@/features/wallet/useWallet";
+import { useWallet } from "@/features/wallet/hooks/useWallet";
 import { SocialCard } from "@/components/arena-v2/modals/SocialCard";
 
 interface RoundSummary {

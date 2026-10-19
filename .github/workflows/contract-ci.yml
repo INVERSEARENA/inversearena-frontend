@@ -5,11 +5,13 @@ on:
     branches: ["main"]
     paths:
       - "contract/**"
+      - "frontend/src/shared/lib/stellar/contract-errors.generated.ts"
       - ".github/workflows/contract-ci.yml"
   pull_request:
     branches: ["main"]
     paths:
       - "contract/**"
+      - "frontend/src/shared/lib/stellar/contract-errors.generated.ts"
       - ".github/workflows/contract-ci.yml"
 
 jobs:
@@ -44,19 +46,34 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libdbus-1-dev libudev-dev libusb-1.0-0-dev
 
-      - name: Build arena WASM
+      - name: Build contract WASM
         working-directory: ./contract
-        run: cargo build -p arena --target wasm32v1-none --release
+        run: cargo build --workspace --target wasm32v1-none --release
         # arena/src/integration_tests.rs embeds this crate's own compiled WASM
         # (via crate::WASM) to test the factory's real dynamic-deployment path,
-        # so it must exist before `cargo test` compiles that test module.
-        # - Scoped to -p arena: a whole-workspace wasm build currently fails
-        #   separately (factory statically links arena and both export an
-        #   `unpause` symbol, colliding when factory's wasm links arena's code
-        #   in) — a pre-existing, unrelated issue not fixed here.
+        # and arena/src/global_pause_tests.rs embeds factory.wasm to measure
+        # the cross-contract pause check (#1583), so both must exist before
+        # `cargo test` compiles those test modules. Every contract is built
+        # because the error-mapping drift check (#1597) reads each contract's
+        # spec from its WASM.
         # - wasm32v1-none, not wasm32-unknown-unknown: the latter can emit
         #   reference-types instructions that soroban-env-host rejects at
         #   runtime ("reference-types not enabled").
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: "pnpm"
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Check contract error mappings are generated from the specs (#1597)
+        run: |
+          pnpm --dir frontend install --no-frozen-lockfile --ignore-scripts
+          node contract/scripts/generate-contract-errors.mjs --check
 
       - name: Run contract tests
         working-directory: ./contract

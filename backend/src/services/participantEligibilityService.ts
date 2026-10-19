@@ -1,5 +1,5 @@
 import { PrismaClient } from "@prisma/client";
-import type { Arena } from "@prisma/client";
+import type { PlayerStatusReader } from "./playerStatus";
 
 export interface EligibilityCheckResult {
   isEligible: boolean;
@@ -21,17 +21,23 @@ export interface EligibilityError {
 }
 
 export class ParticipantEligibilityService {
-  constructor(private prisma: PrismaClient) {}
+  constructor(
+    private prisma: PrismaClient,
+    private readPlayerStatus: PlayerStatusReader,
+  ) {}
 
   /**
    * Perform a comprehensive eligibility check before join transaction construction.
    *
    * Checks:
    * - Capacity: Arena is not full
-   * - Phase: Arena is in joinable phase
+   * - Phase: Arena is in its lobby (on-chain `get_player_status`, #1582)
    * - Balance: Player has sufficient balance for stake
    * - Token: Correct token type for arena
-   * - Duplicate membership: Player not already in arena
+   * - Duplicate membership: Player not already joined (on-chain, #1582)
+   *
+   * The arena id is its contract address, so membership and phase come from
+   * the contract rather than from indexed rows that can lag the chain.
    */
   async checkEligibility(
     arenaId: string,
@@ -42,16 +48,7 @@ export class ParticipantEligibilityService {
     const errors: EligibilityError[] = [];
     const warnings: string[] = [];
 
-    // Fetch arena and latest round info
-    const arena = await this.prisma.arena.findUnique({
-      where: { id: arenaId },
-      include: {
-        rounds: {
-          orderBy: { roundNumber: "desc" },
-          take: 1,
-        },
-      },
-    });
+    const arena = await this.prisma.arena.findUnique({ where: { id: arenaId } });
 
     if (!arena) {
       return {
@@ -74,9 +71,10 @@ export class ParticipantEligibilityService {
       };
     }
 
-    const latestRound = arena.rounds[0];
     const currentPlayers = await this.getCurrentPlayerCount(arenaId);
-    const arenaPhase = this.determineArenaPhase(arena, latestRound);
+    const statusRead = await this.readPlayerStatus(arenaId, playerWallet);
+    const status = statusRead.outcome === "verified" ? statusRead.value : null;
+    const arenaPhase = status?.phase ?? "UNKNOWN";
     const requiredStake = arena.entryFee;
 
     // Check 1: Capacity
@@ -88,8 +86,15 @@ export class ParticipantEligibilityService {
       });
     }
 
-    // Check 2: Phase - joinable phases are WAITING or RECRUITING
-    if (arenaPhase !== "WAITING" && arenaPhase !== "RECRUITING") {
+    // Check 2: Phase - only the lobby accepts joins. An unreadable status is
+    // a failure, never an assumed-joinable arena.
+    if (!status) {
+      errors.push({
+        code: "PLAYER_STATUS_UNAVAILABLE",
+        message: "Could not read the player's on-chain arena status; try again",
+        severity: "error",
+      });
+    } else if (status.phase !== "Lobby") {
       errors.push({
         code: "ARENA_NOT_JOINABLE",
         message: `Arena is in ${arenaPhase} phase and cannot accept new players`,
@@ -125,24 +130,13 @@ export class ParticipantEligibilityService {
       });
     }
 
-    // Check 6: Duplicate membership - player already in current round
-    if (latestRound) {
-      const existingParticipant = await this.prisma.arenaParticipant.findUnique({
-        where: {
-          roundId_walletAddress: {
-            roundId: latestRound.id,
-            walletAddress: playerWallet,
-          },
-        },
+    // Check 6: Duplicate membership
+    if (status?.joined) {
+      errors.push({
+        code: "DUPLICATE_MEMBERSHIP",
+        message: "This wallet address is already participating in this arena",
+        severity: "error",
       });
-
-      if (existingParticipant) {
-        errors.push({
-          code: "DUPLICATE_MEMBERSHIP",
-          message: "This wallet address is already participating in this arena",
-          severity: "error",
-        });
-      }
     }
 
     // Check 7: Network mismatch warning
@@ -192,34 +186,5 @@ export class ParticipantEligibilityService {
     });
 
     return count;
-  }
-
-  /**
-   * Determine the phase of an arena based on current time and latest round state.
-   */
-  private determineArenaPhase(
-    arena: Arena,
-    latestRound: { state: string } | undefined,
-  ): string {
-    const now = new Date();
-
-    if (arena.resolvedAt && new Date(arena.resolvedAt) < now) {
-      return "SETTLED";
-    }
-
-    if (latestRound) {
-      if (latestRound.state === "ACTIVE") {
-        return "ACTIVE";
-      }
-      if (latestRound.state === "RESOLVED") {
-        return "ROUND_RESOLVED";
-      }
-    }
-
-    if (arena.joinDeadline && new Date(arena.joinDeadline) < now) {
-      return "CLOSED";
-    }
-
-    return "WAITING";
   }
 }

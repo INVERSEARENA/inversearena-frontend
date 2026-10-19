@@ -2,7 +2,7 @@
  * Signed server-time synchronization for round countdowns (#1401). See
  * docs/design/server-time-sync.md.
  *
- * A client-side countdown timer (frontend/src/shared-d/hooks/useArenaTimer.ts)
+ * A client-side countdown timer (frontend/src/shared/lib/hooks/useArenaTimer.ts)
  * has no trustworthy source of "now": its own clock can be wrong (skew),
  * paused (device sleep), or briefly disconnected (reconnect). Its existing
  * `sync(serverSeconds)` method takes a raw number with no origin proof, so

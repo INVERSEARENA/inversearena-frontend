@@ -1,4 +1,4 @@
-import type { IntelItem } from "../types";
+import type { IntelItem } from "../model/types";
 
 interface GlobalIntelTickerProps {
     items: IntelItem[];

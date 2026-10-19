@@ -10,7 +10,7 @@
  */
 
 import * as Sentry from "@sentry/nextjs";
-import { scrubStellarAddresses } from "./src/lib/sentry";
+import { scrubStellarAddresses } from "./src/shared/lib/sentry";
 
 Sentry.init({
   dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,

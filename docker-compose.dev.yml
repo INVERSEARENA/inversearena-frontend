@@ -1,0 +1,79 @@
+# One-command local development stack (#1647).
+#
+#   make dev        → docker compose -f docker-compose.dev.yml up
+#   make dev-reset  → tear down + wipe volumes
+#
+# Services:
+#   quickstart — stellar/quickstart local Soroban network (standalone)
+#   postgres   — backend database
+#   redis      — cache / queues
+#   mongo      — mongodb-memory-server is used in tests; a real Mongo is
+#                provided here so `make dev` matches production topology
+#
+# Ports are offset from the defaults where a conflict with a system service is
+# common (Postgres 5433 instead of 5432) so a contributor can run this next to
+# a local Postgres install. Override with the usual *_PORT env vars if needed.
+
+version: "3.8"
+
+services:
+  quickstart:
+    # Official Stellar quickstart image. `--standalone` gives a local network
+    # with friendbot, so funded test accounts need no internet access.
+    image: stellar/quickstart:latest
+    container_name: inversearena-quickstart
+    platform: linux/amd64
+    command: ["--standalone", "--enable-soroban-rpc"]
+    ports:
+      - "8000:8000" # Horizon + friendbot + Soroban RPC
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  postgres:
+    image: postgres:15
+    container_name: inversearena-postgres
+    environment:
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpassword
+      POSTGRES_DB: inversearena
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U testuser"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    container_name: inversearena-redis
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongo:
+    image: mongo:7
+    container_name: inversearena-mongo
+    ports:
+      - "27018:27017"
+    volumes:
+      - mongodata:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+  mongodata:

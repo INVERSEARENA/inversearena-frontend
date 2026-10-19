@@ -14,15 +14,15 @@ import StakeModal from "../StakeModal";
 import {
   formatCurrencyInput,
   sanitizeNumericInput,
-} from "@/shared-d/utils/form-validation";
+} from "@/shared/lib/form-validation";
 
 const walletState: Record<string, unknown> = {};
 
-jest.mock("@/features/wallet/useWallet", () => ({
+jest.mock("@/features/wallet/hooks/useWallet", () => ({
   useWallet: () => walletState,
 }));
 
-jest.mock("@/shared-d/utils/stellar-transactions", () => ({
+jest.mock("@/shared/lib/stellar/stellar-transactions", () => ({
   STAKING_CONTRACT_ID: `C${"A".repeat(55)}`,
   STELLAR_PLACEHOLDERS: { stakingContractId: "PLACEHOLDER_STAKING_CONTRACT_ID" },
   buildStakeProtocolTransaction: jest.fn(),

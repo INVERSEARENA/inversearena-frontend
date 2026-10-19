@@ -23,7 +23,7 @@ jest.mock("next/navigation", () => ({
 }));
 
 // Mock Sentry so tests don't need a real DSN
-jest.mock("@/lib/sentry", () => ({
+jest.mock("@/shared/lib/sentry", () => ({
   captureReactError: jest.fn(),
 }));
 

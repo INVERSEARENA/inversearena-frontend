@@ -51,10 +51,19 @@ export type ContractKind = "arena" | "factory" | "payout" | "staking";
  * contract that older deployed instances won't have.
  */
 let capabilityMap: Record<ContractKind, Record<string, number>> = {
-  arena: {},
+  // #1582: the single per-player status read used for eligibility checks.
+  arena: {
+    get_player_status: 4,
+  },
   factory: {},
   payout: {},
-  staking: {},
+  // #1516: the storage TTL keeper negotiates these before reading/writing TTL
+  // state, so an older deployed staking instance (v1) is silently skipped
+  // rather than probed with an entrypoint it does not have.
+  staking: {
+    storage_inventory: 2,
+    renew_storage: 2,
+  },
 };
 
 /**

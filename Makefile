@@ -1,15 +1,22 @@
-.PHONY: dev test build migrate migrate-prod infra monitoring clean help \
+.PHONY: dev dev-reset dev-seed test build migrate migrate-prod infra monitoring clean help \
         contracts-build contracts-deploy contracts-init-factory contracts-abi-check \
         backend-dev backend-test frontend-dev deps-gate deps-gate-test
 
 NETWORK ?= testnet
 SOURCE  ?= deployer
 
-## ── Convenience shortcuts ──────────────────────────────────────────────────
+## ── One-command local stack (#1647) ─────────────────────────────────────────
 
-dev: ## Start frontend + backend in development mode
-	cd backend && npm run dev &
-	cd frontend && pnpm dev
+dev: ## One-command local stack: quickstart + contracts + seed + apps
+	bash scripts/dev-stack.sh up
+
+dev-reset: ## Clean slate: tear down the stack, wipe volumes and manifests
+	bash scripts/dev-stack.sh reset
+
+dev-seed: ## Re-seed open/active/finished/cancelled arenas
+	npx tsx scripts/seed-arenas.ts
+
+## ── Convenience shortcuts ──────────────────────────────────────────────────
 
 test: ## Run all tests (backend + frontend)
 	cd backend && npm run test:ci

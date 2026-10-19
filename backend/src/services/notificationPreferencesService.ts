@@ -63,8 +63,8 @@ export class NotificationPreferencesService {
       roundNotifications: prefs.roundNotifications,
       payoutNotifications: prefs.payoutNotifications,
       eliminationNotifications: prefs.eliminationNotifications,
-      email: prefs.email ?? undefined,
-      pushToken: prefs.pushToken ?? undefined,
+      ...(prefs.email != null ? { email: prefs.email } : {}),
+      ...(prefs.pushToken != null ? { pushToken: prefs.pushToken } : {}),
     };
   }
 
@@ -85,8 +85,8 @@ export class NotificationPreferencesService {
         roundNotifications: updates.roundNotifications ?? true,
         payoutNotifications: updates.payoutNotifications ?? true,
         eliminationNotifications: updates.eliminationNotifications ?? true,
-        email: updates.email,
-        pushToken: updates.pushToken,
+        ...(updates.email !== undefined ? { email: updates.email } : {}),
+        ...(updates.pushToken !== undefined ? { pushToken: updates.pushToken } : {}),
       },
       update: {
         ...(updates.emailEnabled !== undefined && { emailEnabled: updates.emailEnabled }),
@@ -95,8 +95,8 @@ export class NotificationPreferencesService {
         ...(updates.roundNotifications !== undefined && { roundNotifications: updates.roundNotifications }),
         ...(updates.payoutNotifications !== undefined && { payoutNotifications: updates.payoutNotifications }),
         ...(updates.eliminationNotifications !== undefined && { eliminationNotifications: updates.eliminationNotifications }),
-        ...(updates.email !== undefined && { email: updates.email }),
-        ...(updates.pushToken !== undefined && { pushToken: updates.pushToken }),
+        ...(updates.email !== undefined ? { email: updates.email } : {}),
+        ...(updates.pushToken !== undefined ? { pushToken: updates.pushToken } : {}),
       },
     });
 
@@ -108,8 +108,8 @@ export class NotificationPreferencesService {
       roundNotifications: prefs.roundNotifications,
       payoutNotifications: prefs.payoutNotifications,
       eliminationNotifications: prefs.eliminationNotifications,
-      email: prefs.email ?? undefined,
-      pushToken: prefs.pushToken ?? undefined,
+      ...(prefs.email != null ? { email: prefs.email } : {}),
+      ...(prefs.pushToken != null ? { pushToken: prefs.pushToken } : {}),
     };
   }
 
@@ -134,6 +134,28 @@ export class NotificationPreferencesService {
     if (type === "elimination" && !prefs.eliminationNotifications) return false;
 
     return true;
+  }
+
+  /**
+   * True when a delivery for this dedupe key already reached the user on
+   * this channel (#1571). Used by the push scheduler to fan out at most
+   * once per (user, arena, round, type).
+   */
+  async hasDelivered(
+    userId: string,
+    dedupeKey: string,
+    channel: "email" | "push" | "in_app",
+  ): Promise<boolean> {
+    const existing = await this.prisma.notificationDelivery.findFirst({
+      where: {
+        userId,
+        dedupeKey,
+        channel,
+        status: { in: ["sent", "delivered"] },
+      },
+      select: { id: true },
+    });
+    return existing !== null;
   }
 
   /**
@@ -225,8 +247,77 @@ export class NotificationPreferencesService {
       status: d.status as "pending" | "sent" | "delivered" | "failed",
       dedupeKey: d.dedupeKey,
       createdAt: d.createdAt,
-      sentAt: d.sentAt ?? undefined,
-      error: d.error ?? undefined,
+      ...(d.sentAt != null ? { sentAt: d.sentAt } : {}),
+      ...(d.error != null ? { error: d.error } : {}),
     }));
+  }
+
+  /**
+   * Get in-app notification inbox for a user (#1513).
+   * Returns notifications with acknowledgement/read status.
+   */
+  async getInboxNotifications(
+    userId: string,
+    options: { limit?: number; offset?: number; unreadOnly?: boolean } = {},
+  ): Promise<any> {
+    const { limit = 20, offset = 0, unreadOnly = false } = options;
+
+    const where: any = {
+      userId,
+      channel: "in_app",
+    };
+
+    if (unreadOnly) {
+      where.status = { not: "delivered" };
+    }
+
+    const notifications = await this.prisma.notificationDelivery.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      skip: offset,
+    });
+
+    const total = await this.prisma.notificationDelivery.count({
+      where: {
+        userId,
+        channel: "in_app",
+        ...(unreadOnly && { status: { not: "delivered" } }),
+      },
+    });
+
+    return {
+      items: notifications.map((n) => ({
+        id: n.id,
+        type: n.type,
+        message: `${n.type.charAt(0).toUpperCase() + n.type.slice(1)} notification`,
+        isRead: n.status === "delivered",
+        createdAt: n.createdAt.toISOString(),
+      })),
+      total,
+      limit,
+      offset,
+      hasMore: offset + limit < total,
+    };
+  }
+
+  /**
+   * Acknowledge (mark as read) a notification in the inbox (#1513).
+   */
+  async acknowledgeNotification(userId: string, notificationId: string): Promise<boolean> {
+    const notification = await this.prisma.notificationDelivery.findUnique({
+      where: { id: notificationId },
+    });
+
+    if (!notification || notification.userId !== userId) {
+      return false;
+    }
+
+    await this.prisma.notificationDelivery.update({
+      where: { id: notificationId },
+      data: { status: "delivered" },
+    });
+
+    return true;
   }
 }

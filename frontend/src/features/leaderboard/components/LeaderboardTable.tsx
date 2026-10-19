@@ -1,6 +1,6 @@
 "use client";
 
-import { Survivor } from "../types";
+import { Survivor } from "../model/types";
 import { RankTableRow } from "./RankTableRow";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -11,6 +11,8 @@ interface LeaderboardTableProps {
   onChallenge?: (survivorId: string) => void;
   isLoading?: boolean;
   className?: string;
+  /** Connected wallet address — matching row is highlighted (#1567). */
+  highlightWallet?: string | null;
 }
 
 // Rankings table for survivors (4th place onwards)
@@ -19,6 +21,7 @@ export function LeaderboardTable({
   onChallenge,
   isLoading = false,
   className = "",
+  highlightWallet = null,
 }: LeaderboardTableProps) {
   if (isLoading) {
     return (
@@ -115,6 +118,10 @@ export function LeaderboardTable({
               <RankTableRow
                 key={survivor.id}
                 survivor={survivor}
+                isHighlighted={
+                  highlightWallet != null &&
+                  survivor.agentId.toLowerCase() === highlightWallet.toLowerCase()
+                }
                 {...(onChallenge !== undefined && { onChallenge })}
               />
             ))}

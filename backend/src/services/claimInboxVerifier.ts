@@ -11,7 +11,8 @@
  * @module
  */
 
-import { getOnChainGameState } from "./onChainReader";
+import { readOnChainGameState } from "./onChainReader";
+import { hasReadValue } from "../types/onChainRead";
 import type { ClaimInboxArenaState } from "../types/claimInbox";
 import type { ClaimInboxVerifier } from "./claimInboxService";
 
@@ -28,12 +29,18 @@ import type { ClaimInboxVerifier } from "./claimInboxService";
  * actionable and still worth showing. The dropped arena is not silently
  * treated as verified: the caller distinguishes "absent from the map" from
  * "read successfully" and reports the former as `unavailable`.
+ *
+ * The read now returns a typed availability result (#1519), so a transient
+ * RPC outage surfaces as `unavailable` and is dropped — it is no longer
+ * silently rewritten to the benign `"Open"` state.
  */
 export const verifyArenasOnChain: ClaimInboxVerifier = async (arenaIds) => {
   const entries = await Promise.all(
     arenaIds.map(async (arenaId) => {
       try {
-        return [arenaId, (await getOnChainGameState(arenaId)) as ClaimInboxArenaState] as const;
+        const result = await readOnChainGameState(arenaId);
+        if (!hasReadValue(result)) return null;
+        return [arenaId, result.value as ClaimInboxArenaState] as const;
       } catch {
         return null;
       }
