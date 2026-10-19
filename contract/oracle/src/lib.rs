@@ -25,6 +25,9 @@ use soroban_sdk::{
 /// The admin updates the rate before each round closes, sourcing the value
 /// from Ondo's off-chain API or an on-chain Band Protocol feed.
 /// Future upgrades can replace this contract with a fully autonomous oracle.
+#[cfg(test)]
+mod auth_tests;
+
 #[contract]
 pub struct OracleContract;
 

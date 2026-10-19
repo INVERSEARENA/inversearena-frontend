@@ -9,6 +9,10 @@ const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
 enum DataKey {
     Position(Address),
     YieldIndex,
+    /// Principal a position has deposited and not yet withdrawn (#1633).
+    /// Kept beside `Position` rather than inside `YieldAccrual` so existing
+    /// position entries still decode; a position without one has basis 0.
+    Basis(Address),
 }
 
 pub struct RwaStorage;
@@ -87,6 +91,22 @@ impl RwaStorage {
         env.storage()
             .persistent()
             .set(&DataKey::Position(user.clone()), pos);
+    }
+
+    pub fn load_basis(env: &Env, user: &Address) -> i128 {
+        let key = DataKey::Basis(user.clone());
+        Self::extend_ttl(env, &key);
+        env.storage().persistent().get(&key).unwrap_or(0)
+    }
+
+    pub fn save_basis(env: &Env, user: &Address, basis: i128) {
+        let key = DataKey::Basis(user.clone());
+        if basis == 0 {
+            env.storage().persistent().remove(&key);
+            return;
+        }
+        env.storage().persistent().set(&key, &basis);
+        Self::extend_ttl(env, &key);
     }
 
     // ── Pending Admin ─────────────────────────────────────────────────────

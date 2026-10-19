@@ -16,7 +16,14 @@
 
 #![cfg(test)]
 
+extern crate std;
+
 use sha2::{Digest, Sha256};
+use std::{
+    eprintln, format,
+    string::{String, ToString},
+    vec::Vec,
+};
 use std::fs;
 use std::path::PathBuf;
 
@@ -169,11 +176,19 @@ fn amount_encoding_vectors_match_file() {
             let parsed: i128 = decimal.parse().unwrap_or_else(|_| {
                 panic!("vector '{name}' marked valid but '{decimal}' is not an i128")
             });
+            assert!(parsed >= 0, "vector '{name}' marked valid but '{decimal}' is negative");
             assert_eq!(parsed.to_string(), expected, "amount encoding mismatch in '{name}'");
         } else {
+            // Invalid means "not an acceptable protocol amount": either it
+            // does not parse as i128 at all, or it parses but is negative
+            // (mirrors the TS suite's check on the same vectors).
+            let acceptable = decimal
+                .parse::<i128>()
+                .map(|v| v >= 0)
+                .unwrap_or(false);
             assert!(
-                decimal.parse::<i128>().is_err(),
-                "vector '{name}' marked invalid but '{decimal}' parses as i128"
+                !acceptable,
+                "vector '{name}' marked invalid but '{decimal}' is a non-negative i128"
             );
         }
     }

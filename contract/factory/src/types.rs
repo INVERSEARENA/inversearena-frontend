@@ -30,6 +30,20 @@ pub struct PoolConfig {
     pub start_deadline: u64,
 }
 
+/// The vault settings `create_pool` checks a pool against (#1634).
+///
+/// Decoded from the RWA adapter's `config()` read. It mirrors
+/// `rwa_adapter::VaultConfig` field for field — a contracttype struct is
+/// encoded as a map keyed by field name, so the two must keep the same names
+/// and types. It is duplicated rather than imported for the same link-time
+/// reason as `ArenaClient` in `lib.rs`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VaultConfig {
+    pub stake_token: Address,
+    pub oracle: Address,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArenaStatus {
@@ -81,4 +95,12 @@ pub enum FactoryError {
     /// `PoolConfig.start_deadline` was outside the allowed window relative to
     /// the creation ledger (#1579).
     InvalidStartDeadline = 21,
+    /// The vault's stake token differs from `PoolConfig.stake_token`, or from
+    /// the token the vault was approved with — e.g. the vault was upgraded to
+    /// a different asset after approval (#1634).
+    VaultTokenMismatch = 22,
+    /// `PoolConfig.oracle_contract` is not the oracle the vault accrues yield
+    /// from, so the arena's yield snapshots would disagree with what the
+    /// vault actually pays (#1634).
+    OracleMismatch = 23,
 }

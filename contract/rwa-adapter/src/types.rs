@@ -16,6 +16,20 @@ pub struct RwaConfig {
     pub total_deposited: i128,
 }
 
+/// Public, read-only view of the settings a vault was initialised with
+/// (#1634). Returned by `RwaAdapter::config` so the factory can check that an
+/// arena's `stake_token` and `oracle_contract` match the vault it is wired to.
+///
+/// The factory decodes this with its own copy of the struct
+/// (`factory::types::VaultConfig`), so the field names and types here are an
+/// ABI: renaming one breaks pool creation against this vault.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VaultConfig {
+    pub stake_token: Address,
+    pub oracle: Address,
+}
+
 #[contracttype]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct YieldAccrual {

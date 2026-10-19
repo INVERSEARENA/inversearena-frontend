@@ -6,6 +6,9 @@ import { PaymentService, PayoutConflictError } from "../../src/services/paymentS
 import { InMemoryTransactionRepository } from "../../src/repositories/inMemoryTransactionRepository";
 import type { PaymentConfig } from "../../src/config/paymentConfig";
 
+// Arena each payout is validated against on-chain (#1632).
+const ARENA_ID = "CADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP5KR";
+
 /**
  * payoutId uniqueness (#1353).
  *
@@ -64,6 +67,7 @@ function buildService() {
 function payoutRequest(payoutId: string, idempotencyKey: string) {
   return {
     payoutId,
+    arenaId: ARENA_ID,
     destinationAccount: VALID_ADDRESS,
     amount: "10.5",
     asset: "XLM",

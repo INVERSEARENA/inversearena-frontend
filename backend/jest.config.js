@@ -80,6 +80,9 @@ const shared = {
     "^@creit-tech/stellar-wallets-kit$":
       "<rootDir>/tests/__mocks__/@creit-tech/stellar-wallets-kit.ts",
     "^@/shared-d/(.*)$": "<rootDir>/../frontend/src/shared-d/$1",
+    // Frontend modules the backend imports (e.g. stellarRpcGateway) use the
+    // frontend's own `@/shared/...` alias; the backend has no src/shared.
+    "^@/shared/(.*)$": "<rootDir>/../frontend/src/shared/$1",
     "^@/lib/(.*)$": "<rootDir>/../frontend/src/lib/$1",
     "^@/(.*)$": "<rootDir>/src/$1",
   },

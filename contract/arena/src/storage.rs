@@ -1245,14 +1245,18 @@ impl ArenaStorage {
     }
 
     pub fn has_commitment(env: &Env, player: &Address, round: u32) -> bool {
+        // Temporary storage since #1612, matching `save_commitment`: an
+        // expired entry counts as no commitment.
         env.storage()
-            .persistent()
+            .temporary()
             .has(&DataKey::CommitmentForRound(player.clone(), round))
     }
 
     pub fn has_choice(env: &Env, player: &Address, round: u32) -> bool {
+        // Temporary storage since #1612, matching `save_choice`: an expired
+        // entry counts as no reveal.
         env.storage()
-            .persistent()
+            .temporary()
             .has(&DataKey::ChoiceForRound(player.clone(), round))
     }
 

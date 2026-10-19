@@ -6,8 +6,12 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod auth_tests;
+
 use soroban_sdk::{
-    Address, Env, contract, contractclient, contractimpl, symbol_short, token,
+    Address, Env, IntoVal, Symbol, contract, contractclient, contractimpl, symbol_short, token,
+    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
 };
 use storage::RouterStorage;
 use types::{
@@ -223,16 +227,25 @@ impl FeeRouterContract {
 
         // Route staking share.
         if staking_amount > 0 {
-            // Approve the staking contract to pull staking_amount from us before
-            // calling distribute_rewards, so the token transfer inside staking
-            // can proceed.
-            token_client.approve(
-                &env.current_contract_address(),
-                &staking_contract_addr,
-                &staking_amount,
-                &(env.ledger().sequence() + 1),
-            );
-            staking_client.distribute_rewards(&env.current_contract_address(), &staking_amount);
+            // `distribute_rewards` pulls the rewards with
+            // `transfer(router, staking, amount)`. The router is not the direct
+            // invoker of that transfer (staking is), so it must pre-authorise
+            // it; an allowance does not help because staking calls `transfer`,
+            // not `transfer_from` (#1636).
+            let router = env.current_contract_address();
+            env.authorize_as_current_contract(soroban_sdk::vec![
+                &env,
+                InvokerContractAuthEntry::Contract(SubContractInvocation {
+                    context: ContractContext {
+                        contract: token.clone(),
+                        fn_name: Symbol::new(&env, "transfer"),
+                        args: (router.clone(), staking_contract_addr.clone(), staking_amount)
+                            .into_val(&env),
+                    },
+                    sub_invocations: soroban_sdk::vec![&env],
+                }),
+            ]);
+            staking_client.distribute_rewards(&router, &staking_amount);
         }
 
         // Route treasury share.

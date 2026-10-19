@@ -11,8 +11,11 @@ mod index_tests;
 #[cfg(test)]
 mod integration_tests;
 
+#[cfg(test)]
+mod auth_tests;
+
 use storage::{CreatorStakeRecord, FactoryStorage};
-use types::{ArenaMetadata, ArenaStatus, FactoryError, PoolConfig};
+use types::{ArenaMetadata, ArenaStatus, FactoryError, PoolConfig, VaultConfig};
 
 use soroban_sdk::{
     Address, BytesN, Env, Symbol, Vec, contract, contractclient, contractimpl, symbol_short,
@@ -55,6 +58,13 @@ pub trait ArenaInterface {
     );
     /// Set right after `initialize`; see arena's `set_start_deadline` (#1579).
     fn set_start_deadline(env: Env, deadline: u64);
+}
+
+/// Local stub for the RWA adapter's `config()` read (#1634). Local for the
+/// same link-time reason as `ArenaClient` above.
+#[contractclient(name = "VaultClient")]
+pub trait VaultInterface {
+    fn config(env: Env) -> VaultConfig;
 }
 
 const MIN_ROUND_DURATION: u64 = 60;
@@ -146,18 +156,44 @@ impl FactoryContract {
         FactoryStorage::is_whitelisted(&env, &host)
     }
 
+    /// Approve `vault` for new pools, registering it together with its
+    /// stake token (#1634).
+    ///
+    /// Reads the vault's `config()` and stores the token, so a later
+    /// `create_pool` can detect a vault whose asset has since changed (for
+    /// example through an upgrade). Calling it again for an approved vault
+    /// re-reads and re-registers the token; that is also how a vault
+    /// approved before #1634 is migrated.
+    ///
+    /// # Errors
+    /// - `FactoryError::InvalidVault` if `vault` does not answer `config()`
+    ///   (not a contract, not an RWA adapter, or not initialised).
     pub fn add_approved_vault(env: Env, vault: Address) -> Result<(), FactoryError> {
         Self::require_admin(&env)?;
+        let vault_config = Self::read_vault_config(&env, &vault)?;
         FactoryStorage::set_approved_vault(&env, &vault, true);
-        env.events().publish((symbol_short!("VLT_ADD"),), vault);
+        FactoryStorage::save_approved_vault_token(&env, &vault, &vault_config.stake_token);
+        env.events()
+            .publish((symbol_short!("VLT_ADD"),), (vault, vault_config.stake_token));
         Ok(())
     }
 
     pub fn remove_approved_vault(env: Env, vault: Address) -> Result<(), FactoryError> {
         Self::require_admin(&env)?;
         FactoryStorage::set_approved_vault(&env, &vault, false);
+        FactoryStorage::remove_approved_vault_token(&env, &vault);
         env.events().publish((symbol_short!("VLT_REM"),), vault);
         Ok(())
+    }
+
+    /// The stake token `vault` was approved with (#1634), or `None` if it is
+    /// not approved. Lets clients offer only vault/token pairs that
+    /// `create_pool` will accept.
+    pub fn get_approved_vault_token(env: Env, vault: Address) -> Option<Address> {
+        if !FactoryStorage::is_approved_vault(&env, &vault) {
+            return None;
+        }
+        FactoryStorage::load_approved_vault_token(&env, &vault)
     }
 
     pub fn add_approved_oracle(env: Env, oracle: Address) -> Result<(), FactoryError> {
@@ -344,6 +380,7 @@ impl FactoryContract {
         if !FactoryStorage::is_approved_oracle(&env, &config.oracle_contract) {
             return Err(FactoryError::InvalidOracle);
         }
+        Self::check_vault_compatibility(&env, &config)?;
 
         // Check active pool limit for this host
         let max_pools = FactoryStorage::load_max_active_pools(&env);
@@ -455,6 +492,43 @@ impl FactoryContract {
             (arena, record.creator, record.amount),
         );
         Ok(())
+    }
+
+    /// Reject a pool whose vault would hold a different asset, or accrue
+    /// yield from a different oracle, than the arena expects (#1634).
+    ///
+    /// Each check exists because the separate approvals cannot catch it: an
+    /// approved vault for token B plus a supported token A passes them all,
+    /// and the arena then fails at its first join (or moves the wrong asset).
+    /// The vault's live config is read every time, so a vault upgraded to a
+    /// different token after approval no longer matches its registered token
+    /// and is refused until the admin re-approves it.
+    fn check_vault_compatibility(env: &Env, config: &PoolConfig) -> Result<(), FactoryError> {
+        // A vault approved before #1634 has no registered token; it must be
+        // re-approved (which records one) before it can back new pools.
+        let registered_token = FactoryStorage::load_approved_vault_token(env, &config.yield_vault)
+            .ok_or(FactoryError::InvalidVault)?;
+        let vault_config = Self::read_vault_config(env, &config.yield_vault)?;
+
+        if vault_config.stake_token != registered_token
+            || vault_config.stake_token != config.stake_token
+        {
+            return Err(FactoryError::VaultTokenMismatch);
+        }
+        if vault_config.oracle != config.oracle_contract {
+            return Err(FactoryError::OracleMismatch);
+        }
+        Ok(())
+    }
+
+    /// Read `vault`'s `config()`, mapping any failure — no contract at that
+    /// address, a contract without the entry point, or an uninitialised
+    /// adapter — to `InvalidVault`.
+    fn read_vault_config(env: &Env, vault: &Address) -> Result<VaultConfig, FactoryError> {
+        match VaultClient::new(env, vault).try_config() {
+            Ok(Ok(vault_config)) => Ok(vault_config),
+            _ => Err(FactoryError::InvalidVault),
+        }
     }
 
     /// Transfer `amount` of `stake_token` from the host into the factory.
@@ -665,6 +739,69 @@ mod test {
 
     fn metadata_hash(env: &Env) -> BytesN<32> {
         BytesN::from_array(env, &[7u8; 32])
+    }
+
+    /// A stand-in RWA adapter that only answers `config()` (#1634), with a
+    /// stake token and oracle the test can change afterwards — which is how
+    /// these tests model a vault upgraded to a different asset.
+    mod vault_mock {
+        use crate::types::VaultConfig;
+        use soroban_sdk::{Address, Env, contract, contractimpl, symbol_short};
+
+        #[contract]
+        pub struct MockVault;
+
+        #[contractimpl]
+        impl MockVault {
+            pub fn set_config(env: Env, stake_token: Address, oracle: Address) {
+                env.storage()
+                    .instance()
+                    .set(&symbol_short!("CFG"), &VaultConfig { stake_token, oracle });
+            }
+
+            pub fn config(env: Env) -> VaultConfig {
+                env.storage()
+                    .instance()
+                    .get(&symbol_short!("CFG"))
+                    .expect("mock vault not configured")
+            }
+        }
+    }
+
+    fn mock_vault(env: &Env, stake_token: &Address, oracle: &Address) -> Address {
+        let vault = env.register(vault_mock::MockVault, ());
+        vault_mock::MockVaultClient::new(env, &vault).set_config(stake_token, oracle);
+        vault
+    }
+
+    /// A whitelisted host plus a config whose token, vault and oracle are all
+    /// approved and mutually consistent, so the only thing `create_pool` can
+    /// still object to is whatever a test changes next.
+    fn compatible_pool(
+        env: &Env,
+        client: &FactoryContractClient<'static>,
+        host: &Address,
+    ) -> PoolConfig {
+        client.add_to_whitelist(host);
+        let mut cfg = pool_config_with_real_token(env, 100);
+        cfg.yield_vault = mock_vault(env, &cfg.stake_token, &cfg.oracle_contract);
+        client.add_supported_token(&cfg.stake_token);
+        client.add_approved_vault(&cfg.yield_vault);
+        client.add_approved_oracle(&cfg.oracle_contract);
+        cfg
+    }
+
+    fn create_pool_error(
+        env: &Env,
+        client: &FactoryContractClient<'static>,
+        host: &Address,
+        cfg: &PoolConfig,
+    ) -> FactoryError {
+        client
+            .try_create_pool(host, cfg, &metadata_hash(env))
+            .err()
+            .expect("create_pool must be rejected")
+            .expect("error must be a contract error")
     }
 
     /// A `pool_config` whose `stake_token` is a real deployed token contract
@@ -1025,8 +1162,8 @@ mod test {
     #[test]
     fn approved_vault_and_oracle_add_and_remove_controls_status() {
         let (env, client, _admin, _host) = setup();
-        let vault = Address::generate(&env);
         let oracle = Address::generate(&env);
+        let vault = mock_vault(&env, &Address::generate(&env), &oracle);
 
         assert!(!client.is_approved_vault(&vault));
         client.add_approved_vault(&vault);
@@ -1063,7 +1200,8 @@ mod test {
         let (env, client, _admin, host) = setup();
         client.add_to_whitelist(&host);
 
-        let cfg = pool_config_with_real_token(&env, 100);
+        let mut cfg = pool_config_with_real_token(&env, 100);
+        cfg.yield_vault = mock_vault(&env, &cfg.stake_token, &cfg.oracle_contract);
         client.add_supported_token(&cfg.stake_token);
         client.add_approved_vault(&cfg.yield_vault);
 
@@ -1351,5 +1489,156 @@ mod test {
             FactoryContract::normalize_min_stake(&env, &token_id, i128::MAX)
         });
         assert_eq!(result, Err(FactoryError::ArithmeticOverflow));
+    }
+
+    // ── #1634: vault / token / oracle compatibility ──────────────────────────
+
+    #[test]
+    fn add_approved_vault_registers_the_vaults_token() {
+        let (env, client, _admin, _host) = setup();
+        let token = Address::generate(&env);
+        let vault = mock_vault(&env, &token, &Address::generate(&env));
+
+        assert_eq!(client.get_approved_vault_token(&vault), None);
+        client.add_approved_vault(&vault);
+        assert_eq!(client.get_approved_vault_token(&vault), Some(token));
+
+        client.remove_approved_vault(&vault);
+        assert_eq!(client.get_approved_vault_token(&vault), None);
+        assert!(!client.is_approved_vault(&vault));
+    }
+
+    #[test]
+    fn add_approved_vault_rejects_an_address_without_a_vault_config() {
+        let (env, client, _admin, _host) = setup();
+        let not_a_vault = Address::generate(&env);
+
+        let err = client
+            .try_add_approved_vault(&not_a_vault)
+            .err()
+            .expect("approving a non-vault must error")
+            .expect("error must be a contract error");
+        assert_eq!(err, FactoryError::InvalidVault);
+        assert!(!client.is_approved_vault(&not_a_vault));
+    }
+
+    #[test]
+    fn create_pool_accepts_a_compatible_vault() {
+        let (env, client, _admin, host) = setup();
+        let cfg = compatible_pool(&env, &client, &host);
+
+        // Every compatibility check passes; the call only fails later because
+        // no arena wasm hash is configured in this unit test.
+        assert_eq!(
+            create_pool_error(&env, &client, &host, &cfg),
+            FactoryError::WasmHashNotSet
+        );
+    }
+
+    #[test]
+    fn create_pool_rejects_a_vault_for_a_different_token() {
+        let (env, client, _admin, host) = setup();
+        let mut cfg = compatible_pool(&env, &client, &host);
+
+        // An approved vault for token B, with the pool staking supported token A.
+        let other_token = pool_config_with_real_token(&env, 100).stake_token;
+        let vault_b = mock_vault(&env, &other_token, &cfg.oracle_contract);
+        client.add_approved_vault(&vault_b);
+        cfg.yield_vault = vault_b;
+
+        assert_eq!(
+            create_pool_error(&env, &client, &host, &cfg),
+            FactoryError::VaultTokenMismatch
+        );
+    }
+
+    #[test]
+    fn create_pool_rejects_a_vault_using_a_different_oracle() {
+        let (env, client, _admin, host) = setup();
+        let mut cfg = compatible_pool(&env, &client, &host);
+
+        // Both oracles are approved; the arena would still snapshot yield from
+        // one while the vault accrues from the other.
+        let other_oracle = Address::generate(&env);
+        client.add_approved_oracle(&other_oracle);
+        cfg.oracle_contract = other_oracle;
+
+        assert_eq!(
+            create_pool_error(&env, &client, &host, &cfg),
+            FactoryError::OracleMismatch
+        );
+    }
+
+    #[test]
+    fn create_pool_rejects_a_vault_whose_token_changed_after_approval() {
+        let (env, client, _admin, host) = setup();
+        let mut cfg = compatible_pool(&env, &client, &host);
+        let original_token = cfg.stake_token.clone();
+
+        // The vault is "upgraded" to a different asset, and the host asks for
+        // a pool in that new (also supported) asset.
+        let new_token = pool_config_with_real_token(&env, 100).stake_token;
+        client.add_supported_token(&new_token);
+        vault_mock::MockVaultClient::new(&env, &cfg.yield_vault)
+            .set_config(&new_token, &cfg.oracle_contract);
+        cfg.stake_token = new_token.clone();
+        assert_eq!(
+            create_pool_error(&env, &client, &host, &cfg),
+            FactoryError::VaultTokenMismatch,
+            "a vault must not back pools in an asset it was not approved for"
+        );
+
+        // The original asset no longer matches what the vault actually holds.
+        cfg.stake_token = original_token;
+        assert_eq!(
+            create_pool_error(&env, &client, &host, &cfg),
+            FactoryError::VaultTokenMismatch
+        );
+
+        // Re-approving records the new token and makes the new pairing valid.
+        client.add_approved_vault(&cfg.yield_vault);
+        assert_eq!(client.get_approved_vault_token(&cfg.yield_vault), Some(new_token.clone()));
+        cfg.stake_token = new_token;
+        assert_eq!(
+            create_pool_error(&env, &client, &host, &cfg),
+            FactoryError::WasmHashNotSet
+        );
+    }
+
+    #[test]
+    fn create_pool_rejects_a_vault_approved_before_token_registration() {
+        let (env, client, _admin, host) = setup();
+        let cfg = compatible_pool(&env, &client, &host);
+
+        // Simulate an approval written by the pre-#1634 factory: the flag is
+        // set but no token was registered alongside it.
+        env.as_contract(&client.address, || {
+            FactoryStorage::remove_approved_vault_token(&env, &cfg.yield_vault);
+        });
+
+        assert_eq!(
+            create_pool_error(&env, &client, &host, &cfg),
+            FactoryError::InvalidVault
+        );
+    }
+
+    #[test]
+    fn create_pool_rejects_a_vault_that_stops_answering_config() {
+        let (env, client, _admin, host) = setup();
+        let mut cfg = compatible_pool(&env, &client, &host);
+
+        // An approved vault whose config read now fails (e.g. upgraded to
+        // code without the entry point) must not be trusted.
+        let broken = Address::generate(&env);
+        env.as_contract(&client.address, || {
+            FactoryStorage::set_approved_vault(&env, &broken, true);
+            FactoryStorage::save_approved_vault_token(&env, &broken, &cfg.stake_token);
+        });
+        cfg.yield_vault = broken;
+
+        assert_eq!(
+            create_pool_error(&env, &client, &host, &cfg),
+            FactoryError::InvalidVault
+        );
     }
 }

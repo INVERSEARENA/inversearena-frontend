@@ -1,0 +1,31 @@
+# Files allowed to call `mock_all_auths()` / `mock_all_auths_allowing_non_root_auth()`
+# (#1636). Enforced by scripts/check_mock_all_auths.sh in Contract CI.
+#
+# `mock_all_auths` approves every `require_auth`, so tests using it cannot see
+# a missing check, a check on the wrong address, or an unexpected
+# sub-invocation authorization. Authorization is covered by the exact-auth
+# suites (`*/src/auth_tests.rs`, built on `test-support/auth.rs`), which must
+# never appear here. The files below test behaviour other than authorization
+# and predate that suite; new test files should sign with
+# `test-support/auth.rs` instead of joining this list.
+#
+# In a `lib.rs` listed here, calls are only allowed inside its `#[cfg(test)]`
+# module (after the first `#[cfg(test)]` line).
+#
+# One path per line, relative to contract/.
+
+arena/src/conservation_tests.rs
+arena/src/global_pause_tests.rs
+arena/src/integration_tests.rs
+arena/src/join_arena_tests.rs
+arena/src/lib.rs
+arena/src/lobby_tests.rs
+arena/src/player_status_tests.rs
+factory/src/integration_tests.rs
+factory/src/lib.rs
+fee-router/src/tests.rs
+oracle/src/lib.rs
+payout/src/lib.rs
+rwa-adapter/src/lib.rs
+rwa-adapter/src/test.rs
+staking/src/lib.rs

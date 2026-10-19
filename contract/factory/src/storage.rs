@@ -31,6 +31,9 @@ pub enum DataKey {
     HostPoolPage(Address, u32),
     /// #1613: Bucket of pool IDs currently in an arena status.
     StatusBucket(ArenaStatus),
+    /// #1634: Stake token an approved vault was registered with. Kept apart
+    /// from the `ApprovedVault` flag so existing flag entries still decode.
+    ApprovedVaultToken(Address),
 }
 
 #[contracttype]
@@ -169,6 +172,27 @@ impl FactoryStorage {
             .persistent()
             .get(&DataKey::ApprovedVault(vault.clone()))
             .unwrap_or(false)
+    }
+
+    /// Record the stake token `vault` was approved with (#1634).
+    pub fn save_approved_vault_token(env: &Env, vault: &Address, token: &Address) {
+        let key = DataKey::ApprovedVaultToken(vault.clone());
+        env.storage().persistent().set(&key, token);
+        Self::extend_persistent_ttl(env, &key);
+    }
+
+    /// The stake token `vault` was approved with, or `None` if it was never
+    /// approved, was removed, or was approved before #1634.
+    pub fn load_approved_vault_token(env: &Env, vault: &Address) -> Option<Address> {
+        let key = DataKey::ApprovedVaultToken(vault.clone());
+        Self::extend_persistent_ttl(env, &key);
+        env.storage().persistent().get(&key)
+    }
+
+    pub fn remove_approved_vault_token(env: &Env, vault: &Address) {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ApprovedVaultToken(vault.clone()));
     }
 
     pub fn set_approved_oracle(env: &Env, oracle: &Address, approved: bool) {

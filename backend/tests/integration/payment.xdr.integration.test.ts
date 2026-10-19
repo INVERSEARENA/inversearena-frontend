@@ -9,8 +9,8 @@
  * Verified invariants:
  *   1. The transaction contains exactly one Soroban invoke-contract operation.
  *   2. The invoked function is `distribute_winnings`.
- *   3. The argument list has exactly 3 entries (payout_id: u64, winner: Address, amount: i128).
- *   4. arg[0] decodes to a BigInt (u64 payout ID).
+ *   3. The argument list has exactly 3 entries (arena: Address, winner: Address, amount: i128).
+ *   4. arg[0] decodes to the arena the payout is validated against (#1632).
  *   5. arg[1] decodes to the expected destination account address.
  *   6. arg[2] decodes to the expected amount in stroops (i128).
  */
@@ -28,6 +28,9 @@ import { PaymentService } from "../../src/services/paymentService";
 import { InMemoryTransactionRepository } from "../../src/repositories/inMemoryTransactionRepository";
 import type { PaymentConfig } from "../../src/config/paymentConfig";
 import { resetSorobanBreakerForTest } from "../../src/utils/circuitBreaker";
+
+// Arena each payout is validated against on-chain (#1632).
+const ARENA_ID = "CADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP5KR";
 
 const PASSPHRASE = "Test SDF Network ; September 2015";
 const SOURCE = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
@@ -93,6 +96,7 @@ describe("buildPreparedTransaction XDR matches distribute_winnings ABI (#1149)",
 
     const { transaction } = await service.createPayoutTransaction({
       payoutId: "42",
+      arenaId: ARENA_ID,
       destinationAccount: DEST,
       amount: "100",
       asset: "XLM",
@@ -124,13 +128,12 @@ describe("buildPreparedTransaction XDR matches distribute_winnings ABI (#1149)",
     const args = invokeArgs.args();
     expect(args).toHaveLength(3);
 
-    // arg[0]: payout_id — must be a u64 BigInt. The payout token and nonce
-    // are fixed at contract init time, so buildPreparedTransaction sends the
-    // reserved nonce here (not the caller-supplied payoutId) — it doubles as
-    // the on-chain payout_id for idempotency (see paymentService.ts).
-    const payoutId = scValToNative(args[0]!);
-    expect(typeof payoutId).toBe("bigint");
-    expect(payoutId).toBe(BigInt(transaction.nonce));
+    // arg[0]: arena — the contract validates winner and amount against this
+    // arena's own settlement and derives the idempotency key from
+    // (arena, winner) (#1632).
+    const arena = Address.fromScVal(args[0]!).toString();
+    expect(arena).toBe(ARENA_ID);
+    expect(transaction.arenaId).toBe(ARENA_ID);
 
     // arg[1]: winner address — must decode to the destination account
     const winner = Address.fromScVal(args[1]!).toString();
@@ -152,6 +155,7 @@ describe("buildPreparedTransaction XDR matches distribute_winnings ABI (#1149)",
 
     await service.createPayoutTransaction({
       payoutId: "99",
+      arenaId: ARENA_ID,
       destinationAccount: DEST,
       amount: "1",
       asset: "XLM",
@@ -162,7 +166,7 @@ describe("buildPreparedTransaction XDR matches distribute_winnings ABI (#1149)",
     const op = tx.operations[0] as { func: xdr.HostFunction };
     const argCount = op.func.invokeContract().args().length;
 
-    // distribute_winnings ABI: (payout_id: u64, winner: Address, amount: i128) — 3 args.
+    // distribute_winnings ABI: (arena: Address, winner: Address, amount: i128) — 3 args.
     // If this fails the backend builder and the contract ABI are out of sync.
     expect(argCount).toBe(3);
   });

@@ -6,6 +6,9 @@ import { PaymentService } from "../../src/services/paymentService";
 import { InMemoryTransactionRepository } from "../../src/repositories/inMemoryTransactionRepository";
 import type { PaymentConfig } from "../../src/config/paymentConfig";
 
+// Arena each payout is validated against on-chain (#1632).
+const ARENA_ID = "CADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP5KR";
+
 const VALID_ADDRESS = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
 const VALID_IDEMPOTENCY = "idempotency-key-123";
 
@@ -63,6 +66,7 @@ afterEach(() => {
 test("PaymentService.createPayoutTransaction: successful creation", async () => {
   const input = {
     payoutId: "1",
+    arenaId: ARENA_ID,
     destinationAccount: VALID_ADDRESS,
     amount: "10.5",
     asset: "XLM",
@@ -81,6 +85,7 @@ test("PaymentService.createPayoutTransaction: successful creation", async () => 
 test("PaymentService.createPayoutTransaction: idempotency", async () => {
   const input = {
     payoutId: "2",
+    arenaId: ARENA_ID,
     destinationAccount: VALID_ADDRESS,
     amount: "5",
     asset: "XLM",
@@ -96,6 +101,7 @@ test("PaymentService.createPayoutTransaction: idempotency", async () => {
 test("PaymentService.createPayoutTransaction: invalid input", async () => {
   const input = {
     payoutId: "3",
+    arenaId: ARENA_ID,
     destinationAccount: "INVALID",
     amount: "10",
     asset: "XLM",
@@ -116,6 +122,9 @@ test("PaymentService.submitQueuedTransaction: success", async () => {
   
   await transactions.insert({
     id: txId,
+    payoutId: "payout-tx-123",
+    sourceAccount: VALID_ADDRESS,
+    nonce: 9001,
     status: "queued",
     signedXdr,
     attempts: 0,
@@ -140,6 +149,9 @@ test("PaymentService.submitQueuedTransaction: Soroban rejection", async () => {
 
   await transactions.insert({
     id: txId,
+    payoutId: "payout-tx-456",
+    sourceAccount: VALID_ADDRESS,
+    nonce: 9002,
     status: "queued",
     signedXdr: "sig",
     attempts: 0,

@@ -188,10 +188,12 @@ fn full_game_lifecycle_commit_reveal() {
     assert_eq!(token_client.balance(&p3), 0);
     assert_eq!(token_client.balance(&p4), 0);
 
-    // 15. Verify correct event sequence is emitted
+    // 15. Verify correct event sequence is emitted.
+    // Since #1607 every arena event is namespaced: topic[0] = "arena",
+    // topic[1] = event name.
     let has_event = |topic: Symbol| -> bool {
         all_events.iter().any(|e| {
-            if let Some(val) = e.1.get(0) {
+            if let Some(val) = e.1.get(1) {
                 if let Ok(symbol) = Symbol::try_from_val(&env, &val) {
                     return symbol == topic;
                 }
@@ -280,13 +282,14 @@ fn factory_arena_payout_full_lifecycle() {
     rwa_client.initialize(&admin, &token_id, &oracle_id);
 
     // ── 4. Deploy and initialise Payout contract ───────────────────────
-    let payout_id = env.register(PayoutContract, ());
-    let payout_client = PayoutContractClient::new(&env, &payout_id);
-    payout_client.initialize(&admin, &token_id);
-
     // ── 5. Deploy and initialise Factory ──────────────────────────────
     let factory_id = env.register(FactoryContract, ());
     let factory_client = FactoryContractClient::new(&env, &factory_id);
+
+    // The payout contract trusts only arenas in this factory's registry (#1632).
+    let payout_id = env.register(PayoutContract, ());
+    let payout_client = PayoutContractClient::new(&env, &payout_id);
+    payout_client.initialize(&admin, &token_id, &factory_id, &1_000_000);
     factory_client.initialize(&admin, &100);  // min_stake = 100
 
     // Whitelist host and register approved token/vault/oracle so
@@ -399,30 +402,29 @@ fn factory_arena_payout_full_lifecycle() {
     assert_eq!(token_client.balance(&p3), 0);
 
     // ── 12. Admin distributes payout via payout contract ───────────────
-    // Fund the payout contract to cover the winner's on-chain payout record.
-    let prize: i128 = 315;
-    token_admin_client.mint(&payout_id, &prize);
+    // The arena's own settlement record bounds what may be paid (#1632).
+    let settlement = arena_client.get_settlement();
+    assert!(settlement.finished);
+    assert_eq!(settlement.winner, Some(p1.clone()));
+    assert_eq!(settlement.stake_token, token_id);
+    assert_eq!(settlement.pool_id, 1);
+    assert_eq!(settlement.prize, 300 + arena_client.get_total_yield());
 
-    // #1450: the winner must be registered as the payout destination first.
-    payout_client.register_destination(&1, &p1);
-    // distribute_winnings is idempotent on payout_id; payout_id = 1.
-    payout_client.distribute_winnings(&1, &p1, &prize);
+    let prize = settlement.prize;
+    token_admin_client.mint(&payout_id, &(prize + 1));
+    let p1_before = token_client.balance(&p1);
 
-    // p1's payout contract balance reflects the distributed amount.
-    // (Token balance increases by prize; p2/p3 unchanged.)
-    let p1_balance_after = token_client.balance(&p1);
-    assert!(p1_balance_after >= prize, "winner balance must include payout contract distribution");
+    // Not the recorded winner, and more than the recorded prize: both refused.
+    assert!(payout_client.try_distribute_winnings(&arena_addr, &p2, &prize).is_err());
+    assert!(payout_client.try_distribute_winnings(&arena_addr, &p1, &(prize + 1)).is_err());
 
-    // Idempotency: a retry of the same payout_id is rejected.
-    let retry = payout_client.try_distribute_winnings(&1, &p1, &prize);
-    assert!(retry.is_err(), "duplicate payout_id must be rejected");
+    payout_client.distribute_winnings(&arena_addr, &p1, &prize);
+    assert_eq!(token_client.balance(&p1), p1_before + prize);
 
-    // ── 13. Verify get_winner returns the correct address ──────────────
-    // (Confirms the on-chain winner matches who we paid.)
-    // The arena stores the winner address via set_winner; we can't call it
-    // directly, but resolve_round only sets a winner when survivors == 1 and
-    // we already verified the round result above.
-    assert!(payout_client.is_paid(&1), "payout_id 1 must be marked paid");
+    // Idempotency: the id is derived from (arena, winner), so a retry is refused.
+    let retry = payout_client.try_distribute_winnings(&arena_addr, &p1, &prize);
+    assert!(retry.is_err(), "a second payout for the same arena and winner must be rejected");
+    assert!(payout_client.is_paid(&payout_client.payout_id(&arena_addr, &p1)));
 }
 
 // ── Regression: expire_arena payout completeness (#1359) ─────────────────────

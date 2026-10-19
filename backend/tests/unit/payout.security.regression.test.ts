@@ -2,7 +2,7 @@
  * Regression coverage for the payout security audit:
  *  - admin-only authorization on payout creation/sign/submit
  *  - ownership (IDOR) enforcement on payout + transaction reads
- *  - signed-XDR payout_id (args[0]) binding to the reserved nonce
+ *  - signed-XDR arena (args[0]) binding to the payout record (#1632)
  */
 import { afterAll, describe, expect, it, jest } from "@jest/globals";
 import express, { type Request, type Response, type NextFunction } from "express";
@@ -29,6 +29,9 @@ import type { PaymentService } from "../../src/services/paymentService";
 import type { TransactionRecord } from "../../src/types/payment";
 import { HttpError } from "../../src/utils/apiError";
 import { resetSorobanBreakerForTest } from "../../src/utils/circuitBreaker";
+
+// Arena each payout is validated against on-chain (#1632).
+const ARENA_ID = "CADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP5KR";
 
 // Test-only fixture value (never a real credential); assembled from parts so
 // secret scanners do not mistake the literal for a leaked API key.
@@ -176,6 +179,7 @@ describe("payout ownership (IDOR) enforcement", () => {
     return {
       id: `tx-${idCounter}`,
       payoutId: `p-${idCounter}`,
+      arenaId: ARENA_ID,
       idempotencyKey: `idem-${idemCounter}`,
       sourceAccount: SOURCE,
       destinationAccount: DEST_A,
@@ -368,10 +372,10 @@ describe("signed-XDR payout_id argument validation", () => {
     };
   }
 
-  function buildSignedTx(payoutNonce: bigint, dest: string, amountStroops: bigint): string {
+  function buildSignedTx(arena: string, dest: string, amountStroops: bigint): string {
     const operation = new Contract(CONTRACT).call(
       "distribute_winnings",
-      nativeToScVal(payoutNonce, { type: "u64" }),
+      new Address(arena).toScVal(),
       new Address(dest).toScVal(),
       nativeToScVal(amountStroops, { type: "i128" }),
     );
@@ -390,7 +394,7 @@ describe("signed-XDR payout_id argument validation", () => {
     resetSorobanBreakerForTest();
   });
 
-  it("rejects a signed XDR whose payout_id arg differs from the reserved nonce", async () => {
+  it("rejects a signed XDR that names a different arena (#1632)", async () => {
     const { PaymentService } = await import("../../src/services/paymentService");
     const service = new PaymentService(new InMemoryTransactionRepository(), {
       config: config as never,
@@ -399,20 +403,46 @@ describe("signed-XDR payout_id argument validation", () => {
 
     const built = await service.createPayoutTransaction({
       payoutId: "p-arg-1",
+      arenaId: ARENA_ID,
       destinationAccount: DEST_A,
       amount: "10",
       asset: "XLM",
       idempotencyKey: "idem-arg-0001",
     });
 
-    // Correct destination and amount, but a different (attacker-chosen) payout_id.
-    const malicious = buildSignedTx(BigInt(built.transaction.nonce + 100), DEST_A, 100000000n);
+    // Correct destination and amount, but an attacker-chosen arena: the
+    // contract would validate the payout against the wrong arena's record.
+    const malicious = buildSignedTx(CONTRACT, DEST_A, 100000000n);
     await expect(
       service.queueSignedTransaction(built.transaction.id, malicious)
-    ).rejects.toThrow(/payout_id/i);
+    ).rejects.toThrow(/arena/i);
   });
 
-  it("still queues a signed XDR whose payout_id matches the nonce", async () => {
+  it("refuses to sign a legacy record that names no arena", async () => {
+    const { PaymentService } = await import("../../src/services/paymentService");
+    const repo = new InMemoryTransactionRepository();
+    const service = new PaymentService(repo, {
+      config: config as never,
+      rpcServer: makeRpc() as never,
+    });
+
+    const built = await service.createPayoutTransaction({
+      payoutId: "p-arg-legacy",
+      arenaId: ARENA_ID,
+      destinationAccount: DEST_A,
+      amount: "10",
+      asset: "XLM",
+      idempotencyKey: "idem-arg-0003",
+    });
+    await repo.update(built.transaction.id, { arenaId: null } as never);
+
+    const signed = buildSignedTx(ARENA_ID, DEST_A, 100000000n);
+    await expect(
+      service.queueSignedTransaction(built.transaction.id, signed)
+    ).rejects.toThrow(/predates arena-validated payouts/i);
+  });
+
+  it("still queues a signed XDR that names the recorded arena", async () => {
     const { PaymentService } = await import("../../src/services/paymentService");
     const service = new PaymentService(new InMemoryTransactionRepository(), {
       config: config as never,
@@ -421,13 +451,14 @@ describe("signed-XDR payout_id argument validation", () => {
 
     const built = await service.createPayoutTransaction({
       payoutId: "p-arg-2",
+      arenaId: ARENA_ID,
       destinationAccount: DEST_A,
       amount: "10",
       asset: "XLM",
       idempotencyKey: "idem-arg-0002",
     });
 
-    const legit = buildSignedTx(BigInt(built.transaction.nonce), DEST_A, 100000000n);
+    const legit = buildSignedTx(ARENA_ID, DEST_A, 100000000n);
     const queued = await service.queueSignedTransaction(built.transaction.id, legit);
     expect(queued.status).toBe("queued");
     expect(queued.signedXdr).toBe(legit);

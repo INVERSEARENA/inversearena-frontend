@@ -8,6 +8,7 @@ function docToRecord(doc: { toObject(): Record<string, unknown> } & { _id: strin
   return {
     id: obj._id as string,
     payoutId: obj.payoutId as string,
+    arenaId: (obj.arenaId as string | null) ?? null,
     idempotencyKey: obj.idempotencyKey as string,
     sourceAccount: obj.sourceAccount as string,
     destinationAccount: obj.destinationAccount as string,
@@ -71,6 +72,7 @@ export class MongoTransactionRepository implements TransactionRepository {
     await TransactionModel.create({
       _id: record.id,
       payoutId: record.payoutId,
+      arenaId: record.arenaId ?? null,
       idempotencyKey: record.idempotencyKey,
       sourceAccount: record.sourceAccount,
       destinationAccount: record.destinationAccount,

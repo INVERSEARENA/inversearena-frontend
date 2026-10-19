@@ -3,7 +3,11 @@
 //! Manages the full game lifecycle: player registration, commit-reveal rounds,
 //! yield accounting via an RWA vault adapter, winner payout, and admin controls.
 #![no_std]
-use soroban_sdk::{Address, Bytes, BytesN, Env, Symbol, Vec, contract, contractimpl, token};
+use soroban_sdk::{
+    Address, Bytes, BytesN, Env, IntoVal, Symbol, Vec,
+    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
+    contract, contractimpl, token,
+};
 
 mod eliminations;
 mod events;
@@ -22,7 +26,7 @@ use storage::ArenaStorage;
 use types::{
     ArenaConfig, ArenaError, ArenaStatus, Choice, EliminationReason, GameState, LeaderboardEntry,
     OracleFreshnessPolicy, PendingAdmin, PendingUpgrade, PlayerState, PlayerStatus, RoundResult,
-    YieldSnapshot,
+    Settlement, YieldSnapshot,
 };
 
 #[soroban_sdk::contractclient(name = "FactoryClient")]
@@ -45,7 +49,9 @@ pub const MAX_PLAYERS_ALLOWED: u32 = 100;
 /// entrypoints on older, already-deployed arena instances.
 /// Bumped to 4 for #1582 (`get_player_status`) and #1583 (fund-moving entry
 /// points now honour the factory-wide pause and may return `GloballyPaused`).
-const CONTRACT_VERSION: u32 = 4;
+/// Bumped to 5 for #1632: adds `get_settlement`, which the payout contract
+/// requires before it will pay out for an arena.
+const CONTRACT_VERSION: u32 = 5;
 const UPGRADE_TIMELOCK_SECONDS: u64 = 86_400; // 1 day
 /// Maximum allowed platform fee: 1000 bps (10%). Enforced by `update_platform_fee`.
 const MAX_PLATFORM_FEE_BPS: u32 = 1000;
@@ -412,6 +418,23 @@ impl ArenaContract {
         let token_client = token::TokenClient::new(&env, &config.stake_token);
         let arena_addr = env.current_contract_address();
         token_client.transfer(&player, &arena_addr, &config.entry_fee);
+
+        // The vault's `deposit` pulls the fee with `transfer(arena, vault, fee)`.
+        // The arena is not the direct invoker of that transfer (the vault is),
+        // so without this pre-authorisation it fails under real auth and every
+        // join reverts with VaultDepositFailed (#1636).
+        env.authorize_as_current_contract(soroban_sdk::vec![
+            &env,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: config.stake_token.clone(),
+                    fn_name: Symbol::new(&env, "transfer"),
+                    args: (arena_addr.clone(), config.yield_vault.clone(), config.entry_fee)
+                        .into_val(&env),
+                },
+                sub_invocations: soroban_sdk::vec![&env],
+            }),
+        ]);
 
         // Deposit entry fee into vault and return an error if it fails.
         // The token transfer above will be rolled back together with any storage mutations
@@ -789,6 +812,30 @@ impl ArenaContract {
                 config.commit_deadline,
                 env.ledger().timestamp(),
             ),
+        })
+    }
+
+    /// Return what this arena owes and to whom (#1632).
+    ///
+    /// The payout contract reads this before paying anything for the arena:
+    /// the recipient must be `winner` and the amount at most `prize`. The
+    /// read writes nothing.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    pub fn get_settlement(env: Env) -> Result<Settlement, ArenaError> {
+        let config = ArenaStorage::peek_config(&env)?;
+        let finished = matches!(config.state, GameState::Finished | GameState::Settled);
+        // Same formula `claim` uses for the winner's expected payout.
+        let principal = config
+            .entry_fee
+            .saturating_mul(i128::from(config.player_count));
+        Ok(Settlement {
+            finished,
+            winner: if finished { ArenaStorage::peek_winner(&env) } else { None },
+            prize: principal.saturating_add(config.cumulative_yield),
+            stake_token: config.stake_token,
+            pool_id: config.pool_id,
         })
     }
 
@@ -2545,9 +2592,9 @@ mod test {
             .any(|(contract, topics, _data)| {
                 contract == client.address
                     && topics
-                        == (Symbol::new(&env, "oracle_freshness_observed"),).into_val(&env)
+                        == (Symbol::new(&env, "arena"), Symbol::new(&env, "orc_fresh")).into_val(&env)
             });
-        assert!(has_freshness_event, "must emit oracle_freshness_observed on every resolve_round attempt");
+        assert!(has_freshness_event, "must emit orc_fresh on every resolve_round attempt");
     }
 
     #[test]
@@ -2557,9 +2604,9 @@ mod test {
         let events = env.events().all();
         let has_rejection_event = events.iter().any(|(contract, topics, _data)| {
             contract == client.address
-                && topics == (Symbol::new(&env, "oracle_stale_rejected"),).into_val(&env)
+                && topics == (Symbol::new(&env, "arena"), Symbol::new(&env, "orc_stale")).into_val(&env)
         });
-        assert!(has_rejection_event, "must emit oracle_stale_rejected when resolution is refused for staleness");
+        assert!(has_rejection_event, "must emit orc_stale when resolution is refused for staleness");
     }
 
     #[test]
@@ -4230,7 +4277,7 @@ mod test {
 
         let events = env.events().all();
         let expected_topic: soroban_sdk::Vec<Val> =
-            (symbol_short!("fee_upd"), admin).into_val(&env);
+            (symbol_short!("arena"), symbol_short!("fee_upd"), admin).into_val(&env);
         let has_fee_event = events
             .iter()
             .any(|(contract, topics, _data)| contract == client.address && topics == expected_topic);
@@ -4274,7 +4321,7 @@ mod test {
 
         let events = env.events().all();
         let expected_topic: soroban_sdk::Vec<Val> =
-            (symbol_short!("frsh_pol"), admin).into_val(&env);
+            (symbol_short!("arena"), symbol_short!("frsh_pol"), admin).into_val(&env);
         let has_event = events
             .iter()
             .any(|(contract, topics, _data)| contract == client.address && topics == expected_topic);
@@ -4657,7 +4704,7 @@ mod test {
 
         let events = env.events().all();
         let expected_topic: soroban_sdk::Vec<Val> =
-            (symbol_short!("commit"), p1.clone()).into_val(&env);
+            (symbol_short!("arena"), symbol_short!("commit"), p1.clone()).into_val(&env);
         let event_found = events.iter().any(|(contract, topics, _data)| {
             contract == client.address && topics == expected_topic
         });
@@ -4714,7 +4761,7 @@ mod test {
 
         let events = env.events().all();
         let expected_topic: soroban_sdk::Vec<Val> =
-            (symbol_short!("reveal"), p1.clone()).into_val(&env);
+            (symbol_short!("arena"), symbol_short!("reveal"), p1.clone()).into_val(&env);
         let event_found = events.iter().any(|(contract, topics, _data)| {
             contract == client.address && topics == expected_topic
         });
@@ -5059,3 +5106,9 @@ mod player_status_tests;
 mod global_pause_tests;
 #[cfg(test)]
 mod commitment_vectors;
+#[cfg(test)]
+mod temp_storage_tests;
+#[cfg(test)]
+mod auth_tests;
+#[cfg(test)]
+mod conservation_tests;

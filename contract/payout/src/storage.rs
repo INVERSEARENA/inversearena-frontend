@@ -1,6 +1,6 @@
 #![allow(dead_code)]
-use crate::types::PayoutError;
-use soroban_sdk::{Address, Env, contracttype, IntoVal, TryFromVal};
+use crate::types::{PayoutError, PendingCap};
+use soroban_sdk::{Address, BytesN, Env, contracttype};
 
 pub trait StorageRepository<K, V> {
     fn has(&self, key: &K) -> bool;
@@ -30,18 +30,31 @@ pub(crate) enum DataKey {
     Admin,
     PendingAdmin,
     Token,
+    /// Legacy (pre-#1632) caller-chosen idempotency ids. No longer written or
+    /// read; kept so the variant is never reused with a different shape.
     Paid(u64),
-    /// Issue #1450 — pre-registered payout destination.
-    /// Stores the `Address` that is permitted to receive the payout for a
-    /// given `payout_id`. Set by `register_destination`; checked by
-    /// `distribute_winnings` before any transfer.
-    Destination(u64),
+    /// #1632: factory whose pool registry decides which arenas are genuine.
+    Factory,
+    /// #1632: amount paid for a payout id derived from `(arena, recipient)`.
+    /// Replaces the caller-chosen `Paid(u64)` ids, which let one prize be paid
+    /// under many ids.
+    Payout(BytesN<32>),
+    /// #1632: maximum total outflow per UTC day.
+    DailyCap,
+    /// #1632: a cap increase waiting out its timelock.
+    PendingCap,
+    /// #1632: total paid out on a given day (`timestamp / 86_400`). Temporary
+    /// storage — a day's total is irrelevant once the day is over.
+    Outflow(u64),
 }
 
 // ~6 months in ledgers (assuming 5s per ledger)
 const PAYOUT_TTL_THRESHOLD: u32 = 3_153_600;
 // ~1 year in ledgers
 const PAYOUT_TTL_EXTEND_TO: u32 = 6_307_200;
+/// A day's outflow total must outlive the day it counts (17_280 ledgers at
+/// 5 s/ledger); two days leaves margin for ledger-time drift.
+const OUTFLOW_TTL_LEDGERS: u32 = 34_560;
 
 
 pub struct PayoutRepository<'a> {
@@ -106,10 +119,6 @@ impl TtlRepository<DataKey> for PayoutRepository<'_> {
 pub struct PayoutStorage;
 
 impl PayoutStorage {
-    fn extend_paid_ttl(env: &Env, payout_id: u64) {
-        PayoutRepository::new(env).extend_ttl(&DataKey::Paid(payout_id), PAYOUT_TTL_THRESHOLD, PAYOUT_TTL_EXTEND_TO);
-    }
-
     pub fn has_admin(env: &Env) -> bool {
         let repo = PayoutRepository::new(env);
         StorageRepository::<DataKey, Address>::has(&repo, &DataKey::Admin)
@@ -193,54 +202,93 @@ impl PayoutStorage {
         Ok(token)
     }
 
-    pub fn is_paid(env: &Env, payout_id: u64) -> bool {
+    // ── #1632 — arena-validated payouts ───────────────────────────────────────
+
+    pub fn set_factory(env: &Env, factory: &Address) {
         let repo = PayoutRepository::new(env);
-        repo.extend_ttl( &DataKey::Paid(payout_id), PAYOUT_TTL_THRESHOLD, PAYOUT_TTL_EXTEND_TO);
-        StorageRepository::<DataKey, bool>::has(&repo, &DataKey::Paid(payout_id))
+        repo.set(&DataKey::Factory, factory);
+        repo.extend_ttl(&DataKey::Factory, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_TARGET);
     }
 
-    pub fn mark_paid(env: &Env, payout_id: u64) {
+    pub fn get_factory(env: &Env) -> Result<Address, PayoutError> {
         let repo = PayoutRepository::new(env);
-        let key = DataKey::Paid(payout_id);
-        repo.set(&key, &true);
-        repo.extend_ttl(
-            &key,
+        let factory = repo.get(&DataKey::Factory).ok_or(PayoutError::NotInitialised)?;
+        repo.extend_ttl(&DataKey::Factory, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_TARGET);
+        Ok(factory)
+    }
+
+    /// Amount already paid for `payout_id`, if any.
+    pub fn paid_amount(env: &Env, payout_id: &BytesN<32>) -> Option<i128> {
+        let key = DataKey::Payout(payout_id.clone());
+        let paid: Option<i128> = env.storage().persistent().get(&key);
+        if paid.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, PAYOUT_TTL_THRESHOLD, PAYOUT_TTL_EXTEND_TO);
+        }
+        paid
+    }
+
+    pub fn record_payout(env: &Env, payout_id: &BytesN<32>, amount: i128) {
+        let key = DataKey::Payout(payout_id.clone());
+        env.storage().persistent().set(&key, &amount);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PAYOUT_TTL_THRESHOLD, PAYOUT_TTL_EXTEND_TO);
+    }
+
+    pub fn set_daily_cap(env: &Env, cap: i128) {
+        env.storage().persistent().set(&DataKey::DailyCap, &cap);
+        env.storage().persistent().extend_ttl(
+            &DataKey::DailyCap,
             PERSISTENT_TTL_THRESHOLD,
             PERSISTENT_TTL_TARGET,
         );
     }
 
-    // ── Issue #1450 — payout destination binding ──────────────────────────────
-
-    /// Store the pre-authorised destination address for `payout_id`.
-    ///
-    /// Must be called by the admin before `distribute_winnings`. Once set the
-    /// binding cannot be overwritten — any attempt to register a second
-    /// destination for the same `payout_id` is a no-op (the existing binding
-    /// wins), because the payout may already be in-flight by the time a second
-    /// registration arrives.
-    pub fn register_destination(env: &Env, payout_id: u64, destination: &Address) {
-        let key = DataKey::Destination(payout_id);
-        // Do not overwrite an existing binding.
-        if env.storage().persistent().has(&key) {
-            return;
-        }
-        env.storage().persistent().set(&key, destination);
-        env.storage()
+    pub fn get_daily_cap(env: &Env) -> Result<i128, PayoutError> {
+        let cap: i128 = env
+            .storage()
             .persistent()
-            .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_TARGET);
+            .get(&DataKey::DailyCap)
+            .ok_or(PayoutError::NotInitialised)?;
+        env.storage().persistent().extend_ttl(
+            &DataKey::DailyCap,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_TARGET,
+        );
+        Ok(cap)
     }
 
-    /// Return the pre-registered destination for `payout_id`, or `None` if
-    /// `register_destination` has not been called yet.
-    pub fn get_destination(env: &Env, payout_id: u64) -> Option<Address> {
-        let key = DataKey::Destination(payout_id);
-        let val: Option<Address> = env.storage().persistent().get(&key);
-        if val.is_some() {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_TARGET);
-        }
-        val
+    pub fn set_pending_cap(env: &Env, pending: &PendingCap) {
+        env.storage().persistent().set(&DataKey::PendingCap, pending);
+        env.storage().persistent().extend_ttl(
+            &DataKey::PendingCap,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_TARGET,
+        );
+    }
+
+    pub fn get_pending_cap(env: &Env) -> Option<PendingCap> {
+        env.storage().persistent().get(&DataKey::PendingCap)
+    }
+
+    pub fn clear_pending_cap(env: &Env) {
+        env.storage().persistent().remove(&DataKey::PendingCap);
+    }
+
+    pub fn outflow(env: &Env, day: u64) -> i128 {
+        env.storage()
+            .temporary()
+            .get(&DataKey::Outflow(day))
+            .unwrap_or(0)
+    }
+
+    pub fn set_outflow(env: &Env, day: u64, total: i128) {
+        let key = DataKey::Outflow(day);
+        env.storage().temporary().set(&key, &total);
+        env.storage()
+            .temporary()
+            .extend_ttl(&key, OUTFLOW_TTL_LEDGERS, OUTFLOW_TTL_LEDGERS);
     }
 }

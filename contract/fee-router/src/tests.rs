@@ -44,17 +44,14 @@ mod mock_staking {
             env.storage().instance().get(&StakKey::TotalShares).unwrap_or(0)
         }
 
-        /// Mimics the real staking contract: pulls `amount` tokens from `caller`.
+        /// Mimics the real staking contract: pulls `amount` tokens from
+        /// `caller` with a plain `transfer`, exactly as
+        /// `staking::distribute_rewards` does (not `transfer_from`).
         pub fn distribute_rewards(env: Env, caller: Address, amount: i128) {
             caller.require_auth();
             let token_addr: Address = env.storage().instance().get(&StakKey::Token).unwrap();
             let token = token::TokenClient::new(&env, &token_addr);
-            token.transfer_from(
-                &env.current_contract_address(),
-                &caller,
-                &env.current_contract_address(),
-                &amount,
-            );
+            token.transfer(&caller, &env.current_contract_address(), &amount);
             let prev: i128 = env.storage().instance().get(&StakKey::RewardReceived).unwrap_or(0);
             env.storage().instance().set(&StakKey::RewardReceived, &(prev + amount));
             env.events().publish((symbol_short!("REWARDS"),), (caller, amount));

@@ -11,6 +11,12 @@ export type PaymentStatus =
 export interface TransactionRecord {
   id: string;
   payoutId: string;
+  /**
+   * Arena contract the payout is validated against on-chain (#1632): the
+   * payout contract pays only that arena's recorded winner, at most its
+   * recorded prize. Null for rows created before #1632.
+   */
+  arenaId?: string | null;
   idempotencyKey: string;
   sourceAccount: string;
   destinationAccount: string;
@@ -52,6 +58,8 @@ export interface PayoutBreakdown {
 
 export interface CreatePayoutRequest {
   payoutId: string;
+  /** Arena contract id the payout is for (#1632). */
+  arenaId: string;
   destinationAccount: string;
   amount: string;
   asset: "XLM" | "USDC";

@@ -2,6 +2,9 @@ import { PaymentService } from '../../src/services/paymentService';
 import { InMemoryTransactionRepository } from '../../src/repositories/inMemoryTransactionRepository';
 import type { PaymentConfig } from '../../src/config/paymentConfig';
 
+// Arena each payout is validated against on-chain (#1632).
+const ARENA_ID = 'CADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP5KR';
+
 const mockConfig: PaymentConfig = {
   liveExecution: false,
   signWithHotKey: false,
@@ -25,6 +28,7 @@ async function testBuildOnlyFlow() {
 
   const result = await paymentService.createPayoutTransaction({
     payoutId: '1',
+    arenaId: ARENA_ID,
     destinationAccount: 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H',
     amount: '100.5000000',
     asset: 'XLM',
@@ -53,6 +57,7 @@ async function testIdempotency() {
 
   const result1 = await paymentService.createPayoutTransaction({
     payoutId: '2',
+    arenaId: ARENA_ID,
     destinationAccount: 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H',
     amount: '50.0000000',
     asset: 'XLM',
@@ -84,6 +89,7 @@ async function testNonceTracking() {
   const results = await Promise.all([
     paymentService.createPayoutTransaction({
       payoutId: '10',
+      arenaId: ARENA_ID,
       destinationAccount: 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H',
       amount: '10.0000000',
       asset: 'XLM',
@@ -91,6 +97,7 @@ async function testNonceTracking() {
     }),
     paymentService.createPayoutTransaction({
       payoutId: '20',
+      arenaId: ARENA_ID,
       destinationAccount: 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H',
       amount: '20.0000000',
       asset: 'XLM',
@@ -98,6 +105,7 @@ async function testNonceTracking() {
     }),
     paymentService.createPayoutTransaction({
       payoutId: '30',
+      arenaId: ARENA_ID,
       destinationAccount: 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H',
       amount: '30.0000000',
       asset: 'XLM',
@@ -128,6 +136,7 @@ async function testInputValidation() {
       name: 'Invalid destination account',
       input: {
         payoutId: 'test',
+        arenaId: ARENA_ID,
         destinationAccount: 'INVALID',
         amount: '10.0000000',
         asset: 'XLM' as const,
@@ -139,6 +148,7 @@ async function testInputValidation() {
       name: 'Invalid amount format',
       input: {
         payoutId: 'test',
+        arenaId: ARENA_ID,
         destinationAccount: 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H',
         amount: 'not-a-number',
         asset: 'XLM' as const,
@@ -150,6 +160,7 @@ async function testInputValidation() {
       name: 'Invalid idempotency key',
       input: {
         payoutId: 'test',
+        arenaId: ARENA_ID,
         destinationAccount: 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H',
         amount: '10.0000000',
         asset: 'XLM' as const,
@@ -199,6 +210,7 @@ async function testAmountConversion() {
   for (const test of testCases) {
     const result = await paymentService.createPayoutTransaction({
       payoutId: `100`,
+      arenaId: ARENA_ID,
       destinationAccount: 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H',
       amount: test.amount,
       asset: 'XLM',

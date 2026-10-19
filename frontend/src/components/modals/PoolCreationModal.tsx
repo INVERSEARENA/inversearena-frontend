@@ -33,6 +33,9 @@ import {
   savePoolDraft,
   clearPoolDraft,
 } from "@/features/pools/model/pool-draft";
+import { usePoolCompatibility } from "@/features/pools/model/usePoolCompatibility";
+
+const ALL_CURRENCIES: Currency[] = ["USDC", "XLM"];
 
 interface PoolCreationModalProps {
   isOpen: boolean;
@@ -82,6 +85,13 @@ export function PoolCreationModal({
   const [estimatedFee] = useState(estimateCreatePoolFee());
 
   const { isConnected, address, connect, signTransaction, balance, isLoadingBalance } = useWallet();
+
+  // #1634: offer only currencies the configured yield vault holds. While the
+  // vault read is pending or unavailable every currency stays selectable;
+  // buildCreatePoolTransaction re-checks before anything is signed.
+  const compatibility = usePoolCompatibility(isOpen);
+  const offeredCurrencies = compatibility.currencies ?? ALL_CURRENCIES;
+  const noCompatibleCurrency = compatibility.status === "ready" && offeredCurrencies.length === 0;
   const { runTrackedTransaction } = useTransactionIntent();
   const [showTxModal, setShowTxModal] = useState(false);
   const [txDetails, setTxDetails] = useState<{ label: string; value: string | number }[]>([]);
@@ -239,6 +249,19 @@ export function PoolCreationModal({
     }
   };
 
+  // A restored draft or the default may name a currency the vault cannot
+  // back; move the selection to one it can (#1634).
+  useEffect(() => {
+    if (compatibility.status !== "ready") return;
+    const [firstCompatible] = compatibility.currencies;
+    if (firstCompatible && !compatibility.currencies.includes(currency)) {
+      handleCurrencyChange(firstCompatible);
+    }
+    // handleCurrencyChange is recreated every render; the selection only
+    // needs re-checking when the compatible set or the currency changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compatibility, currency]);
+
   const handleDecreaseCapacity = () => {
     setArenaCapacity((prev) => Math.max(MIN_CAPACITY, prev - 10));
   };
@@ -333,8 +356,11 @@ export function PoolCreationModal({
                     className="bg-primary text-black border-l-3 border-black font-black text-lg px-4 appearance-none cursor-pointer focus:ring-0 focus:outline-none"
                     aria-label="Currency selection"
                   >
-                    <option value="USDC">USDC</option>
-                    <option value="XLM">XLM</option>
+                    {offeredCurrencies.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
@@ -351,6 +377,19 @@ export function PoolCreationModal({
                         Balance: {currency === "XLM" ? balance.xlm.toFixed(7) : balance.usdc.toFixed(2)} {currency}
                       </span>
                     )}
+                  </div>
+                )}
+
+                {noCompatibleCurrency && (
+                  <div
+                    className="mt-3 text-sm font-bold text-red-500 flex items-start gap-2"
+                    role="alert"
+                  >
+                    <span className="material-symbols-outlined text-base">error</span>
+                    <span>
+                      The yield vault does not support any available currency with the configured
+                      oracle. Pool creation is unavailable until the deployment is fixed.
+                    </span>
                   </div>
                 )}
 
@@ -527,7 +566,7 @@ export function PoolCreationModal({
                 onClick={async () => {
                   if (!isConnected) {
                     await connect();
-                  } else if (isFormValid) {
+                  } else if (isFormValid && !noCompatibleCurrency) {
                     setTxDetails([
                       { label: "Operation", value: "Create Pool" },
                       { label: "Stake Amount", value: `${stakeAmount} ${currency}` },
@@ -539,7 +578,7 @@ export function PoolCreationModal({
                     setShowTxModal(true);
                   }
                 }}
-                disabled={isConnected && (!isFormValid || whitelistState === "checking" || whitelistState === "required")}
+                disabled={isConnected && (!isFormValid || noCompatibleCurrency || whitelistState === "checking" || whitelistState === "required")}
                 className="w-full bg-primary text-black border-3 border-black py-6 text-2xl lg:text-3xl font-black uppercase italic tracking-tighter shadow-[4px_4px_0px_0px_#000] hover:translate-x-1 hover:translate-y-1 hover:shadow-none transition-all flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-x-0 disabled:hover:translate-y-0 disabled:hover:shadow-[4px_4px_0px_0px_#000]"
                 aria-label={isConnected ? "Initialize arena" : "Connect wallet"}
               >

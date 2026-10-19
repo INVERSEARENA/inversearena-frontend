@@ -22,6 +22,9 @@ import { InMemoryTransactionRepository } from "../../src/repositories/inMemoryTr
 import type { PaymentConfig } from "../../src/config/paymentConfig";
 import { resetSorobanBreakerForTest } from "../../src/utils/circuitBreaker";
 
+// Arena each payout is validated against on-chain (#1632).
+const ARENA_ID = "CADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP5KR";
+
 const SOURCE = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
 const DEST_A = Keypair.random().publicKey();
 const DEST_B = Keypair.random().publicKey();
@@ -76,6 +79,7 @@ async function createAndSign(
   payoutIdCounter += 1;
   const built = await service.createPayoutTransaction({
     payoutId: String(payoutIdCounter),
+    arenaId: ARENA_ID,
     destinationAccount: dest,
     amount,
     asset: "XLM",
@@ -113,6 +117,7 @@ describe("PaymentService signed-XDR audit (#667)", () => {
     // Record #1 is for DEST_A; the signer returns a tx paying DEST_B.
     const rec = await service.createPayoutTransaction({
       payoutId: "100",
+      arenaId: ARENA_ID,
       destinationAccount: DEST_A,
       amount: "10",
       asset: "XLM",
@@ -128,6 +133,7 @@ describe("PaymentService signed-XDR audit (#667)", () => {
     const { service } = makeService(makeRpc());
     const rec = await service.createPayoutTransaction({
       payoutId: "200",
+      arenaId: ARENA_ID,
       destinationAccount: DEST_A,
       amount: "10",
       asset: "XLM",
@@ -145,7 +151,7 @@ describe("PaymentService signed-XDR audit (#667)", () => {
     // A correctly-formed payout invocation, but built under a foreign source.
     const op = new Contract(CONTRACT).call(
       "distribute_winnings",
-      nativeToScVal(BigInt(0), { type: "u64" }),
+      new Address(ARENA_ID).toScVal(),
       new Address(DEST_A).toScVal(),
       nativeToScVal(BigInt("100000000"), { type: "i128" }),
     );
@@ -160,10 +166,11 @@ describe("PaymentService signed-XDR audit (#667)", () => {
     await expect(service.queueSignedTransaction(id, foreign.toXDR())).rejects.toThrow(/source/i);
   });
 
-  it("pins the on-chain call to distribute_winnings(payout_id, winner, amount) — 3 args, matching contract/payout/src/lib.rs:51", async () => {
+  it("pins the on-chain call to distribute_winnings(arena, winner, amount) — 3 args, matching contract/payout/src/lib.rs (#1632)", async () => {
     const { service } = makeService(makeRpc());
     const built = await service.createPayoutTransaction({
       payoutId: "p-pin",
+      arenaId: ARENA_ID,
       destinationAccount: DEST_A,
       amount: "10",
       asset: "XLM",
@@ -175,9 +182,64 @@ describe("PaymentService signed-XDR audit (#667)", () => {
     const args = op.func.invokeContract().args();
 
     expect(args).toHaveLength(3);
-    expect(scValToNative(args[0] as never)).toBe(BigInt(built.transaction.nonce));
+    expect(String(scValToNative(args[0] as never))).toBe(ARENA_ID);
     expect(String(scValToNative(args[1] as never))).toBe(DEST_A);
     expect(String(scValToNative(args[2] as never))).toBe(built.transaction.amountStroops);
+  });
+});
+
+describe("PaymentService arena resolution (#1632)", () => {
+  it("uses payoutId as the arena when it is an arena contract id", async () => {
+    const { service } = makeService(makeRpc());
+    const built = await service.createPayoutTransaction({
+      payoutId: ARENA_ID,
+      destinationAccount: DEST_A,
+      amount: "10",
+      asset: "XLM",
+      idempotencyKey: "idem-arena-0001",
+    });
+    expect(built.transaction.arenaId).toBe(ARENA_ID);
+  });
+
+  it("prefers an explicit arenaId over the payoutId", async () => {
+    const { service } = makeService(makeRpc());
+    const built = await service.createPayoutTransaction({
+      payoutId: CONTRACT,
+      arenaId: ARENA_ID,
+      destinationAccount: DEST_A,
+      amount: "10",
+      asset: "XLM",
+      idempotencyKey: "idem-arena-0002",
+    });
+    expect(built.transaction.arenaId).toBe(ARENA_ID);
+  });
+
+  it("rejects a payout that names no arena", async () => {
+    const { service, repo } = makeService(makeRpc());
+    await expect(
+      service.createPayoutTransaction({
+        payoutId: "not-an-arena",
+        destinationAccount: DEST_A,
+        amount: "10",
+        asset: "XLM",
+        idempotencyKey: "idem-arena-0003",
+      }),
+    ).rejects.toThrow(/arenaId is required/);
+    expect(await repo.findByPayoutId("not-an-arena")).toBeNull();
+  });
+
+  it("rejects a malformed arenaId", async () => {
+    const { service } = makeService(makeRpc());
+    await expect(
+      service.createPayoutTransaction({
+        payoutId: "p-bad-arena",
+        arenaId: "GNOTACONTRACT",
+        destinationAccount: DEST_A,
+        amount: "10",
+        asset: "XLM",
+        idempotencyKey: "idem-arena-0004",
+      }),
+    ).rejects.toThrow(/Invalid arena contract id/);
   });
 });
 

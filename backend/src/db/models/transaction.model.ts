@@ -12,6 +12,9 @@ const TransactionSchema = new Schema<TransactionDocument>(
     // generated a fresh idempotencyKey passed the de-dup check and produced a
     // second, independently-submittable transaction for the same prize (#1353).
     payoutId: { type: String, required: true, unique: true },
+    // Arena the payout is validated against on-chain (#1632); null on rows
+    // created before arena-validated payouts.
+    arenaId: { type: String, default: null },
     idempotencyKey: { type: String, required: true, unique: true },
     sourceAccount: { type: String, required: true },
     destinationAccount: { type: String, required: true },

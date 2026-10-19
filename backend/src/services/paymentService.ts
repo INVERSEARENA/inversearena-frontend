@@ -29,6 +29,7 @@ import type {
 } from "../types/payment";
 
 const PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
+const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
 const IDEMPOTENCY_REGEX = /^[a-zA-Z0-9:_-]{8,128}$/;
 const AMOUNT_REGEX = /^\d+(\.\d{0,7})?$/;
 
@@ -41,6 +42,14 @@ const PayoutBreakdownSchema = z.object({
 
 const CreatePayoutRequestSchema = z.object({
   payoutId: z.string().trim().min(1).max(128),
+  // #1632: the payout contract validates every payout against an arena. When
+  // omitted, a payoutId that is itself an arena contract id (the convention
+  // getClaimReadiness and the claim inbox already rely on) is used.
+  arenaId: z
+    .string()
+    .trim()
+    .regex(CONTRACT_ID_REGEX, "Invalid arena contract id")
+    .optional(),
   destinationAccount: z
     .string()
     .trim()
@@ -60,6 +69,18 @@ const CreatePayoutRequestSchema = z.object({
   // does not recompute or validate it against `amount` beyond basic shape,
   // since that game-economics logic belongs to whoever produced it.
   breakdown: PayoutBreakdownSchema.optional(),
+}).transform((request, ctx) => {
+  const arenaId =
+    request.arenaId ?? (CONTRACT_ID_REGEX.test(request.payoutId) ? request.payoutId : undefined);
+  if (!arenaId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["arenaId"],
+      message: "arenaId is required unless payoutId is the arena contract id",
+    });
+    return z.NEVER;
+  }
+  return { ...request, arenaId };
 });
 
 export function toStroops(amount: string): string {
@@ -184,10 +205,7 @@ export class PaymentService {
     }
 
     const nonce = await this.transactions.reserveNextNonce(this.config.sourceAccount);
-    const { preparedTransaction, amountStroops } = await this.buildPreparedTransaction(
-      request,
-      nonce
-    );
+    const { preparedTransaction, amountStroops } = await this.buildPreparedTransaction(request);
 
     const unsignedXdr = preparedTransaction.toXDR();
     const now = new Date();
@@ -208,6 +226,7 @@ export class PaymentService {
     const transaction: TransactionRecord = {
       id: generateRecordId(),
       payoutId: request.payoutId,
+      arenaId: request.arenaId,
       idempotencyKey: request.idempotencyKey,
       sourceAccount: this.config.sourceAccount,
       destinationAccount: request.destinationAccount,
@@ -455,7 +474,16 @@ export class PaymentService {
       throw new Error("Signed transaction must have exactly 3 contract arguments");
     }
 
-    // distribute_winnings(payout_id: u64, winner: Address, amount: i128)
+    // distribute_winnings(arena: Address, winner: Address, amount: i128) (#1632).
+    // The contract checks the winner and amount against this arena, so the
+    // arena itself must be the one the record was created for.
+    if (!transaction.arenaId) {
+      throw new Error("Payout record predates arena-validated payouts and cannot be signed");
+    }
+    const arena = Address.fromScVal(args[0]!).toString();
+    if (arena !== transaction.arenaId) {
+      throw new Error("Signed transaction arena does not match the payout record");
+    }
     const destination = Address.fromScVal(args[1]!).toString();
     if (destination !== transaction.destinationAccount) {
       throw new Error("Signed transaction destination does not match the payout record");
@@ -463,14 +491,6 @@ export class PaymentService {
     const amount = String(scValToNative(args[2]!));
     if (amount !== transaction.amountStroops) {
       throw new Error("Signed transaction amount does not match the payout record");
-    }
-    // args[0] must equal the nonce reserved for this payout record — otherwise a
-    // compromised signer could redirect the on-chain payout_id.
-    const payoutIdArg = scValToNative(args[0]!);
-    if (typeof payoutIdArg !== "bigint" || payoutIdArg !== BigInt(transaction.nonce)) {
-      throw new Error(
-        "Signed transaction payout_id argument does not match the reserved nonce"
-      );
     }
   }
 
@@ -491,22 +511,22 @@ export class PaymentService {
     return transaction;
   }
 
-  private async buildPreparedTransaction(request: CreatePayoutRequest, nonce: number) {
+  private async buildPreparedTransaction(request: CreatePayoutRequest) {
     const sourceAccount = await this.breaker.fire(() =>
       this.rpcServer.getAccount(this.config.sourceAccount)
     ) as Account;
     const contract = new Contract(this.config.payoutContractId);
     const amountStroops = toStroops(request.amount);
 
-    // Must match contract/payout/src/lib.rs distribute_winnings(payout_id: u64,
-    // winner: Address, amount: i128) exactly — 3 args, this order. The token is
-    // fixed by the contract at initialize time (no per-call asset argument),
-    // and the contract has no nonce param, so the reserved per-source `nonce`
-    // doubles as the on-chain idempotency key (`payout_id`). Our string
-    // `request.payoutId` stays an off-chain-only identifier.
+    // Must match contract/payout/src/lib.rs distribute_winnings(arena: Address,
+    // winner: Address, amount: i128) exactly — 3 args, this order (#1632). The
+    // token is fixed by the contract at initialize time, and the on-chain
+    // idempotency key is derived from (arena, winner), so a retried request
+    // can never be paid twice. The reserved `nonce` stays an off-chain
+    // sequence for the record; `request.payoutId` an off-chain identifier.
     const operation = contract.call(
       this.config.payoutMethodName,
-      nativeToScVal(BigInt(nonce), { type: "u64" }),
+      new Address(request.arenaId).toScVal(),
       new Address(request.destinationAccount).toScVal(),
       nativeToScVal(BigInt(amountStroops), { type: "i128" }),
     );

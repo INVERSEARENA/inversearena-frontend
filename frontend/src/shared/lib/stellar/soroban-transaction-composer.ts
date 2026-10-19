@@ -193,6 +193,11 @@ export function buildGetArenaStateCallOperation(
 }
 
 
+/** RWA adapter `config()` read: the vault's stake token and oracle (#1634). */
+export function buildGetVaultConfigCallOperation(vaultContract: Contract): SorobanOperation {
+  return vaultContract.call("config");
+}
+
 export function buildGetPlayerStatusCallOperation(
   arenaContract: Contract,
   playerPublicKey: string,

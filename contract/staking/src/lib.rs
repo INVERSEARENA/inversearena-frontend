@@ -74,6 +74,9 @@ pub enum DataKey {
     Position(Address),
 }
 
+#[cfg(test)]
+mod auth_tests;
+
 #[contract]
 pub struct StakingContract;
 

@@ -255,6 +255,30 @@ pub enum ArenaPhase {
     Cancelled,
 }
 
+/// What an arena owes and to whom, for the payout contract's on-chain
+/// validation (#1632). Returned by `ArenaContract::get_settlement`.
+///
+/// The payout contract decodes this with its own mirror of the struct, so the
+/// field names and types are an ABI shared with `payout::ArenaSettlement`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Settlement {
+    /// `true` once the final round left exactly one survivor (`Finished`),
+    /// and still `true` after that winner claimed (`Settled`).
+    pub finished: bool,
+    /// The recorded winner; `None` until the arena finishes, and forever for
+    /// an arena that was cancelled.
+    pub winner: Option<Address>,
+    /// Upper bound on what the winner is owed: every entry fee plus the yield
+    /// recorded across resolved rounds.
+    pub prize: i128,
+    /// Token the prize is denominated in.
+    pub stake_token: Address,
+    /// Factory pool id, so the payout contract can confirm with the factory
+    /// that this arena is genuine.
+    pub pool_id: u32,
+}
+
 /// Every per-player fact a client needs to gate arena actions, returned by
 /// `get_player_status` in a single read (#1582).
 ///

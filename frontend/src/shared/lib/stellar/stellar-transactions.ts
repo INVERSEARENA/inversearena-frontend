@@ -50,6 +50,7 @@ import {
   buildGetArenaStateCallOperation,
   buildGetFullStateCallOperation,
   buildGetPlayerStatusCallOperation,
+  buildGetVaultConfigCallOperation,
   buildJoinCallOperation,
   buildLeaveArenaCallOperation,
   buildRevealChoiceOperation,
@@ -67,6 +68,12 @@ import {
   buildArenaDisplayState,
 } from "@/shared/lib/stellar/contract-state-parsers";
 import { assertCapability } from "@/shared/lib/stellar/compatibility-store";
+import {
+  assertPoolCompatible,
+  parseVaultConfigFromScVal,
+  type CurrencyTokenIds,
+  type VaultConfig,
+} from "@/shared/lib/stellar/pool-compatibility";
 import {
   clearCommitment,
   computeCommitment,
@@ -86,6 +93,12 @@ export const XLM_CONTRACT_ID = stellarConfig.xlmContractId;
 export const USDC_CONTRACT_ID = stellarConfig.usdcContractId;
 export const STAKING_CONTRACT_ID =
   stellarConfig.stakingContractId ?? STELLAR_PLACEHOLDERS.stakingContractId;
+
+/** Token contract per pool currency, as `create_pool` will receive it. */
+export const POOL_TOKEN_IDS: CurrencyTokenIds = {
+  XLM: XLM_CONTRACT_ID,
+  USDC: USDC_CONTRACT_ID,
+};
 
 export const NETWORK_PASSPHRASE = stellarConfig.passphrase;
 export const HORIZON_URL = stellarConfig.horizonUrl;
@@ -127,6 +140,16 @@ export async function buildCreatePoolTransaction(
   const FN = "buildCreatePoolTransaction";
   try {
     const validatedParams = CreatePoolParamsSchema.parse(params);
+    // #1634: refuse a currency the vault does not hold (or a vault on another
+    // oracle) before the wallet ever sees the transaction; the factory would
+    // reject it with VaultTokenMismatch / OracleMismatch anyway.
+    const vault = await fetchVaultConfig();
+    assertPoolCompatible(
+      vault,
+      validatedParams.currency,
+      POOL_TOKEN_IDS,
+      stellarConfig.oracleContractId ?? "",
+    );
     const account = await getAccount(publicKey, FN);
     const factory = new ContractClientFactory(SOROBAN_RPC_URL).createContract(FACTORY_CONTRACT_ID);
 
@@ -143,6 +166,44 @@ export async function buildCreatePoolTransaction(
     });
   } catch (error) {
     throw parseContractError(error, FN, { kind: "factory", contractId: FACTORY_CONTRACT_ID });
+  }
+}
+
+/**
+ * Read the configured yield vault's stake token and oracle with one `config()`
+ * simulation (#1634). Pool creation uses it to offer, and to build, only
+ * currency/vault/oracle combinations the factory accepts.
+ */
+export async function fetchVaultConfig(
+  vaultId: string | undefined = stellarConfig.rwaVaultContractId,
+): Promise<VaultConfig> {
+  const FN = "fetchVaultConfig";
+  try {
+    if (!vaultId) {
+      throw new Error("NEXT_PUBLIC_RWA_VAULT_CONTRACT_ID is not configured");
+    }
+    const validatedVaultId = StellarContractIdSchema.parse(vaultId);
+    const vault = new ContractClientFactory(SOROBAN_RPC_URL).createContract(validatedVaultId);
+
+    const tx = composeUnsignedTransaction(simulationSource(), {
+      fee: getDefaultInvokeBaseFee(),
+      networkPassphrase: NETWORK_PASSPHRASE,
+      timeout: getShortTxTimeoutSeconds(),
+      operation: buildGetVaultConfigCallOperation(vault),
+    });
+    const simulation = await stellarRpcGateway.simulateTransaction(tx as SorobanRpcTransaction);
+
+    if ("error" in simulation) throw new SimulationFailedError(simulation);
+    if (!simulation.result) {
+      throw new ContractError({
+        code: ContractErrorCode.SIMULATION_FAILED,
+        message: "Failed to read the yield vault config: simulation returned no result",
+        fn: FN,
+      });
+    }
+    return parseVaultConfigFromScVal(simulation.result.retval);
+  } catch (error) {
+    throw parseContractError(error, FN, { kind: "rwa_adapter", contractId: vaultId ?? "" });
   }
 }
 
