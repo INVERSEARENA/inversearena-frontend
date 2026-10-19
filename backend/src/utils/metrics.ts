@@ -1,5 +1,11 @@
 import { Registry, Counter, Histogram, Gauge } from 'prom-client';
 import type { PrismaClient } from '@prisma/client';
+import { logger } from "./logger";
+import {
+  TX_CONFIRM_QUEUE,
+  type QueueSnapshot,
+  type QueueSnapshotSource,
+} from "../queues/txQueue";
 
 export const register = new Registry();
 
@@ -19,13 +25,179 @@ export const httpRequestDuration = new Histogram({
   registers: [register],
 });
 
-// Worker Metrics
 export const workerJobsPending = new Gauge({
   name: 'worker_jobs_pending',
   help: 'Number of pending worker jobs',
   labelNames: ['job_type'],
   registers: [register],
 });
+
+const QUEUE_LABELS = { queue: TX_CONFIRM_QUEUE } as const;
+const WORKER_LABELS = { worker: "tx-reconciler" } as const;
+
+export const queueBacklogGauge = new Gauge({
+  name: "inversearena_queue_backlog",
+  help: "Number of jobs waiting to be processed",
+  labelNames: ["queue"],
+  registers: [register],
+});
+
+export const queueOldestAgeGauge = new Gauge({
+  name: "inversearena_queue_oldest_age_seconds",
+  help: "Age in seconds of the oldest pending queue job; -1 means unavailable",
+  labelNames: ["queue"],
+  registers: [register],
+});
+
+export const queueDelayedGauge = new Gauge({
+  name: "inversearena_queue_delayed",
+  help: "Number of jobs waiting for a retry backoff delay",
+  labelNames: ["queue"],
+  registers: [register],
+});
+
+export const queueActiveGauge = new Gauge({
+  name: "inversearena_queue_active",
+  help: "Number of jobs currently being processed",
+  labelNames: ["queue"],
+  registers: [register],
+});
+
+export const queueCapacityGauge = new Gauge({
+  name: "inversearena_queue_capacity",
+  help: "Configured worker concurrency for the queue",
+  labelNames: ["queue"],
+  registers: [register],
+});
+
+export const queueSaturationGauge = new Gauge({
+  name: "inversearena_queue_saturation_ratio",
+  help: "Active jobs divided by configured queue capacity",
+  labelNames: ["queue"],
+  registers: [register],
+});
+
+export const queueSnapshotAvailableGauge = new Gauge({
+  name: "inversearena_queue_snapshot_available",
+  help: "Whether the latest queue snapshot was available: 1 available, 0 unavailable",
+  labelNames: ["queue"],
+  registers: [register],
+});
+
+export const queueRefreshSuccessTotal = new Counter({
+  name: "inversearena_queue_refresh_success_total",
+  help: "Successful queue snapshot refreshes",
+  labelNames: ["queue"],
+  registers: [register],
+});
+
+export const queueRefreshFailureTotal = new Counter({
+  name: "inversearena_queue_refresh_failure_total",
+  help: "Failed queue snapshot refreshes",
+  labelNames: ["queue"],
+  registers: [register],
+});
+
+export const queueRefreshDuration = new Histogram({
+  name: "inversearena_queue_refresh_duration_seconds",
+  help: "Queue snapshot refresh duration in seconds",
+  labelNames: ["queue"],
+  buckets: [0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+  registers: [register],
+});
+
+export const serverTimeIssuedTotal = new Counter({
+  name: "inversearena_server_time_issued_total",
+  help: "Total signed server-time tokens issued",
+  registers: [register],
+});
+
+export const serverTimeVerifiedTotal = new Counter({
+  name: "inversearena_server_time_verified_total",
+  help: "Total signed server-time token verification attempts, by outcome",
+  labelNames: ["outcome"],
+  registers: [register],
+});
+
+export const watchlistOperationsTotal = new Counter({
+  name: "inversearena_watchlist_operations_total",
+  help: "Total arena watchlist watch/unwatch operations, by operation and result",
+  labelNames: ["operation", "result"],
+  registers: [register],
+});
+
+export const diagnosticsRunsTotal = new Counter({
+  name: "inversearena_transaction_diagnostics_runs_total",
+  help: "Total transaction simulation diagnostics runs, by outcome",
+  labelNames: ["outcome"],
+  registers: [register],
+});
+
+export const diagnosticsRunDuration = new Histogram({
+  name: "inversearena_transaction_diagnostics_duration_seconds",
+  help: "Transaction simulation diagnostics duration in seconds",
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+  registers: [register],
+});
+
+export const workerJobAttemptsTotal = new Counter({
+  name: "inversearena_worker_job_attempts_total",
+  help: "Total worker job processing attempts",
+  labelNames: ["queue"],
+  registers: [register],
+});
+
+export const workerJobRetriesTotal = new Counter({
+  name: "inversearena_worker_job_retries_total",
+  help: "Total worker job retries",
+  labelNames: ["queue"],
+  registers: [register],
+});
+
+export const workerTerminalFailuresTotal = new Counter({
+  name: "inversearena_worker_terminal_failures_total",
+  help: "Total worker jobs that reached a terminal failure",
+  labelNames: ["queue", "reason"],
+  registers: [register],
+});
+
+export const workerJobsSuccessTotal = new Counter({
+  name: "inversearena_worker_jobs_success_total",
+  help: "Total worker jobs that completed successfully",
+  labelNames: ["queue"],
+  registers: [register],
+});
+
+export const workerJobProcessingDuration = new Histogram({
+  name: "inversearena_worker_job_processing_duration_seconds",
+  help: "Worker job processing duration in seconds",
+  labelNames: ["queue"],
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30],
+  registers: [register],
+});
+
+export const workerLifecycleEventsTotal = new Counter({
+  name: "inversearena_worker_lifecycle_events_total",
+  help: "Worker lifecycle events",
+  labelNames: ["worker", "event"],
+  registers: [register],
+});
+
+export const workerActiveJobsGauge = new Gauge({
+  name: "inversearena_worker_active_jobs",
+  help: "Number of jobs currently active in the worker",
+  labelNames: ["worker"],
+  registers: [register],
+});
+
+queueBacklogGauge.set(QUEUE_LABELS, -1);
+queueOldestAgeGauge.set(QUEUE_LABELS, -1);
+queueDelayedGauge.set(QUEUE_LABELS, -1);
+queueActiveGauge.set(QUEUE_LABELS, -1);
+queueCapacityGauge.set(QUEUE_LABELS, -1);
+queueSaturationGauge.set(QUEUE_LABELS, -1);
+queueSnapshotAvailableGauge.set(QUEUE_LABELS, 0);
+workerActiveJobsGauge.set(WORKER_LABELS, 0);
 
 // Transaction Metrics
 export const txsConfirmedTotal = new Counter({
@@ -69,6 +241,121 @@ export const playersEliminatedTotal = new Counter({
   registers: [register],
 });
 
+// #1500: publish arena stream updates only when verified state changes
+export const arenaPollsTotal = new Counter({
+  name: 'inversearena_arena_polls_total',
+  help: 'Arena poller fetch+verify attempts, by outcome (ok/error)',
+  labelNames: ['outcome'],
+  registers: [register],
+});
+
+export const arenaSemanticChangesTotal = new Counter({
+  name: 'inversearena_arena_semantic_changes_total',
+  help: 'Arena polls whose canonical snapshot fingerprint changed and were published',
+  registers: [register],
+});
+
+export const arenaSuppressedPublishesTotal = new Counter({
+  name: 'inversearena_arena_suppressed_publishes_total',
+  help: 'Arena polls with unchanged verified state where publication was suppressed',
+  registers: [register],
+});
+
+export const arenaStreamResyncsTotal = new Counter({
+  name: 'inversearena_arena_stream_resyncs_total',
+  help: 'Client-requested arena stream full-snapshot resynchronisations, by reason',
+  labelNames: ['reason'],
+  registers: [register],
+});
+
+// #1433: Bounded concurrency & backpressure metrics for arena poller
+export const arenaPollerActivePollsGauge = new Gauge({
+  name: 'inversearena_arena_poller_active_polls',
+  help: 'Number of active in-flight arena poll operations',
+  registers: [register],
+});
+
+export const arenaPollerQueueDepthGauge = new Gauge({
+  name: 'inversearena_arena_poller_queue_depth',
+  help: 'Number of pending arena poll requests queued under backpressure',
+  registers: [register],
+});
+
+export const arenaPollerBackpressureShedTotal = new Counter({
+  name: 'inversearena_arena_poller_backpressure_shed_total',
+  help: 'Total arena polls shed or dropped due to queue saturation backpressure',
+  labelNames: ['reason'],
+  registers: [register],
+});
+
+export const arenaPollerPollDurationSeconds = new Histogram({
+  name: 'inversearena_arena_poller_poll_duration_seconds',
+  help: 'Duration of arena poll operations in seconds',
+  labelNames: ['outcome'],
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+  registers: [register],
+});
+
+export const arenaPollerRetriesTotal = new Counter({
+  name: 'inversearena_arena_poller_retries_total',
+  help: 'Total poller retry attempts following execution errors, by reason',
+  labelNames: ['reason'],
+  registers: [register],
+});
+
+
+// #1501: dashboard bootstrap composition
+export const dashboardBootstrapTotal = new Counter({
+  name: 'inversearena_dashboard_bootstrap_total',
+  help: 'Dashboard bootstrap requests, by outcome (ok/partial/error)',
+  labelNames: ['outcome'],
+  registers: [register],
+});
+
+export const dashboardBootstrapSectionDuration = new Histogram({
+  name: 'inversearena_dashboard_bootstrap_section_duration_seconds',
+  help: 'Per-section latency of the dashboard bootstrap composition, by section and state',
+  labelNames: ['section', 'state'],
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+  registers: [register],
+});
+
+export const dashboardBootstrapSectionFailures = new Counter({
+  name: 'inversearena_dashboard_bootstrap_section_failures_total',
+  help: 'Dashboard bootstrap sections that failed or timed out, by section and reason',
+  labelNames: ['section', 'reason'],
+  registers: [register],
+});
+
+// #1503: tamper-evident administrative audit chain
+export const auditAppendsTotal = new Counter({
+  name: 'inversearena_audit_appends_total',
+  help: 'Chained audit record appends, by outcome (ok/conflict/error)',
+  labelNames: ['outcome'],
+  registers: [register],
+});
+
+export const auditChainVerificationTotal = new Counter({
+  name: 'inversearena_audit_chain_verification_total',
+  help: 'Audit chain verification runs, by outcome (valid/invalid/error)',
+  labelNames: ['outcome'],
+  registers: [register],
+});
+
+export const auditCheckpointsTotal = new Counter({
+  name: 'inversearena_audit_checkpoints_total',
+  help: 'Signed audit chain checkpoints persisted, by outcome (ok/error)',
+  labelNames: ['outcome'],
+  registers: [register],
+});
+
+/** 1 = the checkpoint store is reachable and signing keys are configured, 0 = degraded (never silent). */
+export const auditChainProtectionGauge = new Gauge({
+  name: 'inversearena_audit_chain_protection_available',
+  help: 'Audit chain protection availability: 1=fully protected, 0=degraded (checkpoint store or key unavailable)',
+  registers: [register],
+});
+
 export const payoutsSuccessTotal = new Counter({
   name: 'inversearena_payouts_success_total',
   help: 'Total successful prize payouts',
@@ -80,6 +367,78 @@ export const payoutsDeadLetterTotal = new Counter({
   name: 'inversearena_payouts_dead_letter_total',
   help: 'Total payouts moved to dead status after exhausting failed retries',
   labelNames: ['reason'],
+  registers: [register],
+});
+
+// Commit receipt status endpoint (#1383)
+export const commitReceiptLookupsTotal = new Counter({
+  name: 'inversearena_commit_receipt_lookups_total',
+  help: 'Total commit-status lookups, by resulting status and outcome',
+  labelNames: ['status', 'outcome'],
+  registers: [register],
+});
+
+export const commitReceiptLookupDuration = new Histogram({
+  name: 'inversearena_commit_receipt_lookup_duration_seconds',
+  help: 'Commit-status lookup duration in seconds',
+  buckets: [0.005, 0.01, 0.05, 0.1, 0.5, 1, 2],
+  registers: [register],
+});
+
+// Transaction intent metrics (#1381) — user-wallet-signed actions (create
+// pool, stake, join, commit/reveal, claim) tracked from build through
+// confirmation so a rejected/expired signature can be resumed.
+export const intentCreatedTotal = new Counter({
+  name: 'inversearena_intent_created_total',
+  help: 'Total transaction intents created (excludes idempotent resumes)',
+  labelNames: ['kind'],
+  registers: [register],
+});
+
+export const intentResumedTotal = new Counter({
+  name: 'inversearena_intent_resumed_total',
+  help: 'Total transaction intents resumed from an existing unexpired record',
+  labelNames: ['kind'],
+  registers: [register],
+});
+
+export const intentOutcomeTotal = new Counter({
+  name: 'inversearena_intent_outcome_total',
+  help: 'Total transaction intents reaching a terminal or retry-relevant status',
+  labelNames: ['kind', 'status'],
+  registers: [register],
+});
+
+export const intentSignRetryTotal = new Counter({
+  name: 'inversearena_intent_sign_retry_total',
+  help: 'Total times an intent was resubmitted for signing after a rejection or expiry',
+  labelNames: ['kind', 'reason'],
+  registers: [register],
+});
+
+export const intentLatencySeconds = new Histogram({
+  name: 'inversearena_intent_latency_seconds',
+  help: 'Time from intent creation to a terminal status (confirmed, failed, or expired)',
+  labelNames: ['kind', 'status'],
+  buckets: [1, 5, 15, 30, 60, 120, 300],
+  registers: [register],
+});
+
+// Arena lifecycle command idempotency (#1386) — resolveRound/closeRound
+// wrapped with a request-level idempotency key checked before any side
+// effect (on-chain submission, state transition) runs.
+export const lifecycleCommandOutcomeTotal = new Counter({
+  name: 'inversearena_lifecycle_command_outcome_total',
+  help: 'Total arena lifecycle command outcomes by action and result',
+  labelNames: ['action', 'outcome'], // outcome: executed | replayed | conflict | retried_after_failure
+  registers: [register],
+});
+
+export const lifecycleCommandDurationSeconds = new Histogram({
+  name: 'inversearena_lifecycle_command_duration_seconds',
+  help: 'Duration of a freshly-executed (non-replayed) arena lifecycle command',
+  labelNames: ['action'],
+  buckets: [0.1, 0.5, 1, 2, 5, 15, 30, 60],
   registers: [register],
 });
 
@@ -97,6 +456,296 @@ export const sorobanCircuitTransitionsTotal = new Counter({
   registers: [register],
 });
 
+export const sorobanSimulationHitsTotal = new Counter({
+  name: 'inversearena_soroban_simulation_cache_hits_total',
+  help: 'Soroban read simulation single-flight cache hits',
+  registers: [register],
+});
+
+export const sorobanSimulationMissesTotal = new Counter({
+  name: 'inversearena_soroban_simulation_cache_misses_total',
+  help: 'Soroban read simulation single-flight cache misses',
+  labelNames: ['reason'],
+  registers: [register],
+});
+
+export const sorobanSimulationCoalescedWaitersTotal = new Counter({
+  name: 'inversearena_soroban_simulation_coalesced_waiters_total',
+  help: 'Concurrent identical Soroban simulations that shared one in-flight RPC',
+  registers: [register],
+});
+
+export const sorobanSimulationCacheEvictionsTotal = new Counter({
+  name: 'inversearena_soroban_simulation_cache_evictions_total',
+  help: 'Evictions from the bounded Soroban simulation result cache',
+  registers: [register],
+});
+
+export const maintenanceMutationsBlockedTotal = new Counter({
+  name: 'inversearena_maintenance_mutations_blocked_total',
+  help: 'Total mutating requests rejected because a maintenance window was active',
+  labelNames: ['method'],
+  registers: [register],
+});
+
+export const maintenanceWindowsScheduledTotal = new Counter({
+  name: 'inversearena_maintenance_windows_scheduled_total',
+  help: 'Total maintenance windows scheduled, by outcome',
+  labelNames: ['status'],
+  registers: [register],
+});
+
+export const transactionAccessDecisionsTotal = new Counter({
+  name: 'inversearena_transaction_access_decisions_total',
+  help: 'Transaction/payout status access decisions, by operation, outcome and (server-side only) reason',
+  labelNames: ['operation', 'outcome', 'reason'],
+  registers: [register],
+});
+
+export const payloadLimitRejectionsTotal = new Counter({
+  name: 'inversearena_payload_limit_rejections_total',
+  help: 'Untrusted payloads rejected by schema-level size/depth limits, by boundary and limit kind',
+  labelNames: ['boundary', 'limit'],
+  registers: [register],
+});
+
+export const secretKeyVerificationsTotal = new Counter({
+  name: 'inversearena_secret_key_verifications_total',
+  help: 'JWT/webhook signature verifications during key rotation, by purpose, matched key slot and outcome',
+  labelNames: ['purpose', 'slot', 'outcome'],
+  registers: [register],
+});
+
+// #1409: contract capability negotiation across mixed deployment versions
+export const capabilityNegotiationsTotal = new Counter({
+  name: 'inversearena_capability_negotiations_total',
+  help: 'Contract capability negotiation attempts, by contract kind and outcome (success/failure/retry)',
+  labelNames: ['contract', 'outcome'],
+  registers: [register],
+});
+
+export const capabilityNegotiationDuration = new Histogram({
+  name: 'inversearena_capability_negotiation_duration_seconds',
+  help: 'Time to resolve a contract\'s negotiated capability set, including retries',
+  labelNames: ['contract'],
+  buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5],
+  registers: [register],
+});
+
+export const capabilityCacheHitsTotal = new Counter({
+  name: 'inversearena_capability_cache_hits_total',
+  help: 'Capability negotiation results served from the in-memory version cache instead of a fresh on-chain read',
+  labelNames: ['contract'],
+  registers: [register],
+});
+
+// #1490: ledger rollback detection and recovery
+export const ledgerRollbackDepth = new Histogram({
+  name: 'inversearena_ledger_rollback_depth_ledgers',
+  help: 'Depth of a detected ledger rollback, in ledgers',
+  buckets: [1, 2, 5, 10, 25, 50, 100, 500, 1000],
+  registers: [register],
+});
+
+export const ledgerRollbackRecoveryDuration = new Histogram({
+  name: 'inversearena_ledger_rollback_recovery_duration_seconds',
+  help: 'Time from rollback detection until continuity was re-verified',
+  buckets: [1, 5, 15, 30, 60, 120, 300, 900, 3600],
+  registers: [register],
+});
+
+export const ledgerRollbackAffectedConsumersTotal = new Counter({
+  name: 'inversearena_ledger_rollback_affected_consumers_total',
+  help: 'Consumers notified of a ledger rollback or gap, or deferred by one',
+  labelNames: ['consumer'],
+  registers: [register],
+});
+
+export interface QueueMetricsRefreshResult {
+  available: boolean;
+  snapshot?: QueueSnapshot;
+}
+
+export interface QueueMetricsRefreshOptions {
+  capacity?: number;
+}
+
+function isValidQueueSnapshot(snapshot: QueueSnapshot): boolean {
+  return (
+    snapshot.queue === TX_CONFIRM_QUEUE &&
+    Number.isFinite(snapshot.backlog) &&
+    snapshot.backlog >= 0 &&
+    Number.isFinite(snapshot.delayed) &&
+    snapshot.delayed >= 0 &&
+    Number.isFinite(snapshot.active) &&
+    snapshot.active >= 0 &&
+    Number.isFinite(snapshot.capacity) &&
+    snapshot.capacity >= 0 &&
+    Number.isFinite(snapshot.saturation) &&
+    snapshot.saturation >= 0 &&
+    (snapshot.oldestAgeSeconds === null ||
+      (Number.isFinite(snapshot.oldestAgeSeconds) &&
+        snapshot.oldestAgeSeconds >= 0))
+  );
+}
+
+function normalizedCapacity(capacity: number | undefined, fallback: number): number {
+  const value = capacity ?? fallback;
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error("Queue capacity must be a finite non-negative number");
+  }
+  return Math.floor(value);
+}
+
+function setQueueUnavailable(capacity?: number): void {
+  queueBacklogGauge.set(QUEUE_LABELS, -1);
+  queueOldestAgeGauge.set(QUEUE_LABELS, -1);
+  queueDelayedGauge.set(QUEUE_LABELS, -1);
+  queueActiveGauge.set(QUEUE_LABELS, -1);
+  queueSaturationGauge.set(QUEUE_LABELS, -1);
+  queueSnapshotAvailableGauge.set(QUEUE_LABELS, 0);
+  if (capacity !== undefined) {
+    queueCapacityGauge.set(QUEUE_LABELS, normalizedCapacity(capacity, 0));
+  } else {
+    queueCapacityGauge.set(QUEUE_LABELS, -1);
+  }
+}
+
+function safeErrorName(error: unknown): string {
+  if (!(error instanceof Error)) return "UnknownError";
+  return /^[A-Za-z0-9_.-]{1,64}$/.test(error.name)
+    ? error.name
+    : "QueueSnapshotError";
+}
+
+export async function refreshQueueMetrics(
+  source: QueueSnapshotSource,
+  options: QueueMetricsRefreshOptions = {},
+): Promise<QueueMetricsRefreshResult> {
+  const started = process.hrtime.bigint();
+  try {
+    const snapshot = await source.getSnapshot();
+    if (!isValidQueueSnapshot(snapshot)) {
+      throw new Error("Queue snapshot is invalid");
+    }
+    const capacity = normalizedCapacity(options.capacity, snapshot.capacity);
+    const effectiveSnapshot: QueueSnapshot = {
+      ...snapshot,
+      capacity,
+      saturation: capacity === 0 ? 0 : snapshot.active / capacity,
+    };
+
+    queueCapacityGauge.set(QUEUE_LABELS, capacity);
+    queueBacklogGauge.set(QUEUE_LABELS, effectiveSnapshot.backlog);
+    queueOldestAgeGauge.set(
+      QUEUE_LABELS,
+      effectiveSnapshot.oldestAgeSeconds ?? -1,
+    );
+    queueDelayedGauge.set(QUEUE_LABELS, effectiveSnapshot.delayed);
+    queueActiveGauge.set(QUEUE_LABELS, effectiveSnapshot.active);
+    queueSaturationGauge.set(QUEUE_LABELS, effectiveSnapshot.saturation);
+    queueSnapshotAvailableGauge.set(QUEUE_LABELS, 1);
+    queueRefreshSuccessTotal.inc(QUEUE_LABELS);
+    return { available: true, snapshot: effectiveSnapshot };
+  } catch (error) {
+    logger.error(
+      {
+        event: "queue_snapshot_refresh_failure",
+        queue: TX_CONFIRM_QUEUE,
+        outcome: "failure",
+        errorName: safeErrorName(error),
+      },
+      "Queue snapshot refresh failed",
+    );
+    try {
+      setQueueUnavailable(options.capacity);
+    } catch {
+      queueCapacityGauge.set(QUEUE_LABELS, -1);
+    }
+    queueRefreshFailureTotal.inc(QUEUE_LABELS);
+    return { available: false };
+  } finally {
+    const elapsed = Number(process.hrtime.bigint() - started) / 1_000_000_000;
+    queueRefreshDuration.observe(QUEUE_LABELS, Math.max(0, elapsed));
+  }
+}
+
+// Round proof bundle metrics (#1394)
+export const proofBundleAssemblyTotal = new Counter({
+  name: 'inversearena_proof_bundle_assembly_total',
+  help: 'Total round proof bundle assembly attempts',
+  labelNames: ['status'],
+  registers: [register],
+});
+
+export const proofBundleAssemblyDuration = new Histogram({
+  name: 'inversearena_proof_bundle_assembly_duration_seconds',
+  help: 'Round proof bundle assembly duration in seconds',
+  buckets: [0.005, 0.01, 0.05, 0.1, 0.5, 1, 2],
+  registers: [register],
+});
+
+export const proofBundleAssemblyRetriesTotal = new Counter({
+  name: 'inversearena_proof_bundle_assembly_retries_total',
+  help: 'Total retry attempts made while assembling a round proof bundle',
+  registers: [register],
+});
+
+export const proofBundleVerificationTotal = new Counter({
+  name: 'inversearena_proof_bundle_verification_total',
+  help: 'Total client-side (frontend-reported) proof bundle verification outcomes',
+  labelNames: ['status'],
+  registers: [register],
+});
+
+// Dispute evidence package metrics (#1517)
+export const evidencePackageGenerationTotal = new Counter({
+  name: 'inversearena_evidence_package_generation_total',
+  help: 'Total dispute evidence package generation attempts',
+  labelNames: ['status'],
+  registers: [register],
+});
+
+export const evidencePackageGenerationDuration = new Histogram({
+  name: 'inversearena_evidence_package_generation_duration_seconds',
+  help: 'Dispute evidence package generation duration in seconds',
+  buckets: [0.005, 0.01, 0.05, 0.1, 0.5, 1, 2],
+  registers: [register],
+});
+
+// Arena Discovery Backfill Metrics (#1391)
+export const backfillRunsTotal = new Counter({
+  name: 'inversearena_backfill_runs_total',
+  help: 'Total arena discovery backfill runs',
+  labelNames: ['status'],
+  registers: [register],
+});
+
+export const backfillArenasDiscoveredTotal = new Counter({
+  name: 'inversearena_backfill_arenas_discovered_total',
+  help: 'Total arenas successfully upserted by the backfill job',
+  registers: [register],
+});
+
+export const backfillArenasFailedTotal = new Counter({
+  name: 'inversearena_backfill_arenas_failed_total',
+  help: 'Total arenas whose backfill upsert failed and will be retried next run',
+  registers: [register],
+});
+
+export const backfillRunDurationSeconds = new Histogram({
+  name: 'inversearena_backfill_run_duration_seconds',
+  help: 'Arena discovery backfill run duration in seconds',
+  buckets: [0.5, 1, 2, 5, 10, 30, 60],
+  registers: [register],
+});
+
+export const backfillCursorPosition = new Gauge({
+  name: 'inversearena_backfill_cursor_position',
+  help: 'Last pool_id fully processed by the arena discovery backfill cursor',
+  registers: [register],
+});
+
 export async function refreshArenaMetrics(prisma: PrismaClient): Promise<void> {
   const activeRounds = await prisma.round.findMany({
     where: {
@@ -110,3 +759,207 @@ export async function refreshArenaMetrics(prisma: PrismaClient): Promise<void> {
 
   arenasActiveGauge.set(activeRounds.length);
 }
+
+// ─── #1523: Typed Round Metadata Persistence & Dual-Read Mismatch Metrics ───
+export const roundMetadataMismatchesTotal = new Counter({
+  name: 'inversearena_round_metadata_mismatches_total',
+  help: 'Total round metadata dual-read mismatches detected between typed columns and legacy json',
+  labelNames: ['field'],
+  registers: [register],
+});
+
+export const roundMetadataBackfillTotal = new Counter({
+  name: 'inversearena_round_metadata_backfill_total',
+  help: 'Total rounds processed by metadata normalization backfill, by status',
+  labelNames: ['status'],
+  registers: [register],
+});
+
+// ─── #1524: Adaptive Arena Polling Cadence & Priority Metrics ─────────────────
+export const arenaPollerCadenceSeconds = new Histogram({
+  name: 'inversearena_arena_poller_cadence_seconds',
+  help: 'Observed or scheduled polling interval cadence in seconds by arena state',
+  labelNames: ['state'],
+  buckets: [0.1, 0.5, 1, 2.5, 5, 10, 15, 30, 60],
+  registers: [register],
+});
+
+export const arenaPollerWakeTotal = new Counter({
+  name: 'inversearena_arena_poller_wake_total',
+  help: 'Total poller wake triggers by reason',
+  labelNames: ['reason'],
+  registers: [register],
+});
+
+export const arenaPollerLatenessMs = new Histogram({
+  name: 'inversearena_arena_poller_lateness_ms',
+  help: 'Lateness of scheduled poll execution against deadline in milliseconds',
+  buckets: [5, 10, 25, 50, 100, 250, 500, 1000, 5000],
+  registers: [register],
+});
+
+export const arenaPollerSkippedTotal = new Counter({
+  name: 'inversearena_arena_poller_skipped_total',
+  help: 'Total polls skipped due to circuit breaker, concurrency limit or maintenance',
+  labelNames: ['reason'],
+  registers: [register],
+});
+
+export const arenaPollerActiveArenasGauge = new Gauge({
+  name: 'inversearena_arena_poller_active_arenas',
+  help: 'Active arenas tracked by adaptive scheduler by lifecycle state',
+  labelNames: ['lifecycle_state'],
+  registers: [register],
+});
+
+// ─── #1525: Database Query Budgets & Slow Query Attribution Metrics ──────────
+export const dbQueryBudgetViolationsTotal = new Counter({
+  name: 'inversearena_db_query_budget_violations_total',
+  help: 'Total database query budget violations by route, datastore, and violation type',
+  labelNames: ['route', 'datastore', 'violation_type'],
+  registers: [register],
+});
+
+export const dbQueryDurationSeconds = new Histogram({
+  name: 'inversearena_db_query_duration_seconds',
+  help: 'Normalized database query execution duration in seconds',
+  labelNames: ['datastore'],
+  buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+  registers: [register],
+});
+
+export const dbQueryCountPerRequest = new Histogram({
+  name: 'inversearena_db_query_count_per_request',
+  help: 'Total database queries executed per HTTP request/job by route',
+  labelNames: ['route'],
+  buckets: [1, 2, 5, 10, 20, 50, 100],
+  registers: [register],
+});
+
+// ─── #1526: Immutable Contract Metadata Cache by WASM Identity Metrics ───────
+export const contractMetadataCacheHitsTotal = new Counter({
+  name: 'inversearena_contract_metadata_cache_hits_total',
+  help: 'Contract metadata cache hits by metadata class (immutable/version_scoped)',
+  labelNames: ['metadata_class'],
+  registers: [register],
+});
+
+export const contractMetadataCacheMissesTotal = new Counter({
+  name: 'inversearena_contract_metadata_cache_misses_total',
+  help: 'Contract metadata cache misses by metadata class (immutable/version_scoped)',
+  labelNames: ['metadata_class'],
+  registers: [register],
+});
+
+export const contractMetadataCacheInvalidationsTotal = new Counter({
+  name: 'inversearena_contract_metadata_cache_invalidations_total',
+  help: 'Contract metadata cache invalidations by reason (upgrade/manual/corrupted/ttl)',
+  labelNames: ['reason'],
+  registers: [register],
+});
+
+export const contractMetadataLookupDuration = new Histogram({
+  name: 'inversearena_contract_metadata_lookup_duration_seconds',
+  help: 'Contract metadata resolution duration in seconds',
+  labelNames: ['status'],
+  buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1],
+  registers: [register],
+});
+
+// ─── #1512: Oracle freshness policy enforcement ──────────────────────────────
+
+export const oracleFreshnessClassificationTotal = new Counter({
+  name: 'inversearena_oracle_freshness_classification_total',
+  help: 'Oracle reading freshness classifications (fresh/warning/stale/unavailable)',
+  labelNames: ['classification'],
+  registers: [register],
+});
+
+export const oracleStalenessSecondsGauge = new Gauge({
+  name: 'inversearena_oracle_staleness_seconds',
+  help: 'Age in seconds of the most recently classified oracle observation, per oracle contract',
+  labelNames: ['oracle_contract'],
+  registers: [register],
+});
+
+export const yieldDependentActionsBlockedTotal = new Counter({
+  name: 'inversearena_yield_dependent_actions_blocked_total',
+  help: 'Yield-dependent mutations rejected for stale/unavailable oracle data, by action and reason',
+  labelNames: ['action', 'reason'],
+  registers: [register],
+});
+
+// ── Claim and refund inbox (#1489) ───────────────────────────────────────────
+//
+// `claim_inbox_item_count` is a Counter rather than a Gauge on purpose: it is
+// incremented per item as the page is built, so the rate is "actionable items
+// served per second". A Gauge sampled at scrape time would be a count of one
+// request and would miss the backlog that actually matters — how many
+// positions are sitting unclaimed across all users.
+
+export const claimInboxScanDuration = new Histogram({
+  name: "claim_inbox_scan_duration_seconds",
+  help: "Wall-clock time to assemble one claim-inbox page, including the bounded on-chain read",
+  labelNames: ["result"],
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
+  registers: [register],
+});
+
+export const claimInboxVerificationFailures = new Counter({
+  name: "claim_inbox_verification_failures_total",
+  help: "On-chain verification failures during a claim-inbox scan, by reason",
+  labelNames: ["reason"],
+  registers: [register],
+});
+
+export const claimInboxItemCount = new Counter({
+  name: "claim_inbox_items_total",
+  help: "Claim-inbox items served, by state",
+  labelNames: ["state"],
+  registers: [register],
+});
+
+export const claimInboxSourceCount = new Counter({
+  name: "claim_inbox_source_records_total",
+  help: "Records read per claim-inbox scan, by source",
+  labelNames: ["source"],
+  registers: [register],
+});
+
+/**
+ * Asset codes returned without a configured issuer.
+ *
+ * A credit asset cannot be described honestly without one, so this counter is
+ * how a missing `ASSET_ISSUERS` entry becomes visible in production instead of
+ * silently shipping null issuers to clients.
+ */
+export const claimInboxUnconfiguredAssets = new Counter({
+  name: "claim_inbox_unconfigured_asset_total",
+  help: "Claim-inbox components whose asset code has no configured issuer",
+  labelNames: ["code"],
+  registers: [register],
+});
+
+/** Convenience view used by the dashboard to compute its own summary. */
+export const claimInboxActionableItems = new Gauge({
+  name: "claim_inbox_actionable_items",
+  help: "Actionable claim-inbox items in the most recently served page",
+  labelNames: [],
+  registers: [register],
+});
+
+/** Creator Operations Console metrics (#1509) */
+export const creatorActionOutcomesTotal = new Counter({
+  name: "creator_action_outcomes_total",
+  help: "Outcomes of creator lifecycle and recovery operations",
+  labelNames: ["action", "status"],
+  registers: [register],
+});
+
+export const creatorStateConflictsTotal = new Counter({
+  name: "creator_state_conflicts_total",
+  help: "Stale-state conflicts encountered during creator actions",
+  labelNames: ["action", "reason"],
+  registers: [register],
+});
+

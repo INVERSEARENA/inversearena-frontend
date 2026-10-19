@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useQueryState } from '@/shared-d/hooks/useQueryState';
 import { useDebouncedValue } from '@/shared-d/hooks/useDebouncedValue';
 
@@ -18,30 +18,48 @@ export const GamesFilters = () => {
         defaultValue: "all"
     });
 
-    // Local state for search input (for immediate UI feedback)
-    const [searchInput, setSearchInput] = useState("");
-
-    // Debounce the search input before updating URL
-    const debouncedSearch = useDebouncedValue(searchInput, 500);
-
     // Sync search state with URL (debounced)
     const [search, setSearch] = useQueryState<string>("q", {
         defaultValue: ""
     });
 
-    // Initialize search input from URL on mount
+    // Local state for search input (for immediate UI feedback). Seeded from the
+    // URL so a deep link or a reload never starts out of step with the filter
+    // that is already applied.
+    const [searchInput, setSearchInput] = useState(search);
+
+    // Debounce the search input before updating URL
+    const debouncedSearch = useDebouncedValue(searchInput, 500);
+
+    // The last `q` value this component itself put into the URL. Any other value
+    // the URL reports came from outside the input — browser back/forward, a
+    // pasted link — and has to be pulled back into the box (#1341).
+    const lastPushedSearch = useRef(search);
+
     useEffect(() => {
-        if (search) {
-            setSearchInput(search);
+        if (search === lastPushedSearch.current) {
+            return;
         }
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+        // Externally-driven URL change: adopt it. Without this the box kept
+        // displaying a stale term after Back, and the next keystroke re-applied
+        // that stale filter through the effect below.
+        lastPushedSearch.current = search;
+        setSearchInput(search);
+    }, [search]);
 
     // Update URL when debounced search changes
     useEffect(() => {
+        // While the debounce is still catching up to an externally-adopted value
+        // the two differ for reasons that are not the user typing; pushing then
+        // would clobber the URL that was just restored.
+        if (debouncedSearch !== searchInput) {
+            return;
+        }
         if (debouncedSearch !== search) {
+            lastPushedSearch.current = debouncedSearch;
             setSearch(debouncedSearch || null);
         }
-    }, [debouncedSearch, search, setSearch]);
+    }, [debouncedSearch, searchInput, search, setSearch]);
 
     return (
         <div className="flex items-center justify-between border-y border-white/10 py-4 mb-8">

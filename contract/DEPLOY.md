@@ -1,3 +1,7 @@
+# Deployment manifests
+
+Frontend contract clients consume an injected manifest containing `network`, `rpcUrl`, `passphrase`, and named contract addresses. Generate a new manifest for each network or contract version and pass it to `ContractClientFactory`; do not mutate module-global contract IDs during tests or deployments. The legacy RPC URL constructor remains supported for compatibility.
+
 # Soroban contract deployment guide
 
 Step-by-step instructions to **build**, **deploy**, and **wire** the Inverse Arena Soroban workspace (`factory`, `arena`, `payout`, `staking`) on **Stellar testnet** and **mainnet**.

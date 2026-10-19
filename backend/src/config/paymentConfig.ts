@@ -57,6 +57,16 @@ const EnvSchema = z.object({
   PAYOUT_CONTRACT_ID: stellarContractId,
   PAYOUT_SOURCE_ACCOUNT: stellarAccountId,
   PAYOUT_HOT_SIGNER_SECRET: z.string().optional(),
+  // Issue #1413 — fee sponsorship
+  PAYOUTS_FEE_SPONSORSHIP_ENABLED: z
+    .string()
+    .optional()
+    .transform(parseBooleanFlag),
+  PAYOUTS_FEE_SPONSORSHIP_TTL_HOURS: z
+    .string()
+    .optional()
+    .transform((v) => Number(v ?? "72"))
+    .pipe(z.number().int().positive()),
 });
 
 export type PaymentConfig = ReturnType<typeof getPaymentConfig>;
@@ -76,6 +86,8 @@ export function getPaymentConfig() {
     PAYOUT_CONTRACT_ID: process.env.PAYOUT_CONTRACT_ID,
     PAYOUT_SOURCE_ACCOUNT: process.env.PAYOUT_SOURCE_ACCOUNT,
     PAYOUT_HOT_SIGNER_SECRET: process.env.PAYOUT_HOT_SIGNER_SECRET,
+    PAYOUTS_FEE_SPONSORSHIP_ENABLED: process.env.PAYOUTS_FEE_SPONSORSHIP_ENABLED,
+    PAYOUTS_FEE_SPONSORSHIP_TTL_HOURS: process.env.PAYOUTS_FEE_SPONSORSHIP_TTL_HOURS,
   });
 
   return {
@@ -93,5 +105,8 @@ export function getPaymentConfig() {
     hotSignerSecret: parsed.PAYOUT_HOT_SIGNER_SECRET,
     networkPassphrase: stellar.networkPassphrase,
     sorobanRpcUrl: stellar.sorobanRpcUrl,
+    // Issue #1413
+    feeSponsorshipEnabled: parsed.PAYOUTS_FEE_SPONSORSHIP_ENABLED,
+    feeSponsorshipTtlHours: parsed.PAYOUTS_FEE_SPONSORSHIP_TTL_HOURS,
   };
 }

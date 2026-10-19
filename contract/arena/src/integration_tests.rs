@@ -21,7 +21,7 @@ fn compute_commitment(env: &Env, choice: Choice, salt: &BytesN<32>) -> BytesN<32
 #[test]
 fn full_game_lifecycle_commit_reveal() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let mut all_events = std::vec::Vec::new();
 
@@ -60,7 +60,7 @@ fn full_game_lifecycle_commit_reveal() {
     // 4. Deploy and initialize RWA Adapter
     let rwa_id = env.register(RwaAdapter, ());
     let rwa_client = RwaAdapterClient::new(&env, &rwa_id);
-    rwa_client.initialize(&admin, &token_id);
+    rwa_client.initialize(&admin, &token_id, &oracle_id);
     all_events.extend(env.events().all().iter());
 
     // 5. Deploy and initialize Arena Contract
@@ -95,8 +95,11 @@ fn full_game_lifecycle_commit_reveal() {
     assert_eq!(token_client.balance(&p2), 0);
     assert_eq!(token_client.balance(&p3), 0);
     assert_eq!(token_client.balance(&p4), 0);
-    // Entry fees (400 total) are held by the Arena Contract
-    assert_eq!(token_client.balance(&arena_id), 400);
+    // join_arena deposits each entry fee into the vault immediately (per-join,
+    // not batched), so the arena itself holds nothing between joins — the
+    // vault (rwa_id) receives the full 400 total instead (#1299).
+    assert_eq!(token_client.balance(&arena_id), 0);
+    assert_eq!(token_client.balance(&rwa_id), 400);
 
     // 7. Start Round 1
     let start_ts = 1000;
@@ -136,6 +139,9 @@ fn full_game_lifecycle_commit_reveal() {
     //     (eliminates majority, so p2, p3, p4 are eliminated)
     env.ledger()
         .with_mut(|li| li.timestamp = start_ts + 31_536_000);
+    // Refresh the observation timestamp so the #1512 freshness check passes
+    // after the simulated year.
+    oracle_client.set_yield_bps(&500);
     arena_client.resolve_round();
     all_events.extend(env.events().all().iter());
 
@@ -239,7 +245,7 @@ fn full_game_lifecycle_commit_reveal() {
 #[test]
 fn factory_arena_payout_full_lifecycle() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     // ── Participants ───────────────────────────────────────────────────────
     let admin      = Address::generate(&env);
@@ -271,7 +277,7 @@ fn factory_arena_payout_full_lifecycle() {
     // ── 3. Deploy and initialise RWA Adapter (vault) ───────────────────
     let rwa_id = env.register(RwaAdapter, ());
     let rwa_client = RwaAdapterClient::new(&env, &rwa_id);
-    rwa_client.initialize(&admin, &token_id);
+    rwa_client.initialize(&admin, &token_id, &oracle_id);
 
     // ── 4. Deploy and initialise Payout contract ───────────────────────
     let payout_id = env.register(PayoutContract, ());
@@ -304,8 +310,10 @@ fn factory_arena_payout_full_lifecycle() {
         min_players:      2,
         max_players:      10,
         round_duration:   3600,
+        start_deadline:   env.ledger().timestamp() + 86_400,
     };
-    let arena_addr = factory_client.create_pool(&host, &pool_cfg);
+    let metadata_hash = BytesN::from_array(&env, &[9u8; 32]);
+    let arena_addr = factory_client.create_pool(&host, &pool_cfg, &metadata_hash);
     let arena_client = ArenaContractClient::new(&env, &arena_addr);
 
     // Factory should have recorded the pool metadata.
@@ -313,6 +321,8 @@ fn factory_arena_payout_full_lifecycle() {
     assert_eq!(meta.arena_address, arena_addr);
     assert_eq!(meta.host, host);
     assert_eq!(meta.entry_fee, 100);
+    assert_eq!(meta.metadata_hash, metadata_hash);
+    assert_eq!(arena_client.get_start_deadline(), pool_cfg.start_deadline);
 
     // ── 7. Players join arena (deposits go to the vault via arena) ─────
     arena_client.join_arena(&p1);
@@ -324,8 +334,11 @@ fn factory_arena_payout_full_lifecycle() {
     assert_eq!(token_client.balance(&p1), 0);
     assert_eq!(token_client.balance(&p2), 0);
     assert_eq!(token_client.balance(&p3), 0);
-    // 300 tokens held by arena (before vault deposit routing)
-    assert_eq!(token_client.balance(&arena_addr), 300);
+    // join_arena deposits each entry fee into the vault immediately (per-join,
+    // not batched), so the arena itself holds nothing between joins — the
+    // vault (rwa_id) receives the full 300 total instead (#1299).
+    assert_eq!(token_client.balance(&arena_addr), 0);
+    assert_eq!(token_client.balance(&rwa_id), 300);
 
     // ── 8. Admin starts round 1 ────────────────────────────────────────
     let start_ts: u64 = 1_000;
@@ -355,6 +368,7 @@ fn factory_arena_payout_full_lifecycle() {
     // ── 10. Admin resolves round (oracle provides 5% yield) ────────────
     // Advance time so vault yield accrues.
     env.ledger().with_mut(|li| li.timestamp = start_ts + 31_536_000);
+    oracle_client.set_yield_bps(&500);
     arena_client.resolve_round();
 
     // Verify on-chain player states: p1 (minority) survives; p2/p3 eliminated.
@@ -389,6 +403,8 @@ fn factory_arena_payout_full_lifecycle() {
     let prize: i128 = 315;
     token_admin_client.mint(&payout_id, &prize);
 
+    // #1450: the winner must be registered as the payout destination first.
+    payout_client.register_destination(&1, &p1);
     // distribute_winnings is idempotent on payout_id; payout_id = 1.
     payout_client.distribute_winnings(&1, &p1, &prize);
 
@@ -407,4 +423,250 @@ fn factory_arena_payout_full_lifecycle() {
     // directly, but resolve_round only sets a winner when survivors == 1 and
     // we already verified the round result above.
     assert!(payout_client.is_paid(&1), "payout_id 1 must be marked paid");
+}
+
+// ── Regression: expire_arena payout completeness (#1359) ─────────────────────
+//
+// expire_arena used to transition to Finished and push entry_fee only to players
+// still `active`. Eliminated players' stakes then had no way out of the contract:
+// `claim` needs a stored_winner that expiry never set, and no sweep existed.
+// force_cancel_arena, on the same arena, refunded everyone. These tests pin that
+// the two paths now pay out equally.
+
+/// Build an arena with `n` joined players, run one round that eliminates the
+/// majority, and return the pieces needed to compare payout paths.
+fn arena_after_one_elimination_round(
+    env: &Env,
+) -> (ArenaContractClient<'static>, token::TokenClient<'static>, Address, std::vec::Vec<Address>) {
+    let admin = Address::generate(env);
+    let token_admin = Address::generate(env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+    let token_client = token::TokenClient::new(env, &token_id);
+    let mint = StellarAssetClient::new(env, &token_id);
+
+    // Five players so the round leaves TWO survivors: with one survivor the
+    // arena finishes outright and never reopens, which is not the stuck-mid-game
+    // situation expire_arena exists for.
+    let players: std::vec::Vec<Address> = (0..5).map(|_| Address::generate(env)).collect();
+    for p in &players {
+        mint.mint(p, &100);
+    }
+
+    let oracle_id = env.register(OracleContract, ());
+    OracleContractClient::new(env, &oracle_id).initialize(&admin, &0);
+
+    let rwa_id = env.register(RwaAdapter, ());
+    RwaAdapterClient::new(env, &rwa_id).initialize(&admin, &token_id, &oracle_id);
+
+    let arena_id = env.register(ArenaContract, ());
+    let arena_client = ArenaContractClient::new(env, &arena_id);
+    arena_client.initialize(
+        &admin,
+        &token_id,
+        &rwa_id,
+        &100,
+        &oracle_id,
+        &Address::generate(env),
+        &1,
+        &2,
+        &10,
+        &60,
+    );
+
+    for p in &players {
+        arena_client.join_arena(p);
+    }
+
+    // One round: players 0 and 1 pick the minority and survive; the other three
+    // are eliminated, so the arena returns to Open with more than one survivor.
+    env.ledger().with_mut(|li| li.timestamp = 1000);
+    arena_client.start_round(&3600);
+
+    let salts: std::vec::Vec<BytesN<32>> = (0..5)
+        .map(|i| BytesN::from_array(env, &[i as u8 + 1; 32]))
+        .collect();
+    let choices = [
+        Choice::Tails,
+        Choice::Tails,
+        Choice::Heads,
+        Choice::Heads,
+        Choice::Heads,
+    ];
+
+    for i in 0..5 {
+        arena_client.submit_commitment(&players[i], &compute_commitment(env, choices[i], &salts[i]));
+    }
+    env.ledger().with_mut(|li| li.timestamp = 1000 + 3601);
+    for i in 0..5 {
+        arena_client.reveal_choice(&players[i], &choices[i], &salts[i]);
+    }
+    OracleContractClient::new(env, &oracle_id).set_yield_bps(&0);
+    arena_client.resolve_round();
+
+    (arena_client, token_client, arena_id, players)
+}
+
+#[test]
+fn expire_arena_lets_every_joined_player_reclaim_their_stake() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+
+    let (arena_client, token_client, _arena_id, players) = arena_after_one_elimination_round(&env);
+
+    // Another round is under way and nobody resolves it — the arena is stuck.
+    arena_client.start_round(&3600);
+    env.ledger().with_mut(|li| li.timestamp = 1000 + 3601 + 3601);
+    arena_client.expire_arena();
+
+    for p in &players {
+        assert!(
+            arena_client.try_claim_refund(p).is_ok(),
+            "every joined player must be refundable after expiry, eliminated or not",
+        );
+        assert_eq!(
+            token_client.balance(p),
+            100,
+            "each player should have their entry fee back",
+        );
+    }
+}
+
+#[test]
+fn expire_arena_and_force_cancel_arena_pay_out_identically() {
+    // Expiry path.
+    let expire_env = Env::default();
+    expire_env.mock_all_auths_allowing_non_root_auth();
+    let (expire_client, expire_token, _, expire_players) =
+        arena_after_one_elimination_round(&expire_env);
+    expire_client.start_round(&3600);
+    expire_env.ledger().with_mut(|li| li.timestamp = 1000 + 3601 + 3601);
+    expire_client.expire_arena();
+    for p in &expire_players {
+        let _ = expire_client.try_claim_refund(p);
+    }
+    let expired_balances: std::vec::Vec<i128> =
+        expire_players.iter().map(|p| expire_token.balance(p)).collect();
+
+    // Force-cancel path, same shape of arena.
+    let cancel_env = Env::default();
+    cancel_env.mock_all_auths_allowing_non_root_auth();
+    let (cancel_client, cancel_token, _, cancel_players) =
+        arena_after_one_elimination_round(&cancel_env);
+    cancel_client.force_cancel_arena();
+    for p in &cancel_players {
+        let _ = cancel_client.try_claim_refund(p);
+    }
+    let cancelled_balances: std::vec::Vec<i128> =
+        cancel_players.iter().map(|p| cancel_token.balance(p)).collect();
+
+    assert_eq!(
+        expired_balances, cancelled_balances,
+        "expiry must pay out exactly as force-cancel does",
+    );
+}
+
+// ── Regression: zero-survivor resolve_round refundability (#1355) ───────────
+//
+// resolve_round with zero survivors transitions to Cancelled to enable
+// claim_refund, but historically never called rwa_client.withdraw_all (unlike
+// cancel_arena / expire_arena / force_cancel_arena). Because join_arena now
+// deposits each entry fee into the vault immediately (#1299/#1325), the arena's
+// own balance was ~0 at that point, so every claim_refund transfer failed and
+// all player funds were permanently locked. These tests pin that the resolution
+// path withdraws the principal back so claim_refund can pay it out.
+
+#[test]
+fn zero_survivor_resolve_round_claim_refund_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+
+    let admin = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+    let token_client = token::TokenClient::new(&env, &token_id);
+    let mint = StellarAssetClient::new(&env, &token_id);
+
+    // Two players who both go AFK (never commit or reveal) → zero survivors.
+    let p1 = Address::generate(&env);
+    let p2 = Address::generate(&env);
+    for p in [&p1, &p2] {
+        mint.mint(p, &100);
+    }
+
+    let oracle_id = env.register(OracleContract, ());
+    OracleContractClient::new(&env, &oracle_id).initialize(&admin, &0);
+
+    let rwa_id = env.register(RwaAdapter, ());
+    RwaAdapterClient::new(&env, &rwa_id).initialize(&admin, &token_id, &oracle_id);
+
+    let arena_id = env.register(ArenaContract, ());
+    let arena_client = ArenaContractClient::new(&env, &arena_id);
+    arena_client.initialize(
+        &admin,
+        &token_id,
+        &rwa_id,
+        &100,
+        &oracle_id,
+        &Address::generate(&env),
+        &1,
+        &2,
+        &10,
+        &60,
+    );
+
+    arena_client.join_arena(&p1);
+    arena_client.join_arena(&p2);
+
+    // Entry fees go straight into the vault; the arena keeps nothing (#1299).
+    assert_eq!(token_client.balance(&arena_id), 0);
+    assert_eq!(token_client.balance(&rwa_id), 200);
+
+    // Start a round and advance well past the deadline with no reveals.
+    env.ledger().with_mut(|li| li.timestamp = 1000);
+    arena_client.start_round(&3600);
+    env.ledger().with_mut(|li| li.timestamp = 1000 + 3601);
+
+    OracleContractClient::new(&env, &oracle_id).set_yield_bps(&0);
+    arena_client.resolve_round();
+
+    // Zero survivors → Cancelled, and resolve_round must have withdrawn the
+    // principal back from the vault so claim_refund can transfer it out.
+    assert_eq!(token_client.balance(&rwa_id), 0);
+    assert_eq!(token_client.balance(&arena_id), 200);
+
+    // Every joined player can claim their full entry fee.
+    for p in [&p1, &p2] {
+        assert!(
+            arena_client.try_claim_refund(p).is_ok(),
+            "claim_refund must succeed after a zero-survivor resolve_round",
+        );
+        assert_eq!(token_client.balance(p), 100);
+    }
+
+    // The arena paid out everything it withdrew; nothing stays locked.
+    assert_eq!(token_client.balance(&arena_id), 0);
+}
+
+#[test]
+fn expire_arena_does_not_strand_eliminated_players_principal() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+
+    let (arena_client, token_client, arena_id, players) = arena_after_one_elimination_round(&env);
+
+    arena_client.start_round(&3600);
+    env.ledger().with_mut(|li| li.timestamp = 1000 + 3601 + 3601);
+    arena_client.expire_arena();
+
+    for p in &players {
+        let _ = arena_client.try_claim_refund(p);
+    }
+
+    // Every player's principal (5 × 100) has left the contract. Anything still
+    // held is accrued yield, which force_cancel_arena leaves behind too.
+    let residual = token_client.balance(&arena_id);
+    assert!(
+        residual < 500,
+        "eliminated players' principal must not remain stranded (residual: {residual})",
+    );
 }

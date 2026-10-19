@@ -2,6 +2,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Modal } from '../ui/Modal';
 
+interface StakeLimitInfo {
+  currentActiveStake: number;
+  limit: number;
+  remainingCapacity: number;
+  limitExceeded: boolean;
+}
+
 interface JoinArenaModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -12,6 +19,15 @@ interface JoinArenaModalProps {
   maxPlayers: number;
   yieldGeneration: number;
   arenaStatus: 'ACTIVE' | 'INACTIVE';
+  walletBalance?: number;
+  balanceAsset?: 'USDC' | 'XLM' | 'EURC';
+  invitationCode?: string;
+}
+
+interface EligibilityError {
+  code: string;
+  message: string;
+  severity: 'error' | 'warning';
 }
 
 const JoinArenaModal: React.FC<JoinArenaModalProps> = ({
@@ -24,9 +40,14 @@ const JoinArenaModal: React.FC<JoinArenaModalProps> = ({
   maxPlayers,
   yieldGeneration,
   arenaStatus,
+  walletBalance = 0,
+  balanceAsset = 'USDC',
+  invitationCode,
 }) => {
   const [isChecked, setIsChecked] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [eligibilityErrors, setEligibilityErrors] = useState<EligibilityError[]>([]);
+  const [eligibilityWarnings, setEligibilityWarnings] = useState<string[]>([]);
   const isMountedRef = useRef(true);
 
   useEffect(() => {
@@ -34,15 +55,45 @@ const JoinArenaModal: React.FC<JoinArenaModalProps> = ({
 
     if (isOpen) {
       setIsChecked(false);
+      checkEligibility();
     }
 
     return () => {
       isMountedRef.current = false;
     };
-  }, [isOpen]);
+  }, [isOpen, walletBalance, balanceAsset, invitationCode]);
+
+  const checkEligibility = async () => {
+    try {
+      const response = await fetch(`/api/arenas/${arenaId}/eligibility-preflight`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          balance: walletBalance,
+          balanceAsset,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        if (isMountedRef.current) {
+          setEligibilityErrors(data.errors || []);
+          setEligibilityWarnings(data.warnings || []);
+        }
+      } else {
+        if (isMountedRef.current) {
+          setEligibilityErrors([]);
+          const data = await response.json();
+          setEligibilityWarnings(data.warnings || []);
+        }
+      }
+    } catch (error) {
+      console.error('Eligibility check failed:', error);
+    }
+  };
 
   const handleConfirm = async () => {
-    if (!isChecked) return;
+    if (!isChecked || eligibilityErrors.length > 0) return;
     setIsLoading(true);
     try {
       await onConfirm();
@@ -52,6 +103,17 @@ const JoinArenaModal: React.FC<JoinArenaModalProps> = ({
       }
     }
   };
+
+  /**
+   * The one definition of "this join may proceed".
+   *
+   * Previously this existed alongside an inline duplicate on the button, and
+   * the two had drifted — the inline copy omitted the eligibility check. A
+   * condition stated twice is a condition that will eventually be trusted in
+   * the place that forgot it, so it is stated once here and read from both the
+   * `disabled` attribute and the styling.
+   */
+  const canConfirm = isChecked && !isLoading && eligibilityErrors.length === 0;
 
   return (
     <Modal isOpen={isOpen} onClose={onClose}>
@@ -97,6 +159,30 @@ const JoinArenaModal: React.FC<JoinArenaModalProps> = ({
           </div>
         </div>
 
+        {/* Eligibility Errors */}
+        {eligibilityErrors.length > 0 && (
+          <div className="border-b-4 border-red-500 px-6 md:px-8 py-4 bg-red-50">
+            <p className="text-xs font-bold tracking-widest text-red-700 mb-2">ELIGIBILITY ISSUES</p>
+            {eligibilityErrors.map((error, idx) => (
+              <p key={idx} className="text-sm text-red-600 mb-1">
+                • {error.message}
+              </p>
+            ))}
+          </div>
+        )}
+
+        {/* Eligibility Warnings */}
+        {eligibilityWarnings.length > 0 && (
+          <div className="border-b-4 border-yellow-500 px-6 md:px-8 py-4 bg-yellow-50">
+            <p className="text-xs font-bold tracking-widest text-yellow-700 mb-2">WARNINGS</p>
+            {eligibilityWarnings.map((warning, idx) => (
+              <p key={idx} className="text-sm text-yellow-600 mb-1">
+                ⚠ {warning}
+              </p>
+            ))}
+          </div>
+        )}
+
         {/* Agreement Checkbox */}
         <div className="px-6 md:px-8 py-6">
           <label className="flex items-center gap-2 cursor-pointer">
@@ -104,7 +190,8 @@ const JoinArenaModal: React.FC<JoinArenaModalProps> = ({
               type="checkbox"
               checked={isChecked}
               onChange={(e) => setIsChecked(e.target.checked)}
-              className="mt-1 w-6 h-6 border-2 border-black cursor-pointer accent-black"
+              disabled={eligibilityErrors.length > 0}
+              className="mt-1 w-6 h-6 border-2 border-black cursor-pointer accent-black disabled:opacity-50"
             />
             <span className="text-md md:text-lg italic font-bold leading-tight">
               I UNDERSTAND THAT MINORITY WINS.
@@ -116,14 +203,14 @@ const JoinArenaModal: React.FC<JoinArenaModalProps> = ({
         <div className="space-y-4 p-6">
           <button
             onClick={handleConfirm}
-            disabled={!isChecked || isLoading}
+            disabled={!canConfirm}
             className={`w-full border-3 border-black py-4 px-6 font-black text-lg italic tracking-wide transition-all ${
-              isChecked && !isLoading
+              canConfirm
                 ? 'bg-lime-400 text-black hover:bg-lime-300 active:scale-95'
                 : 'bg-gray-200 text-gray-400 cursor-not-allowed'
             }`}
           >
-            {isLoading ? 'CONFIRMING...' : 'CONFIRM ENTRY'}
+            {isLoading ? 'CONFIRMING...' : eligibilityErrors.length > 0 ? 'INELIGIBLE' : 'CONFIRM ENTRY'}
           </button>
 
           <button

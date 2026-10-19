@@ -1,25 +1,32 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { z } from "zod";
 import type { Survivor } from "../types";
 
-// ── API shape returned by GET /api/leaderboard ─────────────────────
-interface ApiPlayer {
-  id: string;
-  rank: number;
-  walletAddress: string;
-  survivalStreak: number;
-  totalYield: number;
-  arenasWon: number;
-}
+// ── Zod schemas for runtime validation ─────────────────────────────
+const apiPlayerSchema = z.object({
+  id: z.string(),
+  rank: z.number(),
+  walletAddress: z.string(),
+  survivalStreak: z.number(),
+  totalYield: z.number(),
+  arenasWon: z.number(),
+});
 
+const leaderboardApiResponseSchema = z.object({
+  players: z.array(apiPlayerSchema),
+  nextCursor: z.string().nullable(),
+});
+
+// ── API shape returned by GET /api/leaderboard ─────────────────────
 export interface LeaderboardApiResponse {
-  players: ApiPlayer[];
+  players: z.infer<typeof apiPlayerSchema>[];
   nextCursor: string | null;
 }
 
 // ── Map API player → frontend Survivor ────────────────────────────
-function toSurvivor(p: ApiPlayer): Survivor {
+function toSurvivor(p: z.infer<typeof apiPlayerSchema>): Survivor {
   return {
     id: p.id,
     agentId: p.walletAddress,
@@ -57,26 +64,25 @@ export function useLeaderboard(limit = 20): UseLeaderboardReturn {
       setError(null);
 
       try {
-        const token =
-          typeof window !== "undefined"
-            ? window.localStorage.getItem("accessToken")
-            : null;
-
-        const headers: HeadersInit = { "Content-Type": "application/json" };
-        if (token) headers["Authorization"] = `Bearer ${token}`;
-
         const params = new URLSearchParams({ limit: limit.toString() });
         if (cursor) params.set("cursor", cursor);
 
         const url = `${API_BASE}/api/leaderboard?${params.toString()}`;
+        const token =
+          typeof window !== "undefined"
+            ? window.localStorage.getItem("access_token")
+            : null;
+        const headers: HeadersInit = token
+          ? { Authorization: `Bearer ${token}` }
+          : {};
         const res = await fetch(url, { headers });
 
         if (!res.ok) {
           throw new Error(`Leaderboard request failed: ${res.status}`);
         }
 
-        const data: LeaderboardApiResponse =
-          (await res.json()) as LeaderboardApiResponse;
+        const json = await res.json();
+        const data = leaderboardApiResponseSchema.parse(json);
         const newSurvivors = data.players.map(toSurvivor);
 
         if (cursor) {

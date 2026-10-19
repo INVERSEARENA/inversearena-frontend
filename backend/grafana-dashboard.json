@@ -33,6 +33,150 @@
         ]
       },
       {
+        "title": "Queue Backlog",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "inversearena_queue_backlog{queue=\"tx-confirm\"}",
+            "legendFormat": "backlog"
+          }
+        ]
+      },
+      {
+        "title": "Queue Oldest Age",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "inversearena_queue_oldest_age_seconds{queue=\"tx-confirm\"}",
+            "legendFormat": "oldest age"
+          }
+        ]
+      },
+      {
+        "title": "Queue Delayed Retries",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "inversearena_queue_delayed{queue=\"tx-confirm\"}",
+            "legendFormat": "delayed"
+          }
+        ]
+      },
+      {
+        "title": "Worker Throughput",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(inversearena_worker_jobs_success_total{queue=\"tx-confirm\"}[5m])",
+            "legendFormat": "successful jobs/s"
+          }
+        ]
+      },
+      {
+        "title": "Worker Retry Ratio",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(inversearena_worker_job_retries_total{queue=\"tx-confirm\"}[5m]) / clamp_min(rate(inversearena_worker_job_attempts_total{queue=\"tx-confirm\"}[5m]), 0.000000001)",
+            "legendFormat": "retries / attempts"
+          }
+        ]
+      },
+      {
+        "title": "Queue Saturation",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "inversearena_queue_active{queue=\"tx-confirm\"}",
+            "legendFormat": "active"
+          },
+          {
+            "expr": "inversearena_queue_capacity{queue=\"tx-confirm\"}",
+            "legendFormat": "capacity"
+          },
+          {
+            "expr": "inversearena_queue_saturation_ratio{queue=\"tx-confirm\"}",
+            "legendFormat": "saturation"
+          }
+        ]
+      },
+      {
+        "title": "Queue Snapshot Health",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "inversearena_queue_snapshot_available{queue=\"tx-confirm\"}",
+            "legendFormat": "available"
+          }
+        ]
+      },
+      {
+        "title": "Queue Refresh Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(inversearena_queue_refresh_success_total{queue=\"tx-confirm\"}[5m])",
+            "legendFormat": "success"
+          },
+          {
+            "expr": "rate(inversearena_queue_refresh_failure_total{queue=\"tx-confirm\"}[5m])",
+            "legendFormat": "failure"
+          }
+        ]
+      },
+      {
+        "title": "Queue Refresh Duration (p95)",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(inversearena_queue_refresh_duration_seconds_bucket{queue=\"tx-confirm\"}[5m]))",
+            "legendFormat": "p95"
+          }
+        ]
+      },
+      {
+        "title": "Worker Job Outcomes",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(inversearena_worker_job_attempts_total{queue=\"tx-confirm\"}[5m])",
+            "legendFormat": "attempts"
+          },
+          {
+            "expr": "rate(inversearena_worker_job_retries_total{queue=\"tx-confirm\"}[5m])",
+            "legendFormat": "retries"
+          },
+          {
+            "expr": "rate(inversearena_worker_terminal_failures_total{queue=\"tx-confirm\"}[5m])",
+            "legendFormat": "terminal failures"
+          },
+          {
+            "expr": "rate(inversearena_worker_jobs_success_total{queue=\"tx-confirm\"}[5m])",
+            "legendFormat": "success"
+          }
+        ]
+      },
+      {
+        "title": "Worker Job Processing Duration (p95)",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(inversearena_worker_job_processing_duration_seconds_bucket{queue=\"tx-confirm\"}[5m]))",
+            "legendFormat": "p95"
+          }
+        ]
+      },
+      {
+        "title": "Worker Lifecycle Events",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(inversearena_worker_lifecycle_events_total{worker=\"tx-reconciler\"}[5m])",
+            "legendFormat": "{{event}}"
+          }
+        ]
+      },
+      {
         "title": "Transaction Confirmation Rate",
         "type": "graph",
         "targets": [

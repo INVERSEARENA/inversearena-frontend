@@ -12,14 +12,33 @@ interface TransactionDetail {
     isImportant?: boolean;
 }
 
+/**
+ * Progress callbacks handed to `onConfirm` so the modal can follow a flow it
+ * does not own. Callers that both sign and submit must call `onSigned()` once
+ * the wallet has returned the signed XDR — otherwise the modal cannot tell
+ * signing apart from the on-chain confirmation wait that follows it (#1336).
+ */
+export interface TransactionProgress {
+    onSigned: () => void;
+}
+
+/** Fee sponsorship eligibility for winner claim (#1413). */
+export interface FeeSponsorshipEligibility {
+    tokenId: string;
+    status: "PENDING" | "CONSUMED" | "EXPIRED";
+    expiresAt: string;
+}
+
 interface TransactionModalProps {
     isOpen: boolean;
     onClose: () => void;
     title: string;
     description?: string;
     details: TransactionDetail[];
-    onConfirm: () => Promise<void>;
+    onConfirm: (progress: TransactionProgress) => Promise<void>;
     confirmLabel?: string;
+    /** If provided, the modal shows a fee-sponsorship badge (#1413). */
+    feeSponsorshipEligibility?: FeeSponsorshipEligibility | null;
 }
 
 export function TransactionModal({
@@ -30,6 +49,7 @@ export function TransactionModal({
     details,
     onConfirm,
     confirmLabel = "Approve Transaction",
+    feeSponsorshipEligibility,
 }: TransactionModalProps) {
     const [state, setState] = useState<TransactionState>("REVIEW");
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -48,14 +68,12 @@ export function TransactionModal({
             // Give a small delay to show state change or await actual wallet interaction
             await new Promise(r => setTimeout(r, 500));
 
-            // Call the actual confirm handler (which triggers wallet sign)
-            await onConfirm();
+            // Call the actual confirm handler (which triggers wallet sign, then
+            // submits). It reports back the moment the wallet has signed so the
+            // several-second on-chain confirmation wait no longer sits behind
+            // "Please approve the transaction in Freighter" (#1336).
+            await onConfirm({ onSigned: () => setState("SUBMITTING") });
 
-            // If we get here, we assume it's submitting or done. 
-            // The caller might handle the actual submission and state updates, but if `onConfirm` resolves, 
-            // we usually consider it submitted. 
-            // However, if onConfirm involves the whole flow including submission, it might take time.
-            // Let's assume onConfirm resolves when the txn is successfully submitted on-chain or at least sent.
             setState("SUCCESS");
         } catch (err: unknown) {
             setState("ERROR");
@@ -70,6 +88,31 @@ export function TransactionModal({
             case "REVIEW":
                 return (
                     <>
+                        {/* ── Fee sponsorship badge (#1413) ───────────────────────── */}
+                        {feeSponsorshipEligibility?.status === "PENDING" && (
+                            <div
+                                className="flex items-center gap-2 mb-4 px-3 py-2 bg-green-900/40 border border-green-500/40 text-green-400"
+                                role="status"
+                                aria-label="Fee sponsorship active"
+                            >
+                                <span className="material-symbols-outlined text-base">verified</span>
+                                <span className="text-xs font-bold uppercase tracking-widest">
+                                    Network fee sponsored — no XLM required for this claim
+                                </span>
+                            </div>
+                        )}
+                        {feeSponsorshipEligibility?.status === "EXPIRED" && (
+                            <div
+                                className="flex items-center gap-2 mb-4 px-3 py-2 bg-yellow-900/40 border border-yellow-500/40 text-yellow-400"
+                                role="alert"
+                            >
+                                <span className="material-symbols-outlined text-base">warning</span>
+                                <span className="text-xs font-bold uppercase tracking-widest">
+                                    Fee sponsorship expired — standard network fee applies
+                                </span>
+                            </div>
+                        )}
+
                         <div className="space-y-4 mb-8">
                             {details.map((detail, index) => (
                                 <div key={index} className="flex justify-between items-center border-b border-white/10 pb-2">
@@ -86,13 +129,13 @@ export function TransactionModal({
                         <div className="flex gap-4">
                             <button
                                 onClick={onClose}
-                                className="flex-1 border-2 border-white/20 py-4 font-black uppercase tracking-widest text-white hover:bg-white/10 transition-colors"
+                                className="flex-1 border-2 border-white/20 min-h-[44px] py-4 font-black uppercase tracking-widest text-white hover:bg-white/10 transition-colors"
                             >
                                 Cancel
                             </button>
                             <button
                                 onClick={handleConfirm}
-                                className="flex-1 bg-primary text-black border-2 border-black py-4 font-black uppercase tracking-widest hover:translate-y-[-2px] hover:shadow-[4px_4px_0px_0px_#fff] transition-all"
+                                className="flex-1 bg-primary text-black border-2 border-black min-h-[44px] py-4 font-black uppercase tracking-widest hover:translate-y-[-2px] hover:shadow-[4px_4px_0px_0px_#fff] transition-all"
                             >
                                 {confirmLabel}
                             </button>
@@ -139,7 +182,7 @@ export function TransactionModal({
                                 }
                             }}
                             onClick={onClose}
-                            className="w-full bg-white text-black border-2 border-black py-4 font-black uppercase tracking-widest hover:bg-slate-200 transition-colors"
+                            className="w-full bg-white text-black border-2 border-black min-h-[44px] py-4 font-black uppercase tracking-widest hover:bg-slate-200 transition-colors"
                         >
                             Close
                         </button>
@@ -161,7 +204,7 @@ export function TransactionModal({
                         <div className="flex gap-4 w-full">
                             <button
                                 onClick={onClose}
-                                className="flex-1 border-2 border-white/20 py-4 font-black uppercase tracking-widest text-white hover:bg-white/10 transition-colors"
+                                className="flex-1 border-2 border-white/20 min-h-[44px] py-4 font-black uppercase tracking-widest text-white hover:bg-white/10 transition-colors"
                             >
                                 Close
                             </button>
@@ -170,7 +213,7 @@ export function TransactionModal({
                                     setErrorMessage(null);
                                     setState("REVIEW");
                                 }}
-                                className="flex-1 bg-red-500 text-black border-2 border-black py-4 font-black uppercase tracking-widest hover:brightness-110 transition-all font-display"
+                                className="flex-1 bg-red-500 text-black border-2 border-black min-h-[44px] py-4 font-black uppercase tracking-widest hover:brightness-110 transition-all font-display"
                             >
                                 Try Again
                             </button>
@@ -191,7 +234,7 @@ export function TransactionModal({
             closeOnEscape={!isProcessing}
             className="bg-[#0F172A]! border-3 border-black rounded-none!"
         >
-            <div className="p-6 lg:p-8 font-display">
+            <div className="max-h-[90dvh] overflow-y-auto p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:p-6 lg:p-8 font-display">
                 {/* Header */}
                 <div className="mb-6">
                     <div className="flex items-center gap-3 mb-2">

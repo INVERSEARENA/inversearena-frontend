@@ -280,16 +280,9 @@ Sensitive write endpoints are protected with a Redis-backed limiter (`rate-limit
 ### Protected Endpoints
 
 - `POST /auth/nonce`
-- `POST /pools`
 
-### POST /pools Validation
-
-Request body accepts optional fields:
-
-- `name`: optional string, trimmed, maximum `256` characters
-- `walletAddress`: optional Stellar public key, format `^G[A-Z2-7]{55}$`
-
-Invalid payloads return HTTP `400` with an `issues` array describing validation failures.
+Pool creation is served by the backend API (`POST /api/pools`) and is rate
+limited there.
 
 ### On Limit Violation
 
@@ -330,6 +323,3 @@ Environment variables:
 - `RATE_LIMIT_NONCE_PREFIX` (default: `rl:auth:nonce`)
 - `RATE_LIMIT_NONCE_POINTS` (default: `5`)
 - `RATE_LIMIT_NONCE_WINDOW_SECONDS` (default: `60`)
-- `RATE_LIMIT_POOLS_PREFIX` (default: `rl:pools:create`)
-- `RATE_LIMIT_POOLS_POINTS` (default: `3`)
-- `RATE_LIMIT_POOLS_WINDOW_SECONDS` (default: `60`)

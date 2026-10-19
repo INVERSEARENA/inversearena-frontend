@@ -15,8 +15,10 @@ import { GlobalIntelTicker } from "@/features/dashboard-home/components/GlobalIn
 import { RecentGames } from "@/features/dashboard-home/components/RecentGames";
 import { Announcements } from "@/features/dashboard-home/components/Announcements";
 import { MetricsPanel } from "@/features/dashboard-home/components/MetricsPanel";
+import { ClaimInboxPanel } from "@/features/claim-inbox/components/ClaimInboxPanel";
 import { PoolCreationModal } from "@/components/modals/PoolCreationModal";
 import StakeModal from "@/components/modals/StakeModal";
+import { PayoutTimeline } from "@/app/dashboard/payouts/PayoutTimeline";
 import { GlobalTelemetryBar } from "@/app/dashboard/telemetry-bar/page";
 
 import {
@@ -42,10 +44,12 @@ function DashboardHomeView() {
   const [isStakeModalOpen, setIsStakeModalOpen] = useState(false);
   const [isPoolModalOpen, setIsPoolModalOpen] = useState(false);
   const [hasStaked, setHasStaked] = useState(false);
+  const [timelineTransactionId, setTimelineTransactionId] = useState<string | null>(null);
 
   useEffect(() => {
     const stored = typeof window !== "undefined" && localStorage.getItem(HAS_STAKED_KEY);
     setHasStaked(stored === "true");
+    setTimelineTransactionId(new URLSearchParams(window.location.search).get("payoutTransactionId"));
   }, []);
 
   const handleCreateArenaClick = () => {
@@ -94,6 +98,13 @@ function DashboardHomeView() {
       </div>
 
       <GlobalIntelTicker items={globalIntelItems} />
+      {timelineTransactionId && <PayoutTimeline transactionId={timelineTransactionId} />}
+
+      {/* Full width: the inbox is a list, and it is the one panel whose rows
+          carry a per-item state the user has to be able to read at a glance. */}
+      <div className="grid grid-cols-1 gap-6">
+        <ClaimInboxPanel />
+      </div>
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
         <RecentGames games={recentGames} />

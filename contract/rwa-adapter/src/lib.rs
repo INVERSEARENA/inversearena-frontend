@@ -1,15 +1,16 @@
 #![no_std]
 use soroban_sdk::{Address, Env, contract, contractimpl, token};
 
-const YIELD_BPS_PER_YEAR: i128 = 500;
 const SECONDS_PER_YEAR: u64 = 31_536_000;
+const INDEX_SCALE: i128 = 1_000_000_000_000_000_000;
 
+mod oracle;
 mod storage;
 mod types;
 
 use storage::RwaStorage;
 use types::PendingAdmin;
-use types::RwaConfig;
+use types::{RwaConfig, YieldIndex};
 pub use types::RwaError;
 
 #[contract]
@@ -17,7 +18,12 @@ pub struct RwaAdapter;
 
 #[contractimpl]
 impl RwaAdapter {
-    pub fn initialize(env: Env, admin: Address, stake_token: Address) -> Result<(), RwaError> {
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        stake_token: Address,
+        oracle: Address,
+    ) -> Result<(), RwaError> {
         admin.require_auth();
         if RwaStorage::assert_initialized(&env).is_ok() {
             return Err(RwaError::AlreadyInitialized);
@@ -25,9 +31,15 @@ impl RwaAdapter {
         let config = RwaConfig {
             admin,
             stake_token,
+            oracle,
             total_deposited: 0,
         };
         RwaStorage::save_config(&env, &config);
+        RwaStorage::save_yield_index(&env, &YieldIndex {
+            value: INDEX_SCALE,
+            last_updated: env.ledger().timestamp(),
+            rate_bps: oracle::fetch_yield_bps(&env, &config.oracle),
+        });
         RwaStorage::set_initialized(&env);
         env.events()
             .publish((soroban_sdk::symbol_short!("init"),), ());
@@ -40,16 +52,23 @@ impl RwaAdapter {
             return Err(RwaError::InvalidAmount);
         }
         let config = RwaStorage::load_config(&env)?;
+        let index = Self::accrue_index(&env, &config)?;
 
         let mut pos = RwaStorage::load_position(&env, &from);
-        pos.principal = pos
-            .principal
-            .checked_add(amount)
+        let shares = amount.checked_mul(INDEX_SCALE)
+            .and_then(|v| v.checked_div(index.value))
             .ok_or(RwaError::ArithmeticOverflow)?;
-        // Set deposit timestamp only if this is the first deposit (principal was 0)
-        if pos.principal == amount {
+        pos.principal = pos.principal
+            .checked_add(shares)
+            .ok_or(RwaError::ArithmeticOverflow)?;
+        // Fresh position (principal was 0): reset the deposit timestamp and clear
+        // the withdrawn flag, otherwise a re-deposit after a full withdrawal would
+        // permanently fail withdraw_all()'s AlreadyWithdrawn check (#1356, #1357).
+        if pos.principal == shares {
             pos.deposited_at = env.ledger().timestamp();
+            pos.withdrawn = false;
         }
+        pos.index_entry = INDEX_SCALE;
         RwaStorage::save_position(&env, &from, &pos);
 
         let mut cfg = config;
@@ -58,6 +77,14 @@ impl RwaAdapter {
             .checked_add(amount)
             .ok_or(RwaError::ArithmeticOverflow)?;
         RwaStorage::save_config(&env, &cfg);
+
+        // Transfer tokens from the depositor into this vault contract.
+        // This was previously missing, leaving the vault empty and making
+        // every subsequent withdraw_all() payout bounded by the vault's near-zero
+        // balance rather than the actual staked amount (#1299).
+        let token_client = token::TokenClient::new(&env, &cfg.stake_token);
+        let contract_addr = env.current_contract_address();
+        token_client.transfer(&from, &contract_addr, &amount);
 
         env.events().publish(
             (soroban_sdk::symbol_short!("dep"), from.clone(), amount),
@@ -69,6 +96,7 @@ impl RwaAdapter {
     pub fn withdraw_all(env: Env, from: Address) -> Result<i128, RwaError> {
         from.require_auth();
         let config = RwaStorage::load_config(&env)?;
+        let index = Self::accrue_index(&env, &config)?;
 
         let pos = RwaStorage::load_position(&env, &from);
         if pos.principal == 0 {
@@ -78,20 +106,7 @@ impl RwaAdapter {
             return Err(RwaError::AlreadyWithdrawn);
         }
 
-        let base_yield = pos
-            .principal
-            .checked_mul(YIELD_BPS_PER_YEAR)
-            .and_then(|v| v.checked_div(10000))
-            .ok_or(RwaError::ArithmeticOverflow)?;
-        let elapsed = env.ledger().timestamp().saturating_sub(pos.deposited_at);
-        let yield_amount = base_yield
-            .checked_mul(elapsed as i128)
-            .and_then(|y| y.checked_div(SECONDS_PER_YEAR as i128))
-            .unwrap_or(0);
-        let total = pos
-            .principal
-            .checked_add(yield_amount)
-            .ok_or(RwaError::ArithmeticOverflow)?;
+        let total = Self::position_value(&pos, index.value)?;
 
         let mut updated = pos;
         updated.principal = 0;
@@ -100,7 +115,7 @@ impl RwaAdapter {
 
         // Decrement the global counter so get_total_deposited() reflects net deposits.
         let mut cfg = config;
-        cfg.total_deposited = cfg.total_deposited.saturating_sub(pos.principal);
+        cfg.total_deposited = cfg.total_deposited.saturating_sub(total);
         RwaStorage::save_config(&env, &cfg);
 
         let token_client = token::TokenClient::new(&env, &cfg.stake_token);
@@ -121,7 +136,102 @@ impl RwaAdapter {
                 soroban_sdk::symbol_short!("wdraw"),
                 from.clone(),
                 payable,
-                payable - pos.principal,
+                payable.saturating_sub(pos.principal),
+            ),
+            cfg.total_deposited,
+        );
+
+        Ok(payable)
+    }
+
+    /// Withdraw `amount` tokens from `from`'s position, leaving the remainder
+    /// (including any accrued yield) in place.
+    ///
+    /// The arena uses this to refund a single player's entry fee out of the
+    /// pooled arena position without unwinding the whole position (#1580,
+    /// #1581). Yield accrued on the withdrawn principal is forfeited to the
+    /// remaining pool: the number of principal shares burned is rounded up so
+    /// the caller can never receive more value than the shares removed.
+    ///
+    /// The payout is capped by the vault's actual token balance, exactly like
+    /// `withdraw_all`; a shortfall is surfaced with the `short` event and the
+    /// returned value is what was actually paid.
+    pub fn withdraw(env: Env, from: Address, amount: i128) -> Result<i128, RwaError> {
+        from.require_auth();
+        if amount <= 0 {
+            return Err(RwaError::InvalidAmount);
+        }
+        let config = RwaStorage::load_config(&env)?;
+        let index = Self::accrue_index(&env, &config)?;
+
+        let pos = RwaStorage::load_position(&env, &from);
+        if pos.principal == 0 {
+            return Err(RwaError::NoDeposit);
+        }
+        if pos.withdrawn {
+            return Err(RwaError::AlreadyWithdrawn);
+        }
+
+        let value = Self::position_value(&pos, index.value)?;
+        if amount > value {
+            return Err(RwaError::InsufficientBalance);
+        }
+
+        let token_client = token::TokenClient::new(&env, &config.stake_token);
+        let contract_addr = env.current_contract_address();
+        let balance = token_client.balance(&contract_addr);
+        let payable = if amount > balance { balance } else { amount };
+        if payable <= 0 {
+            return Err(RwaError::InsufficientBalance);
+        }
+
+        let entry = if pos.index_entry == 0 {
+            INDEX_SCALE
+        } else {
+            pos.index_entry
+        };
+        // Burn the shares backing `payable`, rounding up so the position is
+        // never left holding more value than the tokens it was paid.
+        let burn = if payable >= value {
+            pos.principal
+        } else {
+            let numerator = payable
+                .checked_mul(entry)
+                .ok_or(RwaError::ArithmeticOverflow)?;
+            let rounded_up = numerator
+                .checked_add(index.value.checked_sub(1).ok_or(RwaError::ArithmeticOverflow)?)
+                .ok_or(RwaError::ArithmeticOverflow)?
+                .checked_div(index.value)
+                .ok_or(RwaError::ArithmeticOverflow)?;
+            core::cmp::min(rounded_up, pos.principal)
+        };
+
+        let mut updated = pos;
+        updated.principal = pos.principal.saturating_sub(burn);
+        if updated.principal == 0 {
+            updated.withdrawn = true;
+        }
+        RwaStorage::save_position(&env, &from, &updated);
+
+        let mut cfg = config;
+        cfg.total_deposited = cfg.total_deposited.saturating_sub(payable);
+        RwaStorage::save_config(&env, &cfg);
+
+        token_client.transfer(&contract_addr, &from, &payable);
+
+        if amount > balance {
+            env.events().publish(
+                (soroban_sdk::symbol_short!("short"), from.clone()),
+                (amount, balance),
+            );
+        }
+
+        env.events().publish(
+            (
+                soroban_sdk::symbol_short!("wdraw"),
+                from.clone(),
+                payable,
+                0i128,
             ),
             cfg.total_deposited,
         );
@@ -131,22 +241,14 @@ impl RwaAdapter {
 
     pub fn balance_of(env: Env, user: Address) -> i128 {
         RwaStorage::load_config(&env)
-            .map(|_| {
+            .map(|config| {
                 let pos = RwaStorage::load_position(&env, &user);
                 if pos.withdrawn {
                     0
                 } else {
-                    let base_yield = pos
-                        .principal
-                        .checked_mul(YIELD_BPS_PER_YEAR)
-                        .and_then(|y| y.checked_div(10000))
-                        .unwrap_or(0);
-                    let elapsed = env.ledger().timestamp().saturating_sub(pos.deposited_at);
-                    let accrued = base_yield
-                        .checked_mul(elapsed as i128)
-                        .and_then(|y| y.checked_div(SECONDS_PER_YEAR as i128))
-                        .unwrap_or(0);
-                    pos.principal.checked_add(accrued).unwrap_or(0)
+                    Self::accrue_index(&env, &config)
+                        .and_then(|index| Self::position_value(&pos, index.value))
+                        .unwrap_or(0)
                 }
             })
             .unwrap_or(0)
@@ -156,6 +258,15 @@ impl RwaAdapter {
         RwaStorage::load_config(&env)
             .map(|c| c.total_deposited)
             .unwrap_or(0)
+    }
+
+    /// Checkpoint the index using the previous rate, then begin applying the
+    /// oracle's current rate from this ledger onward.
+    pub fn sync(env: Env) -> Result<(), RwaError> {
+        let config = RwaStorage::load_config(&env)?;
+        let index = Self::accrue_index(&env, &config)?;
+        env.events().publish((soroban_sdk::symbol_short!("sync"),), index.value);
+        Ok(())
     }
 
     /// Propose a new admin. The current admin must authorize the proposal.
@@ -192,6 +303,34 @@ impl RwaAdapter {
             .publish((soroban_sdk::symbol_short!("upgrade"),), new_wasm_hash);
         Ok(())
     }
+
+    fn accrue_index(env: &Env, config: &RwaConfig) -> Result<YieldIndex, RwaError> {
+        let now = env.ledger().timestamp();
+        let mut index = RwaStorage::load_yield_index(env).unwrap_or(YieldIndex {
+            value: INDEX_SCALE, last_updated: now,
+            rate_bps: oracle::fetch_yield_bps(env, &config.oracle),
+        });
+        let elapsed = now.saturating_sub(index.last_updated) as i128;
+        if elapsed > 0 {
+            let gain = (index.rate_bps as i128).checked_mul(elapsed)
+                .and_then(|v| v.checked_mul(INDEX_SCALE))
+                .and_then(|v| v.checked_div(10_000))
+                .and_then(|v| v.checked_div(SECONDS_PER_YEAR as i128))
+                .ok_or(RwaError::ArithmeticOverflow)?;
+            index.value = index.value.checked_add(gain).ok_or(RwaError::ArithmeticOverflow)?;
+        }
+        index.last_updated = now;
+        index.rate_bps = oracle::fetch_yield_bps(env, &config.oracle);
+        RwaStorage::save_yield_index(env, &index);
+        Ok(index)
+    }
+
+    fn position_value(pos: &types::YieldAccrual, index: i128) -> Result<i128, RwaError> {
+        if pos.principal == 0 || pos.withdrawn { return Ok(0); }
+        let entry = if pos.index_entry == 0 { INDEX_SCALE } else { pos.index_entry };
+        pos.principal.checked_mul(index).and_then(|v| v.checked_div(entry))
+            .ok_or(RwaError::ArithmeticOverflow)
+    }
 }
 
 #[cfg(test)]
@@ -205,7 +344,15 @@ mod test {
         token::StellarAssetClient,
     };
 
-    // ── helpers ───────────────────────────────────────────────────────────────
+    #[contract]
+    struct MockOracle;
+
+    #[contractimpl]
+    impl MockOracle {
+        pub fn get_current_yield_bps(_env: Env) -> u32 {
+            500
+        }
+    }
 
     /// Register the RwaAdapter and wire up a SAC token, writing config directly
     /// into storage so tests can control auth independently of `initialize`.
@@ -215,12 +362,14 @@ mod test {
         let token_id = env
             .register_stellar_asset_contract_v2(token_admin)
             .address();
+        let oracle_id = env.register(MockOracle, ());
         let admin = Address::generate(env);
 
         env.as_contract(&contract_id, || {
             let config = RwaConfig {
                 admin: admin.clone(),
                 stake_token: token_id.clone(),
+                oracle: oracle_id,
                 total_deposited: 0,
             };
             RwaStorage::save_config(env, &config);
@@ -250,8 +399,11 @@ mod test {
     fn deposit_with_auth_succeeds() {
         let env = Env::default();
         env.mock_all_auths();
-        let (client, _, _) = setup(&env);
+        let (client, token_id, _) = setup(&env);
         let from = Address::generate(&env);
+
+        // Pre-fund the depositor so the real token transfer in deposit() succeeds.
+        StellarAssetClient::new(&env, &token_id).mint(&from, &100);
 
         client.deposit(&from, &100);
 
@@ -264,8 +416,11 @@ mod test {
     fn balance_of_accrues_over_time() {
         let env = Env::default();
         env.mock_all_auths();
-        let (client, _, _) = setup(&env);
+        let (client, token_id, _) = setup(&env);
         let from = Address::generate(&env);
+
+        // Pre-fund the depositor so the real token transfer in deposit() succeeds.
+        StellarAssetClient::new(&env, &token_id).mint(&from, &100);
 
         client.deposit(&from, &100);
         assert_eq!(client.balance_of(&from), 100);
@@ -298,6 +453,7 @@ mod test {
                     principal: 100,
                     withdrawn: false,
                     deposited_at: 0,
+                    index_entry: INDEX_SCALE,
                 },
             );
         });
@@ -316,14 +472,19 @@ mod test {
         let alice = Address::generate(&env);
         let bob = Address::generate(&env);
 
+        // Pre-fund depositors; deposit() will transfer their tokens into the vault.
+        StellarAssetClient::new(&env, &token_id).mint(&alice, &1_000);
+        StellarAssetClient::new(&env, &token_id).mint(&bob, &500);
+
         client.deposit(&alice, &1_000);
         client.deposit(&bob, &500);
         assert_eq!(client.get_total_deposited(), 1_500);
 
-        // Fund the contract so both withdrawals can succeed.
-        let payout_alice: i128 = 1_050; // 1000 + 5%
-        let payout_bob: i128 = 525; // 500 + 5%
-        StellarAssetClient::new(&env, &token_id).mint(&contract_id, &(payout_alice + payout_bob));
+        // The vault already holds 1_500 from deposits.  Mint only the yield portion
+        // so withdrawals succeed (no timestamp advance so yield = 0, nothing extra needed).
+        // Mint a small buffer to cover any rounding if a future timestamp is set.
+        let yield_buffer: i128 = 100;
+        StellarAssetClient::new(&env, &token_id).mint(&contract_id, &yield_buffer);
 
         client.withdraw_all(&alice);
         assert_eq!(
@@ -348,7 +509,10 @@ mod test {
         let (client, token_id, contract_id) = setup(&env);
         let from = Address::generate(&env);
 
-        // Deposit 1000 tokens worth of position.
+        // Pre-fund the depositor; deposit() transfers 1000 tokens into the vault.
+        StellarAssetClient::new(&env, &token_id).mint(&from, &1_000);
+
+        // Deposit 1000 tokens — vault now holds 1000.
         client.deposit(&from, &1_000);
 
         let mut ledger = env.ledger().get();
@@ -358,8 +522,10 @@ mod test {
         // Expected payout: 1000 principal + 5% yield = 1050.
         let expected: i128 = 1_050;
 
-        // Fund the contract so the token transfer in withdraw_all can succeed.
-        StellarAssetClient::new(&env, &token_id).mint(&contract_id, &expected);
+        // The vault already holds 1000 from the deposit.  Only mint the 50-token
+        // yield portion so the balance equals the full expected payout.
+        let yield_amount: i128 = 50;
+        StellarAssetClient::new(&env, &token_id).mint(&contract_id, &yield_amount);
 
         let returned = client.withdraw_all(&from);
         assert_eq!(returned, expected);
@@ -382,10 +548,13 @@ mod test {
         let admin = Address::generate(&env);
         let new_admin = Address::generate(&env);
 
+        let oracle_id = env.register(MockOracle, ());
+
         env.as_contract(&contract_id, || {
             let config = RwaConfig {
                 admin: admin.clone(),
                 stake_token: token_id.clone(),
+                oracle: oracle_id,
                 total_deposited: 0,
             };
             RwaStorage::save_config(&env, &config);
@@ -414,10 +583,13 @@ mod test {
         let admin = Address::generate(&env);
         let new_admin = Address::generate(&env);
 
+        let oracle_id = env.register(MockOracle, ());
+
         env.as_contract(&contract_id, || {
             let config = RwaConfig {
                 admin: admin.clone(),
                 stake_token: token_id.clone(),
+                oracle: oracle_id,
                 total_deposited: 0,
             };
             RwaStorage::save_config(&env, &config);
@@ -445,10 +617,13 @@ mod test {
             .address();
         let admin = Address::generate(&env);
 
+        let oracle_id = env.register(MockOracle, ());
+
         env.as_contract(&contract_id, || {
             let config = RwaConfig {
                 admin: admin.clone(),
                 stake_token: token_id.clone(),
+                oracle: oracle_id,
                 total_deposited: 0,
             };
             RwaStorage::save_config(&env, &config);
@@ -470,8 +645,11 @@ mod test {
     fn withdraw_all_emits_shortfall_when_insufficient_balance() {
         let env = Env::default();
         env.mock_all_auths();
-        let (client, token_id, contract_id) = setup(&env);
+        let (client, token_id, _contract_id) = setup(&env);
         let from = Address::generate(&env);
+
+        // Pre-fund the depositor; deposit() moves 1000 tokens into the vault.
+        StellarAssetClient::new(&env, &token_id).mint(&from, &1_000);
 
         client.deposit(&from, &1_000);
 
@@ -480,11 +658,11 @@ mod test {
         env.ledger().set(ledger);
 
         // Expected payout: 1050 (1000 principal + 5% yield).
-        // Fund only 800 — shortfall of 250.
-        StellarAssetClient::new(&env, &token_id).mint(&contract_id, &800);
-
+        // The vault holds exactly 1000 from the deposit.  Do NOT mint extra tokens
+        // so that the vault cannot cover the 50-token yield — triggering a shortfall.
+        // Vault balance = 1000, payable = min(1050, 1000) = 1000; shortfall of 50.
         let returned = client.withdraw_all(&from);
-        assert_eq!(returned, 800, "should cap at available balance");
+        assert_eq!(returned, 1_000, "should cap at available vault balance");
         assert_eq!(client.balance_of(&from), 0);
 
         // Verify a `short` event was emitted.
@@ -519,6 +697,10 @@ mod test {
         let alice = Address::generate(&env);
         let bob = Address::generate(&env);
 
+        // Pre-fund depositors; deposit() moves their tokens into the vault.
+        StellarAssetClient::new(&env, &token_id).mint(&alice, &1_000);
+        StellarAssetClient::new(&env, &token_id).mint(&bob, &2_000);
+
         // Alice deposits 1000 tokens.
         client.deposit(&alice, &1_000);
 
@@ -544,13 +726,12 @@ mod test {
         let _alice_balance = client.balance_of(&alice);
         let _bob_balance = client.balance_of(&bob);
 
-        // Fund the contract with the expected legitimate payouts.
+        // The vault already holds 3000 from the two deposits (principal only).
         // Alice's yield over 365 seconds:
         //   (1_000 × 500 / 10_000) × (365 / 31_536_000) ≈ 0.0005784 tokens (rounds down to 0)
-        // So alice should get back ~1000.
-        // Bob's yield is 0 (just deposited), so bob should get back exactly 2000.
-        let legitimate_payout = 1_000 + 2_000; // principal only, negligible yield
-        StellarAssetClient::new(&env, &token_id).mint(&contract_id, &(legitimate_payout + 100));
+        // So alice should get back ~1000.  Bob's yield is 0 (just deposited).
+        // Mint a small buffer (100) to cover any rounding on yield.
+        StellarAssetClient::new(&env, &token_id).mint(&contract_id, &100);
 
         // Withdrawals should succeed and return approximately principal-only amounts.
         let alice_withdrawn = client.withdraw_all(&alice);
@@ -563,10 +744,225 @@ mod test {
             "alice's yield must be tiny; got {}",
             alice_withdrawn
         );
-        assert_eq!(bob_withdrawn, 2_000, "bob's yield must be zero; got {}", bob_withdrawn);
+        // Share conversion floors on deposit, so bob may recover one unit less
+        // than his principal; what matters is that he earns no yield.
+        assert!(
+            (1_999..=2_000).contains(&bob_withdrawn),
+            "bob's yield must be zero; got {}",
+            bob_withdrawn
+        );
         assert!(
             alice_withdrawn + bob_withdrawn <= 3_100,
             "total payout must not exceed ~3000 + minimal yield"
+        );
+    }
+
+    // ── Regression test: deposit() must move tokens on-chain (#1299) ──────────
+
+    /// REGRESSION TEST for #1299: deposit() was only updating bookkeeping without
+    /// calling token_client.transfer(), so the vault's on-chain balance stayed
+    /// at zero regardless of how many deposits were recorded.
+    ///
+    /// This test verifies that after a deposit the vault's actual token balance
+    /// matches the deposited amount, and that withdraw_all() can pay out from
+    /// those real tokens without requiring any extra minting.
+    #[test]
+    fn deposit_transfers_tokens_into_vault_regression_1299() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, token_id, contract_id) = setup(&env);
+        let depositor = Address::generate(&env);
+
+        // Mint tokens to the depositor (simulates the arena transferring funds).
+        let deposit_amount: i128 = 5_000;
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &deposit_amount);
+
+        let token_client = token::TokenClient::new(&env, &token_id);
+
+        // Before deposit: vault holds 0 tokens.
+        assert_eq!(
+            token_client.balance(&contract_id),
+            0,
+            "vault must start empty"
+        );
+
+        client.deposit(&depositor, &deposit_amount);
+
+        // After deposit: vault must hold exactly the deposited amount.
+        assert_eq!(
+            token_client.balance(&contract_id),
+            deposit_amount,
+            "vault balance must equal deposited amount (#1299 regression)"
+        );
+
+        // Depositor's wallet must be drained by the deposit.
+        assert_eq!(
+            token_client.balance(&depositor),
+            0,
+            "depositor must have no tokens remaining after deposit"
+        );
+
+        // Bookkeeping must also reflect the deposit.
+        assert_eq!(client.get_total_deposited(), deposit_amount);
+        assert_eq!(client.balance_of(&depositor), deposit_amount);
+
+        // Now withdraw_all() must succeed using the real vault balance
+        // (no additional minting needed — the tokens are already in the vault).
+        let withdrawn = client.withdraw_all(&depositor);
+        assert_eq!(
+            withdrawn,
+            deposit_amount,
+            "withdraw_all must pay out from the real vault balance"
+        );
+
+        // Vault must be empty after withdrawal (yield is 0; no time elapsed).
+        assert_eq!(
+            token_client.balance(&contract_id),
+            0,
+            "vault must be empty after full withdrawal"
+        );
+    }
+
+    // ── Regression test: withdrawn flag must reset on re-deposit (#1356, #1357) ──
+
+    /// REGRESSION TEST: deposit() must clear `withdrawn` back to false when
+    /// starting a fresh position (principal was 0).
+    ///
+    /// The original bug: withdraw_all() sets `withdrawn = true` unconditionally
+    /// on a successful withdrawal, but deposit()'s "fresh position" branch only
+    /// reset `deposited_at`, never `withdrawn`. So a second deposit after a full
+    /// withdrawal would succeed (real tokens transferred in), but the following
+    /// withdraw_all() would hit the `AlreadyWithdrawn` check — which runs before
+    /// the principal check — forever, stranding the newly-deposited tokens.
+    #[test]
+    fn deposit_after_full_withdrawal_can_withdraw_again() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, token_id, contract_id) = setup(&env);
+        let from = Address::generate(&env);
+
+        StellarAssetClient::new(&env, &token_id).mint(&from, &2_000);
+
+        // First cycle: deposit then fully withdraw.
+        client.deposit(&from, &1_000);
+        let first_withdrawn = client.withdraw_all(&from);
+        assert_eq!(first_withdrawn, 1_000);
+
+        env.as_contract(&contract_id, || {
+            let pos = RwaStorage::load_position(&env, &from);
+            assert!(pos.withdrawn, "position must be marked withdrawn");
+            assert_eq!(pos.principal, 0);
+        });
+
+        // Second cycle: deposit again — this must not be permanently bricked.
+        client.deposit(&from, &1_000);
+
+        env.as_contract(&contract_id, || {
+            let pos = RwaStorage::load_position(&env, &from);
+            assert!(
+                !pos.withdrawn,
+                "withdrawn flag must be cleared on re-deposit"
+            );
+        });
+
+        // withdraw_all() must succeed again instead of failing with AlreadyWithdrawn.
+        let second_withdrawn = client.withdraw_all(&from);
+        assert_eq!(second_withdrawn, 1_000);
+
+        env.as_contract(&contract_id, || {
+            let pos = RwaStorage::load_position(&env, &from);
+            assert!(pos.withdrawn);
+            assert_eq!(pos.principal, 0);
+        });
+    }
+
+    // ── Partial withdrawal (#1580, #1581) ─────────────────────────────────────
+
+    /// A partial withdrawal pays the requested amount and leaves the rest of
+    /// the position (and its bookkeeping) intact.
+    #[test]
+    fn withdraw_partial_leaves_remainder() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, token_id, _) = setup(&env);
+        let from = Address::generate(&env);
+
+        StellarAssetClient::new(&env, &token_id).mint(&from, &1_000);
+        client.deposit(&from, &1_000);
+
+        assert_eq!(client.withdraw(&from, &400), 400);
+        assert_eq!(client.balance_of(&from), 600);
+        assert_eq!(client.get_total_deposited(), 600);
+
+        // The remainder can still be withdrawn in full.
+        assert_eq!(client.withdraw_all(&from), 600);
+        assert_eq!(client.balance_of(&from), 0);
+    }
+
+    /// A request larger than the position value is rejected rather than
+    /// silently draining the vault.
+    #[test]
+    fn withdraw_rejects_amount_above_position_value() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, token_id, _) = setup(&env);
+        let from = Address::generate(&env);
+
+        StellarAssetClient::new(&env, &token_id).mint(&from, &1_000);
+        client.deposit(&from, &1_000);
+
+        let err = client
+            .try_withdraw(&from, &2_000)
+            .expect_err("oversized withdrawal must fail")
+            .expect("error must be a contract error");
+        assert_eq!(err, RwaError::InsufficientBalance);
+    }
+
+    #[test]
+    fn withdraw_rejects_zero_and_negative_amounts() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, token_id, _) = setup(&env);
+        let from = Address::generate(&env);
+
+        StellarAssetClient::new(&env, &token_id).mint(&from, &1_000);
+        client.deposit(&from, &1_000);
+
+        let err = client
+            .try_withdraw(&from, &0)
+            .expect_err("zero withdrawal must fail")
+            .expect("error must be a contract error");
+        assert_eq!(err, RwaError::InvalidAmount);
+    }
+
+    /// Yield accrued on the withdrawn portion is forfeited to the remaining
+    /// pool: the caller never receives more than the shares they gave up.
+    #[test]
+    fn withdraw_forfeits_accrued_yield_on_withdrawn_portion() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, token_id, contract_id) = setup(&env);
+        let from = Address::generate(&env);
+
+        StellarAssetClient::new(&env, &token_id).mint(&from, &1_000);
+        client.deposit(&from, &1_000);
+
+        let mut ledger = env.ledger().get();
+        ledger.timestamp += 31_536_000;
+        env.ledger().set(ledger);
+
+        // Position is now worth 1050; fund the 50-token yield so the vault can
+        // cover payouts.
+        StellarAssetClient::new(&env, &token_id).mint(&contract_id, &50);
+
+        // Asking for exactly the principal back pays the principal only.
+        assert_eq!(client.withdraw(&from, &1_000), 1_000);
+        // Whatever remains still holds the accrued yield for the pool.
+        let remaining = client.balance_of(&from);
+        assert!(remaining > 0, "the pool must retain the accrued yield");
+        assert!(
+            remaining <= 50,
+            "the leaver must not walk away with the accrued yield"
         );
     }
 }

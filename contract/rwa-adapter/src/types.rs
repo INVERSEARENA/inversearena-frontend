@@ -12,15 +12,27 @@ pub struct PendingAdmin {
 pub struct RwaConfig {
     pub admin: Address,
     pub stake_token: Address,
+    pub oracle: Address,
     pub total_deposited: i128,
 }
 
 #[contracttype]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct YieldAccrual {
+    /// Normalized principal shares whose value is derived from YieldIndex.
     pub principal: i128,
     pub withdrawn: bool,
     pub deposited_at: u64,
+    /// Zero identifies a legacy position which is migrated lazily.
+    pub index_entry: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct YieldIndex {
+    pub value: i128,
+    pub last_updated: u64,
+    pub rate_bps: u32,
 }
 
 #[contracterror]

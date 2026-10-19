@@ -16,6 +16,8 @@ import {
   clearCommitment,
 } from "../commit-reveal";
 
+const PUBLIC_KEY = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
+
 function independentSha256(preimage: Uint8Array): Uint8Array {
   return new Uint8Array(createHash("sha256").update(Buffer.from(preimage)).digest());
 }
@@ -78,51 +80,73 @@ describe("saveCommitment / loadCommitment / clearCommitment", () => {
 
   it("round-trips a saved commitment", () => {
     const salt = generateSalt();
-    saveCommitment("arena-1", 3, { choice: "Tails", salt });
+    saveCommitment("arena-1", 3, PUBLIC_KEY, { choice: "Tails", salt });
 
-    const loaded = loadCommitment("arena-1", 3);
+    const loaded = loadCommitment("arena-1", 3, PUBLIC_KEY);
 
     expect(loaded).not.toBeNull();
     expect(loaded!.choice).toBe("Tails");
     expect(Buffer.from(loaded!.salt).equals(Buffer.from(salt))).toBe(true);
   });
 
+  it("returns the saved commitment from the return value", () => {
+    const salt = generateSalt();
+    const result = saveCommitment("arena-1", 3, PUBLIC_KEY, { choice: "Heads", salt });
+    expect(result.choice).toBe("Heads");
+    expect(Buffer.from(result.salt).equals(Buffer.from(salt))).toBe(true);
+  });
+
+  it("is idempotent — a second call returns the first-saved commitment (#1492)", () => {
+    const salt1 = generateSalt();
+    const salt2 = generateSalt();
+    saveCommitment("arena-1", 1, PUBLIC_KEY, { choice: "Heads", salt: salt1 });
+    const result = saveCommitment("arena-1", 1, PUBLIC_KEY, { choice: "Tails", salt: salt2 });
+
+    // The first commitment is preserved — the second write is a no-op.
+    expect(result.choice).toBe("Heads");
+    expect(Buffer.from(result.salt).equals(Buffer.from(salt1))).toBe(true);
+
+    // loadCommitment also returns the original.
+    const loaded = loadCommitment("arena-1", 1, PUBLIC_KEY);
+    expect(loaded!.choice).toBe("Heads");
+  });
+
   it("returns null when nothing was saved for that arena/round", () => {
-    expect(loadCommitment("never-saved-arena", 1)).toBeNull();
+    expect(loadCommitment("never-saved-arena", 1, PUBLIC_KEY)).toBeNull();
   });
 
   it("keys storage by both arena and round — no cross-contamination", () => {
     const saltA = generateSalt();
     const saltB = generateSalt();
-    saveCommitment("arena-1", 1, { choice: "Heads", salt: saltA });
-    saveCommitment("arena-1", 2, { choice: "Tails", salt: saltB });
-    saveCommitment("arena-2", 1, { choice: "Tails", salt: saltB });
+    saveCommitment("arena-1", 1, PUBLIC_KEY, { choice: "Heads", salt: saltA });
+    saveCommitment("arena-1", 2, PUBLIC_KEY, { choice: "Tails", salt: saltB });
+    saveCommitment("arena-2", 1, PUBLIC_KEY, { choice: "Tails", salt: saltB });
 
-    expect(loadCommitment("arena-1", 1)!.choice).toBe("Heads");
-    expect(loadCommitment("arena-1", 2)!.choice).toBe("Tails");
-    expect(loadCommitment("arena-2", 1)!.choice).toBe("Tails");
+    expect(loadCommitment("arena-1", 1, PUBLIC_KEY)!.choice).toBe("Heads");
+    expect(loadCommitment("arena-1", 2, PUBLIC_KEY)!.choice).toBe("Tails");
+    expect(loadCommitment("arena-2", 1, PUBLIC_KEY)!.choice).toBe("Tails");
   });
 
   it("clearCommitment removes only the targeted arena/round", () => {
-    saveCommitment("arena-1", 1, { choice: "Heads", salt: generateSalt() });
-    saveCommitment("arena-1", 2, { choice: "Tails", salt: generateSalt() });
+    saveCommitment("arena-1", 1, PUBLIC_KEY, { choice: "Heads", salt: generateSalt() });
+    saveCommitment("arena-1", 2, PUBLIC_KEY, { choice: "Tails", salt: generateSalt() });
 
-    clearCommitment("arena-1", 1);
+    clearCommitment("arena-1", 1, PUBLIC_KEY);
 
-    expect(loadCommitment("arena-1", 1)).toBeNull();
-    expect(loadCommitment("arena-1", 2)).not.toBeNull();
+    expect(loadCommitment("arena-1", 1, PUBLIC_KEY)).toBeNull();
+    expect(loadCommitment("arena-1", 2, PUBLIC_KEY)).not.toBeNull();
   });
 
   it("returns null (not a throw) for corrupt stored JSON", () => {
-    localStorage.setItem("inversearena:commit-reveal:arena-1:5", "not json{{{");
-    expect(loadCommitment("arena-1", 5)).toBeNull();
+    localStorage.setItem(`inversearena:commit-reveal:arena-1:5:${PUBLIC_KEY}`, "not json{{{");
+    expect(loadCommitment("arena-1", 5, PUBLIC_KEY)).toBeNull();
   });
 
   it("returns null for a stored choice that isn't Heads/Tails", () => {
     localStorage.setItem(
-      "inversearena:commit-reveal:arena-1:5",
+      `inversearena:commit-reveal:arena-1:5:${PUBLIC_KEY}`,
       JSON.stringify({ choice: "Sideways", salt: "AAAA" }),
     );
-    expect(loadCommitment("arena-1", 5)).toBeNull();
+    expect(loadCommitment("arena-1", 5, PUBLIC_KEY)).toBeNull();
   });
 });

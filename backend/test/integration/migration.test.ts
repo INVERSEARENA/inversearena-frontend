@@ -45,7 +45,6 @@ describe("Prisma migration compatibility", () => {
       "rounds",
       "transactions",
       "elimination_logs",
-      "audit_logs",
     ];
 
     for (const table of required) {

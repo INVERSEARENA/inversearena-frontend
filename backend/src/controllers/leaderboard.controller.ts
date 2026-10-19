@@ -46,12 +46,17 @@ export class LeaderboardController {
 
     const offset = cursor ? this.decodeCursor(cursor) : 0;
 
-    // ── Build the full ranked list ──────────────────────────────────
-    const rankedPlayers = await this.buildRankedPlayers();
+    // Page in SQL (#1352). This used to aggregate every user with any yield or
+    // elimination history on every cache miss, materialise all of them as JS
+    // objects, then `slice()` the requested window — so page 40 cost exactly as
+    // much as page 1, and the cost grew with the platform rather than the page.
+    //
+    // One extra row is requested to decide `hasMore` without a second count
+    // query.
+    const rows = await this.buildRankedPlayers(limit + 1, offset);
 
-    // ── Paginate ────────────────────────────────────────────────────
-    const page = rankedPlayers.slice(offset, offset + limit);
-    const hasMore = offset + limit < rankedPlayers.length;
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
     const nextCursor = hasMore ? this.encodeCursor(offset + limit) : null;
 
     res.json({
@@ -65,24 +70,22 @@ export class LeaderboardController {
   // ──────────────────────────────────────────────────────────────────
 
   /**
-   * Aggregates per-user stats using a single PostgreSQL CTE, avoiding the
-   * O(rounds × players) memory spike of loading all round rows into Node.js.
+   * Fetch one page of the ranked leaderboard.
    *
-   * The CTE pipeline:
-   *  1. round_choices  – unnests playerChoices JSONB arrays from RESOLVED rounds
-   *  2. round_stats    – groups by userId: totalYield, roundsParticipated, arenas
-   *  3. elim_stats     – groups elimination_logs by userId
-   *  4. all_users      – UNION of both sets so eliminated-only players are included
-   *
-   * Result is pre-sorted by totalYield DESC, arenasWon DESC so JS only assigns ranks.
+   * Rank is computed by the database with `ROW_NUMBER()` over the full ordering,
+   * so a row's rank is its position on the whole leaderboard — not its index
+   * within the page (#1352). arenasWon / survivalStreak use an anti-join
+   * against RESOLVED-round eliminations rather than subtracting independently
+   * scoped counts (#1346).
    */
-  private async buildRankedPlayers(): Promise<PlayerStats[]> {
+  private async buildRankedPlayers(limit: number, offset: number): Promise<PlayerStats[]> {
     type RawRow = {
       id: string;
       walletAddress: string;
       totalYield: string;      // PostgreSQL numeric → string in Prisma $queryRaw
       arenasWon: string;       // bigint → string
       survivalStreak: string;  // bigint → string
+      rank: string;            // bigint → string
     };
 
     const rows = await this.prisma.$queryRaw<RawRow[]>`
@@ -103,20 +106,41 @@ export class LeaderboardController {
       round_stats AS (
         SELECT
           user_id,
-          SUM(payout)                   AS total_yield,
-          COUNT(*)                      AS rounds_participated,
-          COUNT(DISTINCT arena_id)      AS arenas_participated
+          SUM(payout) AS total_yield
         FROM round_choices
         GROUP BY user_id
       ),
       elim_stats AS (
-        SELECT
-          el.user_id,
-          COUNT(DISTINCT r.arena_id)    AS arenas_eliminated,
-          COUNT(*)                      AS eliminations
+        SELECT DISTINCT el.user_id
         FROM elimination_logs el
         JOIN rounds r ON r.id = el.round_id
-        GROUP BY el.user_id
+        WHERE r.state = 'RESOLVED'
+      ),
+      arena_wins AS (
+        SELECT rc.user_id, COUNT(*)::bigint AS arenas_won
+        FROM (SELECT DISTINCT user_id, arena_id FROM round_choices) rc
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM elimination_logs el
+          JOIN rounds r ON r.id = el.round_id
+          WHERE el.user_id = rc.user_id
+            AND r.arena_id = rc.arena_id
+            AND r.state = 'RESOLVED'
+        )
+        GROUP BY rc.user_id
+      ),
+      round_survivals AS (
+        SELECT rc.user_id, COUNT(*)::bigint AS survival_streak
+        FROM (SELECT DISTINCT user_id, round_id FROM round_choices) rc
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM elimination_logs el
+          JOIN rounds r ON r.id = el.round_id
+          WHERE el.user_id = rc.user_id
+            AND el.round_id = rc.round_id
+            AND r.state = 'RESOLVED'
+        )
+        GROUP BY rc.user_id
       ),
       all_user_ids AS (
         SELECT user_id FROM round_stats
@@ -127,30 +151,31 @@ export class LeaderboardController {
         u.id,
         u.wallet_address                                                    AS "walletAddress",
         COALESCE(rs.total_yield, 0)::numeric                                AS "totalYield",
-        GREATEST(0,
-          COALESCE(rs.arenas_participated, 0)::bigint
-          - COALESCE(es.arenas_eliminated, 0)::bigint
-        )                                                                   AS "arenasWon",
-        GREATEST(0,
-          COALESCE(rs.rounds_participated, 0)::bigint
-          - COALESCE(es.eliminations, 0)::bigint
-        )                                                                   AS "survivalStreak"
+        COALESCE(aw.arenas_won, 0)::bigint                                  AS "arenasWon",
+        COALESCE(sv.survival_streak, 0)::bigint                             AS "survivalStreak",
+        ROW_NUMBER() OVER (
+          ORDER BY
+            COALESCE(rs.total_yield, 0)::numeric DESC,
+            COALESCE(aw.arenas_won, 0)::bigint DESC
+        )                                                                   AS "rank"
       FROM all_user_ids au
       JOIN users u ON u.id = au.user_id
       LEFT JOIN round_stats rs ON rs.user_id = au.user_id
-      LEFT JOIN elim_stats es ON es.user_id = au.user_id
+      LEFT JOIN arena_wins aw ON aw.user_id = au.user_id
+      LEFT JOIN round_survivals sv ON sv.user_id = au.user_id
       ORDER BY "totalYield" DESC, "arenasWon" DESC
+      LIMIT ${limit} OFFSET ${offset}
     `;
 
     if (rows.length === 0) return [];
 
-    return rows.map((row, i) => ({
+    return rows.map((row) => ({
       id: row.id,
       walletAddress: row.walletAddress,
       totalYield: Number(row.totalYield),
       arenasWon: Number(row.arenasWon),
       survivalStreak: Number(row.survivalStreak),
-      rank: i + 1,
+      rank: Number(row.rank),
     }));
   }
 

@@ -38,6 +38,34 @@ export function getPoolsRateLimitConfig(): RateLimitConfig {
   };
 }
 
+/**
+ * Limiter for POST /api/arenas/:id/sync-players (#1351).
+ *
+ * Same shape and default budget as pool creation — the route reaches Soroban RPC
+ * on every call — but its own bucket, so syncing players cannot eat a user's
+ * pool-creation allowance or vice versa.
+ */
+export function getSyncPlayersRateLimitConfig(): RateLimitConfig {
+  return {
+    keyPrefix: process.env.RATE_LIMIT_SYNC_PLAYERS_PREFIX ?? "rl:arenas:sync-players",
+    points: readPositiveInt("RATE_LIMIT_SYNC_PLAYERS_POINTS", 3),
+    durationSeconds: readPositiveInt("RATE_LIMIT_SYNC_PLAYERS_WINDOW_SECONDS", 60),
+  };
+}
+
+/**
+ * Limiter for POST /api/arenas/:id/reservation (#1406). A generous budget:
+ * legitimate use re-reserves on every render of the join modal's
+ * confirmation step, not just once per join attempt.
+ */
+export function getLobbyReservationRateLimitConfig(): RateLimitConfig {
+  return {
+    keyPrefix: process.env.RATE_LIMIT_RESERVATION_PREFIX ?? "rl:arenas:reservation",
+    points: readPositiveInt("RATE_LIMIT_RESERVATION_POINTS", 10),
+    durationSeconds: readPositiveInt("RATE_LIMIT_RESERVATION_WINDOW_SECONDS", 60),
+  };
+}
+
 export function getVerifyRateLimitConfig(): RateLimitConfig {
   return {
     keyPrefix: process.env.RATE_LIMIT_VERIFY_PREFIX ?? "rl:auth:verify",
@@ -45,6 +73,11 @@ export function getVerifyRateLimitConfig(): RateLimitConfig {
     durationSeconds: readPositiveInt("RATE_LIMIT_VERIFY_WINDOW_SECONDS", 60),
     dualScope: true,
   };
+}
+
+/** Expensive simulations (#1448): independent per-IP and per-wallet budgets. */
+export function getSimulationRateLimitConfig(): RateLimitConfig {
+  return { keyPrefix: process.env.RATE_LIMIT_SIMULATION_PREFIX ?? "rl:simulations", points: readPositiveInt("RATE_LIMIT_SIMULATION_POINTS", 5), durationSeconds: readPositiveInt("RATE_LIMIT_SIMULATION_WINDOW_SECONDS", 60), dualScope: true };
 }
 
 export function getRefreshRateLimitConfig(): RateLimitConfig {

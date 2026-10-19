@@ -3,12 +3,23 @@ import type { Request, Response, NextFunction, RequestHandler } from "express";
 import type { AuthService } from "../services/authService";
 import { apiError } from "../utils/apiError";
 
+// TODO(#1504): bind an authorization epoch claim to privileged sessions.
+const CLAIM_AUTH_EPOCH = "authz_epoch";
+
 // Augment Express Request so controllers can read adminId / user without casting
 declare global {
   namespace Express {
     interface Request {
       adminId?: string;
       user?: { id: string; walletAddress: string; jti: string };
+      /**
+       * Raw request body bytes, captured by the `express.json({ verify })`
+       * hook mounted ahead of the oracle webhook route (see app.ts). Only
+       * set for requests parsed by that parser — used by
+       * verifyWebhookSignature so HMAC verification runs against exactly
+       * what the sender signed, not a re-serialized copy of req.body.
+       */
+      rawBody?: Buffer;
     }
   }
 }

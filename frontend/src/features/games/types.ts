@@ -11,4 +11,6 @@ export interface Arena {
     poolYield: string;
     status: 'ACTIVE' | 'PENDING' | 'CLOSED';
     isFeatured?: boolean;
+    /** Result of verifying off-chain metadata against the on-chain hash (#1577). */
+    metadataVerified?: boolean | null;
 }

@@ -5,18 +5,33 @@ import { z } from "zod";
 import { useRouter } from "next/navigation";
 import { ArenaStatsSkeleton } from "@/components/arena/ArenaStatsSkeleton";
 import { ChoiceSubmission } from "@/components/arena/ChoiceSubmission";
-import { TransactionModal } from "@/components/modals/TransactionModal";
-import { useStellarWallet } from "@/features/wallet/useStellarWallet";
-import { stellarConfig } from "@/lib/stellarConfig";
+import { TransactionModal, type TransactionProgress } from "@/components/modals/TransactionModal";
+import { useWallet } from "@/features/wallet/useWallet";
 import {
   buildJoinArenaTransaction,
+  buildLeaveArenaTransaction,
   submitSignedTransaction,
+  NETWORK_PASSPHRASE,
 } from "@/shared-d/utils/stellar-transactions";
+import {
+  evaluateSigningRequest,
+  // Imported as a value, not a type: these call sites narrow policy
+  // rejections with `instanceof SigningPolicyError`, which a type-only import
+  // erases to `any` and silently turns into a dead branch.
+  SigningPolicyError,
+  type DecodedEnvelope,
+} from "@/shared-d/security/policy";
+import { useAssetReadinessGate } from "@/features/asset-readiness/useAssetReadinessGate";
+import { displayAmountToStroops } from "@/shared-d/utils/stellar-asset-reader";
+import { AssetTrustlinePrompt } from "@/components/modals/AssetTrustlinePrompt";
+import { useTransactionIntent } from "@/shared-d/hooks/useTransactionIntent";
 
 const arenaParticipantSchema = z.object({
   id: z.string(),
   walletAddress: z.string(),
-  choice: z.enum(["heads", "tails"]),
+  // null while the round is still OPEN — the backend hides other players'
+  // choices until the round closes so callers can't vote accordingly (#1212).
+  choice: z.enum(["heads", "tails"]).nullable(),
   stake: z.number(),
   status: z.enum(["READY", "ACTIVE", "ELIMINATED"]),
   roundNumber: z.number(),
@@ -37,6 +52,12 @@ const arenaStatsSchema = z.object({
   yieldAccrued: z.number(),
   status: z.string(),
   lastUpdated: z.string(),
+  // #1408: present once the backend has ever completed a live on-chain read
+  // for this arena; optional so a response from before this field existed
+  // (or an intermediate cache entry) still validates.
+  degraded: z.boolean().optional(),
+  ledgerSequence: z.number().nullable().optional(),
+  snapshotVerifiedAt: z.string().nullable().optional(),
 });
 
 const arenaParticipantsResponseSchema = z.object({
@@ -71,7 +92,8 @@ function formatCurrency(value: number, token: string): string {
 }
 
 function formatCountdown(joinDeadline: string | null): string {
-  if (!joinDeadline) return "Unknown";
+  // null deadline means no deadline (open-ended arena)
+  if (!joinDeadline) return "No deadline";
   const remaining = Math.max(0, Date.parse(joinDeadline) - Date.now());
   const totalSeconds = Math.floor(remaining / 1000);
   const hours = Math.floor(totalSeconds / 3600);
@@ -98,7 +120,8 @@ export function ArenaLobbyClient({
   notFound = false,
 }: ArenaLobbyClientProps) {
   const router = useRouter();
-  const wallet = useStellarWallet(stellarConfig.network);
+  const wallet = useWallet();
+  const { runTrackedTransaction } = useTransactionIntent();
   const [stats, setStats] = useState<ArenaStats | null>(initialStats);
   const [participants, setParticipants] = useState<ArenaParticipant[]>(
     initialParticipants,
@@ -109,6 +132,43 @@ export function ArenaLobbyClient({
   const [loadingParticipants, setLoadingParticipants] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showJoinModal, setShowJoinModal] = useState(false);
+  const [showLeaveModal, setShowLeaveModal] = useState(false);
+  const [leaveError, setLeaveError] = useState<string | null>(null);
+  const [isReserving, setIsReserving] = useState(false);
+  const [reservationError, setReservationError] = useState<string | null>(null);
+  /**
+   * Set when the signing firewall rejects the envelope we built (#1487).
+   *
+   * Distinct from `error`: a policy rejection is not a request failure, and
+   * the user should see the specific rule that fired rather than a generic
+   * banner. Kept separate so it cannot be clobbered by an unrelated fetch
+   * that happens to fail at the same time.
+   */
+  const [joinError, setJoinError] = useState<string | null>(null);
+  /**
+   * The decoded envelope, rendered into the confirmation modal. Holding the
+   * decode rather than the XDR is the point of the firewall: nothing reaches
+   * the confirmation screen that has not been parsed and checked.
+   */
+  const [joinConfirmation, setJoinConfirmation] = useState<DecodedEnvelope | null>(null);
+
+  /**
+   * Asset-readiness gate for the entry fee (#1487).
+   *
+   * The stake is received by this account, so the account needs a trustline and
+   * limit headroom for `stakeToken` before the join transaction is built.
+   */
+  const entryFeeStroops = useMemo(
+    () => (stats ? displayAmountToStroops(stats.entryFee) : 0n),
+    [stats],
+  );
+  const assetGate = useAssetReadinessGate({
+    assetCode: stats?.stakeToken,
+    amountStroops: entryFeeStroops,
+    entryPoint: "join",
+    enabled: Boolean(stats?.stakeToken),
+  });
+  const [showTrustline, setShowTrustline] = useState(false);
 
   const isOpen = stats?.status === "open";
   const walletConnected = wallet.isConnected && !!wallet.publicKey;
@@ -204,6 +264,76 @@ export function ArenaLobbyClient({
     }
   };
 
+  function authHeaders(): HeadersInit {
+    const token =
+      typeof window !== "undefined"
+        ? window.localStorage.getItem("access_token")
+        : null;
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }
+
+  // Backend-authoritative lobby capacity reservation (#1406): holds this
+  // player's slot for RESERVATION_TTL seconds before they open the sign
+  // modal, so two players racing for the arena's last slot can't both start
+  // signing only to have one fail on-chain after paying a network fee.
+  // Returns true if a slot was actually reserved.
+  const reserveJoinSlot = async (): Promise<boolean> => {
+    setIsReserving(true);
+    setReservationError(null);
+    try {
+      const response = await fetch(
+        `${API_BASE}/api/arenas/${arenaId}/reservation`,
+        { method: "POST", headers: authHeaders() },
+      );
+
+      if (response.status === 409) {
+        setReservationError("This arena has no open slots right now.");
+        return false;
+      }
+      if (!response.ok) {
+        throw new Error(`Reservation request failed (${response.status})`);
+      }
+      return true;
+    } catch (reserveError) {
+      setReservationError(
+        reserveError instanceof Error
+          ? reserveError.message
+          : "Failed to reserve a slot in this arena.",
+      );
+      return false;
+    } finally {
+      setIsReserving(false);
+    }
+  };
+
+  // Best-effort: releasing early just frees the slot sooner for someone
+  // else. If it fails, the reservation's own TTL still expires it (see
+  // lobbyReservationStore) — the user is never charged for the delay.
+  const releaseJoinSlot = () => {
+    void fetch(`${API_BASE}/api/arenas/${arenaId}/reservation`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    }).catch(() => undefined);
+  };
+
+  const handleJoinClick = async () => {
+    // Asset readiness first (#1487). Taking a join slot and only then telling
+    // the user their account cannot receive the stake wastes both.
+    if (!assetGate.canProceed) {
+      if (assetGate.phase === "remediation_offered") setShowTrustline(true);
+      return;
+    }
+    const reserved = await reserveJoinSlot();
+    if (reserved) {
+      setShowJoinModal(true);
+    }
+  };
+
+  const handleCloseJoinModal = () => {
+    setShowJoinModal(false);
+    releaseJoinSlot();
+  };
+
   useEffect(() => {
     setStats(initialStats);
     setParticipants(initialParticipants);
@@ -274,25 +404,73 @@ export function ArenaLobbyClient({
 
   const playerCapacity =
     stats.maxPlayers > 0 ? `${stats.playerCount}/${stats.maxPlayers}` : `${stats.playerCount}`;
-  const joinDisabled = !isOpen || !stats.joinDeadline || loadingStats || !walletConnected;
+  // joinDeadline === null means "no deadline" (always open), not "already passed"
+  const hasPassedDeadline = stats.joinDeadline && Date.parse(stats.joinDeadline) <= Date.now();
+  const joinDisabled = !isOpen || hasPassedDeadline || loadingStats || !walletConnected;
   const joinLabel = !walletConnected
     ? "Wallet Required"
     : joinDisabled
       ? "Join Unavailable"
       : "Join Arena";
 
-  const handleConfirmJoin = async () => {
+  // #1580: only a joined player, in the first-round lobby, may leave and be
+  // refunded. `currentRound === 0` mirrors the contract's `round_count == 0`.
+  const isParticipant = Boolean(
+    wallet.publicKey &&
+      mergedParticipants.some(
+        (participant) => participant.walletAddress === wallet.publicKey,
+      ),
+  );
+  const canLeave =
+    isOpen && stats.currentRound === 0 && isParticipant && walletConnected && !loadingStats;
+
+  const handleConfirmJoin = async ({ onSigned }: TransactionProgress) => {
     if (!wallet.publicKey) {
       throw new Error("Connect a wallet before joining this arena.");
     }
 
-    const unsignedTx = await buildJoinArenaTransaction(
-      wallet.publicKey,
-      arenaId,
-      stats.entryFee,
-    );
-    const signedXdr = await wallet.signTransaction(unsignedTx.toXDR());
-    await submitSignedTransaction(signedXdr);
+    if (!assetGate.canProceed) {
+      setJoinError(assetGate.message);
+      if (assetGate.phase === "remediation_offered") setShowTrustline(true);
+      return;
+    }
+
+    setJoinError(null);
+    let policyRejected = false;
+    await runTrackedTransaction({
+      kind: "join_arena",
+      actionKey: `join_arena:${arenaId}`,
+      publicKey: wallet.publicKey,
+      buildTransaction: async () => {
+        const unsignedTx = await buildJoinArenaTransaction(wallet.publicKey!, arenaId);
+
+        // Validate XDR against the signing policy before prompting the wallet.
+        // This distinct error is catchable so the UI can show a policy-rejection
+        // message rather than a wallet-rejection one.
+        let decoded: DecodedEnvelope;
+        try {
+          decoded = evaluateSigningRequest(unsignedTx.toXDR(), "JOIN");
+        } catch (error) {
+          if (error instanceof SigningPolicyError) {
+            // Policy rejection — show error and do NOT call wallet.signTransaction.
+            policyRejected = true;
+            setJoinError(error.message);
+          }
+          throw error;
+        }
+        setJoinConfirmation(decoded);
+
+        return unsignedTx;
+      },
+      signTransaction: wallet.signTransaction,
+      submitSignedTransaction,
+      networkPassphrase: NETWORK_PASSPHRASE,
+      onSigned,
+    }).catch((error) => {
+      if (policyRejected) return;
+      throw error;
+    });
+    if (policyRejected) return;
 
     await Promise.all([fetchStats(), fetchParticipants(0, true)]);
 
@@ -301,6 +479,44 @@ export function ArenaLobbyClient({
       behavior: "smooth",
       block: "start",
     });
+  };
+
+  const handleConfirmLeave = async ({ onSigned }: TransactionProgress) => {
+    if (!wallet.publicKey) {
+      throw new Error("Connect a wallet before leaving this arena.");
+    }
+
+    setLeaveError(null);
+    let policyRejected = false;
+    await runTrackedTransaction({
+      kind: "leave_arena",
+      actionKey: `leave_arena:${arenaId}`,
+      publicKey: wallet.publicKey,
+      buildTransaction: async () => {
+        const unsignedTx = await buildLeaveArenaTransaction(wallet.publicKey!, arenaId);
+        try {
+          evaluateSigningRequest(unsignedTx.toXDR(), "REFUND");
+        } catch (error) {
+          if (error instanceof SigningPolicyError) {
+            policyRejected = true;
+            setLeaveError(error.message);
+          }
+          throw error;
+        }
+        return unsignedTx;
+      },
+      signTransaction: wallet.signTransaction,
+      submitSignedTransaction,
+      networkPassphrase: NETWORK_PASSPHRASE,
+      onSigned,
+    }).catch((error) => {
+      if (policyRejected) return;
+      throw error;
+    });
+    if (policyRejected) return;
+
+    await Promise.all([fetchStats(), fetchParticipants(0, true)]);
+    setShowLeaveModal(false);
   };
 
   return (
@@ -315,6 +531,17 @@ export function ArenaLobbyClient({
                   {stats.status.toUpperCase()} / Round {stats.currentRound}
                 </span>
               </div>
+              {stats.degraded && (
+                <div
+                  role="status"
+                  className="inline-flex items-center gap-2 rounded-full border border-amber-400/40 bg-amber-950/60 px-3 py-1"
+                >
+                  <span className="h-2 w-2 rounded-full bg-amber-400" />
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-amber-200">
+                    Delayed data{stats.ledgerSequence != null ? ` — as of ledger ${stats.ledgerSequence}` : ""}
+                  </span>
+                </div>
+              )}
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-white/45">
                   Arena Lobby
@@ -376,15 +603,59 @@ export function ArenaLobbyClient({
               </p>
             </div>
 
-            <button
-              type="button"
-              disabled={joinDisabled}
-              onClick={() => setShowJoinModal(true)}
-              className="rounded-full border border-[#3CFF1A]/40 bg-[#3CFF1A] px-6 py-3 text-sm font-black uppercase tracking-[0.2em] text-black transition hover:brightness-95 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/10 disabled:text-white/40"
-            >
-              {joinLabel}
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              {canLeave && (
+                <button
+                  type="button"
+                  onClick={() => setShowLeaveModal(true)}
+                  className="rounded-full border border-white/20 bg-white/5 px-6 py-3 text-sm font-black uppercase tracking-[0.2em] text-white/70 transition hover:border-red-400/50 hover:text-red-300"
+                >
+                  Leave Arena
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={joinDisabled || isReserving}
+                onClick={() => void handleJoinClick()}
+                className="rounded-full border border-[#3CFF1A]/40 bg-[#3CFF1A] px-6 py-3 text-sm font-black uppercase tracking-[0.2em] text-black transition hover:brightness-95 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/10 disabled:text-white/40"
+              >
+                {isReserving ? "Reserving..." : joinLabel}
+              </button>
+            </div>
           </div>
+          {reservationError && (
+            <p role="alert" className="mt-3 text-sm font-semibold text-red-400">
+              {reservationError}
+            </p>
+          )}
+          {assetGate.phase !== "ready" && assetGate.phase !== "idle" && (
+            <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-4 text-sm text-white/70">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/40">
+                Asset readiness
+              </p>
+              <p className="mt-2 text-left">{assetGate.message}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {assetGate.phase === "remediation_offered" && (
+                  <button
+                    type="button"
+                    onClick={() => setShowTrustline(true)}
+                    className="rounded-full border border-white/20 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white"
+                  >
+                    Set up trustline
+                  </button>
+                )}
+                {assetGate.canRetry && (
+                  <button
+                    type="button"
+                    onClick={() => void assetGate.check()}
+                    className="rounded-full border border-white/20 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white/70"
+                  >
+                    Check again
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </section>
 
         <section className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
@@ -432,12 +703,14 @@ export function ArenaLobbyClient({
                       </span>
                       <span
                         className={
-                          participant.choice === "heads"
-                            ? "font-semibold text-[#3CFF1A]"
-                            : "font-semibold text-[#FF0A54]"
+                          participant.choice === null
+                            ? "font-semibold text-white/40"
+                            : participant.choice === "heads"
+                              ? "font-semibold text-[#3CFF1A]"
+                              : "font-semibold text-[#FF0A54]"
                         }
                       >
-                        {participant.choice.toUpperCase()}
+                        {participant.choice === null ? "HIDDEN" : participant.choice.toUpperCase()}
                       </span>
                       <span className="font-mono text-white/80">
                         {participant.stake.toLocaleString()}
@@ -482,7 +755,23 @@ export function ArenaLobbyClient({
                 roundNumber={stats.currentRound}
                 deadline={stats.joinDeadline ?? ""}
                 arenaStatus={stats.status}
-                wallet={wallet}
+                wallet={{
+                  publicKey: wallet.publicKey,
+                  isConnected: wallet.isConnected,
+                  status: wallet.status,
+                  signTransaction: wallet.signTransaction,
+                  // ChoiceSubmission expects connectWallet() to resolve with
+                  // the connected address (it falls back to the return value
+                  // when publicKey isn't set yet). The shared wallet
+                  // context's connect() resolves with that same address.
+                  connectWallet: async () => {
+                    const address = await wallet.connect();
+                    if (!address) {
+                      throw new Error("Wallet connection did not return an address.");
+                    }
+                    return address;
+                  },
+                }}
               />
             </div>
 
@@ -520,7 +809,7 @@ export function ArenaLobbyClient({
 
       <TransactionModal
         isOpen={showJoinModal}
-        onClose={() => setShowJoinModal(false)}
+        onClose={handleCloseJoinModal}
         title="Join Arena"
         description="Confirm your entry to this arena"
         details={[
@@ -529,6 +818,55 @@ export function ArenaLobbyClient({
         ]}
         confirmLabel="Sign & Join"
         onConfirm={handleConfirmJoin}
+      />
+      {joinError && (
+        <div className="mt-3 rounded-2xl border border-red-500/30 bg-red-900/60 p-4 text-sm text-red-300">
+          <p className="font-semibold uppercase tracking-[0.2em]">{joinError}</p>
+        </div>
+      )}
+
+      <TransactionModal
+        isOpen={showLeaveModal}
+        onClose={() => {
+          setShowLeaveModal(false);
+          setLeaveError(null);
+        }}
+        title="Leave Arena"
+        description="Leave the lobby and reclaim your entry fee. You can rejoin before the round starts."
+        details={[
+          { label: "Arena", value: stats.arenaName },
+          {
+            label: "Refund",
+            value: formatCurrency(stats.entryFee, stats.stakeToken),
+          },
+        ]}
+        confirmLabel="Sign & Leave"
+        onConfirm={handleConfirmLeave}
+      />
+      {leaveError && (
+        <div className="mt-3 rounded-2xl border border-red-500/30 bg-red-900/60 p-4 text-sm text-red-300">
+          <p className="font-semibold uppercase tracking-[0.2em]">{leaveError}</p>
+        </div>
+      )}
+
+      <AssetTrustlinePrompt
+        isOpen={showTrustline}
+        onClose={() => setShowTrustline(false)}
+        remediation={assetGate.remediation}
+        message={assetGate.message}
+        phase={
+          assetGate.phase === "remediating"
+            ? "remediating"
+            : assetGate.phase === "blocked"
+              ? "blocked"
+              : "remediation_offered"
+        }
+        onConfirm={async () => {
+          await assetGate.remediate();
+          if (assetGate.canProceed) setShowTrustline(false);
+        }}
+        onRetry={() => void assetGate.check()}
+        actionLabel="join this arena"
       />
     </div>
   );

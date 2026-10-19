@@ -11,6 +11,10 @@ import React from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
 
 import StakeModal from "../StakeModal";
+import {
+  formatCurrencyInput,
+  sanitizeNumericInput,
+} from "@/shared-d/utils/form-validation";
 
 const walletState: Record<string, unknown> = {};
 
@@ -86,5 +90,91 @@ describe("StakeModal balance-load failure (#1295)", () => {
 
     expect(screen.queryByText(/couldn't load your wallet balance/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /initiate stake/i })).not.toBeDisabled();
+  });
+});
+
+/**
+ * Regression tests for #1340.
+ *
+ * handleAmountChange used to strip characters with /[^0-9.]/g, which permits
+ * any number of decimal points. Typing "12..34" left "12..34" visible in the
+ * field while parseFloat("12..34") returns 12 — and that 12 is what drove
+ * validation, the enabled state, and the transaction that got built. The
+ * amount actually submitted silently diverged from the amount on screen.
+ *
+ * StakeModal now routes input through sanitizeNumericInput/formatCurrencyInput
+ * from form-validation.ts, the same helpers PoolCreationModal uses.
+ */
+describe("StakeModal numeric input normalisation (#1340)", () => {
+  function renderWithBalance(xlm = 10_000) {
+    Object.assign(walletState, baseWallet({ balance: { xlm, usdc: 0 } }));
+    render(<StakeModal isOpen onClose={jest.fn()} />);
+    return screen.getByPlaceholderText("0.00") as HTMLInputElement;
+  }
+
+  it('normalises "12..34" instead of displaying it verbatim', () => {
+    const input = renderWithBalance();
+
+    fireEvent.change(input, { target: { value: "12..34" } });
+
+    // The field must never show a value that parseFloat would read as
+    // something else. Previously this rendered "12..34" while the modal
+    // used 12.
+    expect(input.value).not.toBe("12..34");
+    expect(input.value).toBe("12.34");
+    expect(parseFloat(input.value)).toBeCloseTo(12.34, 5);
+  });
+
+  it("keeps the displayed value and the parsed amount in agreement", () => {
+    const input = renderWithBalance();
+
+    for (const typed of ["12..34", "1.2.3", "5....5", "0..1"]) {
+      fireEvent.change(input, { target: { value: typed } });
+
+      // The invariant that #1340 broke: what the user sees is what gets
+      // staked.
+      expect(String(parseFloat(input.value))).toBe(input.value);
+    }
+  });
+
+  it("strips non-numeric characters and negative signs", () => {
+    const input = renderWithBalance();
+
+    fireEvent.change(input, { target: { value: "1a2b3c" } });
+    expect(input.value).toBe("123");
+
+    fireEvent.change(input, { target: { value: "-50" } });
+    expect(input.value).toBe("50");
+  });
+
+  it("limits decimals to XLM's 7-digit precision", () => {
+    const input = renderWithBalance();
+
+    fireEvent.change(input, { target: { value: "1.123456789" } });
+
+    expect(input.value).toBe("1.1234567");
+  });
+
+  it("still accepts ordinary well-formed amounts unchanged", () => {
+    const input = renderWithBalance();
+
+    for (const typed of ["100", "0.5", "1234.56"]) {
+      fireEvent.change(input, { target: { value: typed } });
+      expect(input.value).toBe(typed);
+    }
+  });
+
+  it("normalises multi-dot input the same way PoolCreationModal does", () => {
+    const input = renderWithBalance();
+
+    fireEvent.change(input, { target: { value: "12..34" } });
+
+    // PoolCreationModal pipes input through the identical helpers, so both
+    // modals must agree on the normalised result.
+    const viaSharedHelpers = formatCurrencyInput(
+      sanitizeNumericInput("12..34"),
+      "XLM",
+    );
+    expect(input.value).toBe(viaSharedHelpers);
   });
 });

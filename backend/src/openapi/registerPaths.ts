@@ -7,7 +7,10 @@ import {
   ArenaIdParamSchema,
   ArenaParticipantsResponseSchema,
   ArenaStatsSchema,
+  ArenaYieldQuerySchema,
+  ArenaYieldResponseSchema,
   AuthUserResponseSchema,
+  ClaimInboxPageSchema,
   CreatePayoutBodySchema,
   LeaderboardQuerySchema,
   LeaderboardResponseSchema,
@@ -21,6 +24,7 @@ import {
   TransactionIdParamSchema,
   TransactionRecordSchema,
   VerifySchema,
+  YieldUpdateSchema,
 } from "./schemas";
 import { z } from "./zodOpenApi";
 
@@ -164,6 +168,29 @@ function registerArenaPaths(registry: OpenAPIRegistry): void {
       },
     },
   });
+
+  registry.registerPath({
+    method: "get",
+    path: "/api/arenas/{id}/yield",
+    summary: "Per-round yield time-series for an arena",
+    request: {
+      params: ArenaIdParamSchema,
+      query: ArenaYieldQuerySchema,
+    },
+    responses: {
+      200: {
+        description:
+          "Ordered yield snapshots (round, timestamp, rate, accrued, cumulative); amounts are decimal strings in the arena stake asset",
+        content: {
+          "application/json": { schema: ArenaYieldResponseSchema },
+        },
+      },
+      404: {
+        description: "Arena not found",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+    },
+  });
 }
 
 function registerPublicApiPaths(registry: OpenAPIRegistry): void {
@@ -301,6 +328,68 @@ function registerAdminPaths(registry: OpenAPIRegistry): void {
   });
 }
 
+function registerOraclePaths(registry: OpenAPIRegistry): void {
+  registry.registerPath({
+    method: "post",
+    path: "/api/oracle/yield",
+    summary: "Update current yield data (webhook)",
+    request: {
+      body: {
+        content: { "application/json": { schema: YieldUpdateSchema } },
+      },
+    },
+    responses: {
+      200: { description: "Yield data updated" },
+      400: {
+        description: "Validation error",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+    },
+  });
+}
+
+/**
+ * Wallet-scoped claim and refund inbox (#1489).
+ *
+ * Registered in its own function because the response is the one place the
+ * service's full state machine is published: clients branch on `state` and
+ * `reason` rather than inferring them, and a `unavailable` item must be
+ * rendered as an explicit unknown rather than an absence.
+ */
+function registerClaimInboxPaths(registry: OpenAPIRegistry): void {
+  registry.registerPath({
+    method: "get",
+    path: "/api/users/me/claim-inbox",
+    summary: "Wallet-scoped claim and refund inbox",
+    description:
+      "One item per arena, aggregating payout records, cancellation recovery and " +
+      "on-chain arena state. Ownership comes from the bearer token; there is no " +
+      "wallet parameter. A failed on-chain read yields state `unavailable`, never " +
+      "an empty result and never a zeroed amount.",
+    security: [{ bearerAuth: [] }],
+    request: {
+      query: z.object({
+        limit: z.coerce.number().int().min(1).max(50).optional(),
+        cursor: z.string().min(1).max(512).optional(),
+      }),
+    },
+    responses: {
+      200: {
+        description: "Inbox page",
+        content: { "application/json": { schema: ClaimInboxPageSchema } },
+      },
+      400: {
+        description: "Invalid limit or cursor",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+      401: {
+        description: "Missing or invalid session",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+    },
+  });
+}
+
 export function generateOpenApiDocument() {
   const registry = new OpenAPIRegistry();
 
@@ -311,6 +400,8 @@ export function generateOpenApiDocument() {
   registerArenaPaths(registry);
   registerPublicApiPaths(registry);
   registerAdminPaths(registry);
+  registerOraclePaths(registry);
+  registerClaimInboxPaths(registry);
 
   const generator = new OpenApiGeneratorV31(registry.definitions);
   return generator.generateDocument({

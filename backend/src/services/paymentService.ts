@@ -15,6 +15,8 @@ import { rpc } from "@stellar/stellar-sdk";
 const { Api, Server } = rpc;
 import { z } from "zod";
 
+import { readOnChainGameState } from "./onChainReader";
+import { requireReadValue } from "../types/onChainRead";
 import { getPaymentConfig, type PaymentConfig } from "../config/paymentConfig";
 import type { TransactionRepository } from "../repositories/transactionRepository";
 import { payoutsSuccessTotal } from "../utils/metrics";
@@ -29,6 +31,13 @@ import type {
 const PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
 const IDEMPOTENCY_REGEX = /^[a-zA-Z0-9:_-]{8,128}$/;
 const AMOUNT_REGEX = /^\d+(\.\d{0,7})?$/;
+
+const PayoutBreakdownSchema = z.object({
+  principal: z.number().finite().nonnegative(),
+  yieldAmount: z.number().finite().nonnegative(),
+  platformFee: z.number().finite().nonnegative(),
+  dust: z.number().finite().nonnegative(),
+});
 
 const CreatePayoutRequestSchema = z.object({
   payoutId: z.string().trim().min(1).max(128),
@@ -45,6 +54,12 @@ const CreatePayoutRequestSchema = z.object({
     .string()
     .trim()
     .regex(IDEMPOTENCY_REGEX, "Invalid idempotency key format"),
+  // #1407: optional settlement breakdown, populated when the caller (e.g. an
+  // operator submitting a round-settlement payout computed via
+  // roundService.computePayouts) has one. Persisted verbatim — this service
+  // does not recompute or validate it against `amount` beyond basic shape,
+  // since that game-economics logic belongs to whoever produced it.
+  breakdown: PayoutBreakdownSchema.optional(),
 });
 
 export function toStroops(amount: string): string {
@@ -82,6 +97,26 @@ export interface PaymentServiceOptions {
   circuitBreaker?: CircuitBreaker;
 }
 
+/**
+ * Raised when a second payout is attempted for a payout id that already has a
+ * transaction, under a different idempotency key (#1353).
+ */
+export class PayoutConflictError extends Error {
+  readonly status = 409;
+  readonly code = "PAYOUT_ALREADY_EXISTS";
+
+  constructor(
+    readonly payoutId: string,
+    readonly existingIdempotencyKey: string,
+  ) {
+    super(
+      `A payout transaction already exists for payoutId ${payoutId}. ` +
+        "Re-send the original idempotency key to retrieve it rather than creating a second payout.",
+    );
+    this.name = "PayoutConflictError";
+  }
+}
+
 export class PaymentService {
   private readonly config: PaymentConfig;
   private readonly rpcServer: any;
@@ -94,6 +129,27 @@ export class PaymentService {
     this.config = options.config ?? getPaymentConfig();
     this.rpcServer = options.rpcServer ?? new Server(this.config.sorobanRpcUrl);
     this.breaker = options.circuitBreaker ?? getSorobanBreaker();
+  }
+
+  async getClaimReadiness(arenaId: string): Promise<{ version: 1; arenaId: string; ready: boolean; chainState: string; payoutStatus: string | null; reason: string }> {
+    const startedAt = Date.now();
+    if (!/^C[A-Z2-7]{55}$/ .test(arenaId)) throw new Error("Invalid arena contract id");
+    try {
+      const [chainStateResult, records] = await Promise.all([readOnChainGameState(arenaId), this.transactions.listByStatus(["built", "queued", "awaiting_signature", "submitted", "confirmed", "failed", "dead"], 1000)]);
+      // #1519: an unavailable read must not be reported as "not finished" and
+      // thereby tell the caller the claim is simply not ready yet. Throwing
+      // lets the catch below log it as a failure so the caller retries.
+      const chainState = requireReadValue(chainStateResult);
+      const payout = records.filter((record) => record.payoutId === arenaId).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0];
+      const payoutBlocksClaim = payout?.status === "submitted" || payout?.status === "confirmed";
+      const ready = chainState === "Finished" && !payoutBlocksClaim;
+      const reason = chainState !== "Finished" ? "contract_not_finished" : payoutBlocksClaim ? "payout_already_in_progress_or_complete" : "ready";
+      console.info(JSON.stringify({ event: "claim_readiness_success", arenaId, ready, latencyMs: Date.now() - startedAt }));
+      return { version: 1, arenaId, ready, chainState, payoutStatus: payout?.status ?? null, reason };
+    } catch (error) {
+      console.error(JSON.stringify({ event: "claim_readiness_failure", arenaId, latencyMs: Date.now() - startedAt, error: error instanceof Error ? error.message : "unknown" }));
+      throw error;
+    }
   }
 
   getSorobanBreakerStats() {
@@ -110,6 +166,21 @@ export class PaymentService {
         transaction: existing,
         unsignedXdr: existing.unsignedXdr,
       };
+    }
+
+    // De-duplicating on the caller-supplied idempotency key alone was not enough
+    // (#1353). A retry after an ambiguous timeout typically generates a *fresh*
+    // key, which sailed past the check above, reserved its own nonce and built a
+    // second, independently-submittable transaction for the same prize — a real
+    // double payment. The payout id is the business identity of the payout, so
+    // it is what uniqueness must be enforced on.
+    //
+    // The database now also carries a unique constraint on payout_id; this check
+    // exists so the caller gets a clear conflict instead of a driver error, and
+    // so the nonce below is never burned on a duplicate.
+    const duplicate = await this.transactions.findByPayoutId(request.payoutId);
+    if (duplicate) {
+      throw new PayoutConflictError(request.payoutId, duplicate.idempotencyKey);
     }
 
     const nonce = await this.transactions.reserveNextNonce(this.config.sourceAccount);
@@ -153,6 +224,10 @@ export class PaymentService {
       updatedAt: now,
       confirmedAt: null,
       ownerId: ownerId ?? null,
+      principal: request.breakdown?.principal ?? null,
+      yieldAmount: request.breakdown?.yieldAmount ?? null,
+      platformFee: request.breakdown?.platformFee ?? null,
+      dust: request.breakdown?.dust ?? null,
     };
 
     await this.transactions.insert(transaction);
@@ -423,9 +498,12 @@ export class PaymentService {
     const contract = new Contract(this.config.payoutContractId);
     const amountStroops = toStroops(request.amount);
 
-    // distribute_winnings(payout_id: u64, winner: Address, amount: i128)
-    // The payout token and nonce are fixed at contract init time — the nonce
-    // here doubles as the on-chain payout_id for idempotency.
+    // Must match contract/payout/src/lib.rs distribute_winnings(payout_id: u64,
+    // winner: Address, amount: i128) exactly — 3 args, this order. The token is
+    // fixed by the contract at initialize time (no per-call asset argument),
+    // and the contract has no nonce param, so the reserved per-source `nonce`
+    // doubles as the on-chain idempotency key (`payout_id`). Our string
+    // `request.payoutId` stays an off-chain-only identifier.
     const operation = contract.call(
       this.config.payoutMethodName,
       nativeToScVal(BigInt(nonce), { type: "u64" }),

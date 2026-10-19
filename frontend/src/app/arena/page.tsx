@@ -13,18 +13,34 @@ import {
 } from "@/components/arena/core";
 import { useWallet } from "@/features/wallet/useWallet";
 import { TransactionModal } from "@/components/modals/TransactionModal";
+import { AssetTrustlinePrompt } from "@/components/modals/AssetTrustlinePrompt";
+import { useAssetReadinessGate } from "@/features/asset-readiness/useAssetReadinessGate";
+import { displayAmountToStroops } from "@/shared-d/utils/stellar-asset-reader";
+import {
+  evaluateSigningRequest,
+  // A value import, not a type: `instanceof` narrows to `any` under a
+  // type-only import and the rejection branch becomes dead code.
+  SigningPolicyError,
+} from "@/shared-d/security/policy";
 import { ArenaStatsSkeleton } from "@/components/arena/ArenaStatsSkeleton";
+import { ArenaStateSummary } from "@/components/arena/ArenaStateSummary";
 import {
   buildJoinArenaTransaction,
   buildSubmitCommitmentTransaction,
   buildRevealChoiceTransaction,
   buildClaimWinningsTransaction,
   submitSignedTransaction,
-  fetchArenaState,
   clearCommitmentForRound,
   hasStoredCommitmentForRound,
+  captureTransactionOutcome,
+  reconcileTransaction,
+  type TransactionOutcome,
+  NETWORK_PASSPHRASE,
 } from "@/shared-d/utils/stellar-transactions";
 import { useArenaStream } from "@/features/arena/useArenaStream";
+import { useArenaStateActions } from "@/features/arena/useArenaState";
+import { useTransactionIntent, type IntentKind } from "@/shared-d/hooks/useTransactionIntent";
+import type { Transaction } from "@stellar/stellar-sdk";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
@@ -64,9 +80,11 @@ export default function ArenaPage() {
 
 function ArenaGameView() {
   const { isConnected, address, connect, signTransaction, refreshBalance } = useWallet();
+  const { runTrackedTransaction } = useTransactionIntent();
   const [selectedChoice, setSelectedChoice] = useState<"heads" | "tails" | null>(null);
   const [isJoined, setIsJoined] = useState(false);
   const [hasWon, setHasWon] = useState(false);
+  const [claimReady, setClaimReady] = useState(false);
   const [showEliminationSummary, setShowEliminationSummary] = useState(false);
   const [survivors, setSurvivors] = useState({ current: 128, max: 1024 });
   const [userStatus, setUserStatus] = useState("STILL IN");
@@ -77,6 +95,12 @@ function ArenaGameView() {
   const [playerCount, setPlayerCount] = useState<number | null>(null);
   const [oracleYield, setOracleYield] = useState<number | null>(null);
   const [isLoadingYield, setIsLoadingYield] = useState(true);
+  // #1512: last-verified freshness classification/age for the oracle rate —
+  // shown alongside the rate so a stale reading is never presented as current.
+  const [oracleFreshness, setOracleFreshness] = useState<
+    "fresh" | "warning" | "stale" | "unavailable" | undefined
+  >(undefined);
+  const [oracleAgeSeconds, setOracleAgeSeconds] = useState<number | null>(null);
 
   // Round Resolution State
   const [isRoundResolved, setIsRoundResolved] = useState(false);
@@ -95,10 +119,43 @@ function ArenaGameView() {
   // Transaction Modal State
   const [showTxModal, setShowTxModal] = useState(false);
   const [txType, setTxType] = useState<"JOIN" | "COMMIT" | "REVEAL" | "CLAIM" | null>(null);
+  const [showTrustline, setShowTrustline] = useState(false);
+  /**
+   * Shown when a transaction is refused before the wallet prompt (#1487).
+   *
+   * A signing-policy rejection is not a request failure, so it needs its own
+   * surface: swallowing it into a generic "something went wrong" would hide the
+   * specific rule that fired, which is the only useful information the user has
+   * about why they cannot proceed.
+   */
+  const [policyNotice, setPolicyNotice] = useState<string | null>(null);
+
+  /**
+   * Asset-readiness gate for the claim (#1487).
+   *
+   * A payout is a *receipt*, so this is the case where a missing trustline
+   * costs the user money they have already won: without the line, the claim
+   * transaction cannot settle. Checking it here rather than only at join time
+   * means an account that added a line and then had it revoked is caught
+   * before the claim button is pressed.
+   */
+  const claimAssetGate = useAssetReadinessGate({
+    assetCode: "USDC",
+    amountStroops: (() => {
+      try {
+        return displayAmountToStroops(potentialPayout);
+      } catch {
+        return 0n;
+      }
+    })(),
+    entryPoint: "claim",
+    enabled: isConnected && hasWon && !!address,
+  });
   const [txDetails, setTxDetails] = useState<{ label: string; value: string | number }[]>([]);
 
   // Demo arena identifier; when unset the page falls back to the static mock view.
   const ARENA_ID = process.env.NEXT_PUBLIC_DEMO_ARENA_ID ?? "";
+  const { reconcile: reconcileArenaState } = useArenaStateActions(ARENA_ID);
   const { status: streamStatus, snapshot, feed: streamFeed } = useArenaStream(ARENA_ID);
 
   const headsPercentage = 42;
@@ -110,6 +167,8 @@ function ArenaGameView() {
         const response = await fetch(`${API_BASE}/api/oracle/yield`);
         const data = await response.json();
         setOracleYield(data.currentAPY);
+        setOracleFreshness(data.freshness);
+        setOracleAgeSeconds(typeof data.ageSeconds === "number" ? data.ageSeconds : null);
       } catch (err) {
         console.error("Failed to fetch oracle yield", err);
       } finally {
@@ -143,12 +202,12 @@ function ArenaGameView() {
   // this device already has a commitment stored for it — relevant on
   // remount/reload, since the commitment lives in localStorage, not state.
   useEffect(() => {
-    if (!ARENA_ID) return;
+    if (!ARENA_ID || !address) return;
     setRoundPhase("commit");
     setSelectedChoice(null);
     setCommitTimeExpired(false);
-    setHasCommittedForRound(hasStoredCommitmentForRound(ARENA_ID, currentRound));
-  }, [ARENA_ID, currentRound]);
+    setHasCommittedForRound(hasStoredCommitmentForRound(ARENA_ID, currentRound, address));
+  }, [ARENA_ID, currentRound, address]);
 
   useEffect(() => {
     if (!ARENA_ID || !snapshot) return;
@@ -166,28 +225,52 @@ function ArenaGameView() {
     if (!address || !ARENA_ID) return;
     setIsLoadingArena(true);
     try {
-      const state = await fetchArenaState(ARENA_ID, address);
+      const state = await reconcileArenaState(address);
+      if (!state) return;
       setSurvivors({ current: state.survivorsCount, max: state.maxCapacity });
       setIsJoined(state.isUserIn);
       setHasWon(state.hasWon);
+      if (state.hasWon) {
+        const readinessResponse = await fetch(`/api/payouts/claim-readiness/${encodeURIComponent(ARENA_ID)}`);
+        setClaimReady(readinessResponse.ok && ((await readinessResponse.json()) as { ready: boolean }).ready);
+      } else {
+        setClaimReady(false);
+      }
       setUserStatus(state.hasWon ? "WINNER!" : "STILL IN");
       setCurrentStake(state.currentStake);
       setPotentialPayout(state.potentialPayout);
       setEntryFee(state.entryFee);
       setPlayerCount(state.playerCount);
-      setCurrentRound(state.roundNumber);
+      setCurrentRound(state.currentRound);
     } catch (error) {
       console.error("Failed to fetch arena state:", error);
     } finally {
       setIsLoadingArena(false);
     }
-  }, [address, ARENA_ID]);
+  }, [address, ARENA_ID, reconcileArenaState]);
 
   useEffect(() => {
     if (isConnected && address) {
       updateArenaState();
     }
   }, [isConnected, address, updateArenaState]);
+
+  // Deterministic client reconciliation (#1385). After a Soroban transaction
+  // reaches a terminal confirmation state — SUCCESS, REJECTED, or TIMEOUT —
+  // the optimistic client state must converge to the chain's authoritative
+  // state. Resolving the outcome through the shared engine (deduped, with
+  // retry + latency observability) and then re-reading the chain makes that
+  // convergence deterministic for every caller of this page.
+  const reconcileOutcome = useCallback(
+    async (outcome: TransactionOutcome) => {
+      await reconcileTransaction(outcome, { arenaId: ARENA_ID });
+      // Re-read the authoritative chain state so optimistic UI state
+      // (isJoined, hasCommittedForRound, balances) converges to the chain.
+      await updateArenaState();
+      await refreshBalance();
+    },
+    [ARENA_ID, updateArenaState, refreshBalance],
+  );
 
   return (
     <>
@@ -241,7 +324,7 @@ function ArenaGameView() {
                   setTxType("JOIN");
                   setTxDetails([
                     { label: "Action", value: "Join Arena" },
-                    { label: "Entry Fee", value: "100 XLM" }, // Example
+                    { label: "Entry Fee", value: `${entryFee ?? 0} XLM` },
                     { label: "Arena ID", value: ARENA_ID },
                   ]);
                   setShowTxModal(true);
@@ -381,11 +464,17 @@ function ArenaGameView() {
 
           {/* Right column - Stats */}
           <div className="space-y-4">
+            {ARENA_ID && <ArenaStateSummary />}
             {isLoadingArena || isLoadingYield || entryFee === null || playerCount === null ? (
               <ArenaStatsSkeleton />
             ) : (
             <>
-            <TotalYieldPot amount={entryFee * playerCount} apr={oracleYield ?? 12.4} />
+            <TotalYieldPot
+              amount={entryFee * playerCount}
+              apr={oracleYield ?? 12.4}
+              freshness={oracleFreshness}
+              ageSeconds={oracleAgeSeconds}
+            />
 
             {/* Survivors placeholder */}
             <div className="bg-card-bg border border-neon-green p-4">
@@ -446,10 +535,53 @@ function ArenaGameView() {
                   <span>CURRENT STAKE</span>
                   <span className="font-bold">${currentStake.toLocaleString()}</span>
                 </div>
-                {hasWon ? (
+                {policyNotice && (
+                  <div
+                    role="alert"
+                    className="mt-4 border-2 border-red-500 bg-red-50 p-3 text-left text-xs text-red-800"
+                  >
+                    <p className="font-bold uppercase tracking-widest">Cannot proceed</p>
+                    <p className="mt-1">{policyNotice}</p>
+                  </div>
+                )}
+                {hasWon && claimReady && !claimAssetGate.canProceed && (
+                  <div className="mt-4 border-2 border-amber-500 bg-amber-50 p-3 text-left text-xs text-amber-900">
+                    <p className="font-bold uppercase tracking-widest">Asset readiness</p>
+                    <p className="mt-1">{claimAssetGate.message}</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {claimAssetGate.phase === "remediation_offered" && (
+                        <button
+                          type="button"
+                          onClick={() => setShowTrustline(true)}
+                          className="border-2 border-zinc-800 px-3 py-1 text-[10px] font-bold uppercase tracking-wider"
+                        >
+                          Set up trustline
+                        </button>
+                      )}
+                      {claimAssetGate.canRetry && (
+                        <button
+                          type="button"
+                          onClick={() => void claimAssetGate.check()}
+                          className="border-2 border-zinc-800 px-3 py-1 text-[10px] font-bold uppercase tracking-wider"
+                        >
+                          Check again
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {hasWon && claimReady ? (
                   <button
                     onClick={() => {
                       if (!ARENA_ID) return;
+                      // Claim is a receipt: refuse to open a confirm modal the
+                      // account cannot settle, and offer the trustline instead.
+                      if (!claimAssetGate.canProceed) {
+                        if (claimAssetGate.phase === "remediation_offered") {
+                          setShowTrustline(true);
+                        }
+                        return;
+                      }
                       setTxType("CLAIM");
                       setTxDetails([
                         { label: "Action", value: "Claim Winnings" },
@@ -499,6 +631,26 @@ function ArenaGameView() {
         </div>
       </div>
 
+      <AssetTrustlinePrompt
+        isOpen={showTrustline}
+        onClose={() => setShowTrustline(false)}
+        remediation={claimAssetGate.remediation}
+        message={claimAssetGate.message}
+        phase={
+          claimAssetGate.phase === "remediating"
+            ? "remediating"
+            : claimAssetGate.phase === "blocked"
+              ? "blocked"
+              : "remediation_offered"
+        }
+        onConfirm={async () => {
+          await claimAssetGate.remediate();
+          if (claimAssetGate.canProceed) setShowTrustline(false);
+        }}
+        onRetry={() => void claimAssetGate.check()}
+        actionLabel="claim your winnings"
+      />
+
       <TransactionModal
         isOpen={showTxModal}
         onClose={() => setShowTxModal(false)}
@@ -530,25 +682,100 @@ function ArenaGameView() {
                 ? "Sign & Reveal"
                 : "Sign & Claim"
         }
-        onConfirm={async () => {
+        onConfirm={async ({ onSigned }) => {
           if (!address || !txType) return;
 
           try {
-            let tx;
+            let buildTransaction: (() => Promise<Transaction>) | null = null;
+            let intentKind: IntentKind | null = null;
+            let actionKey: string | null = null;
+
             if (txType === "JOIN") {
-              tx = await buildJoinArenaTransaction(address, ARENA_ID, 100);
+              buildTransaction = () => buildJoinArenaTransaction(address, ARENA_ID);
+              intentKind = "join_arena";
+              actionKey = `join_arena:${ARENA_ID}`;
             } else if (txType === "COMMIT" && selectedChoice) {
-              tx = await buildSubmitCommitmentTransaction(address, ARENA_ID, selectedChoice === "heads" ? "Heads" : "Tails", currentRound);
+              const choice = selectedChoice === "heads" ? "Heads" : "Tails";
+              buildTransaction = () => buildSubmitCommitmentTransaction(address, ARENA_ID, choice, currentRound);
+              intentKind = "commit_choice";
+              actionKey = `commit_choice:${ARENA_ID}:${currentRound}`;
             } else if (txType === "REVEAL") {
-              tx = await buildRevealChoiceTransaction(address, ARENA_ID, currentRound);
+              buildTransaction = () => buildRevealChoiceTransaction(address, ARENA_ID, currentRound);
+              intentKind = "reveal_choice";
+              actionKey = `reveal_choice:${ARENA_ID}:${currentRound}`;
             } else if (txType === "CLAIM") {
-              tx = await buildClaimWinningsTransaction(address, ARENA_ID);
+              buildTransaction = () => buildClaimWinningsTransaction(address, ARENA_ID);
+              intentKind = "claim";
+              actionKey = `claim:${ARENA_ID}`;
             } else {
               return;
             }
 
-            const signedXdr = await signTransaction(tx.toXDR());
-            await submitSignedTransaction(signedXdr);
+            // Runs both #1381 (resumable intent tracking, so a wallet
+            // rejection/expiry can be resumed against the same backend
+            // record) and #1385 (deterministic outcome reconciliation, so
+            // optimistic UI state converges to the chain's authoritative
+            // state) together — neither alone is sufficient:
+            // runTrackedTransaction does not reconcile UI state, and the
+            // old inline sign/submit path had no intent tracking.
+            //
+            // Firewall every protected flow from this page (#1487) by
+            // validating inside buildTransaction, before runTrackedTransaction
+            // ever reaches the wallet prompt — this view builds JOIN, COMMIT,
+            // REVEAL and CLAIM envelopes, and without this check they would be
+            // the one place a user is asked to sign something the rest of the
+            // app has already refused to sign.
+            const buildTransactionForIntent = buildTransaction;
+            let policyRejected = false;
+            const checkedBuildTransaction = async () => {
+              const tx = await buildTransactionForIntent();
+              try {
+                evaluateSigningRequest(tx.toXDR(), txType);
+              } catch (error) {
+                if (error instanceof SigningPolicyError) {
+                  policyRejected = true;
+                  setPolicyNotice(error.message);
+                  setShowTxModal(false);
+                }
+                throw error;
+              }
+              return tx;
+            };
+
+            let outcome: TransactionOutcome;
+            try {
+              const { hash } = await runTrackedTransaction({
+                kind: intentKind,
+                actionKey,
+                publicKey: address,
+                buildTransaction: checkedBuildTransaction,
+                signTransaction,
+                submitSignedTransaction,
+                networkPassphrase: NETWORK_PASSPHRASE,
+                onSigned,
+              });
+              outcome = { status: "SUCCESS", hash };
+            } catch (e) {
+              // A policy rejection never reached the chain, so there's
+              // nothing to reconcile — the UI state was already updated
+              // by checkedBuildTransaction above.
+              if (policyRejected) return;
+
+              // Map every failure to a deterministic outcome and reconcile in
+              // the background: on REJECTED (chain unchanged) and on TIMEOUT
+              // (may still land) the chain is the authority, so we converge
+              // to it instead of leaving optimistic state in place.
+              outcome = captureTransactionOutcome(e);
+              void reconcileOutcome(outcome).catch((reconcileError) => {
+                console.error("Reconciliation failed:", reconcileError);
+              });
+              throw e;
+            }
+
+            // SUCCESS already confirmed — deterministically converge the
+            // optimistic UI to the chain's authoritative state before
+            // settling the round-scoped side effects below.
+            await reconcileOutcome(outcome);
 
             if (txType === "COMMIT") {
               setHasCommittedForRound(true);
@@ -556,13 +783,11 @@ function ArenaGameView() {
               // Only clear now that the reveal has actually confirmed —
               // clearing earlier would strand the salt if signing was
               // cancelled or submission failed.
-              clearCommitmentForRound(ARENA_ID, currentRound);
+              if (address) {
+                clearCommitmentForRound(ARENA_ID, currentRound, address);
+              }
               setHasCommittedForRound(false);
             }
-
-            // Trigger real-time updates
-            await refreshBalance();
-            await updateArenaState();
 
             setShowTxModal(false);
           } catch (e) {

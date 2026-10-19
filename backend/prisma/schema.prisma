@@ -10,6 +10,9 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// TODO(#1444): Add production-plan-validated indexes for arena stats queries.
+// TODO(#1444): Store the supporting EXPLAIN fixtures.
+
 model User {
   id             String           @id @default(uuid())
   walletAddress  String           @unique @map("wallet_address")
@@ -18,6 +21,9 @@ model User {
 
   transactions   Transaction[]
   eliminationLogs EliminationLog[]
+  notificationPreference NotificationPreference?
+  notificationDeliveries NotificationDelivery[]
+  pushSubscriptions PushSubscription[]
 
   @@map("users")
 }
@@ -31,6 +37,7 @@ model Arena {
   pools       Pool[]
   rounds      Round[]
 
+  @@index([createdAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
   @@map("arenas")
 }
 
@@ -44,23 +51,30 @@ model Pool {
   arena       Arena    @relation(fields: [arenaId], references: [id])
 
   @@index([arenaId]) // Index to quickly find pools for an arena
+  @@index([arenaId, createdAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
   @@map("pools")
 }
 
 model Round {
-  id          String   @id @default(uuid())
-  arenaId     String   @map("arena_id")
-  roundNumber Int      @map("round_number")
-  state       String   @default("OPEN") // OPEN, CLOSED, RESOLVED, SETTLED
-  metadata    Json?    // Stores player choices, oracle yield, random seed
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id                 String   @id @default(uuid())
+  arenaId            String   @map("arena_id")
+  roundNumber        Int      @map("round_number")
+  state              String   @default("OPEN") // OPEN, CLOSED, RESOLVED, SETTLED
+  metadata           Json?    // Legacy extensible metadata JSON document
+  oracleYield        Float?   @map("oracle_yield")
+  randomSeed         String?  @map("random_seed")
+  playerChoices      Json?    @map("player_choices")
+  allActivePlayerIds String[] @default([]) @map("all_active_player_ids")
+  resolution         Json?    @map("resolution")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
 
-  arena       Arena    @relation(fields: [arenaId], references: [id])
-  eliminationLogs EliminationLog[]
+  arena              Arena    @relation(fields: [arenaId], references: [id])
+  eliminationLogs    EliminationLog[]
 
   @@unique([arenaId, roundNumber]) // Each round is unique per arena
   @@index([arenaId])
+  @@index([arenaId, roundNumber(sort: Asc), id(sort: Asc)]) // Keyset pagination index (#1520)
   @@index([state])
   @@map("rounds")
 }
@@ -81,20 +95,16 @@ model Transaction {
   @@map("transactions")
 }
 
-model AuditLog {
-  id          String   @id @default(uuid())
-  adminId     String   @map("admin_id")
-  action      String
-  resourceId  String?  @map("resource_id")
-  metadata    Json?
-  ipAddress   String   @map("ip_address")
-  userAgent   String?  @map("user_agent")
-  createdAt   DateTime @default(now()) @map("created_at")
+// Resumable cursor state for background reconciliation/backfill jobs.
+// One row per job (keyed by `id`, e.g. "arena_discovery"), so a job resumes
+// from where it left off across restarts instead of rescanning from scratch
+// or losing progress (see docs/arena-discovery-backfill.md, #1391).
+model BackfillCursor {
+  id            String   @id // job name, e.g. "arena_discovery"
+  lastProcessed Int      @default(0) @map("last_processed")
+  updatedAt     DateTime @updatedAt @map("updated_at")
 
-  @@index([adminId])
-  @@index([action])
-  @@index([createdAt])
-  @@map("audit_logs")
+  @@map("backfill_cursors")
 }
 
 model EliminationLog {
@@ -108,6 +118,197 @@ model EliminationLog {
   user        User     @relation(fields: [userId], references: [id])
 
   @@index([roundId])
+  @@index([roundId, eliminatedAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
   @@index([userId])
   @@map("elimination_logs")
+}
+
+model NotificationPreference {
+  id          String   @id @default(uuid())
+  userId      String   @unique @map("user_id")
+  emailEnabled Boolean @default(false) @map("email_enabled")
+  pushEnabled Boolean @default(false) @map("push_enabled")
+  inAppEnabled Boolean @default(true) @map("in_app_enabled")
+  roundNotifications Boolean @default(true) @map("round_notifications")
+  payoutNotifications Boolean @default(true) @map("payout_notifications")
+  eliminationNotifications Boolean @default(true) @map("elimination_notifications")
+  email       String?
+  pushToken   String?  @map("push_token")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@map("notification_preferences")
+}
+
+model NotificationDelivery {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  type        String   // "round" | "payout" | "elimination"
+  channel     String   // "email" | "push" | "in_app"
+  status      String   // "pending" | "sent" | "delivered" | "failed"
+  dedupeKey   String   @map("dedupe_key")
+  sentAt      DateTime? @map("sent_at")
+  error       String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([userId, dedupeKey, channel])
+  @@map("notification_deliveries")
+}
+
+// Web Push subscriptions, one row per (user, device endpoint) (#1571).
+// p256dh/auth are AES-256-GCM encrypted at rest (see pushService);
+// the service never returns them to clients.
+model PushSubscription {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  endpoint    String   @unique
+  p256dh      String
+  auth        String
+  userAgent   String?  @map("user_agent")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("push_subscriptions")
+}
+
+// Checkpointed on-chain arena projection state (#1382).
+//
+// One row per (network, arenaId): the canonical resume point for the
+// projection replay engine. `lastLedgerSequence` is the highest ledger
+// whose events have been folded into `projectionState`. Checkpoints are
+// scoped per network so testnet and mainnet replays never share state
+// (see docs/projection-checkpoint-replay.md).
+model ArenaProjectionCheckpoint {
+  id                 String    @id @default(uuid())
+  arenaId            String    @map("arena_id")
+  network            String    // networkPassphrase-derived key; keeps testnet/mainnet checkpoints isolated
+  lastLedgerSequence Int       @map("last_ledger_sequence")
+  // Full folded ArenaProjectionState (see arenaProjectionFold.ts), stored as
+  // JSON so the replay engine can resume without re-deriving state from
+  // genesis. This is the "projection snapshot" referenced in the design note.
+  projectionState    Json      @map("projection_state")
+  status             String    @default("idle") // idle | replaying | caught_up | failed
+  lastError          String?   @map("last_error")
+  // Advisory lease to guard against two replay processes running
+  // concurrently for the same (arenaId, network) after an ungraceful
+  // restart. Null/expired lease means no active replayer.
+  leaseOwner         String?   @map("lease_owner")
+  leaseExpiresAt     DateTime? @map("lease_expires_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  @@unique([arenaId, network])
+  @@index([status])
+  @@map("arena_projection_checkpoints")
+}
+
+// Protocol treasury fee reconciliation (#1511).
+//
+// One row per canonical fee expectation, derived from an authoritative
+// on-chain event (currently: the platform fee implied by an arena's
+// `claimed` event) and matched against actual on-chain token movement.
+// Read-only reporting — this table never drives a transfer. See
+// backend/docs/TREASURY_RECONCILIATION_DESIGN.md.
+model TreasuryFeeRecord {
+  id     String @id @default(uuid())
+  // networkPassphrase-derived key; keeps testnet/mainnet records isolated,
+  // same convention as ArenaProjectionCheckpoint.network.
+  network String
+  // "platform_fee" today; the schema leaves room for other treasury record
+  // types (e.g. creator-stake collect/refund) as a documented follow-up.
+  recordType String @default("platform_fee") @map("record_type")
+  arenaId    String @map("arena_id")
+  asset      String
+  assetIssuer String? @map("asset_issuer")
+
+  // Canonical source event identity — the idempotency key (network, tx hash,
+  // event/operation index) required by #1511's ingestion acceptance criterion.
+  sourceTxHash         String   @map("source_tx_hash")
+  sourceEventId        String   @map("source_event_id")
+  sourceLedgerSequence Int      @map("source_ledger_sequence")
+  sourceLedgerClosedAt DateTime @map("source_ledger_closed_at")
+
+  // Expected side — derived from authoritative on-chain data (the claimed
+  // event's yield_amount) and a versioned protocol config snapshot, using
+  // exact integer (atomic-unit) math.
+  expectedAmountAtomic BigInt  @map("expected_amount_atomic")
+  configVersion        Int     @map("config_version")
+  feeBpsApplied         Int     @map("fee_bps_applied")
+  destination           String? @map("destination")
+
+  // Actual side — filled in only once/if a matching transfer is found.
+  actualAmountAtomic  BigInt? @map("actual_amount_atomic")
+  actualTxHash        String? @map("actual_tx_hash")
+  actualDestination   String? @map("actual_destination")
+
+  // pending | balanced | discrepant
+  status String @default("pending")
+  // missing_transfer | unexpected_transfer | amount_mismatch | destination_mismatch | unfinalized_ledger
+  discrepancyType String?   @map("discrepancy_type")
+  reconciledAt    DateTime? @map("reconciled_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([network, sourceTxHash, sourceEventId])
+  @@index([arenaId])
+  @@index([status])
+  @@index([sourceLedgerSequence])
+  @@map("treasury_fee_records")
+}
+
+// Idempotent ingestion checkpoint for treasury reconciliation (#1511).
+// Mirrors ArenaProjectionCheckpoint's per-(arenaId, network) lease pattern,
+// scoped to this ingestion job specifically (a distinct job from the #1382
+// arena state projection).
+model TreasuryReconciliationCheckpoint {
+  id                 String   @id @default(uuid())
+  arenaId            String   @map("arena_id")
+  network            String
+  lastLedgerSequence Int      @map("last_ledger_sequence")
+  // The `platform_fee_bps` in effect as of `lastLedgerSequence`, carried
+  // forward across ingestion runs so a resumed run knows which fee rate
+  // applied to a `claimed` event without re-scanning full history. Defaults
+  // to the contract's own global default (see `load_platform_fee_bps`).
+  lastKnownFeeBps Int @default(1000) @map("last_known_fee_bps")
+  // idle | ingesting | caught_up | failed
+  status     String    @default("idle")
+  lastError  String?   @map("last_error")
+  leaseOwner String?   @map("lease_owner")
+  leaseExpiresAt DateTime? @map("lease_expires_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  @@unique([arenaId, network])
+  @@index([status])
+  @@map("treasury_reconciliation_checkpoints")
+}
+
+// Request-level idempotency for arena lifecycle commands (#1386).
+// One row per (idempotencyKey), checked BEFORE any side effect
+// (on-chain submission, state transition) runs, so a duplicate/retried
+// request returns the prior durable result instead of re-executing.
+// Deliberately separate from Round.state: that field is coarse and
+// shared across every caller, not a substitute for per-request dedup —
+// see docs/ARENA_LIFECYCLE_IDEMPOTENCY.md.
+model IdempotentCommand {
+  id             String   @id @default(uuid())
+  idempotencyKey String   @unique @map("idempotency_key")
+  action         String   // "resolve_round" | "close_round"
+  roundId        String   @map("round_id")
+  status         String   // "in_progress" | "completed" | "failed"
+  result         Json?    // The durable response body to replay on retry, once completed
+  errorMessage   String?  @map("error_message")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([roundId])
+  @@map("idempotent_commands")
 }

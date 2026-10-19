@@ -111,4 +111,39 @@ describe("scrubStellarAddresses", () => {
     });
     expect(() => scrubStellarAddresses(event)).not.toThrow();
   });
+
+  it("replaces a public key embedded in event.request.url (issue #1286)", () => {
+    const event = makeEvent({
+      request: {
+        url: `https://app.example.com/arena-v2/withdrawal-success?address=${PUBLIC_KEY}&amount=500`,
+      },
+    });
+    const result = scrubStellarAddresses(event);
+    expect(result!.request!.url).toBe(
+      "https://app.example.com/arena-v2/withdrawal-success?address=[STELLAR_ADDRESS]&amount=500",
+    );
+  });
+
+  it("replaces multiple public keys in event.request.url", () => {
+    const event = makeEvent({
+      request: { url: `/tx?from=${PUBLIC_KEY}&to=${PUBLIC_KEY_2}` },
+    });
+    const result = scrubStellarAddresses(event);
+    expect(result!.request!.url).toBe("/tx?from=[STELLAR_ADDRESS]&to=[STELLAR_ADDRESS]");
+  });
+
+  it("handles an event with a request object but no url without throwing", () => {
+    const event = makeEvent({ request: { method: "GET" } });
+    expect(() => scrubStellarAddresses(event)).not.toThrow();
+  });
+
+  it("handles an event with no request object at all without throwing", () => {
+    const event = makeEvent();
+    expect(() => scrubStellarAddresses(event)).not.toThrow();
+  });
+
+  it("still drops the whole event if a secret key leaks via request.url", () => {
+    const event = makeEvent({ request: { url: `/debug?key=${SECRET_KEY}` } });
+    expect(scrubStellarAddresses(event)).toBeNull();
+  });
 });

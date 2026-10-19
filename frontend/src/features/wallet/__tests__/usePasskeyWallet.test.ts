@@ -2,7 +2,7 @@
  * @jest-environment jsdom
  */
 import { renderHook, act } from '@testing-library/react';
-import { usePasskeyWallet } from '../usePasskeyWallet';
+import { usePasskeyWallet, isPasskeyDemoModeEnabled } from '../usePasskeyWallet';
 
 const mockCredential = {
   rawId: new Uint8Array([1, 2, 3, 4]).buffer,
@@ -68,5 +68,38 @@ describe('usePasskeyWallet', () => {
     Object.defineProperty(window, 'PublicKeyCredential', { value: undefined, configurable: true, writable: true });
     const { result } = renderHook(() => usePasskeyWallet());
     await expect(result.current.register('player')).rejects.toThrow('WebAuthn / Passkeys are not supported');
+  });
+});
+
+describe('usePasskeyWallet — demo address derivation is disabled in production (#1281)', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+
+  afterEach(() => {
+    Object.defineProperty(process.env, 'NODE_ENV', { value: originalNodeEnv, configurable: true });
+  });
+
+  it('isPasskeyDemoModeEnabled is false in production even with NEXT_PUBLIC_PASSKEY_DEMO_MODE=true', () => {
+    Object.defineProperty(process.env, 'NODE_ENV', { value: 'production', configurable: true });
+    // jest.setup.env.ts sets NEXT_PUBLIC_PASSKEY_DEMO_MODE=true; the NODE_ENV
+    // check must still win.
+    expect(isPasskeyDemoModeEnabled()).toBe(false);
+  });
+
+  it('isPasskeyDemoModeEnabled is true outside production (development)', () => {
+    Object.defineProperty(process.env, 'NODE_ENV', { value: 'development', configurable: true });
+    expect(isPasskeyDemoModeEnabled()).toBe(true);
+  });
+
+  it('rejects registration in a production build even with NEXT_PUBLIC_PASSKEY_DEMO_MODE=true', async () => {
+    Object.defineProperty(process.env, 'NODE_ENV', { value: 'production', configurable: true });
+    const { result } = renderHook(() => usePasskeyWallet());
+    await expect(result.current.register('player')).rejects.toThrow(/disabled in production builds/);
+  });
+
+  it('allows the demo derivation outside production (development)', async () => {
+    Object.defineProperty(process.env, 'NODE_ENV', { value: 'development', configurable: true });
+    const { result } = renderHook(() => usePasskeyWallet());
+    const reg = await result.current.register('player');
+    expect(reg.address).toMatch(/^G[A-Z2-7]{55}$/);
   });
 });

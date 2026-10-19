@@ -1,11 +1,20 @@
 import { PrismaClient } from "@prisma/client";
 import { ArenaStats } from "../types/arena";
 import {
-  getOnChainGameState,
-  getOnChainPlayerCount,
-  getOnChainTotalYield,
+  getOnChainSnapshotOrThrow,
   mapGameStateToStatus,
+  type OnChainArenaSnapshot,
 } from "./onChainReader";
+import { getCurrentLedgerSequence } from "./ledgerClock";
+import { getRollbackGuard } from "./ledgerContinuity";
+import { getSorobanBreaker } from "../utils/circuitBreaker";
+import { cache, cacheKeys, cacheTTL } from "../cache/cacheService";
+import { logger } from "../utils/logger";
+
+interface VerifiedOnChainSnapshot extends OnChainArenaSnapshot {
+  ledgerSequence: number;
+  verifiedAt: string;
+}
 
 export class ArenaStatsService {
   constructor(private prisma: PrismaClient) {}
@@ -14,11 +23,16 @@ export class ArenaStatsService {
     const arena = await this.prisma.arena.findUnique({
       where: { id: arenaId },
       include: {
+        // Round-level fields (state/metadata) are needed across the *whole*
+        // history — yield fallback and SETTLED detection both scan every
+        // round, not just the latest — so we still fetch all rounds. But
+        // eliminationLogs was pulling every elimination row's full content
+        // into memory (id, reason, eliminatedAt, ...) just to read distinct
+        // userIds; that's fetched separately below via a single distinct
+        // query instead, which Prisma can satisfy without materializing
+        // full row objects for a long-running arena's entire history.
         rounds: {
           orderBy: { roundNumber: "asc" },
-          include: {
-            eliminationLogs: true,
-          },
         },
       },
     });
@@ -44,57 +58,84 @@ export class ArenaStatsService {
     const lastRound = rounds[rounds.length - 1];
     const currentRound = lastRound !== undefined ? lastRound.roundNumber : 0;
 
-    // ── #1119: Read player count from on-chain contract ──────────────────
-    // The contract's get_player_count() reflects ALL players who joined,
-    // including those who called the contract directly (not via backend API).
-    // Fall back to DB row count if the on-chain call fails.
+    // ── #1408: One combined, all-or-nothing on-chain read ─────────────────
+    // Previously player count / yield / status each had their own try/catch
+    // that silently fell back to a DB-derived value with no signal to the
+    // caller — a partial RPC hiccup could mix live and stale fields with
+    // nothing to tell them apart. Now: either all three come from a single
+    // live read (degraded=false), or — if that fails — all three come from
+    // the last verified snapshot (degraded=true, with the ledger it was
+    // verified at), or — if there has never been a successful read for this
+    // arena — all three fall back to the pre-#1408 DB-derived values,
+    // unflagged, exactly as before.
     const contractAddress = metadata.contractAddress as string | undefined;
-    let playerCount: number;
-    if (contractAddress) {
+    const vaultContractAddress =
+      (metadata.vaultContractAddress as string | undefined) ?? contractAddress;
+
+    let onChainOverlay: VerifiedOnChainSnapshot | null = null;
+    let degraded = false;
+
+    // While ledger rollback recovery is active (#1490) no on-chain read is
+    // trustworthy and none may be cached, so the live attempt is skipped and
+    // the response is flagged degraded without exposing RPC internals.
+    if (contractAddress && vaultContractAddress && !getRollbackGuard().isQuarantined()) {
       try {
-        playerCount = await getOnChainPlayerCount(contractAddress);
-      } catch {
-        // Fallback to DB count if on-chain read fails
-        playerCount = await this.prisma.pool.count({ where: { arenaId } });
+        onChainOverlay = await this.fetchAndCacheOnChainSnapshot(
+          arenaId,
+          contractAddress,
+          vaultContractAddress,
+        );
+      } catch (err) {
+        const cached = await cache.get<VerifiedOnChainSnapshot>(
+          cacheKeys.arenaOnChainSnapshot(arenaId),
+        );
+        if (cached) {
+          logger.warn(
+            {
+              subsystem: "arena-stats",
+              arenaId,
+              err: err instanceof Error ? err.message : String(err),
+              snapshotLedgerSequence: cached.ledgerSequence,
+            },
+            "Live on-chain read failed; serving last verified snapshot",
+          );
+          onChainOverlay = cached;
+          degraded = true;
+        }
+        // No snapshot has ever been verified for this arena — fall through
+        // to the DB-derived values below, matching pre-#1408 behavior.
       }
-    } else {
-      playerCount = await this.prisma.pool.count({ where: { arenaId } });
     }
 
-    const eliminatedUserIds = new Set<string>();
-    rounds.forEach((round) => {
-      round.eliminationLogs.forEach((log) => {
-        eliminatedUserIds.add(log.userId);
-      });
-    });
-    const survivorCount = Math.max(0, playerCount - eliminatedUserIds.size);
+    // A rollback may have been exposed while the live read was in flight.
+    if (getRollbackGuard().isQuarantined()) {
+      onChainOverlay = null;
+      degraded = true;
+    }
+
+    const playerCount = onChainOverlay
+      ? onChainOverlay.playerCount
+      : await this.prisma.pool.count({ where: { arenaId } });
+
+    const eliminatedCount = await this.prisma.eliminationLog
+      .findMany({
+        where: { round: { arenaId } },
+        distinct: ["userId"],
+        select: { userId: true },
+      })
+      .then((rows) => rows.length);
+    const survivorCount = Math.max(0, playerCount - eliminatedCount);
 
     const latestRound = rounds[rounds.length - 1];
     const latestRoundMetadata = (latestRound?.metadata as Record<string, unknown>) ?? {};
     const latestChoices = (latestRoundMetadata.playerChoices as Array<{ stake?: number }>) ?? [];
     const currentPot = latestChoices.reduce((sum: number, p) => sum + (p.stake ?? 0), 0);
 
-    // ── #1120: Source yieldAccrued from on-chain rwa-adapter vault ─────────
-    // The previous implementation summed the oracleYield column from DB records,
-    // which is disconnected from actual on-chain token flows. Now we attempt
-    // to read from the rwa-adapter vault's get_total_yield if available.
-    let yieldAccrued = 0;
-    const vaultContractAddress = (metadata.vaultContractAddress as string | undefined) ?? contractAddress;
-    if (vaultContractAddress) {
-      try {
-        yieldAccrued = await getOnChainTotalYield(vaultContractAddress);
-      } catch {
-        // Fallback to DB-based calculation if on-chain read fails
-        rounds.forEach((round) => {
-          if (round.state === "RESOLVED") {
-            const roundMetadata = (round.metadata as Record<string, unknown>) ?? {};
-            const roundYield = (roundMetadata.oracleYield as number | undefined) ?? 0;
-            yieldAccrued += roundYield;
-          }
-        });
-      }
+    let yieldAccrued: number;
+    if (onChainOverlay) {
+      yieldAccrued = onChainOverlay.yieldAccrued;
     } else {
-      // No contract address available, use DB-based calculation
+      yieldAccrued = 0;
       rounds.forEach((round) => {
         if (round.state === "RESOLVED") {
           const roundMetadata = (round.metadata as Record<string, unknown>) ?? {};
@@ -104,25 +145,12 @@ export class ArenaStatsService {
       });
     }
 
-    // ── #1124: Derive status from on-chain game_state() ──────────────────
-    // The previous implementation only used latestRound.state which only
-    // returns "OPEN"/"CLOSED"/"RESOLVED"/"SETTLED" — never the terminal
-    // arena states. Now we check the contract's game_state() to detect
-    // Finished and Cancelled arenas.
-    let status: string;
-    if (contractAddress) {
-      try {
-        const gameState = await getOnChainGameState(contractAddress);
-        // Check if prize has been claimed by looking for a SETTLED round
-        const prizeClaimed = rounds.some((r) => r.state === "SETTLED");
-        status = mapGameStateToStatus(gameState, prizeClaimed);
-      } catch {
-        // Fallback to round-based status derivation
-        status = this.deriveStatusFromRounds(rounds);
-      }
-    } else {
-      status = this.deriveStatusFromRounds(rounds);
-    }
+    // Check if prize has been claimed by looking for a SETTLED round — this
+    // is DB state either way, live read or degraded snapshot.
+    const prizeClaimed = rounds.some((r) => r.state === "SETTLED");
+    const status = onChainOverlay
+      ? mapGameStateToStatus(onChainOverlay.gameState, prizeClaimed)
+      : this.deriveStatusFromRounds(rounds);
 
     return {
       arenaId,
@@ -138,7 +166,42 @@ export class ArenaStatsService {
       yieldAccrued,
       status,
       lastUpdated: new Date().toISOString(),
+      degraded,
+      ledgerSequence: onChainOverlay?.ledgerSequence ?? null,
+      snapshotVerifiedAt: onChainOverlay?.verifiedAt ?? null,
     };
+  }
+
+  /**
+   * Attempt a live on-chain read; on success, persist it as the new "last
+   * verified" snapshot so a future failed read has something to degrade to.
+   */
+  private async fetchAndCacheOnChainSnapshot(
+    arenaId: string,
+    contractAddress: string,
+    vaultContractAddress: string,
+  ): Promise<VerifiedOnChainSnapshot> {
+    const [snapshot, ledgerSequence] = await Promise.all([
+      getSorobanBreaker().fire(() => getOnChainSnapshotOrThrow(contractAddress, vaultContractAddress)),
+      getCurrentLedgerSequence(), // already circuit-breaker-wrapped internally
+    ]);
+
+    const verified: VerifiedOnChainSnapshot = {
+      ...snapshot,
+      ledgerSequence,
+      verifiedAt: new Date().toISOString(),
+    };
+
+    // Never persist a read taken while a rollback is being recovered from.
+    if (!getRollbackGuard().isQuarantined()) {
+      await cache.set(
+        cacheKeys.arenaOnChainSnapshot(arenaId),
+        verified,
+        cacheTTL.ARENA_ONCHAIN_SNAPSHOT,
+      );
+    }
+
+    return verified;
   }
 
   /**

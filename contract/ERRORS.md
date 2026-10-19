@@ -123,6 +123,8 @@ The arena pool contract uses `#[contracterror]` with **explicit** `repr(u32)` va
 | 20 | `MaxSubmissionsPerRound` | Per-round submission bound (`contract/BOUNDS.md`) |
 | 21 | `PlayerEliminated` | Eliminated player attempted action |
 | 42 | `NotWhitelisted` | Non-whitelisted player attempted to join a private arena |
+| 37 | `ArenaAlreadyStarted` | `join_arena` after at least one round has been played, even while the arena is back in `Open` between rounds (#1358) |
+| 38 | `InvalidLeaderboardLimit` | `configure_leaderboard_limit` with `0` or a value above `MAX_LEADERBOARD_LIMIT` (100) (#1455) |
 | 22 | `WrongRoundNumber` | Submitted for wrong round |
 | 23 | `NotEnoughPlayers` | Too few players to start/resolve round |
 | 24 | `InvalidCapacity` | `set_capacity` value out of `[MIN, MAX]` range |
@@ -130,6 +132,28 @@ The arena pool contract uses `#[contracterror]` with **explicit** `repr(u32)` va
 | 26 | `TimelockNotExpired` | `execute_upgrade` called before 48-hour timelock |
 
 **ABI snapshot:** `contract/arena/abi_snapshot.json` guards these ordinals in CI (`abi_guard` tests).
+
+> Note: the table above does not match the current `ArenaError` enum in
+> `contract/arena/src/types.rs` (pre-existing drift, not introduced by
+> #1512) — treat `types.rs` as the source of truth. Two codes added by
+> #1512, current as of that enum:
+>
+> | Code | Variant | Meaning |
+> |------|---------|---------|
+> | 39 | `InvalidFreshnessPolicy` | `set_oracle_freshness_policy` called with `warn_age_secs > max_age_secs`, either `0`, or `max_age_secs` above `MAX_ORACLE_MAX_AGE_SECS` (86,400s) |
+> | 40 | `StaleOracleData` | `resolve_round` refused because the oracle's latest observation is older than the arena's configured `max_age_secs`, or was never recorded. Recoverable — retry once the oracle publishes a fresh observation. |
+
+> Codes added by the lobby lifecycle work (#1579, #1580, #1581), current as of
+> that enum:
+>
+> | Code | Variant | Meaning |
+> |------|---------|---------|
+> | 41 | `StartDeadlinePassed` | `join_arena` called at or after the lobby start deadline |
+> | 42 | `NoStartDeadline` | `cancel_unstarted` called on an arena with no configured deadline |
+> | 43 | `VaultWithdrawFailed` | `leave_arena`/`ban_player` could not release the entry fee from the vault; the whole call reverts |
+
+> The factory adds `InvalidStartDeadline = 21` (`FactoryError`) when
+> `PoolConfig.start_deadline` is outside `[created_at + 300, created_at + 2_592_000]`.
 
 > **Required process — every new `ArenaError` variant must be added in the same PR to all three places:**
 > 1. `contract/arena/src/lib.rs` — add the variant with its explicit `repr(u32)` value.

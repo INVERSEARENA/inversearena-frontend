@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useWallet } from "@/features/wallet/useWallet";
 import { useAdminRole } from "@/features/wallet/useAdminRole";
+import { useCapability } from "@/shared-d/hooks/useCompatibility";
 import { PoolCreationModal } from "@/components/modals/PoolCreationModal";
 
 // ---------------------------------------------------------------------------
@@ -107,6 +108,8 @@ export default function AdminDashboardPage() {
   const { status, publicKey } = useWallet();
   const adminRole = useAdminRole(publicKey);
   const isAuthorized = adminRole === "authorized";
+  // Compatibility gate (#1491): round controls need the deployment to support admin entrypoints.
+  const adminCapability = useCapability("admin");
 
   const [arenas, setArenas] = useState<ArenaEntry[]>([]);
   const [payouts, setPayouts] = useState<PayoutRow[]>([]);
@@ -179,6 +182,11 @@ export default function AdminDashboardPage() {
     // gate above was somehow bypassed.
     if (!isAuthorized) {
       setActionError("This wallet is not authorized to perform admin actions.");
+      return;
+    }
+
+    if (!adminCapability.allowed) {
+      setActionError(adminCapability.message);
       return;
     }
 
@@ -259,6 +267,12 @@ export default function AdminDashboardPage() {
         </div>
       )}
 
+      {!adminCapability.allowed && (
+        <div role="alert" className="border border-yellow-500/60 bg-yellow-900/20 p-4">
+          <p className="font-pixel text-[9px] text-yellow-300 tracking-wider">{adminCapability.message}</p>
+        </div>
+      )}
+
       {/* My Arenas */}
       <section className="space-y-3">
         <h2 className="font-pixel text-[10px] text-white/60 tracking-widest uppercase">
@@ -300,14 +314,14 @@ export default function AdminDashboardPage() {
                       {arena.state === "active" && (
                         <>
                           <button
-                            disabled={busy}
+                            disabled={busy || !adminCapability.allowed}
                             onClick={() => setConfirmDialog({ arenaId: arena.id, action: "close" })}
                             className="border border-white/20 text-white font-pixel text-[8px] px-3 py-1.5 hover:bg-white/5 disabled:opacity-40 uppercase tracking-wider"
                           >
                             {busy ? "..." : "CLOSE ROUND"}
                           </button>
                           <button
-                            disabled={busy}
+                            disabled={busy || !adminCapability.allowed}
                             onClick={() => setConfirmDialog({ arenaId: arena.id, action: "resolve" })}
                             className="bg-neon-green text-black font-pixel text-[8px] px-3 py-1.5 hover:opacity-90 disabled:opacity-40 uppercase tracking-wider"
                           >
@@ -318,7 +332,7 @@ export default function AdminDashboardPage() {
                       {/* Cancel — only before game starts (state === 'open') */}
                       {arena.state === "open" && (
                         <button
-                          disabled={busy}
+                          disabled={busy || !adminCapability.allowed}
                           onClick={() => setConfirmDialog({ arenaId: arena.id, action: "cancel" })}
                           className="border border-neon-pink text-neon-pink font-pixel text-[8px] px-3 py-1.5 hover:bg-neon-pink/10 disabled:opacity-40 uppercase tracking-wider"
                         >

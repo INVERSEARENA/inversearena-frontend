@@ -1,5 +1,84 @@
 use soroban_sdk::{Address, BytesN, contracterror, contracttype};
 
+/// Schema-level limits for untrusted, size-variable inputs (#1455).
+///
+/// Every admin- or caller-supplied value that controls how much data is
+/// stored or emitted must be checked against one of these before it is
+/// persisted. See `contract/BOUNDS.md`.
+///
+/// Upper bound for `configure_leaderboard_limit`. The leaderboard is a
+/// persistent `Vec<LeaderboardEntry>` rewritten on every resolution, so an
+/// unbounded limit lets its storage entry grow with the player set. It can
+/// never usefully exceed the player cap.
+pub const MAX_LEADERBOARD_LIMIT: u32 = 100;
+
+/// Validate a requested leaderboard size before persisting it.
+pub fn validate_leaderboard_limit(limit: u32) -> Result<u32, ArenaError> {
+    if limit == 0 || limit > MAX_LEADERBOARD_LIMIT {
+        return Err(ArenaError::InvalidLeaderboardLimit);
+    }
+    Ok(limit)
+}
+
+// ── Oracle freshness policy (#1512) ─────────────────────────────────────────
+//
+// Defines how old an oracle observation may be before yield-dependent
+// mutations (currently `resolve_round`) must refuse to use it. Per-instance,
+// admin-configurable via `set_oracle_freshness_policy` (mirrors
+// `update_platform_fee`'s pattern — no `initialize` signature change), with
+// a validated hard-coded default applied until the admin reconfigures it.
+
+/// Schema version of `OracleFreshnessPolicy`. Bumped only on a breaking shape
+/// change, so an indexer/backend reading `set_oracle_freshness_policy`
+/// events can tell which fields to expect.
+pub const FRESHNESS_POLICY_VERSION: u32 = 1;
+
+/// Applied at first read until an admin calls `set_oracle_freshness_policy`.
+pub const DEFAULT_ORACLE_MAX_AGE_SECS: u64 = 3_600;
+pub const DEFAULT_ORACLE_WARN_AGE_SECS: u64 = 1_800;
+/// Hard ceiling no policy may exceed, regardless of admin configuration —
+/// keeps a misconfigured policy from silently disabling freshness
+/// enforcement altogether (e.g. a multi-year max age).
+pub const MAX_ORACLE_MAX_AGE_SECS: u64 = 86_400;
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OracleFreshnessPolicy {
+    /// An observation older than this many seconds is `Stale` and
+    /// `resolve_round` refuses to use it.
+    pub max_age_secs: u64,
+    /// An observation older than this many seconds (but not yet
+    /// `max_age_secs`) is `Warning` — still usable, but surfaced via event
+    /// for alerting before it actually blocks anything.
+    pub warn_age_secs: u64,
+    pub version: u32,
+}
+
+impl OracleFreshnessPolicy {
+    pub fn default_policy() -> Self {
+        OracleFreshnessPolicy {
+            max_age_secs: DEFAULT_ORACLE_MAX_AGE_SECS,
+            warn_age_secs: DEFAULT_ORACLE_WARN_AGE_SECS,
+            version: FRESHNESS_POLICY_VERSION,
+        }
+    }
+}
+
+/// Validate a freshness policy before persisting it (startup/reconfiguration
+/// validation, per #1512's acceptance criteria).
+pub fn validate_freshness_policy(policy: &OracleFreshnessPolicy) -> Result<(), ArenaError> {
+    if policy.max_age_secs == 0 || policy.warn_age_secs == 0 {
+        return Err(ArenaError::InvalidFreshnessPolicy);
+    }
+    if policy.warn_age_secs > policy.max_age_secs {
+        return Err(ArenaError::InvalidFreshnessPolicy);
+    }
+    if policy.max_age_secs > MAX_ORACLE_MAX_AGE_SECS {
+        return Err(ArenaError::InvalidFreshnessPolicy);
+    }
+    Ok(())
+}
+
 /// Lifecycle state of an arena.
 ///
 /// Transitions: Open → Active → Finished
@@ -50,6 +129,9 @@ pub struct ArenaConfig {
     /// Total number of players that have ever joined this arena. Kept in sync
     /// by `ArenaStorage::add_player` so it can be read without scanning storage.
     pub player_count: u32,
+    /// Number of active players remaining in the game (not eliminated). Kept in sync
+    /// by `ArenaStorage::add_player` and `resolve_round` so it can be read without scanning storage.
+    pub active_player_count: u32,
     /// Cumulative yield accrued across all resolved rounds.
     pub cumulative_yield: i128,
     /// Ledger timestamp (seconds) after which commitments are no longer
@@ -263,6 +345,48 @@ pub enum ArenaError {
 
     /// Returned when `update_platform_fee` is called with a value above `MAX_PLATFORM_FEE_BPS`.
     InvalidPlatformFee = 36,
+
+    /// Returned by `join_arena` once at least one round has been played.
+    ///
+    /// The arena returns to `Open` between rounds so `start_round` can run
+    /// again, so `state == Open` alone does not mean the lobby is still
+    /// recruiting. Joining after eliminations would let a latecomer buy in at
+    /// the original entry fee against a thinned field.
+    ArenaAlreadyStarted = 37,
+
+    /// Returned by `configure_leaderboard_limit` when `limit` is 0 or above
+    /// `MAX_LEADERBOARD_LIMIT` (#1455). Appended; existing ordinals unchanged.
+    InvalidLeaderboardLimit = 38,
+
+    /// Returned by `set_oracle_freshness_policy` when `warn_age_secs`
+    /// exceeds `max_age_secs`, either is 0, or `max_age_secs` exceeds
+    /// `MAX_ORACLE_MAX_AGE_SECS` (#1512). Appended; existing ordinals unchanged.
+    InvalidFreshnessPolicy = 39,
+
+    /// Returned by `resolve_round` when the oracle's latest observation is
+    /// older than the arena's configured `max_age_secs`, or was never
+    /// recorded at all (#1512). Recoverable: the admin can retry once the
+    /// oracle has published a fresh observation, or raise the policy's
+    /// `max_age_secs` via `set_oracle_freshness_policy` if the
+    /// existing threshold is inappropriate for this arena.
+    StaleOracleData = 40,
+
+    /// Returned by `join_arena` when the arena's configured start deadline has
+    /// passed and the first round has not started (#1579). The lobby is
+    /// closed, so entry is refused and the arena can be cancelled by anyone
+    /// via `cancel_unstarted`.
+    StartDeadlinePassed = 41,
+
+    /// Returned by `cancel_unstarted` when this arena has no start deadline
+    /// configured (#1579). Arenas deployed by a factory always have one; the
+    /// explicit error keeps an unconfigured arena from being cancelled under
+    /// the permissionless path.
+    NoStartDeadline = 42,
+
+    /// Returned by `leave_arena` or `ban_player` when the vault cannot release
+    /// the player's entry fee (#1580, #1581). The whole call reverts, so the
+    /// player is neither removed nor refunded partially.
+    VaultWithdrawFailed = 43,
 }
 
 #[contracttype]

@@ -130,10 +130,24 @@
 
 ## Oracle
 
+Rate changes are bounded and delayed (#1570): each update may move the rate
+by at most `max_delta_bps` and takes effect after `activation_delay` as a
+scheduled rate (`pending_rate`, `effective_at`). Every change is evented;
+consumers read the effective rate via `get_current_yield_bps` (arena
+`resolve_round` snapshots it once per round) and the full schedule via
+`get_rate_schedule` for keepers/frontends.
+
 ### Functions
 - `pub fn initialize(env: Env, admin: Address, initial_rate_bps: u32)`
-- `pub fn set_yield_bps(env: Env, rate_bps: u32)`
-- `pub fn get_current_yield_bps(env: Env) -> u32`
+- `pub fn set_yield_bps(env: Env, rate_bps: u32)` — schedules (or applies immediately when `activation_delay == 0`) a rate bounded by `max_delta_bps` against the effective rate; last pending update wins
+- `pub fn set_rate_to_zero(env: Env)` — emergency path: zeroes the rate immediately, bypassing delta bound and delay, clearing any pending update
+- `pub fn set_max_delta_bps(env: Env, max_delta_bps: u32)` — per-update bound, itself subject to the activation delay
+- `pub fn set_activation_delay(env: Env, delay_secs: u64)` — activation delay within the 7-day hard bound, itself subject to the current delay
+- `pub fn set_max_rate(env: Env, max_rate_bps: u32)`
+- `pub fn get_current_yield_bps(env: Env) -> u32` — effective rate at the current ledger time
+- `pub fn get_oracle_reading(env: Env) -> OracleReading` — `{rate_bps, observed_at, source_version}` (#1512): the effective rate plus when it was applied; `observed_at == 0` means no observation has ever been recorded
+- `pub fn get_rate_schedule(env: Env) -> RateSchedule` — `{current, pending, effective_at, max_delta_bps, activation_delay, pending_*, params_effective_at}`
+- `pub fn get_max_yield_bps / get_max_delta_bps / get_activation_delay` — effective bound views
 
 ## Staking
 

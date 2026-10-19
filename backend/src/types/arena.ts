@@ -12,12 +12,27 @@ export interface ArenaStats {
   yieldAccrued: number;
   status: string;
   lastUpdated: string;
+  /**
+   * True when playerCount/status/yieldAccrued came from the last verified
+   * on-chain snapshot rather than a fresh read, because the fresh read
+   * failed (RPC outage) — see #1408. Never true and non-null at the same
+   * time as a genuinely-live read.
+   */
+  degraded: boolean;
+  /** Soroban ledger sequence the on-chain fields were read at, or last verified at if degraded. Null if no on-chain read has ever succeeded for this arena. */
+  ledgerSequence: number | null;
+  /** ISO timestamp the on-chain fields were verified at. Null under the same condition as ledgerSequence. */
+  snapshotVerifiedAt: string | null;
 }
 
 export interface ArenaParticipant {
   id: string;
   walletAddress: string;
-  choice: "heads" | "tails";
+  // null while the round that contains this choice is still OPEN — a
+  // player's heads/tails pick must not be visible to other callers until
+  // the round closes, or a caller could pick their own choice accordingly
+  // (see #1212).
+  choice: "heads" | "tails" | null;
   stake: number;
   status: "READY" | "ACTIVE" | "ELIMINATED";
   roundNumber: number;
@@ -51,4 +66,10 @@ export interface ArenaStreamEvent {
   payload: Record<string, unknown>;
   sequence: number;
   createdAt: string;
+  /** Semantic snapshot version (#1500). Monotonic per arena; present on snapshot envelopes. */
+  version?: number;
+  /** The version this snapshot replaced (#1500); null for the first published snapshot. */
+  previousVersion?: number | null;
+  /** Per-process stream identity (#1500). A change means the server restarted and sequences/versions reset. */
+  instanceId?: string;
 }

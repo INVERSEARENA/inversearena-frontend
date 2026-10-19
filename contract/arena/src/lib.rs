@@ -11,6 +11,7 @@ mod fuzz_tests;
 mod oracle;
 mod rwa_client;
 mod snapshot_test;
+mod storage_layout_fixture;
 mod state_machine;
 mod storage;
 pub mod types;
@@ -19,8 +20,8 @@ use events::ArenaEvents;
 use rwa_client::RwaAdapterClient;
 use storage::ArenaStorage;
 use types::{
-    ArenaConfig, ArenaError, ArenaStatus, Choice, GameState, LeaderboardEntry, PendingAdmin,
-    PendingUpgrade, PlayerState, RoundResult, YieldSnapshot,
+    ArenaConfig, ArenaError, ArenaStatus, Choice, GameState, LeaderboardEntry,
+    OracleFreshnessPolicy, PendingAdmin, PendingUpgrade, PlayerState, RoundResult, YieldSnapshot,
 };
 
 #[soroban_sdk::contractclient(name = "FactoryClient")]
@@ -30,10 +31,17 @@ pub trait FactoryInterface {
     fn update_arena_status(env: Env, pool_id: u32, status: ArenaStatus);
 }
 
-const PAGE_SIZE: u32 = 50;
+pub(crate) const PAGE_SIZE: u32 = 50;
 pub(crate) const MIN_PLAYERS_TO_START: u32 = 2;
 pub const MAX_PLAYERS_ALLOWED: u32 = 100;
-const CONTRACT_VERSION: u32 = 1;
+/// Bumped to 3 for #1512: adds `set_oracle_freshness_policy`,
+/// `get_oracle_freshness_policy`, and `get_oracle_contract`.
+/// `resolve_round`'s signature is unchanged —
+/// its new staleness check is a behavior change, not a new entrypoint — but
+/// the version still moves so `contractCapability.ts`'s negotiation can
+/// gate UI/tooling that specifically wants the new freshness-policy
+/// entrypoints on older, already-deployed arena instances.
+const CONTRACT_VERSION: u32 = 3;
 const UPGRADE_TIMELOCK_SECONDS: u64 = 86_400; // 1 day
 /// Maximum allowed platform fee: 1000 bps (10%). Enforced by `update_platform_fee`.
 const MAX_PLATFORM_FEE_BPS: u32 = 1000;
@@ -79,6 +87,10 @@ struct RoundResolution {
     survivors: u32,
     winner: Option<Address>,
     tied: bool,
+    /// Revealed-choice tally for the round, carried through so
+    /// `resolve_round` can emit it in `round_resolved_v2` (#1394) without
+    /// re-scanning storage that `resolve_players` already cleared.
+    tally: eliminations::Tally,
 }
 
 #[contractimpl]
@@ -92,6 +104,8 @@ impl ArenaContract {
     /// - `admin`: Address that will control admin-only operations. Must authorize this call.
     /// - `stake_token`: SAC token address used for entry fees and prize payouts.
     /// - `yield_vault`: RWA adapter contract that earns yield on the staked principal.
+    ///   Initialization performs a shallow `balance_of` reachability/interface check;
+    ///   vault initialization state is enforced by later adapter calls.
     /// - `entry_fee`: Exact token amount every player must stake to join.
     /// - `oracle_contract`: On-chain oracle queried for the current yield rate on each round resolution.
     ///
@@ -128,10 +142,11 @@ impl ArenaContract {
             return Err(ArenaError::InvalidPlayerLimits);
         }
 
-        // Validate the provided yield_vault implements the expected RWA adapter interface
+        // Validate that the provided yield_vault is reachable and exposes the expected RWA
+        // adapter interface. This is intentionally a shallow interface check: the current
+        // adapter returns 0 from balance_of when uninitialized, so adapter initialization
+        // state is enforced by later deposit/withdraw calls rather than by this probe.
         let rwa_client = RwaAdapterClient::new(&env, &yield_vault);
-        // Attempt a harmless read to ensure the contract is reachable and implements the interface
-        // Here we use try_balance_of on the arena contract address; any error indicates an invalid vault
         let dummy_addr = env.current_contract_address();
         if rwa_client.try_balance_of(&dummy_addr).is_err() {
             return Err(ArenaError::InvalidVaultAddress);
@@ -145,6 +160,7 @@ impl ArenaContract {
             state: GameState::Open,
             paused: false,
             player_count: 0,
+            active_player_count: 0,
             cumulative_yield: 0,
             commit_deadline: 0,
             round_count: 0,
@@ -154,6 +170,7 @@ impl ArenaContract {
             platform_fee_bps: ArenaStorage::load_platform_fee_bps(&env),
         };
         ArenaStorage::save_config(&env, &config);
+        ArenaStorage::initialize_paged_roster(&env);
         ArenaStorage::save_player_limits(&env, min_players, max_players);
         ArenaStorage::save_last_vault_balance(&env, 0);
         ArenaEvents::initialized(&env, &admin);
@@ -232,15 +249,66 @@ impl ArenaContract {
         Ok(())
     }
 
+    /// Set the lobby start deadline (#1579).
+    ///
+    /// Only the deploying factory may call this, immediately after
+    /// `initialize`, as part of `create_pool`. It is a separate entry point
+    /// because `initialize` already sits at Soroban's ten-parameter limit. Once
+    /// the deadline passes, `join_arena` rejects new entries and anyone may
+    /// call `cancel_unstarted`.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    /// - `ArenaError::InvalidGameState` if the lobby is no longer open.
+    pub fn set_start_deadline(env: Env, deadline: u64) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        config.factory.require_auth();
+        if config.state != GameState::Open || config.round_count > 0 {
+            return Err(ArenaError::InvalidGameState);
+        }
+        ArenaStorage::save_start_deadline(&env, deadline);
+        Ok(())
+    }
+
+    /// Return the lobby start deadline (#1579), or `0` if none is configured.
+    /// The lobby UI uses this for its countdown and refund-availability state.
+    pub fn get_start_deadline(env: Env) -> u64 {
+        ArenaStorage::load_start_deadline(&env)
+    }
+
     /// Ban a player from joining this arena.
     ///
-    /// Existing player state is not modified, so a ban does not eliminate a
-    /// player who has already joined.
+    /// While the arena is still in its lobby (`round_count == 0`), a player who
+    /// has already joined is removed from the roster and refunded their entry
+    /// fee atomically (#1581). The ban flag persists so a future join attempt
+    /// is rejected with `PlayerBanned`.
+    ///
+    /// Once the first round has started, banning is rejected with
+    /// `ArenaAlreadyStarted`. Allowing it would give the host a way to
+    /// eliminate players mid-game by removing them from an in-progress
+    /// roster, which the game's commit-reveal model must not permit.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    /// - `ArenaError::ArenaAlreadyStarted` if at least one round has resolved.
+    /// - `ArenaError::VaultWithdrawFailed` if a joined player's refund cannot
+    ///   be released; the whole call reverts.
     pub fn ban_player(env: Env, player: Address) -> Result<(), ArenaError> {
         let config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
+
+        if config.round_count > 0 {
+            return Err(ArenaError::ArenaAlreadyStarted);
+        }
+
         ArenaStorage::set_player_banned(&env, &player, true);
         ArenaEvents::player_banned(&env, &config.admin, &player);
+
+        if ArenaStorage::load_player(&env, &player).is_some() {
+            let refund = Self::refund_lobby_player(&env, &config, &player)?;
+            ArenaStorage::remove_player(&env, &player);
+            ArenaEvents::player_refunded(&env, &player, refund);
+        }
         Ok(())
     }
 
@@ -271,6 +339,8 @@ impl ArenaContract {
     /// - `ArenaError::NotInitialized` if `initialize` has not been called.
     /// - `ArenaError::ContractPaused` if the contract is paused.
     /// - `ArenaError::InvalidGameState` if the arena is not in the `Open` state.
+    /// - `ArenaError::ArenaAlreadyStarted` if at least one round has been played,
+    ///   even though the arena is back in `Open` between rounds.
     ///
     /// # Events
     /// Emits `player_joined` with the player address and updated total player count.
@@ -281,6 +351,22 @@ impl ArenaContract {
         Self::require_not_paused(&config)?;
         if config.state != GameState::Open {
             return Err(ArenaError::InvalidGameState);
+        }
+        // `Open` is reused for two different situations: the initial recruiting
+        // lobby, and the gap between rounds when more than one survivor remains
+        // (so `start_round` can run again). Only the first accepts new players —
+        // otherwise someone who watched round 1 eliminate the majority could buy
+        // into a 3-player field for the price the original 10 paid, which is
+        // exactly the edge the minority-wins model is meant to deny (#1358).
+        if config.round_count > 0 {
+            return Err(ArenaError::ArenaAlreadyStarted);
+        }
+        // #1579: the lobby closes at `start_deadline`. Once it has passed and
+        // the first round has not started, entry is refused and anyone can
+        // cancel the arena to unlock refunds.
+        let start_deadline = ArenaStorage::load_start_deadline(&env);
+        if start_deadline != 0 && env.ledger().timestamp() >= start_deadline {
+            return Err(ArenaError::StartDeadlinePassed);
         }
         if player == config.admin {
             return Err(ArenaError::CreatorCannotJoin);
@@ -319,8 +405,57 @@ impl ArenaContract {
         ArenaStorage::save_last_vault_balance(&env, baseline);
 
         ArenaStorage::add_player(&env, &player);
-        let count = ArenaStorage::load_all_players(&env).len();
+        let count = ArenaStorage::load_roster_count(&env);
         ArenaEvents::player_joined(&env, &player, count);
+        ArenaStorage::exit_reentrancy_guard(&env);
+        Ok(())
+    }
+
+    /// Leave an arena lobby before the first round and reclaim the entry fee
+    /// (#1580).
+    ///
+    /// Allowed only while the arena is `Open` and no round has resolved. The
+    /// player's entry fee is released from the yield vault, the roster and
+    /// counters are updated, and the player state is removed so they may join
+    /// again later.
+    ///
+    /// Yield policy: any yield accrued in the lobby on the departing player's
+    /// principal is forfeited to the pool and is not paid out. The refund is
+    /// therefore exactly `entry_fee`, matching the amount the player staked.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    /// - `ArenaError::ContractPaused` if the contract is paused.
+    /// - `ArenaError::InvalidGameState` if the arena is not in the `Open` state.
+    /// - `ArenaError::ArenaAlreadyStarted` if at least one round has resolved.
+    /// - `ArenaError::NotAPlayer` if the caller never joined.
+    /// - `ArenaError::VaultWithdrawFailed` if the vault cannot release the fee.
+    ///
+    /// # Events
+    /// Emits `player_left` and `player_refunded`.
+    pub fn leave_arena(env: Env, player: Address) -> Result<(), ArenaError> {
+        ArenaStorage::enter_reentrancy_guard(&env)?;
+        player.require_auth();
+        let config = ArenaStorage::load_config(&env)?;
+        Self::require_not_paused(&config)?;
+        if config.state != GameState::Open {
+            return Err(ArenaError::InvalidGameState);
+        }
+        if config.round_count > 0 {
+            return Err(ArenaError::ArenaAlreadyStarted);
+        }
+        if ArenaStorage::load_player(&env, &player).is_none() {
+            return Err(ArenaError::NotAPlayer);
+        }
+
+        // Effects first: the roster and counters no longer include the player
+        // before any token movement. A failing vault call reverts everything.
+        ArenaStorage::remove_player(&env, &player);
+        let refund = Self::refund_lobby_player(&env, &config, &player)?;
+        let count = ArenaStorage::load_roster_count(&env);
+
+        ArenaEvents::player_left(&env, &player, count);
+        ArenaEvents::player_refunded(&env, &player, refund);
         ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
     }
@@ -436,33 +571,74 @@ impl ArenaContract {
             ArenaError::InvalidGameState,
         )?;
 
-        config.state = GameState::Cancelled;
-        ArenaStorage::save_config(&env, &config);
-
-        let arena_addr = env.current_contract_address();
-        if config.player_count > 0 {
-            let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
-            let _ = rwa_client.withdraw_all(&arena_addr);
-        }
-
+        Self::transition_to_cancelled(&env, &mut config);
         ArenaEvents::arena_cancelled(&env, &config.admin);
-        
-        // Notify factory of cancellation: release active pool slot and refund creator stake
-        let factory_client = FactoryClient::new(&env, &config.factory);
-        let _ = factory_client.try_release_arena(&arena_addr);
-        let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
-        let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Cancelled);
-        
+
         ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
     }
 
-    /// Expire the arena and refund all survivors.
+    /// Cancel an arena that never started once its start deadline has passed
+    /// (#1579).
+    ///
+    /// Permissionless: any caller may trigger this after `start_deadline` while
+    /// the first round has not resolved. It reuses the normal cancellation
+    /// path, so the arena becomes `Cancelled`, every joined player can claim a
+    /// refund, and the creator stake is returned to the host. Without this,
+    /// entry fees would stay locked forever in an arena that never reaches
+    /// `min_players`.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    /// - `ArenaError::ContractPaused` if the contract is paused.
+    /// - `ArenaError::InvalidGameState` if the arena is not in the `Open` state.
+    /// - `ArenaError::ArenaAlreadyStarted` if at least one round has resolved.
+    /// - `ArenaError::NoStartDeadline` if this arena has no deadline configured.
+    /// - `ArenaError::DeadlineTooSoon` if the deadline has not been reached.
+    ///
+    /// # Events
+    /// Emits `arena_cancelled`.
+    pub fn cancel_unstarted(env: Env) -> Result<(), ArenaError> {
+        ArenaStorage::enter_reentrancy_guard(&env)?;
+        let mut config = ArenaStorage::load_config(&env)?;
+        Self::require_not_paused(&config)?;
+        if config.state != GameState::Open {
+            return Err(ArenaError::InvalidGameState);
+        }
+        if config.round_count > 0 {
+            return Err(ArenaError::ArenaAlreadyStarted);
+        }
+        let deadline = ArenaStorage::load_start_deadline(&env);
+        if deadline == 0 {
+            return Err(ArenaError::NoStartDeadline);
+        }
+        if env.ledger().timestamp() < deadline {
+            return Err(ArenaError::DeadlineTooSoon);
+        }
+
+        Self::transition_to_cancelled(&env, &mut config);
+        ArenaEvents::arena_cancelled(&env, &config.admin);
+
+        ArenaStorage::exit_reentrancy_guard(&env);
+        Ok(())
+    }
+
+    /// Expire a stuck arena, making every joined player refundable.
     ///
     /// Any caller may trigger this when the arena is `Active` and the current
     /// round's commit deadline has already passed, i.e. the arena is stuck
-    /// because no one called `resolve_round`. Transitions to `Finished` and
-    /// refunds all surviving players to prevent indefinite fund lockup.
+    /// because no one called `resolve_round`.
+    ///
+    /// Transitions to `Cancelled` and lets every player who ever joined —
+    /// including those already eliminated — reclaim their entry fee through
+    /// `claim_refund`, exactly as `force_cancel_arena` does (#1359).
+    ///
+    /// This previously transitioned to `Finished` and pushed `entry_fee` only to
+    /// players still `active`. Eliminated players' stakes then had no path out of
+    /// the contract at all: `claim` requires a `stored_winner` that expiry never
+    /// set, and no sweep existed. An arena that expired mid-game therefore
+    /// stranded every eliminated player's stake permanently — while the *same*
+    /// arena cancelled by an admin refunded all of them.
     ///
     /// # Errors
     /// - `ArenaError::NotInitialized` if `initialize` has not been called.
@@ -480,7 +656,11 @@ impl ArenaContract {
             return Err(ArenaError::DeadlineTooSoon);
         }
 
-        config.state = GameState::Finished;
+        // Cancelled, not Finished: `claim_refund` is gated on the cancelled state
+        // and pays any joined player, which is precisely the payout completeness
+        // an expired arena needs. Refunds are pull-based here, matching
+        // force_cancel_arena rather than pushing to a subset of players.
+        config.state = GameState::Cancelled;
         ArenaStorage::save_config(&env, &config);
 
         let arena_addr = env.current_contract_address();
@@ -489,23 +669,14 @@ impl ArenaContract {
             let _ = rwa_client.withdraw_all(&arena_addr);
         }
 
-        let token_client = token::TokenClient::new(&env, &config.stake_token);
-        let players = ArenaStorage::load_all_players(&env);
-        for player in players.iter() {
-            if ArenaStorage::load_player(&env, &player)
-                .map(|s| s.active)
-                .unwrap_or(false)
-            {
-                token_client.transfer(&arena_addr, &player, &config.entry_fee);
-            }
-        }
-
         ArenaEvents::arena_expired(&env);
-        
-        // Notify factory of expiration: release active pool slot and sync status
+
+        // Notify the factory exactly as a cancellation does: release the active
+        // pool slot, return the creator's stake, and report the arena cancelled.
         let factory_client = FactoryClient::new(&env, &config.factory);
         let _ = factory_client.try_release_arena(&arena_addr);
-        let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Finished);
+        let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
+        let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Cancelled);
         
         ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
@@ -519,7 +690,9 @@ impl ArenaContract {
     /// # Parameters
     /// - `page`: Zero-based page index.
     pub fn get_players(env: Env, page: u32) -> Vec<(Address, PlayerState)> {
-        let start = page.saturating_mul(PAGE_SIZE);
+        let Some(start) = page.checked_mul(PAGE_SIZE) else {
+            return Vec::new(&env);
+        };
         let addrs = ArenaStorage::load_player_page(&env, start, PAGE_SIZE);
         let mut result: Vec<(Address, PlayerState)> = Vec::new(&env);
         for addr in addrs.iter() {
@@ -540,8 +713,8 @@ impl ArenaContract {
 
     /// Start a new commit-reveal round.
     ///
-    /// Only callable by the admin while the arena is `Open` or `Finished`
-    /// (i.e., between rounds). Transitions the arena to `Active` and records
+    /// Only callable by the admin while the arena is `Open`.
+    /// Transitions the arena to `Active` and records
     /// the round start timestamp. Players must submit commitments before
     /// `duration_seconds` elapses, after which reveals are accepted.
     ///
@@ -556,7 +729,7 @@ impl ArenaContract {
     /// - `ArenaError::ContractPaused` if the contract is paused.
     /// - `ArenaError::InvalidDuration` if `duration_seconds` is outside
     ///   [`MIN_ROUND_DURATION_SECONDS`, `MAX_ROUND_DURATION_SECONDS`].
-    /// - `ArenaError::InvalidGameState` if the arena is not in `Open` or `Finished` state.
+    /// - `ArenaError::InvalidGameState` if the arena is not in the `Open` state.
     ///
     /// # Events
     /// Emits `game_started` with the round number and duration.
@@ -576,11 +749,7 @@ impl ArenaContract {
             ArenaError::InvalidGameState,
         )?;
 
-        let active_count = ArenaStorage::load_all_players(&env)
-            .iter()
-            .filter(|p| ArenaStorage::load_player(&env, &p).map_or(false, |s| s.active))
-            .count() as u32;
-        if active_count < ArenaStorage::load_min_players(&env) {
+        if config.active_player_count < ArenaStorage::load_min_players(&env) {
             return Err(ArenaError::NotEnoughPlayers);
         }
 
@@ -627,10 +796,17 @@ impl ArenaContract {
     /// - `ArenaError::RoundNotActive` if the arena is not in the `Active` state.
     /// - `ArenaError::RoundNotStarted` if no round start timestamp is recorded.
     /// - `ArenaError::GracePeriodNotElapsed` if the round duration has not yet passed.
+    /// - `ArenaError::StaleOracleData` if the oracle's latest observation is older than
+    ///   this arena's configured `max_age_secs` (#1512), or was never recorded. Recoverable:
+    ///   retry once the oracle has published a fresh observation. Does not apply when the
+    ///   oracle is merely unreachable or predates freshness metadata — that case keeps the
+    ///   existing liveness-first 0-bps fallback (see `oracle::fetch_yield_bps`).
     ///
     /// # Events
     /// Emits `round_resolved` with the round number, eliminated count, and survivor count.
     /// Emits `game_finished` with the winner address and round number if exactly one survivor remains.
+    /// Emits `oracle_freshness_observed` with this round's oracle freshness classification and age (#1512).
+    /// Emits `oracle_stale_rejected` instead of the above when the resolution is rejected for staleness.
     pub fn resolve_round(env: Env) -> Result<(), ArenaError> {
         ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
@@ -650,6 +826,26 @@ impl ArenaContract {
 
         let round = config.round_count.saturating_add(1);
         let yield_bps = oracle::fetch_yield_bps(&env, &config.oracle_contract);
+
+        // ── #1512: reject a yield-dependent resolution against stale oracle
+        // data. `fetch_yield_bps` above (kept unchanged, liveness-first) is
+        // what actually feeds the payout snapshot; this is a *separate*,
+        // additive freshness check that can reject before any state mutation
+        // below, without changing what a live oracle read returns.
+        let now = env.ledger().timestamp();
+        let policy = ArenaStorage::load_oracle_freshness_policy(&env);
+        let reading = oracle::fetch_oracle_reading(&env, &config.oracle_contract);
+        let freshness = oracle::classify_freshness(now, reading.as_ref(), &policy);
+        let age_secs = reading
+            .as_ref()
+            .map(|r| now.saturating_sub(r.observed_at))
+            .unwrap_or(u64::MAX);
+        ArenaEvents::oracle_freshness_observed(&env, round, freshness.as_code(), age_secs);
+        if freshness == oracle::OracleFreshness::Stale {
+            ArenaEvents::oracle_stale_rejected(&env, round, age_secs);
+            return Err(ArenaError::StaleOracleData);
+        }
+
         let arena_addr = env.current_contract_address();
         let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
         let previous_balance = ArenaStorage::load_last_vault_balance(&env);
@@ -675,7 +871,7 @@ impl ArenaContract {
         ArenaStorage::save_last_vault_balance(&env, vault_balance);
         config.cumulative_yield = config.cumulative_yield.saturating_add(accrued);
 
-        let resolution = Self::resolve_players(&env, round);
+        let resolution = Self::resolve_players(&env, round, config.active_player_count);
         let result = RoundResult {
             round,
             eliminated: resolution.eliminated,
@@ -685,6 +881,7 @@ impl ArenaContract {
         ArenaStorage::save_round_result(&env, round, &result);
 
         config.round_count = round;
+        config.active_player_count = resolution.survivors;
         config.state = if resolution.survivors == 0 {
             // Zero survivors: all active players failed to reveal (e.g., both AFKs).
             // Transition to Cancelled to unlock claim_refund-style recovery instead of
@@ -704,6 +901,17 @@ impl ArenaContract {
         ArenaStorage::save_config(&env, &config);
 
         ArenaEvents::round_resolved(&env, round, resolution.eliminated, resolution.survivors);
+        // #1394: enriched event carrying the full tally so a client can
+        // independently recompute survivor membership (proof-bundle
+        // verification) instead of trusting the backend's derived counts.
+        ArenaEvents::round_resolved_v2(
+            &env,
+            round,
+            resolution.tally.heads,
+            resolution.tally.tails,
+            resolution.eliminated,
+            resolution.survivors,
+        );
         if resolution.tied {
             ArenaEvents::round_tied(&env, round, resolution.survivors);
         }
@@ -714,14 +922,19 @@ impl ArenaContract {
         // Clear per-round choice and commitment data to prevent stale data
         // from persisting into a future round.
         ArenaStorage::clear_round_data(&env, round);
-        
+
         // Notify factory of round resolution state changes
         let arena_addr = env.current_contract_address();
         let factory_client = FactoryClient::new(&env, &config.factory);
         if config.state == GameState::Finished {
             let _ = factory_client.try_release_arena(&arena_addr);
-            let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Active);
+            // Settlement is terminal even if the winner never submits a claim.
+            // Reclaim the creator stake here, before any winner-controlled action,
+            // and persist the matching factory lifecycle state.
+            let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
+            let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Finished);
         } else if config.state == GameState::Cancelled {
+            let _ = rwa_client.try_withdraw_all(&arena_addr);
             let _ = factory_client.try_release_arena(&arena_addr);
             let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
             let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Cancelled);
@@ -781,24 +994,24 @@ impl ArenaContract {
         // INTERACTIONS — external calls happen only after state is committed.
         let arena_addr = env.current_contract_address();
         let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
-        let principal = config.entry_fee * i128::from(config.player_count);
+        let principal = config
+            .entry_fee
+            .saturating_mul(i128::from(config.player_count));
         let payout = principal.saturating_add(Self::total_yield(&env));
         let withdrawn = rwa_client
             .try_withdraw_all(&arena_addr)
             .unwrap_or(Ok(payout))
             .unwrap_or(payout);
-        let total = if payout > withdrawn {
-            withdrawn
-        } else {
-            payout
-        };
+        let total = withdrawn;
 
         let token_client = token::TokenClient::new(&env, &config.stake_token);
         token_client.transfer(&arena_addr, &winner, &total);
 
         ArenaEvents::prize_claimed(&env, &winner, total, total.saturating_sub(principal));
         
-        // Notify factory that prize has been claimed and game is settled
+        // The factory was already transitioned to Finished and the creator
+        // stake reclaimed when the final round resolved. Repeating the status
+        // write is harmless and keeps older factory deployments convergent.
         let factory_client = FactoryClient::new(&env, &config.factory);
         let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Finished);
         
@@ -949,6 +1162,7 @@ impl ArenaContract {
 
     /// Claim a refund when the arena has been cancelled.
     pub fn claim_refund(env: Env, player: Address) -> Result<(), ArenaError> {
+        ArenaStorage::enter_reentrancy_guard(&env)?;
         player.require_auth();
 
         let config = ArenaStorage::load_config(&env)?;
@@ -976,6 +1190,7 @@ impl ArenaContract {
         token_client.transfer(&env.current_contract_address(), &player, &config.entry_fee);
 
         ArenaEvents::refund_claimed(&env, &player);
+        ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
     }
 
@@ -985,10 +1200,15 @@ impl ArenaContract {
     }
 
     /// Configure the leaderboard size limit (admin only).
+    ///
+    /// # Errors
+    /// - `ArenaError::InvalidLeaderboardLimit` if `limit` is 0 or exceeds
+    ///   `types::MAX_LEADERBOARD_LIMIT`. Nothing is persisted in that case.
     pub fn configure_leaderboard_limit(env: Env, limit: u32) -> Result<(), ArenaError> {
         let config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
 
+        let limit = types::validate_leaderboard_limit(limit)?;
         ArenaStorage::save_leaderboard_limit(&env, limit);
         Ok(())
     }
@@ -1021,6 +1241,56 @@ impl ArenaContract {
     /// Return the current global platform fee in basis points.
     pub fn get_platform_fee_bps(env: Env) -> u32 {
         ArenaStorage::load_platform_fee_bps(&env)
+    }
+
+    /// Configure this arena instance's oracle freshness policy (#1512). Admin only.
+    ///
+    /// `max_age_secs`: an oracle observation older than this makes
+    /// `resolve_round` refuse with `ArenaError::StaleOracleData`.
+    /// `warn_age_secs`: an observation older than this (but younger than
+    /// `max_age_secs`) still resolves, but is surfaced via
+    /// `oracle_freshness_observed` as `Warning` for alerting.
+    ///
+    /// Like `update_platform_fee`, this only affects *this* arena instance
+    /// going forward — each arena has independent storage.
+    pub fn set_oracle_freshness_policy(
+        env: Env,
+        max_age_secs: u64,
+        warn_age_secs: u64,
+    ) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        config.admin.require_auth();
+
+        let policy = OracleFreshnessPolicy {
+            max_age_secs,
+            warn_age_secs,
+            version: types::FRESHNESS_POLICY_VERSION,
+        };
+        types::validate_freshness_policy(&policy)?;
+
+        ArenaStorage::save_oracle_freshness_policy(&env, &policy);
+        ArenaEvents::oracle_freshness_policy_updated(
+            &env,
+            &config.admin,
+            max_age_secs,
+            warn_age_secs,
+        );
+        Ok(())
+    }
+
+    /// Return this arena instance's current oracle freshness policy (#1512).
+    pub fn get_oracle_freshness_policy(env: Env) -> OracleFreshnessPolicy {
+        ArenaStorage::load_oracle_freshness_policy(&env)
+    }
+
+    /// Return the oracle contract this arena instance reads its yield rate
+    /// from (#1512). Previously only stored inside `ArenaConfig` with no
+    /// dedicated getter — an off-chain reader (the backend's own
+    /// independent freshness check, or any other tooling) had no way to
+    /// discover which oracle instance a given arena actually uses.
+    pub fn get_oracle_contract(env: Env) -> Result<Address, ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        Ok(config.oracle_contract)
     }
 
     /// Return the cumulative yield earned across all resolved rounds.
@@ -1077,6 +1347,56 @@ impl ArenaContract {
         Ok(())
     }
 
+    /// Shared cancellation path: mark the arena `Cancelled`, release the pooled
+    /// principal, and tell the factory to free the pool slot and refund the
+    /// creator stake. Callers own the preconditions and the cancellation event.
+    fn transition_to_cancelled(env: &Env, config: &mut ArenaConfig) {
+        config.state = GameState::Cancelled;
+        ArenaStorage::save_config(env, config);
+
+        let arena_addr = env.current_contract_address();
+        if config.player_count > 0 {
+            let rwa_client = RwaAdapterClient::new(env, &config.yield_vault);
+            let _ = rwa_client.withdraw_all(&arena_addr);
+        }
+
+        let factory_client = FactoryClient::new(env, &config.factory);
+        let _ = factory_client.try_release_arena(&arena_addr);
+        let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
+        let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Cancelled);
+    }
+
+    /// Release one lobby player's entry fee from the vault and transfer it back
+    /// to them. Used by `leave_arena` and `ban_player` (#1580, #1581).
+    ///
+    /// Yield accrued on the refunded principal is intentionally left in the
+    /// vault for the remaining pool.
+    fn refund_lobby_player(
+        env: &Env,
+        config: &ArenaConfig,
+        player: &Address,
+    ) -> Result<i128, ArenaError> {
+        let arena_addr = env.current_contract_address();
+        let rwa_client = RwaAdapterClient::new(env, &config.yield_vault);
+        let withdrawn = rwa_client
+            .try_withdraw(&arena_addr, &config.entry_fee)
+            .map_err(|_| ArenaError::VaultWithdrawFailed)?
+            .map_err(|_| ArenaError::VaultWithdrawFailed)?;
+        let refund = if withdrawn > config.entry_fee {
+            config.entry_fee
+        } else {
+            withdrawn
+        };
+
+        let token_client = token::TokenClient::new(env, &config.stake_token);
+        token_client.transfer(&arena_addr, player, &refund);
+
+        let baseline = ArenaStorage::load_last_vault_balance(env);
+        ArenaStorage::save_last_vault_balance(env, baseline.saturating_sub(config.entry_fee));
+
+        Ok(refund)
+    }
+
     fn validate_player_limits(min_players: u32, max_players: u32) -> Result<(), ArenaError> {
         if min_players < MIN_PLAYERS_TO_START || min_players > max_players {
             return Err(ArenaError::InvalidPlayerLimits);
@@ -1087,14 +1407,27 @@ impl ArenaContract {
         Ok(())
     }
 
-    fn resolve_players(env: &Env, round: u32) -> RoundResolution {
-        let players = ArenaStorage::load_all_players(env);
+    fn resolve_players(env: &Env, round: u32, expected_active: u32) -> RoundResolution {
+        let indexed = ArenaStorage::load_survivor_index(env);
+        let mut players = Vec::new(env);
+        for player in indexed.iter() {
+            if players.contains(&player) {
+                continue;
+            }
+            if let Some(state) = ArenaStorage::load_player(env, &player)
+                && state.active
+            {
+                players.push_back(player);
+            }
+        }
+
+        if players.len() != expected_active {
+            players = ArenaStorage::load_active_roster(env);
+        }
+
         let mut active_choices: Vec<Choice> = Vec::new(env);
         for player in players.iter() {
-            let state = ArenaStorage::load_player(env, &player).unwrap_or_default();
-            if state.active
-                && let Some(choice) = ArenaStorage::load_choice(env, &player, round)
-            {
+            if let Some(choice) = ArenaStorage::load_choice(env, &player, round) {
                 active_choices.push_back(choice);
             }
         }
@@ -1104,6 +1437,7 @@ impl ArenaContract {
         let mut eliminated = 0u32;
         let mut survivors = 0u32;
         let mut winner: Option<Address> = None;
+        let mut next_survivors = Vec::new(env);
 
         for player in players.iter() {
             let mut state = ArenaStorage::load_player(env, &player).unwrap_or_default();
@@ -1118,16 +1452,18 @@ impl ArenaContract {
             if should_eliminate {
                 state.active = false;
                 eliminated += 1;
-                // Remove eliminated player's choice so it cannot appear in subsequent rounds (#1075)
                 ArenaStorage::remove_player_choice(env, &player, round);
                 ArenaEvents::player_eliminated(env, &player, round);
             } else {
                 state.rounds_survived = state.rounds_survived.saturating_add(1);
                 survivors += 1;
                 winner = Some(player.clone());
+                next_survivors.push_back(player.clone());
             }
             ArenaStorage::save_player(env, &player, &state);
         }
+
+        ArenaStorage::rebuild_survivor_index(env, &next_survivors);
 
         if survivors == 1 {
             RoundResolution {
@@ -1135,6 +1471,7 @@ impl ArenaContract {
                 survivors,
                 winner,
                 tied,
+                tally,
             }
         } else {
             RoundResolution {
@@ -1142,25 +1479,34 @@ impl ArenaContract {
                 survivors,
                 winner: None,
                 tied,
+                tally,
             }
         }
     }
 }
 
 fn build_leaderboard(env: &Env) {
-    let players = ArenaStorage::load_all_players(env);
+    let total = ArenaStorage::load_roster_count(env);
+    let page_count = if total == 0 {
+        0
+    } else {
+        (total - 1) / PAGE_SIZE + 1
+    };
     let limit = ArenaStorage::load_leaderboard_limit(env);
-    let n = players.len();
 
     // Collect all player entries into an unsorted working Vec.
     let mut entries: Vec<LeaderboardEntry> = Vec::new(env);
-    for player in players.iter() {
-        let state = ArenaStorage::load_player(env, &player).unwrap_or_default();
-        entries.push_back(LeaderboardEntry {
-            player,
-            rounds_survived: state.rounds_survived,
-        });
+    for page_index in 0..page_count {
+        let players = ArenaStorage::load_roster_page(env, page_index);
+        for player in players.iter() {
+            let state = ArenaStorage::load_player(env, &player).unwrap_or_default();
+            entries.push_back(LeaderboardEntry {
+                player,
+                rounds_survived: state.rounds_survived,
+            });
+        }
     }
+    let n = entries.len();
 
     // Partial selection sort: K = min(limit, n) passes, each a single linear scan.
     // Total work O(K·n) — O(n) for a bounded limit — versus O(n²) for insertion sort.
@@ -1206,6 +1552,66 @@ mod test {
         }
     }
 
+    /// Oracle mock that also implements `get_oracle_reading` (#1512), with a
+    /// caller-settable `observed_at`/`source_version` so freshness tests can
+    /// control exactly how old (or how far in the future) an observation is.
+    /// A plain `MockOracle` above deliberately keeps *not* implementing this
+    /// method, standing in for a pre-#1512 oracle deployment.
+    ///
+    /// Nested in its own module: Soroban's `#[contractimpl]` macro generates
+    /// module-scoped helper items named after the method, not the struct, so
+    /// this contract's `get_current_yield_bps` would otherwise collide with
+    /// `MockOracle`'s identically-named method in the same enclosing module.
+    mod fresh_oracle_mock {
+        use super::*;
+
+        #[contract]
+        pub struct MockOracleWithReading;
+
+        #[contractimpl]
+        impl MockOracleWithReading {
+            pub fn set_reading(env: Env, rate_bps: u32, observed_at: u64, source_version: u32) {
+                env.storage()
+                    .persistent()
+                    .set(&symbol_short!("rate"), &rate_bps);
+                env.storage()
+                    .persistent()
+                    .set(&symbol_short!("obs_at"), &observed_at);
+                env.storage()
+                    .persistent()
+                    .set(&symbol_short!("ver"), &source_version);
+            }
+
+            pub fn get_current_yield_bps(env: Env) -> u32 {
+                env.storage()
+                    .persistent()
+                    .get(&symbol_short!("rate"))
+                    .unwrap_or(0)
+            }
+
+            pub fn get_oracle_reading(env: Env) -> oracle::OracleReading {
+                oracle::OracleReading {
+                    rate_bps: env
+                        .storage()
+                        .persistent()
+                        .get(&symbol_short!("rate"))
+                        .unwrap_or(0),
+                    observed_at: env
+                        .storage()
+                        .persistent()
+                        .get(&symbol_short!("obs_at"))
+                        .unwrap_or(0),
+                    source_version: env
+                        .storage()
+                        .persistent()
+                        .get(&symbol_short!("ver"))
+                        .unwrap_or(0),
+                }
+            }
+        }
+    }
+    use fresh_oracle_mock::{MockOracleWithReading, MockOracleWithReadingClient};
+
     #[contract]
     struct MockVault;
 
@@ -1219,6 +1625,10 @@ mod test {
         }
 
         pub fn deposit(_env: Env, _from: Address, _amount: i128) {}
+
+        pub fn withdraw(_env: Env, _user: Address, amount: i128) -> i128 {
+            amount
+        }
 
         pub fn withdraw_all(env: Env, user: Address) -> i128 {
             Self::balance_of(env, user)
@@ -1239,6 +1649,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: u64::MAX,
                 yield_vault: Address::generate(&env),
@@ -1300,6 +1711,96 @@ mod test {
         assert_eq!(page0.len() + page1.len(), client.player_count());
     }
 
+    #[test]
+    fn cross_page_minority_survives_and_compacts_survivor_index() {
+        let (env, client) = setup(51);
+        let mut expected_survivor = None;
+
+        env.as_contract(&client.address, || {
+            let players = ArenaStorage::load_all_players(&env);
+            for index in 0..players.len() {
+                let player = players.get(index).unwrap();
+                let choice = if index == 50 {
+                    Choice::Tails
+                } else {
+                    Choice::Heads
+                };
+                ArenaStorage::save_choice(&env, &player, 1, &choice);
+            }
+            expected_survivor = Some(players.get(50).unwrap());
+
+            let resolution = ArenaContract::resolve_players(&env, 1, 51);
+            assert_eq!(resolution.eliminated, 50);
+            assert_eq!(resolution.survivors, 1);
+            assert_eq!(resolution.winner, expected_survivor);
+
+            let survivors = ArenaStorage::load_survivor_index(&env);
+            assert_eq!(survivors.len(), 1);
+            assert_eq!(survivors.get(0), expected_survivor);
+        });
+
+        let expected_survivor = expected_survivor.unwrap();
+        for (player, state) in client.get_players(&0).iter() {
+            assert!(!state.active);
+            assert_ne!(player, expected_survivor);
+        }
+        let second_page = client.get_players(&1);
+        assert_eq!(second_page.len(), 1);
+        let (player, state) = second_page.get(0).unwrap();
+        assert_eq!(player, expected_survivor);
+        assert!(state.active);
+        assert!(client.get_players(&2).is_empty());
+    }
+
+    #[test]
+    fn stale_survivor_page_self_heals_from_player_state() {
+        let (env, client) = setup(2);
+        env.as_contract(&client.address, || {
+            let players = ArenaStorage::load_all_players(&env);
+            let stale = players.get(0).unwrap();
+            ArenaStorage::save_player(
+                &env,
+                &stale,
+                &PlayerState {
+                    active: false,
+                    rounds_survived: 1,
+                },
+            );
+            let mut stale_page = Vec::new(&env);
+            stale_page.push_back(stale);
+            ArenaStorage::save_survivor_page(&env, 0, &stale_page);
+            ArenaStorage::save_survivor_count(&env, 1);
+
+            let resolution = ArenaContract::resolve_players(&env, 1, 1);
+            assert_eq!(resolution.eliminated, 1);
+            assert_eq!(resolution.survivors, 0);
+            assert!(ArenaStorage::load_survivor_index(&env).is_empty());
+        });
+    }
+
+    #[test]
+    fn paged_player_read_budget_is_bounded_at_maximum_roster() {
+        let measure = |player_count: u32, page: u32| {
+            let (env, client) = setup(player_count);
+            assert_eq!(client.get_players(&page).len(), PAGE_SIZE);
+            env.cost_estimate().resources()
+        };
+
+        let fifty = measure(50, 0);
+        let hundred_first = measure(100, 0);
+        let hundred_second = measure(100, 1);
+
+        assert!(fifty.read_entries <= 53);
+        assert!(hundred_first.read_entries <= 53);
+        assert!(hundred_second.read_entries <= 53);
+        assert_eq!(hundred_first.read_bytes, fifty.read_bytes);
+        assert_eq!(hundred_second.read_bytes, hundred_first.read_bytes);
+        assert!(hundred_first.instructions <= fifty.instructions + 100_000);
+        assert!(hundred_second.instructions <= hundred_first.instructions + 100_000);
+        assert!(hundred_first.instructions < 50_000_000);
+        assert!(hundred_second.instructions < 50_000_000);
+    }
+
     fn compute_commitment(env: &Env, choice: Choice, salt: &BytesN<32>) -> BytesN<32> {
         ArenaContract::compute_commitment(env, choice, salt)
     }
@@ -1322,6 +1823,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -1363,6 +1865,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -1399,6 +1902,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -1443,6 +1947,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -1479,6 +1984,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 1,
                 yield_vault: Address::generate(&env),
@@ -1516,6 +2022,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -1552,6 +2059,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -1579,9 +2087,21 @@ mod test {
     /// helper is ever touched again.
     fn setup_started(duration: u64, start_ts: u64) -> (Env, ArenaContractClient<'static>) {
         let env = Env::default();
+        let oracle_id = env.register(MockOracle, ());
+        setup_started_with_oracle(env, duration, start_ts, oracle_id)
+    }
+
+    /// Same as `setup_started`, but lets the caller supply the oracle
+    /// contract instance — used by the #1512 freshness tests to swap in
+    /// `MockOracleWithReading` instead of the plain `MockOracle`.
+    fn setup_started_with_oracle(
+        env: Env,
+        duration: u64,
+        start_ts: u64,
+        oracle_id: Address,
+    ) -> (Env, ArenaContractClient<'static>) {
         env.mock_all_auths();
         let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
         env.as_contract(&contract_id, || {
             let config = ArenaConfig {
                 admin: Address::generate(&env),
@@ -1590,6 +2110,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 2,
+                active_player_count: 2,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -1650,6 +2171,7 @@ mod test {
                     state: GameState::Active,
                     paused: false,
                     player_count: 1,
+                    active_player_count: 1,
                     cumulative_yield: 0,
                     commit_deadline: 0,
                     yield_vault: Address::generate(&env),
@@ -1778,6 +2300,154 @@ mod test {
         assert_eq!(state_of(&env, &client), GameState::Cancelled);
     }
 
+    // ── Coverage added for issue #1512 (oracle freshness policy) ──────────
+
+    /// Builds a started arena wired to `MockOracleWithReading`, with the
+    /// observation set to be exactly `age_secs` old at the moment
+    /// `resolve_round` is called (grace period already elapsed).
+    fn setup_started_with_oracle_age(
+        age_secs: u64,
+    ) -> (Env, ArenaContractClient<'static>, u64) {
+        let env = Env::default();
+        let oracle_id = env.register(MockOracleWithReading, ());
+        let start_ts = 100_000u64;
+        let duration = 60u64;
+        let resolve_ts = start_ts + duration + 1;
+        let observed_at = resolve_ts - age_secs;
+
+        MockOracleWithReadingClient::new(&env, &oracle_id).set_reading(&500, &observed_at, &1);
+
+        let (env, client) = setup_started_with_oracle(env, duration, start_ts, oracle_id);
+        env.ledger().with_mut(|li| li.timestamp = resolve_ts);
+        (env, client, resolve_ts)
+    }
+
+    #[test]
+    fn resolve_round_accepts_oracle_reading_one_second_below_max_age() {
+        // Default policy: max_age_secs = 3_600.
+        let (env, client, _resolve_ts) = setup_started_with_oracle_age(3_599);
+        client.resolve_round();
+        assert_eq!(state_of(&env, &client), GameState::Cancelled);
+    }
+
+    #[test]
+    fn resolve_round_rejects_oracle_reading_at_exact_max_age() {
+        // Exact threshold: age == max_age_secs must already be Stale.
+        let (env, client, _resolve_ts) = setup_started_with_oracle_age(3_600);
+        let result = client.try_resolve_round();
+        assert_eq!(result, Err(Ok(ArenaError::StaleOracleData)));
+        // Rejected before any state mutation — round must still be Active.
+        assert_eq!(state_of(&env, &client), GameState::Active);
+    }
+
+    #[test]
+    fn resolve_round_rejects_oracle_reading_far_older_than_max_age() {
+        let (env, client, _resolve_ts) = setup_started_with_oracle_age(100_000);
+        let result = client.try_resolve_round();
+        assert_eq!(result, Err(Ok(ArenaError::StaleOracleData)));
+        assert_eq!(state_of(&env, &client), GameState::Active);
+    }
+
+    #[test]
+    fn resolve_round_accepts_oracle_reading_at_exact_warn_threshold() {
+        // Exact threshold: age == warn_age_secs (1_800) is Warning, not Stale — still proceeds.
+        let (env, client, _resolve_ts) = setup_started_with_oracle_age(1_800);
+        client.resolve_round();
+        assert_eq!(state_of(&env, &client), GameState::Cancelled);
+    }
+
+    #[test]
+    fn resolve_round_rejects_future_dated_oracle_observation() {
+        // Clock/ledger divergence: observed_at is after `now` — must not be
+        // silently treated as maximally fresh.
+        let env = Env::default();
+        let oracle_id = env.register(MockOracleWithReading, ());
+        let start_ts = 100_000u64;
+        let duration = 60u64;
+        let resolve_ts = start_ts + duration + 1;
+        let future_observed_at = resolve_ts + 10_000;
+
+        MockOracleWithReadingClient::new(&env, &oracle_id).set_reading(&500, &future_observed_at, &1);
+
+        let (env, client) = setup_started_with_oracle(env, duration, start_ts, oracle_id);
+        env.ledger().with_mut(|li| li.timestamp = resolve_ts);
+
+        let result = client.try_resolve_round();
+        assert_eq!(result, Err(Ok(ArenaError::StaleOracleData)));
+        assert_eq!(state_of(&env, &client), GameState::Active);
+    }
+
+    #[test]
+    fn resolve_round_rejects_when_oracle_has_no_observation_ever() {
+        // Missing metadata: get_oracle_reading is implemented but no
+        // set_reading call has ever landed (observed_at defaults to 0).
+        let env = Env::default();
+        let oracle_id = env.register(MockOracleWithReading, ());
+        let (env, client) = setup_started_with_oracle(env, 60, 100_000, oracle_id);
+        env.ledger().with_mut(|li| li.timestamp = 100_061);
+
+        let result = client.try_resolve_round();
+        assert_eq!(result, Err(Ok(ArenaError::StaleOracleData)));
+    }
+
+    #[test]
+    fn resolve_round_proceeds_when_oracle_predates_freshness_metadata() {
+        // Mixed deployment version: a pre-#1512 oracle with no
+        // get_oracle_reading at all must not block resolution — this is the
+        // existing liveness-first `fetch_yield_bps` fallback, unchanged.
+        let (env, client) = setup_started(60, 1_000);
+        env.ledger().with_mut(|li| li.timestamp = 1_061);
+        let result = client.try_resolve_round();
+        assert!(result.is_ok(), "an oracle with no freshness metadata must not block resolution");
+        assert_eq!(state_of(&env, &client), GameState::Cancelled);
+    }
+
+    #[test]
+    fn resolve_round_proceeds_with_mismatched_oracle_source_version() {
+        // Oracle upgrade: a different source_version (e.g. a newer/older
+        // oracle deployment) must not by itself gate freshness — only age does.
+        let env = Env::default();
+        let oracle_id = env.register(MockOracleWithReading, ());
+        let start_ts = 100_000u64;
+        let duration = 60u64;
+        let resolve_ts = start_ts + duration + 1;
+
+        MockOracleWithReadingClient::new(&env, &oracle_id).set_reading(&500, &resolve_ts, &99);
+
+        let (env, client) = setup_started_with_oracle(env, duration, start_ts, oracle_id);
+        env.ledger().with_mut(|li| li.timestamp = resolve_ts);
+
+        client.resolve_round();
+        assert_eq!(state_of(&env, &client), GameState::Cancelled);
+    }
+
+    #[test]
+    fn resolve_round_emits_oracle_freshness_observed_event() {
+        let (env, client, _resolve_ts) = setup_started_with_oracle_age(0);
+        client.resolve_round();
+        let events = env.events().all();
+        let has_freshness_event = events
+            .iter()
+            .any(|(contract, topics, _data)| {
+                contract == client.address
+                    && topics
+                        == (Symbol::new(&env, "oracle_freshness_observed"),).into_val(&env)
+            });
+        assert!(has_freshness_event, "must emit oracle_freshness_observed on every resolve_round attempt");
+    }
+
+    #[test]
+    fn resolve_round_emits_oracle_stale_rejected_event_on_rejection() {
+        let (env, client, _resolve_ts) = setup_started_with_oracle_age(3_600);
+        let _ = client.try_resolve_round();
+        let events = env.events().all();
+        let has_rejection_event = events.iter().any(|(contract, topics, _data)| {
+            contract == client.address
+                && topics == (Symbol::new(&env, "oracle_stale_rejected"),).into_val(&env)
+        });
+        assert!(has_rejection_event, "must emit oracle_stale_rejected when resolution is refused for staleness");
+    }
+
     #[test]
     fn resolve_round_requires_an_active_round() {
         let env = Env::default();
@@ -1791,6 +2461,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -1869,7 +2540,8 @@ mod test {
                     entry_fee: 100,
                     state: GameState::Open,
                     paused: false,
-                    player_count: 2,
+                    player_count: 0,
+                    active_player_count: 0,
                     cumulative_yield: 0,
                     commit_deadline: 0,
                     yield_vault: vault_id.clone(),
@@ -1916,6 +2588,7 @@ mod test {
             env.as_contract(&contract_id, || {
                 let mut cfg = ArenaStorage::load_config(&env).unwrap();
                 cfg.state = GameState::Open;
+                cfg.active_player_count = 2;
                 ArenaStorage::save_config(&env, &cfg);
             });
             // Baseline is captured here, from the balance the previous round
@@ -2087,6 +2760,7 @@ mod test {
                     state: GameState::Finished,
                     paused: false,
                     player_count: 1,
+                    active_player_count: 1,
                     cumulative_yield: 0,
                     commit_deadline: 0,
                     yield_vault: Address::generate(&env),
@@ -2139,6 +2813,7 @@ mod test {
                     state: GameState::Finished,
                     paused: false,
                     player_count: 1,
+                    active_player_count: 1,
                     cumulative_yield: 0,
                     commit_deadline: 0,
                     yield_vault: Address::generate(&env),
@@ -2184,6 +2859,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -2221,6 +2897,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -2258,6 +2935,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -2298,6 +2976,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
+                active_player_count: 0,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
@@ -2351,6 +3030,7 @@ mod test {
                     state: GameState::Open,
                     paused: false,
                     player_count: 0,
+                    active_player_count: 0,
                     cumulative_yield: 0,
                     commit_deadline: 0,
                     yield_vault: Address::generate(&env),
@@ -2383,6 +3063,7 @@ mod test {
                     state: GameState::Open,
                     paused: false,
                     player_count: 1,
+                    active_player_count: 1,
                     cumulative_yield: 0,
                     commit_deadline: 0,
                     yield_vault: Address::generate(&env),
@@ -2416,6 +3097,7 @@ mod test {
                     state: GameState::Open,
                     paused: false,
                     player_count: 2,
+                    active_player_count: 2,
                     cumulative_yield: 0,
                     commit_deadline: 0,
                     yield_vault: Address::generate(&env),
@@ -2580,8 +3262,8 @@ mod test {
     }
 
     /// When every remaining active player fails to reveal, the round resolves
-    /// with zero survivors and the game transitions to Finished with no winner.
-    /// The prize pool remains locked in the contract.
+    /// with zero survivors and the game transitions to Cancelled with no winner.
+    /// The prize pool is released so players can claim refunds.
     #[test]
     fn zero_survivor_round_resolution() {
         let env = Env::default();
@@ -2637,10 +3319,10 @@ mod test {
             assert!(!s2.active, "p2 should be eliminated");
         });
 
-        // Game ends Finished with no winner.
+        // Game ends Cancelled with no winner.
         env.as_contract(&client.address, || {
             let config = ArenaStorage::load_config(&env).unwrap();
-            assert_eq!(config.state, GameState::Finished);
+            assert_eq!(config.state, GameState::Cancelled);
         });
 
         // Prize pool stays locked — no tokens moved to any player.
@@ -2943,6 +3625,7 @@ mod test {
                     state: GameState::Open,
                     paused: false,
                     player_count: 0,
+                    active_player_count: 0,
                     cumulative_yield: 0,
                     commit_deadline: 0,
                     yield_vault: vault_id,
@@ -3208,6 +3891,7 @@ mod test {
                 state: GameState::Active,
                 paused: false,
                 player_count: 3,
+                active_player_count: 3,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 round_count: 0,
@@ -3292,6 +3976,7 @@ mod test {
                 state: GameState::Active,
                 paused: false,
                 player_count: 20,
+                active_player_count: 20,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 round_count: 0,
@@ -3337,6 +4022,38 @@ mod test {
     }
 
     #[test]
+    fn configure_leaderboard_limit_rejects_out_of_bounds_without_persisting() {
+        let (env, client) = setup(0);
+        let contract_id = client.address.clone();
+
+        assert_eq!(
+            client.try_configure_leaderboard_limit(&0),
+            Err(Ok(ArenaError::InvalidLeaderboardLimit))
+        );
+        assert_eq!(
+            client.try_configure_leaderboard_limit(&(types::MAX_LEADERBOARD_LIMIT + 1)),
+            Err(Ok(ArenaError::InvalidLeaderboardLimit))
+        );
+        assert_eq!(
+            client.try_configure_leaderboard_limit(&u32::MAX),
+            Err(Ok(ArenaError::InvalidLeaderboardLimit))
+        );
+        env.as_contract(&contract_id, || {
+            assert_eq!(ArenaStorage::load_leaderboard_limit(&env), 100);
+        });
+
+        // Boundary values are accepted.
+        client.configure_leaderboard_limit(&1);
+        client.configure_leaderboard_limit(&types::MAX_LEADERBOARD_LIMIT);
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                ArenaStorage::load_leaderboard_limit(&env),
+                types::MAX_LEADERBOARD_LIMIT
+            );
+        });
+    }
+
+    #[test]
     fn get_platform_fee_bps_defaults_to_1000() {
         let env = Env::default();
         let contract_id = env.register(ArenaContract, ());
@@ -3376,6 +4093,91 @@ mod test {
         env.as_contract(&client.address, || {
             assert_eq!(ArenaStorage::load_platform_fee_bps(&env), 250);
         });
+    }
+
+    // ── Coverage added for issue #1512 (freshness policy config) ──────────
+
+    #[test]
+    fn get_oracle_contract_returns_configured_oracle() {
+        let (env, client) = setup(0);
+        let expected = env.as_contract(&client.address, || {
+            ArenaStorage::load_config(&env).unwrap().oracle_contract
+        });
+        assert_eq!(client.get_oracle_contract(), expected);
+    }
+
+    #[test]
+    fn get_oracle_freshness_policy_defaults_before_configuration() {
+        let (_env, client) = setup(0);
+        let policy = client.get_oracle_freshness_policy();
+        assert_eq!(policy.max_age_secs, types::DEFAULT_ORACLE_MAX_AGE_SECS);
+        assert_eq!(policy.warn_age_secs, types::DEFAULT_ORACLE_WARN_AGE_SECS);
+        assert_eq!(policy.version, types::FRESHNESS_POLICY_VERSION);
+    }
+
+    #[test]
+    fn set_oracle_freshness_policy_updates_stored_value_and_emits_event() {
+        let (env, client) = setup(0);
+        let admin = env.as_contract(&client.address, || {
+            ArenaStorage::load_config(&env).unwrap().admin
+        });
+
+        client.set_oracle_freshness_policy(&7_200, &3_600);
+
+        let events = env.events().all();
+        let expected_topic: soroban_sdk::Vec<Val> =
+            (symbol_short!("frsh_pol"), admin).into_val(&env);
+        let has_event = events
+            .iter()
+            .any(|(contract, topics, _data)| contract == client.address && topics == expected_topic);
+        assert!(has_event, "must emit frsh_pol event");
+
+        let policy = client.get_oracle_freshness_policy();
+        assert_eq!(policy.max_age_secs, 7_200);
+        assert_eq!(policy.warn_age_secs, 3_600);
+    }
+
+    #[test]
+    fn set_oracle_freshness_policy_rejects_warn_greater_than_max() {
+        let (_env, client) = setup(0);
+        let result = client.try_set_oracle_freshness_policy(&100, &200);
+        assert_eq!(result, Err(Ok(ArenaError::InvalidFreshnessPolicy)));
+    }
+
+    #[test]
+    fn set_oracle_freshness_policy_rejects_zero_max_age() {
+        let (_env, client) = setup(0);
+        let result = client.try_set_oracle_freshness_policy(&0, &0);
+        assert_eq!(result, Err(Ok(ArenaError::InvalidFreshnessPolicy)));
+    }
+
+    #[test]
+    fn set_oracle_freshness_policy_rejects_above_hard_ceiling() {
+        let (_env, client) = setup(0);
+        let result = client.try_set_oracle_freshness_policy(
+            &(types::MAX_ORACLE_MAX_AGE_SECS + 1),
+            &100,
+        );
+        assert_eq!(result, Err(Ok(ArenaError::InvalidFreshnessPolicy)));
+    }
+
+    #[test]
+    fn set_oracle_freshness_policy_accepts_equal_warn_and_max() {
+        let (_env, client) = setup(0);
+        client.set_oracle_freshness_policy(&1_000, &1_000);
+        let policy = client.get_oracle_freshness_policy();
+        assert_eq!(policy.max_age_secs, 1_000);
+        assert_eq!(policy.warn_age_secs, 1_000);
+    }
+
+    #[test]
+    fn set_oracle_freshness_policy_at_hard_ceiling_is_accepted() {
+        let (_env, client) = setup(0);
+        client.set_oracle_freshness_policy(&types::MAX_ORACLE_MAX_AGE_SECS, &100);
+        assert_eq!(
+            client.get_oracle_freshness_policy().max_age_secs,
+            types::MAX_ORACLE_MAX_AGE_SECS
+        );
     }
 
     #[test]
@@ -3898,8 +4700,7 @@ mod test {
         const N: u32 = 120;
         const LIMIT: u32 = 50;
 
-        fn start_round_rejected_when_only_one_active_player_remains() {
-            let env = Env::default();
+        let env = Env::default();
             env.mock_all_auths();
             let contract_id = env.register(ArenaContract, ());
             let oracle_id = env.register(MockOracle, ());
@@ -3915,6 +4716,7 @@ mod test {
                         state: GameState::Open,
                         paused: false,
                         player_count: 0,
+                        active_player_count: 0,
                         cumulative_yield: 0,
                         commit_deadline: 0,
                         round_count: 0,
@@ -3964,7 +4766,6 @@ mod test {
                 );
             });
         }
-    }
 
     #[test]
     fn start_round_rejects_duration_below_minimum() {
@@ -4051,6 +4852,7 @@ mod test {
                 state: GameState::Open,
                 paused: false,
                 player_count: 2,
+                active_player_count: 2,
                 cumulative_yield: 0,
                 commit_deadline: 0,
                 yield_vault: vault_id.clone(),
@@ -4101,3 +4903,5 @@ mod test {
 mod integration_tests;
 #[cfg(test)]
 mod join_arena_tests;
+#[cfg(test)]
+mod lobby_tests;

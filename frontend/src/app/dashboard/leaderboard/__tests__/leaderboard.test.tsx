@@ -1,7 +1,27 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import LeaderboardPage from '../page';
 import { useLeaderboard } from '@/features/leaderboard';
+
+// next/navigation stub (page reads `page` from URL query params, #1567).
+// The object must be stable across calls — the page re-syncs local state from
+// `searchParams` on identity change, as Next does on real navigation.
+jest.mock('next/navigation', () => {
+    const params = { get: () => null as string | null };
+    return {
+        useSearchParams: () => params,
+        useRouter: () => ({ push: jest.fn(), replace: jest.fn() }),
+        usePathname: () => '/dashboard/leaderboard',
+    };
+});
+
+// The page reads the connected wallet for own-row highlighting (#1567). The
+// real WalletProvider pulls in the ESM-only wallet-kit package that Jest
+// cannot transform, so stub the context with no wallet connected.
+jest.mock('@/features/wallet/WalletProvider', () => {
+    const { createContext } = jest.requireActual('react');
+    return { WalletContext: createContext(null) };
+});
 
 // Mock the leaderboard hook
 jest.mock('@/features/leaderboard', () => ({
@@ -13,7 +33,15 @@ jest.mock('@/features/leaderboard', () => ({
 
 // Mock the components that might be too complex or use animations
 jest.mock('@/components/modals/PoolCreationModal', () => ({
-    PoolCreationModal: ({ isOpen, onClose, challengedSurvivor }: any) =>
+    PoolCreationModal: ({
+        isOpen,
+        onClose,
+        challengedSurvivor,
+    }: {
+        isOpen: boolean;
+        onClose: () => void;
+        challengedSurvivor?: { agentId: string };
+    }) =>
         isOpen ? (
             <div data-testid="challenge-modal">
                 <p>Challenging {challengedSurvivor?.agentId}</p>
@@ -120,5 +148,23 @@ describe('LeaderboardPage', () => {
         });
 
         expect(screen.getByText(errorMsg)).toBeInTheDocument();
+    });
+
+    it('labels the stat cards as partial, not platform totals (#1338)', async () => {
+        render(<LeaderboardPage />);
+
+        act(() => {
+            jest.advanceTimersByTime(1100);
+        });
+
+        // Cards are clearly labeled as reflecting only the loaded page,
+        // never presented as fabricated platform-wide aggregates.
+        expect(screen.getByText('LOADED AGENTS')).toBeInTheDocument();
+        expect(screen.getByText('YIELD ON THIS PAGE')).toBeInTheDocument();
+
+        // The loaded-agent card reports the number of survivors actually
+        // loaded so far (11), not an invented platform total.
+        expect(screen.getByText('11')).toBeInTheDocument();
+        expect(screen.getByText(/11 loaded · shown above/i)).toBeInTheDocument();
     });
 });

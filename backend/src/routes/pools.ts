@@ -7,31 +7,16 @@ import { prisma } from "../db/prisma";
 import { createRateLimitMiddleware, getPoolsRateLimitConfig } from "../middleware/rateLimit";
 import type { RequestHandler } from "express";
 import { apiError } from "../utils/apiError";
+import { getAssetMetadata, formatAmount } from "../types/asset";
+import { lobbyReservationStore } from "../cache/lobbyReservationStore";
+import { decodeCursorInput, encodeKeysetCursor } from "../utils/keysetPagination";
+import { verifyMetadataHash } from "../utils/metadataHash";
 
 const PaginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
   cursor: z.string().optional(),
 });
 
-interface DecodedCursor {
-  offset: number;
-}
-
-function encodeCursor(offset: number): string {
-  return Buffer.from(JSON.stringify({ offset } as DecodedCursor)).toString("base64url");
-}
-
-function decodeCursor(cursor: string): number {
-  try {
-    const payload = JSON.parse(
-      Buffer.from(cursor, "base64url").toString("utf-8"),
-    ) as DecodedCursor;
-    if (typeof payload.offset !== "number" || payload.offset < 0) return 0;
-    return payload.offset;
-  } catch {
-    return 0;
-  }
-}
 
 function formatEliminationLog(log: {
   id: string;
@@ -57,6 +42,7 @@ export function createPoolsRouter(authMiddleware: RequestHandler): Router {
   /**
    * POST /api/pools
    * Rate-limited pool creation endpoint.
+   * Validates stake amount against asset decimals and limits.
    */
   router.post(
     "/",
@@ -66,14 +52,91 @@ export function createPoolsRouter(authMiddleware: RequestHandler): Router {
       const PoolCreateSchema = z.object({
         arenaId: z.string().length(56).regex(/^C[A-Z2-7]{55}$/),
         stakeAmount: z.number().positive(),
+        assetCode: z.string().min(1).max(12).default("USDC"),
       });
-      const { arenaId, stakeAmount } = PoolCreateSchema.parse(req.body);
+      const { arenaId, stakeAmount, assetCode } = PoolCreateSchema.parse(req.body);
+
+      const arena = await prisma.arena.findUnique({
+        where: { id: arenaId },
+        select: { id: true, stakeToken: true },
+      });
+      if (!arena) {
+        throw apiError(404, "ARENA_NOT_FOUND", `Arena with ID ${arenaId} not found`);
+      }
+
+      const assetMetadata = getAssetMetadata(assetCode);
+
+      if (stakeAmount < assetMetadata.minimumAmount || stakeAmount > assetMetadata.maximumAmount) {
+        throw apiError(
+          400,
+          "INVALID_STAKE_AMOUNT",
+          `Stake amount must be between ${assetMetadata.minimumAmount} and ${assetMetadata.maximumAmount} ${assetCode}`
+        );
+      }
 
       const pool = await prisma.pool.create({
         data: { arenaId, stakeAmount },
       });
 
-      res.status(201).json(pool);
+      // The stake is confirmed, so this player now counts as a real
+      // (confirmed) player rather than a reservation holder (#1406). Release
+      // is best-effort: a missing/already-expired reservation (e.g. the
+      // reservation endpoint was never called, or the TTL lapsed just
+      // before this request landed) must not block a successful join.
+      if (req.user?.id) {
+        await lobbyReservationStore
+          .releaseSlot(arenaId, req.user.id)
+          .catch(() => undefined);
+      }
+
+      const displayAmount = formatAmount(
+        (stakeAmount * Math.pow(10, assetMetadata.decimals)).toString(),
+        assetMetadata.decimals,
+        assetMetadata.displayDecimals
+      );
+
+      res.status(201).json({
+        ...pool,
+        assetMetadata: {
+          code: assetMetadata.code,
+          decimals: assetMetadata.decimals,
+          displayDecimals: assetMetadata.displayDecimals,
+          displayAmount,
+          minimumAmount: assetMetadata.minimumAmount,
+          maximumAmount: assetMetadata.maximumAmount,
+        },
+        requestId: require("crypto").randomUUID(),
+      });
+    }),
+  );
+
+  /**
+   * POST /api/pools/metadata/verify
+   *
+   * Verify a metadata document against the `metadata_hash` committed on-chain
+   * at pool creation (#1577). The caller supplies the hash read from
+   * `factory.get_arena`; a mismatch is rejected so the upload cannot replace
+   * the published name/description/rules/banner with different content.
+   */
+  router.post(
+    "/metadata/verify",
+    authMiddleware,
+    asyncHandler(async (req, res) => {
+      const MetadataVerifySchema = z.object({
+        metadata: z.record(z.unknown()),
+        metadataHash: z.string().regex(/^[0-9a-fA-F]{64}$/),
+      });
+      const { metadata, metadataHash } = MetadataVerifySchema.parse(req.body);
+
+      if (!verifyMetadataHash(metadata, metadataHash)) {
+        throw apiError(
+          422,
+          "METADATA_HASH_MISMATCH",
+          "Metadata does not match the hash committed on-chain",
+        );
+      }
+
+      res.json({ verified: true, metadataHash: metadataHash.toLowerCase() });
     }),
   );
 
@@ -118,22 +181,49 @@ export function createPoolsRouter(authMiddleware: RequestHandler): Router {
         throw apiError(404, "POOL_NOT_FOUND", "Pool not found");
       }
 
-      const offset = cursor ? decodeCursor(cursor) : 0;
+      const decoded = decodeCursorInput(cursor);
+
+      let whereClause: any = { round: { arenaId: pool.arenaId } };
+      let skip: number | undefined = undefined;
+
+      if (decoded.mode === "keyset") {
+        const lastEliminatedAt = new Date(decoded.cursor.sortValues.eliminatedAt as string);
+        const lastId = decoded.cursor.id;
+        whereClause = {
+          round: { arenaId: pool.arenaId },
+          OR: [
+            { eliminatedAt: { lt: lastEliminatedAt } },
+            { eliminatedAt: lastEliminatedAt, id: { lt: lastId } },
+          ],
+        };
+      } else if (decoded.mode === "legacy") {
+        skip = decoded.offset;
+      }
 
       const logs = await prisma.eliminationLog.findMany({
-        where: { round: { arenaId: pool.arenaId } },
-        orderBy: { eliminatedAt: "desc" },
+        where: whereClause,
+        orderBy: [{ eliminatedAt: "desc" }, { id: "desc" }],
         take: limit + 1,
-        skip: offset,
+        ...(skip !== undefined ? { skip } : {}),
         include: { round: { select: { roundNumber: true } } },
       });
 
       const hasMore = logs.length > limit;
-      const items = logs.slice(0, limit).map(formatEliminationLog);
+      const pageLogs = logs.slice(0, limit);
+      const items = pageLogs.map(formatEliminationLog);
+
+      let nextCursor: string | null = null;
+      if (hasMore && pageLogs.length > 0) {
+        const last = pageLogs[pageLogs.length - 1];
+        nextCursor = encodeKeysetCursor(
+          { eliminatedAt: last.eliminatedAt.toISOString() },
+          last.id,
+        );
+      }
 
       res.json({
         items,
-        cursor: hasMore ? encodeCursor(offset + limit) : null,
+        cursor: nextCursor,
         hasMore,
       });
     }),

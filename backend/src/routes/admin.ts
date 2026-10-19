@@ -32,6 +32,12 @@ export function createAdminRouter(
   router.post("/pools/:id/reindex", authMiddleware, asyncHandler(controller.reindexPool));
   router.post("/reconciliation/run", authMiddleware, asyncHandler(controller.runReconciliation));
 
+  // Maintenance windows: scheduling/cancelling require a confirmation token
+  // (they disable mutating traffic app-wide); listing is read-only.
+  router.post("/maintenance", authMiddleware, asyncHandler(controller.scheduleMaintenance));
+  router.delete("/maintenance/:id", authMiddleware, asyncHandler(controller.cancelMaintenance));
+  router.get("/maintenance", authMiddleware, asyncHandler(controller.listMaintenanceWindows));
+
   // Round management: admin-only
   router.post("/rounds/:id/close", authMiddleware, asyncHandler(roundController.closeRound));
   router.post("/rounds/resolve", authMiddleware, asyncHandler(roundController.resolveRound));

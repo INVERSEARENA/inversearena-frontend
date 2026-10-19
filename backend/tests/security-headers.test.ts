@@ -1,20 +1,26 @@
 import { createApp, AppDependencies } from "../src/app";
 import type { PaymentService } from "../src/services/paymentService";
 import type { PaymentWorker } from "../src/workers/paymentWorker";
+import type { ArenaBackfillWorker } from "../src/workers/arenaBackfillWorker";
 import type { TransactionRepository } from "../src/repositories/transactionRepository";
 import type { AdminService } from "../src/services/adminService";
 import type { AuthService } from "../src/services/authService";
+import type { RoundService } from "../src/services/roundService";
+import type { TransactionIntentService } from "../src/services/transactionIntentService";
 import type { Request, Response } from "express";
 
 // ── Mock dependencies ──────────────────────────────────────────────
 const mockDeps: AppDependencies = {
   paymentService: {} as PaymentService,
   paymentWorker: {} as PaymentWorker,
+  arenaBackfillWorker: {} as ArenaBackfillWorker,
   transactions: {} as TransactionRepository,
   adminService: {} as AdminService,
   authService: {
     verifyToken: async () => ({ userId: "test-user" }),
   } as AuthService,
+  roundService: {} as RoundService,
+  transactionIntentService: {} as TransactionIntentService,
 };
 
 // ── Helper to capture response headers ────────────────────────────

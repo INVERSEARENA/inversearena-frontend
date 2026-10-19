@@ -185,7 +185,10 @@ Copy `backend/.env.example` → `backend/.env` and `frontend/.env.example` →
 | `REDIS_URL` | Redis URL for caching (arena stats, leaderboard) |
 | `ADMIN_API_KEY` | API key gating admin routes |
 | `ADMIN_TOKEN_TTL_SECONDS` | Lifetime of issued admin tokens |
-| `JWT_SECRET` | Secret for signing auth JWTs |
+| `JWT_SECRET` | Secret for signing auth JWTs (current key, ≥ 32 chars) |
+| `JWT_SECRET_KID` | Optional key id for the current JWT secret (default: SHA-256 fingerprint) |
+| `JWT_SECRET_PREVIOUS` / `JWT_SECRET_PREVIOUS_KID` / `JWT_SECRET_PREVIOUS_EXPIRES_AT` | Rotation overlap: previous secret stays verify-only until the ISO expiry (≤ 30 days). See `docs/design/secret-rotation.md` |
+| `ORACLE_WEBHOOK_SECRET` (+ `_KID`, `_PREVIOUS`, `_PREVIOUS_KID`, `_PREVIOUS_EXPIRES_AT`) | Oracle webhook HMAC key and its rotation overlap, same rules as JWT |
 | `JWT_EXPIRES_IN` / `JWT_REFRESH_EXPIRES_IN` | Access / refresh token lifetimes |
 | `NONCE_TTL_SECONDS` | Validity window for auth challenge nonces |
 | `SOROBAN_RPC_URL` | Soroban RPC endpoint |
@@ -218,6 +221,37 @@ Copy `backend/.env.example` → `backend/.env` and `frontend/.env.example` →
 > There is no `docker-compose.yml` in this repo today; local services (Postgres,
 > MongoDB, Redis) are expected to be provided by the developer, and the app is run
 > with the `make backend-dev` / `make frontend-dev` targets above.
+
+---
+
+## Client compatibility manifest (#1491)
+
+`GET /api/config/compatibility[?arenaId=C...]` returns the network, a
+`configRevision` (the ledger it was derived at), each negotiated contract
+version, and per-capability support (`join`, `commit`, `reveal`, `claim`,
+`admin`). Responses are cacheable for 15 s; the frontend never replaces a
+manifest with a lower `configRevision` and stops trusting one older than 5 min.
+The capability map in `backend/src/services/contractCapability.ts` decides which
+contract version each entrypoint needs.
+
+**Rollout order**
+
+1. Deploy the backend first. An old frontend ignores the endpoint.
+2. Upgrade contracts. Arenas still on an older version report the affected
+   capabilities as unsupported, so the new frontend disables only those actions
+   (reads keep working).
+3. Deploy the frontend last. Against a backend without the endpoint (404) it
+   allows every action, as before.
+
+**Rollback**
+
+- Frontend rollback: safe at any point; the older build never calls the endpoint.
+- Backend rollback: the new frontend gets 404, treats it as an old backend and
+  stops gating. Rolling back a contract upgrade makes the manifest report
+  the capability as unsupported again at the next refresh (within 15 s cache +
+  60 s poll).
+- A newer manifest `schemaVersion` than the frontend supports blocks mutations
+  with a "refresh to update" message rather than guessing.
 
 ---
 

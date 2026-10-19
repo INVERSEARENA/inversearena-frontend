@@ -30,6 +30,10 @@ export function createAuthRouter(
   // Wallet-owner action: invalidate every active session for the caller's
   // wallet (used after wallet compromise, rotation, or full sign-out).
   router.delete("/sessions", authMiddleware, asyncHandler(controller.revokeAllSessions));
+  // Per-device session management (#1410): list active sessions and revoke
+  // exactly one, leaving every other device's session untouched.
+  router.get("/sessions", authMiddleware, asyncHandler(controller.listSessions));
+  router.delete("/sessions/:familyId", authMiddleware, asyncHandler(controller.revokeSession));
 
   return router;
 }

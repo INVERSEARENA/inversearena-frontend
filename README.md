@@ -87,6 +87,8 @@ Stellar is the optimal foundation for Inverse Arena:
 
 > **RWA Yield Flow:** For a complete end-to-end explanation of how entry fees are converted to USDY, how yield accrues, and how the winner's payout is calculated, see [docs/RWA_YIELD_FLOW.md](docs/RWA_YIELD_FLOW.md).
 
+> **Client Reconciliation:** For the deterministic post-confirmation reconciliation contract (state transitions, failure behavior, observability, compatibility) that the client uses to converge optimistic state to chain state, see [frontend/docs/CLIENT_RECONCILIATION.md](frontend/docs/CLIENT_RECONCILIATION.md).
+
 ### Smart Contracts (Rust/WASM on Soroban)
 
 | Contract | Responsibility |

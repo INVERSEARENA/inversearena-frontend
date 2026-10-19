@@ -21,6 +21,17 @@ Defined in `contract/arena/src/bounds.rs`:
 | [`ArenaError::ArenaFull`](arena/src/lib.rs) | Join would exceed the effective participant cap. |
 | [`ArenaError::MaxSubmissionsPerRound`](arena/src/lib.rs) | `submit_choice` would exceed `MAX_SUBMISSIONS_PER_ROUND`. |
 
+## Untrusted-input schema limits (#1455)
+
+Size-controlling inputs are validated against constants that live beside their types:
+
+| Constant | Location | Behaviour |
+|----------|----------|-----------|
+| `MAX_LEADERBOARD_LIMIT = 100` | `arena/src/types.rs` | `configure_leaderboard_limit` rejects `0` and `> 100` with `ArenaError::InvalidLeaderboardLimit` (38); nothing is persisted. |
+| `MAX_ARENAS_PAGE_SIZE = 50` | `factory/src/types.rs` | `get_arenas` clamps any caller `limit` (read-only; unchanged ABI behaviour). |
+
+`pause(reason: Symbol)` is already bounded by the Soroban `Symbol` type (≤ 32 chars). See `docs/design/payload-limits.md` for the matching backend limits.
+
 ## Versioning
 
 Raising or lowering these limits is a **contract behaviour change**. Bump the on-chain contract version / migration notes when you change defaults, and update `abi_snapshot.json` if error ordinals change.

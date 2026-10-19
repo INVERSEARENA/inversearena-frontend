@@ -1,6 +1,9 @@
 CREATE TABLE IF NOT EXISTS transactions (
   id UUID PRIMARY KEY,
-  payout_id TEXT NOT NULL,
+  -- Unique: one on-chain payout per payout id (#1353). Idempotency keys are
+  -- caller-supplied, so keying de-duplication on them alone let a retry with a
+  -- fresh key create a second real payout for the same prize.
+  payout_id TEXT NOT NULL UNIQUE,
   idempotency_key TEXT NOT NULL UNIQUE,
   source_account TEXT NOT NULL,
   destination_account TEXT NOT NULL,
@@ -17,6 +20,8 @@ CREATE TABLE IF NOT EXISTS transactions (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   confirmed_at TIMESTAMPTZ,
+  replaces_transaction_id UUID REFERENCES transactions(id),
+  replaced_by_transaction_id UUID REFERENCES transactions(id),
   CONSTRAINT chk_transactions_status CHECK (
     status IN ('built', 'queued', 'awaiting_signature', 'submitted', 'confirmed', 'failed', 'dead')
   ),

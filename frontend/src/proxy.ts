@@ -81,17 +81,46 @@ function buildCsp(allowedOrigins: string[], nonce: string) {
     scriptSrc.push("'unsafe-eval'");
   }
 
+  // #1451 — style-src: nonce allows Next.js-injected <style nonce="…"> tags;
+  // 'unsafe-inline' is kept as a fallback for pre-CSP3 browsers that do not
+  // understand nonces. Fonts from googleapis are explicitly allowed.
+  const styleSrc = [
+    "'self'",
+    `'nonce-${nonce}'`,
+    "'unsafe-inline'",
+    "https://fonts.googleapis.com",
+  ];
+
+  // #1451 — img-src: restrict to explicitly trusted origins instead of the
+  // broad `https:` wildcard that previously allowed loading images from any
+  // HTTPS host. data: and blob: are kept for canvas exports and wallet QR codes.
+  const imgSrc = [
+    "'self'",
+    "data:",
+    "blob:",
+    "https://assets.coingecko.com",
+    "https://stellar.org",
+    "https://www.stellar.org",
+  ];
+
   const policies = [
     "default-src 'self'",
     `script-src ${scriptSrc.join(" ")}`,
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    `style-src ${styleSrc.join(" ")}`,
     "font-src 'self' https://fonts.gstatic.com data:",
-    "img-src 'self' data: blob: https:",
+    `img-src ${imgSrc.join(" ")}`,
     `connect-src ${connectSrc.join(" ")}`,
     "object-src 'none'",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
+    // #1451 — worker-src: Next.js service worker and webpack HMR workers must
+    // be loaded from the same origin; blob: is needed for dynamic workers
+    // created by the Stellar SDK and some wallet connectors.
+    "worker-src 'self' blob:",
+    // #1451 — manifest-src: restrict the web app manifest to same-origin to
+    // prevent a cross-origin manifest from altering the installed PWA identity.
+    "manifest-src 'self'",
   ];
 
   if (!isDev) {

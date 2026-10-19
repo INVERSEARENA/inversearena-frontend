@@ -88,28 +88,32 @@ Timestamp: ${new Date().toISOString()}
           </p>
         </div>
 
-        {/* Error Details (Collapsed by default) */}
-        <details className="mb-8 bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
-          <summary className="cursor-pointer p-4 hover:bg-gray-800 transition-colors text-gray-400 font-mono text-sm">
-            View Technical Details
-          </summary>
-          <div className="p-4 border-t border-gray-800 bg-black">
-            <div className="mb-4">
-              <p className="text-red-400 font-mono text-xs mb-2">Error Message:</p>
-              <p className="text-gray-300 font-mono text-xs bg-gray-900 p-3 rounded break-all">
-                {error?.message || "Unknown error occurred"}
-              </p>
-            </div>
-            {error?.stack && (
-              <div>
-                <p className="text-red-400 font-mono text-xs mb-2">Stack Trace:</p>
-                <pre className="text-gray-400 font-mono text-xs bg-gray-900 p-3 rounded overflow-x-auto max-h-48 overflow-y-auto">
-                  {error.stack}
-                </pre>
+        {/* Error Details (Collapsed by default) — only shown outside
+            production, since error.message/error.stack can reveal internal
+            file paths and function names to end users. */}
+        {process.env.NODE_ENV !== "production" && (
+          <details className="mb-8 bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+            <summary className="cursor-pointer p-4 hover:bg-gray-800 transition-colors text-gray-400 font-mono text-sm">
+              View Technical Details
+            </summary>
+            <div className="p-4 border-t border-gray-800 bg-black">
+              <div className="mb-4">
+                <p className="text-red-400 font-mono text-xs mb-2">Error Message:</p>
+                <p className="text-gray-300 font-mono text-xs bg-gray-900 p-3 rounded break-all">
+                  {error?.message || "Unknown error occurred"}
+                </p>
               </div>
-            )}
-          </div>
-        </details>
+              {error?.stack && (
+                <div>
+                  <p className="text-red-400 font-mono text-xs mb-2">Stack Trace:</p>
+                  <pre className="text-gray-400 font-mono text-xs bg-gray-900 p-3 rounded overflow-x-auto max-h-48 overflow-y-auto">
+                    {error.stack}
+                  </pre>
+                </div>
+              )}
+            </div>
+          </details>
+        )}
 
         {/* Recovery Actions */}
         <div className="space-y-4">

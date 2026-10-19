@@ -1,6 +1,12 @@
 use crate::types::Choice;
 use soroban_sdk::{Address, BytesN, Env, Symbol, symbol_short};
 
+/// Schema version for the `round_resolved_v2` (`rslvd2`) event payload
+/// (#1394). Bump this and document the change in `docs/event-schema.md` if
+/// the payload shape changes; consumers should ignore unknown versions
+/// rather than fail parsing.
+pub const ROUND_PROOF_EVENT_VERSION: u32 = 1;
+
 pub struct ArenaEvents;
 
 impl ArenaEvents {
@@ -22,6 +28,20 @@ impl ArenaEvents {
     pub fn player_unbanned(env: &Env, admin: &Address, player: &Address) {
         env.events()
             .publish((symbol_short!("unban"), admin.clone()), player.clone());
+    }
+
+    /// Emitted when a player withdraws from the lobby before the first round
+    /// (#1580). `player_count` is the roster size after the removal.
+    pub fn player_left(env: &Env, player: &Address, player_count: u32) {
+        env.events()
+            .publish((symbol_short!("left"), player.clone()), player_count);
+    }
+
+    /// Emitted when an entry fee is returned to a player who left or was banned
+    /// from the lobby before the first round (#1580, #1581).
+    pub fn player_refunded(env: &Env, player: &Address, amount: i128) {
+        env.events()
+            .publish((symbol_short!("refunded"), player.clone()), amount);
     }
 
     pub fn player_limits_configured(env: &Env, min_players: u32, max_players: u32) {
@@ -54,6 +74,38 @@ impl ArenaEvents {
     pub fn round_resolved(env: &Env, round: u32, eliminated: u32, survivors: u32) {
         env.events()
             .publish((symbol_short!("resolved"),), (round, eliminated, survivors));
+    }
+
+    /// Emitted alongside `round_resolved` (#1394) with enough data for a
+    /// client to independently recompute survivor membership: the full
+    /// heads/tails tally and the surviving choice (if any). Additive —
+    /// `round_resolved` keeps firing unchanged for existing consumers; this
+    /// is a *new* topic, not a payload change to an existing one, so no
+    /// existing indexer breaks by ignoring it.
+    ///
+    /// `surviving_choice` is `None` encoded as `heads_count == tails_count`
+    /// when both are nonzero (a tie — nobody eliminated); callers should use
+    /// `crate::eliminations::surviving_choice` on the tally rather than
+    /// inferring it from a sentinel, since Soroban events cannot carry
+    /// `Option<Choice>` as a topic-friendly primitive here.
+    pub fn round_resolved_v2(
+        env: &Env,
+        round: u32,
+        heads_count: u32,
+        tails_count: u32,
+        eliminated: u32,
+        survivors: u32,
+    ) {
+        env.events().publish(
+            (symbol_short!("rslvd2"), round),
+            (
+                heads_count,
+                tails_count,
+                eliminated,
+                survivors,
+                ROUND_PROOF_EVENT_VERSION,
+            ),
+        );
     }
 
     pub fn round_tied(env: &Env, round: u32, survivors: u32) {
@@ -112,6 +164,40 @@ impl ArenaEvents {
     pub fn vault_oracle_failed(env: &Env, oracle: &Address) {
         env.events()
             .publish((Symbol::new(env, "vault_oracle_failed"),), oracle.clone());
+    }
+
+    /// Emitted by `set_oracle_freshness_policy` (#1512).
+    pub fn oracle_freshness_policy_updated(
+        env: &Env,
+        admin: &Address,
+        max_age_secs: u64,
+        warn_age_secs: u64,
+    ) {
+        env.events().publish(
+            (symbol_short!("frsh_pol"), admin.clone()),
+            (max_age_secs, warn_age_secs),
+        );
+    }
+
+    /// Emitted on every `resolve_round` attempt that reaches the oracle
+    /// freshness check (#1512), success or rejection — `classification_code`
+    /// is `OracleFreshness::as_code()`'s value. This is the signal a
+    /// keeper-facing status / alerting pipeline watches for staleness, since
+    /// it fires even when `age_secs` doesn't cross the `Stale` threshold.
+    pub fn oracle_freshness_observed(env: &Env, round: u32, classification_code: u32, age_secs: u64) {
+        env.events().publish(
+            (Symbol::new(env, "oracle_freshness_observed"),),
+            (round, classification_code, age_secs),
+        );
+    }
+
+    /// Emitted when `resolve_round` refuses to proceed because the oracle's
+    /// observation is `Stale` (#1512).
+    pub fn oracle_stale_rejected(env: &Env, round: u32, age_secs: u64) {
+        env.events().publish(
+            (Symbol::new(env, "oracle_stale_rejected"),),
+            (round, age_secs),
+        );
     }
 
     pub fn arena_cancelled(env: &Env, admin: &Address) {

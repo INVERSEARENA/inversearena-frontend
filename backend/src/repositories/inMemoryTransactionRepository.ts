@@ -1,15 +1,24 @@
 import type { PaymentStatus, TransactionRecord } from "../types/payment";
-import type { TransactionRepository } from "./transactionRepository";
+import type { TransactionPatch, TransactionRepository } from "./transactionRepository";
 
 export class InMemoryTransactionRepository implements TransactionRepository {
   private readonly records = new Map<string, TransactionRecord>();
   private readonly idempotencyMap = new Map<string, string>();
+  private readonly payoutMap = new Map<string, string>();
+  private readonly nonceMap = new Set<string>();
   private readonly nonceBySource = new Map<string, number>();
 
   async findByIdempotencyKey(idempotencyKey: string): Promise<TransactionRecord | null> {
     const id = this.idempotencyMap.get(idempotencyKey);
     if (!id) return null;
     return this.records.get(id) ?? null;
+  }
+
+  async findByPayoutId(payoutId: string): Promise<TransactionRecord | null> {
+    for (const record of this.records.values()) {
+      if (record.payoutId === payoutId) return record;
+    }
+    return null;
   }
 
   async findById(id: string): Promise<TransactionRecord | null> {
@@ -24,13 +33,24 @@ export class InMemoryTransactionRepository implements TransactionRepository {
   }
 
   async insert(record: TransactionRecord): Promise<void> {
+    const nonceKey = `${record.sourceAccount}:${record.nonce}`;
+    if (
+      this.records.has(record.id) ||
+      this.idempotencyMap.has(record.idempotencyKey) ||
+      this.payoutMap.has(record.payoutId) ||
+      this.nonceMap.has(nonceKey)
+    ) {
+      throw new Error("Duplicate transaction identifier, payout, idempotency key, or nonce");
+    }
     this.records.set(record.id, record);
     this.idempotencyMap.set(record.idempotencyKey, record.id);
+    this.payoutMap.set(record.payoutId, record.id);
+    this.nonceMap.add(nonceKey);
   }
 
   async update(
     id: string,
-    patch: Partial<Omit<TransactionRecord, "id" | "createdAt">>
+    patch: TransactionPatch
   ): Promise<TransactionRecord> {
     const current = this.records.get(id);
     if (!current) {
@@ -50,6 +70,34 @@ export class InMemoryTransactionRepository implements TransactionRepository {
     const rows = Array.from(this.records.values())
       .filter((record) => statusSet.has(record.status))
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    return rows.slice(0, limit);
+  }
+
+  /**
+   * Owner-scoped, keyset-paginated payout list for the claim inbox (#1489).
+   * Mirrors MongoTransactionRepository.listByDestination, including the
+   * descending `(updatedAt, id)` ordering, so the inbox behaves identically
+   * under the in-memory repository used by tests.
+   */
+  async listByDestination(
+    destinationAccount: string,
+    limit: number,
+    cursor?: { updatedAt: Date; id: string } | null,
+  ): Promise<TransactionRecord[]> {
+    if (limit <= 0) return [];
+    const rows = Array.from(this.records.values())
+      .filter((record) => record.destinationAccount === destinationAccount)
+      .filter((record) => {
+        if (!cursor) return true;
+        const at = record.updatedAt.getTime();
+        const cursorAt = cursor.updatedAt.getTime();
+        if (at !== cursorAt) return at < cursorAt;
+        return record.id < cursor.id;
+      })
+      .sort((a, b) => {
+        const at = b.updatedAt.getTime() - a.updatedAt.getTime();
+        return at !== 0 ? at : b.id.localeCompare(a.id);
+      });
     return rows.slice(0, limit);
   }
 }

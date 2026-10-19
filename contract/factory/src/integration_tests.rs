@@ -34,7 +34,7 @@ fn compute_commitment(env: &Env, choice: arena::types::Choice, salt: &BytesN<32>
 #[test]
 fn factory_deploys_arena_and_full_game_plays() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     // ── 1. Deploy factory, oracle, vault, token ──────────────────────────
     let factory_id = env.register(FactoryContract, ());
@@ -56,7 +56,7 @@ fn factory_deploys_arena_and_full_game_plays() {
     // Deploy and initialize RWA Adapter
     let vault_id = env.register(RwaAdapter, ());
     let vault_client = RwaAdapterClient::new(&env, &vault_id);
-    vault_client.initialize(&admin, &token_id);
+    vault_client.initialize(&admin, &token_id, &oracle_id);
 
     // ── 2. Initialize factory ────────────────────────────────────────────
     factory_client.initialize(&admin, &100);
@@ -112,6 +112,7 @@ fn factory_deploys_arena_and_full_game_plays() {
                 entry_fee: 100,
                 status: ArenaStatus::Active,
                 created_at: env.ledger().timestamp(),
+                metadata_hash: soroban_sdk::BytesN::from_array(&env, &[0u8; 32]),
             },
         );
         crate::storage::FactoryStorage::increment_pool_count(&env);
@@ -139,7 +140,11 @@ fn factory_deploys_arena_and_full_game_plays() {
     let token_client = soroban_sdk::token::TokenClient::new(&env, &token_id);
     assert_eq!(arena_client.player_count(), 3);
     assert_eq!(token_client.balance(&p1), 900);
-    assert_eq!(token_client.balance(&arena_id), 300);
+    // join_arena deposits each entry fee into the vault immediately (per-join,
+    // not batched), so the arena itself holds nothing between joins — the
+    // vault (vault_id) receives the full 300 total instead (#1299).
+    assert_eq!(token_client.balance(&arena_id), 0);
+    assert_eq!(token_client.balance(&vault_id), 300);
 
     // ── 6. Start round ──────────────────────────────────────────────────
     env.ledger().with_mut(|li| li.timestamp = 1000);
@@ -166,6 +171,9 @@ fn factory_deploys_arena_and_full_game_plays() {
     arena_client.reveal_choice(&p3, &arena::types::Choice::Heads, &salt3);
 
     // ── 9. Resolve round ────────────────────────────────────────────────
+    // Refresh the oracle observation so the #1512 freshness check passes at
+    // the advanced ledger timestamp.
+    oracle_client.set_yield_bps(&500);
     arena_client.resolve_round();
 
     // Verify round result

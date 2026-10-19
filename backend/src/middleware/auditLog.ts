@@ -1,6 +1,25 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { AuditLogModel } from "../db/models/auditLog.model";
 import { logger } from "../utils/logger";
+import { PAYLOAD_LIMITS, findPayloadLimitViolation } from "../validation/payloadLimits";
+import { payloadLimitRejectionsTotal } from "../utils/metrics";
+
+/**
+ * Bound handler-supplied audit context before it reaches the Mongo Mixed
+ * field (#1455). An oversized value is replaced by a small marker rather than
+ * dropping the audit entry — the fact that the action happened must survive.
+ */
+export function boundAuditMetadata(metadata: unknown): Record<string, unknown> | undefined {
+  if (metadata === undefined || metadata === null) return undefined;
+  if (typeof metadata !== "object" || Array.isArray(metadata)) {
+    return { truncated: true, reason: "metadata must be a plain object" };
+  }
+  const violation = findPayloadLimitViolation(metadata, PAYLOAD_LIMITS.audit_metadata);
+  if (!violation) return metadata as Record<string, unknown>;
+  payloadLimitRejectionsTotal.inc({ boundary: "audit_metadata", limit: violation.kind });
+  logger.warn({ event: "payload_limit_rejected", boundary: "audit_metadata", kind: violation.kind, path: violation.path }, "audit metadata truncated");
+  return { truncated: true, limit: violation.kind, path: violation.path.slice(0, 8).join(".") };
+}
 
 /**
  * Express middleware that automatically writes an audit log entry for every
@@ -37,12 +56,21 @@ async function writeAuditLog(
   res: Response,
   _body: unknown
 ): Promise<void> {
+  const startedAt = Date.now();
   const adminId = req.adminId;
   const action = `${req.method} ${req.route?.path ?? req.path}`;
   const resourceId =
     (res.locals.auditResourceId as string | undefined) ??
     req.params.id ??
     undefined;
+  const actor: AuditActor = adminId
+    ? { type: "admin", id: adminId }
+    : { type: "anonymous", id: `unauthenticated:${req.ip ?? "unknown"}` };
+  const resource: AuditResource = {
+    type: deriveResourceType(req.path),
+    id: resourceId ?? "unknown",
+  };
+  const correlationId = (req.headers["x-correlation-id"] as string | undefined)?.slice(0, 128);
 
   if (!adminId) {
     // Authentication itself failed (bad/missing API key), so req.adminId was
@@ -53,14 +81,18 @@ async function writeAuditLog(
 
     await AuditLogModel.create({
       adminId: `unauthenticated:${req.ip ?? "unknown"}`,
+      actor,
       action,
       resourceType: deriveResourceType(req.path),
       resourceId: resourceId ?? "unknown",
+      resource,
+      correlationId,
       status: "auth_failed",
-      metadata: res.locals.auditMetadata as Record<string, unknown> | undefined,
+      metadata: boundAuditMetadata(res.locals.auditMetadata),
       ipAddress: req.ip,
       userAgent: req.headers["user-agent"],
     });
+    logger.info({ event: "audit_write", status: "auth_failed", latencyMs: Date.now() - startedAt }, "Audit event recorded");
     return;
   }
 
@@ -68,17 +100,21 @@ async function writeAuditLog(
 
   await AuditLogModel.create({
     adminId,
+    actor,
     action,
     resourceType: deriveResourceType(req.path),
     resourceId: resourceId ?? "unknown",
+    resource,
+    correlationId,
     status,
-    metadata: res.locals.auditMetadata as Record<string, unknown> | undefined,
+    metadata: boundAuditMetadata(res.locals.auditMetadata),
     ipAddress: req.ip,
     userAgent: req.headers["user-agent"],
   });
+  logger.info({ event: "audit_write", status, latencyMs: Date.now() - startedAt }, "Audit event recorded");
 }
 
-function deriveResourceType(path: string): string {
+export function deriveResourceType(path: string): string {
   // Extract the first meaningful path segment, skipping any leading
   // "api"/"admin" mount-prefix segments. req.path is router-relative while
   // handling the request (e.g. "/audit-logs") but reverts to the full
