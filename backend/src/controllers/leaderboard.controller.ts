@@ -6,6 +6,9 @@ import { z } from "zod";
 const LeaderboardQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   cursor: z.string().optional(),
+  // Ranked leaderboard excludes wallets with unreviewed sybil flags by default
+  // (issue #1635). Pass excludeFlagged=false to include them (admin use only).
+  excludeFlagged: z.coerce.boolean().default(true),
 });
 
 // ── Response shape (matches frontend Survivor type) ─────────────────
@@ -42,7 +45,7 @@ export class LeaderboardController {
    *  }
    */
   getLeaderboard = async (req: Request, res: Response): Promise<void> => {
-    const { limit, cursor } = LeaderboardQuerySchema.parse(req.query);
+    const { limit, cursor, excludeFlagged } = LeaderboardQuerySchema.parse(req.query);
 
     const offset = cursor ? this.decodeCursor(cursor) : 0;
 
@@ -53,7 +56,10 @@ export class LeaderboardController {
     //
     // One extra row is requested to decide `hasMore` without a second count
     // query.
-    const rows = await this.buildRankedPlayers(limit + 1, offset);
+    //
+    // excludeFlagged=true (default) omits wallets with unreviewed sybil flags
+    // from ranked results (issue #1635).
+    const rows = await this.buildRankedPlayers(limit + 1, offset, excludeFlagged);
 
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
@@ -78,7 +84,11 @@ export class LeaderboardController {
    * against RESOLVED-round eliminations rather than subtracting independently
    * scoped counts (#1346).
    */
-  private async buildRankedPlayers(limit: number, offset: number): Promise<PlayerStats[]> {
+  private async buildRankedPlayers(
+    limit: number,
+    offset: number,
+    excludeFlagged = true
+  ): Promise<PlayerStats[]> {
     type RawRow = {
       id: string;
       walletAddress: string;
@@ -163,6 +173,17 @@ export class LeaderboardController {
       LEFT JOIN round_stats rs ON rs.user_id = au.user_id
       LEFT JOIN arena_wins aw ON aw.user_id = au.user_id
       LEFT JOIN round_survivals sv ON sv.user_id = au.user_id
+      -- Exclude wallets with unreviewed sybil flags from the ranked board
+      -- when excludeFlagged=true (issue #1635). Admins pass excludeFlagged=false.
+      WHERE (
+        NOT ${excludeFlagged}
+        OR NOT EXISTS (
+          SELECT 1
+          FROM sybil_flags sf
+          WHERE sf.wallet_address = u.wallet_address
+            AND sf.reviewed_at IS NULL
+        )
+      )
       ORDER BY "totalYield" DESC, "arenasWon" DESC
       LIMIT ${limit} OFFSET ${offset}
     `;
