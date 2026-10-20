@@ -61,15 +61,40 @@ fn load_vectors() -> serde_json::Value {
     serde_json::from_str(&raw).expect("parse commitment.json")
 }
 
-/// Independent SHA-256 of `[choice_byte] ++ salt` — deliberately does **not**
-/// call `ArenaContract::compute_commitment`, so a bug in the contract helper
-/// cannot hide behind a self-consistent test.
-fn independent_commitment(choice: &str, salt: &[u8]) -> Vec<u8> {
+/// Domain separator for the bound commitment preimage (#1630).
+const COMMIT_DOMAIN: &[u8] = b"IA_COMMIT_V1";
+
+/// Build the bound preimage `"IA_COMMIT_V1" || arena_xdr || round_u32_be ||
+/// player_xdr || choice_byte || salt`. `arena_xdr` and `player_xdr` are the
+/// ScVal XDR bytes of each address, stored in the vector file.
+///
+/// Deliberately does **not** call `ArenaContract::compute_commitment`, so a bug
+/// in the contract helper cannot hide behind a self-consistent test.
+fn bound_preimage(
+    arena_xdr: &[u8],
+    round: u32,
+    player_xdr: &[u8],
+    choice: &str,
+    salt: &[u8],
+) -> Vec<u8> {
     assert_eq!(salt.len(), 32, "salt must be 32 bytes");
-    let mut preimage = Vec::with_capacity(33);
+    let mut preimage = Vec::new();
+    preimage.extend_from_slice(COMMIT_DOMAIN);
+    preimage.extend_from_slice(arena_xdr);
+    preimage.extend_from_slice(&round.to_be_bytes());
+    preimage.extend_from_slice(player_xdr);
     preimage.push(choice_byte(choice));
     preimage.extend_from_slice(salt);
-    Sha256::digest(&preimage).to_vec()
+    preimage
+}
+
+/// Read the `context` XDR fields for a vector, rejecting a missing field loudly.
+fn context_xdr(vector: &serde_json::Value) -> (Vec<u8>, u32, Vec<u8>) {
+    let ctx = &vector["context"];
+    let arena_xdr = hex_to_bytes(vector["arenaXdr"].as_str().expect("arenaXdr"));
+    let round = ctx["round"].as_u64().expect("round") as u32;
+    let player_xdr = hex_to_bytes(vector["playerXdr"].as_str().expect("playerXdr"));
+    (arena_xdr, round, player_xdr)
 }
 
 fn bless() -> bool {
@@ -116,16 +141,15 @@ fn commitment_vectors_match_file() {
         let preimage_hex = vector["preimage"].as_str().expect("preimage");
         let commitment_hex = vector["commitment"].as_str().expect("commitment");
 
-        let mut expected_preimage = Vec::with_capacity(33);
-        expected_preimage.push(choice_byte(choice));
-        expected_preimage.extend_from_slice(&salt);
+        let (arena_xdr, round, player_xdr) = context_xdr(vector);
+        let expected_preimage = bound_preimage(&arena_xdr, round, &player_xdr, choice, &salt);
         assert_eq!(
             bytes_to_hex(&expected_preimage),
             preimage_hex,
             "preimage mismatch in vector '{name}'"
         );
 
-        let computed = independent_commitment(choice, &salt);
+        let computed = Sha256::digest(&expected_preimage);
         assert_eq!(
             bytes_to_hex(&computed),
             commitment_hex,
@@ -211,10 +235,9 @@ fn bless_vectors_when_requested() {
     for vector in doc["commitment"].as_array_mut().expect("commitment array") {
         let choice = vector["choice"].as_str().expect("choice").to_string();
         let salt = hex_to_bytes(vector["salt"].as_str().expect("salt"));
+        let (arena_xdr, round, player_xdr) = context_xdr(vector);
 
-        let mut preimage = Vec::with_capacity(33);
-        preimage.push(choice_byte(&choice));
-        preimage.extend_from_slice(&salt);
+        let preimage = bound_preimage(&arena_xdr, round, &player_xdr, &choice, &salt);
 
         vector["preimage"] = serde_json::Value::String(bytes_to_hex(&preimage));
         vector["commitment"] =

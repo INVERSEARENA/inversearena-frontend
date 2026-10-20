@@ -72,6 +72,9 @@ pub(crate) enum DataKey {
     ResolutionPlayers,
     /// Top-K leaderboard accumulator a paged resolution builds (#1639).
     ResolutionLeaderboard,
+    /// Set when a settlement-time vault withdrawal failed and the arena's
+    /// principal is still held by the vault (#1631). Cleared by `retry_withdraw`.
+    FundsInVault,
 }
 
 pub struct ArenaRepository<'a> {
@@ -1060,6 +1063,24 @@ impl ArenaStorage {
         env.storage()
             .persistent()
             .set(&DataKey::PrizeClaimed, &true);
+    }
+
+    /// Whether a settlement-time vault withdrawal failed and the principal is
+    /// still parked in the vault (#1631). Refunds are blocked while this is set.
+    pub fn load_funds_in_vault(env: &Env) -> bool {
+        Self::extend_persistent_ttl(env, &DataKey::FundsInVault);
+        env.storage()
+            .persistent()
+            .get(&DataKey::FundsInVault)
+            .unwrap_or(false)
+    }
+
+    /// Persist the funds-in-vault flag (#1631).
+    pub fn save_funds_in_vault(env: &Env, in_vault: bool) {
+        Self::extend_persistent_ttl(env, &DataKey::FundsInVault);
+        env.storage()
+            .persistent()
+            .set(&DataKey::FundsInVault, &in_vault);
     }
 
     /// Return whether a state-changing entry point is already executing.

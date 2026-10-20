@@ -519,6 +519,12 @@ pub enum ArenaError {
     /// (#1639) is in progress. Mixing the two would double-apply the round:
     /// drive the existing resolution to completion first.
     ResolutionInProgress = 48,
+
+    /// Returned by `claim_refund` while the arena's principal is still held by
+    /// the yield vault because a cancellation-time withdrawal failed (#1631).
+    /// The arena cannot pay refunds from its own balance until `retry_withdraw`
+    /// succeeds. Appended; existing ordinals unchanged.
+    FundsInVault = 49,
 }
 
 /// Stage of the paged `resolve_round` pipeline (#1639).

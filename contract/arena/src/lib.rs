@@ -8,7 +8,11 @@ use soroban_sdk::{
     Address, Bytes, BytesN, Env, IntoVal, Symbol, Vec,
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contractimpl, token,
+    xdr::ToXdr,
 };
+
+/// Domain separator prepended to every commitment preimage (#1630).
+const COMMIT_DOMAIN: &[u8] = b"IA_COMMIT_V1";
 
 mod eliminations;
 mod events;
@@ -89,6 +93,14 @@ pub const MIN_ROUND_DURATION_SECONDS: u64 = 30;
 pub const MAX_ROUND_DURATION_SECONDS: u64 = 3_600;
 /// Delay after a round deadline before keepers may act without the host.
 pub const HOST_GRACE_SECONDS: u64 = 3_600;
+/// Delay after `commit_deadline` before `expire_arena` becomes callable (#1627).
+///
+/// `commit_deadline` is also when reveals open and `resolve_round` becomes
+/// callable. Expiry is a liveness backstop for an arena nobody resolves, so it
+/// must wait long enough for the host and then keepers to resolve. Set well
+/// above `HOST_GRACE_SECONDS`, so a keeper-initiated resolution can never race
+/// a stranger-initiated cancellation.
+pub const EXPIRY_GRACE_SECONDS: u64 = 86_400;
 
 #[contract]
 /// On-chain arena contract. Manages the full lifecycle of a single elimination
@@ -592,7 +604,8 @@ impl ArenaContract {
 
         let commitment = ArenaStorage::load_commitment(&env, &player, round)
             .ok_or(ArenaError::MissingCommitment)?;
-        if commitment != Self::compute_commitment(&env, choice, &salt) {
+        let arena = env.current_contract_address();
+        if commitment != Self::compute_commitment(&env, &arena, round, &player, choice, &salt) {
             return Err(ArenaError::InvalidReveal);
         }
         ArenaStorage::save_choice(&env, &player, round, &choice);
@@ -694,7 +707,15 @@ impl ArenaContract {
     /// - `ArenaError::NotInitialized` if `initialize` has not been called.
     /// - `ArenaError::ContractPaused` if the contract is paused.
     /// - `ArenaError::InvalidGameState` if the arena is not in the `Active` state.
-    /// - `ArenaError::DeadlineTooSoon` if the commit deadline has not yet passed.
+    /// - `ArenaError::DeadlineTooSoon` unless `now > commit_deadline +
+    ///   EXPIRY_GRACE_SECONDS` (#1627).
+    ///
+    /// # Security (#1627)
+    /// Expiry is gated by `EXPIRY_GRACE_SECONDS` after the commit deadline, not
+    /// by the deadline itself. The deadline is also when reveals open and
+    /// `resolve_round` becomes callable, so an earlier gate would let any
+    /// account cancel the game before reveals or resolution, forcing refunds
+    /// and letting a losing player escape elimination.
     pub fn expire_arena(env: Env) -> Result<(), ArenaError> {
         ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
@@ -702,7 +723,8 @@ impl ArenaContract {
         if config.state != GameState::Active {
             return Err(ArenaError::InvalidGameState);
         }
-        if env.ledger().timestamp() <= config.commit_deadline {
+        let expiry_at = config.commit_deadline.saturating_add(EXPIRY_GRACE_SECONDS);
+        if env.ledger().timestamp() <= expiry_at {
             return Err(ArenaError::DeadlineTooSoon);
         }
 
@@ -714,9 +736,8 @@ impl ArenaContract {
         ArenaStorage::save_config(&env, &config);
 
         let arena_addr = env.current_contract_address();
-        if config.player_count > 0 {
-            let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
-            let _ = rwa_client.withdraw_all(&arena_addr);
+        if !Self::release_vault_principal(&env, &config) {
+            ArenaStorage::save_funds_in_vault(&env, true);
         }
 
         ArenaEvents::arena_expired(&env);
@@ -1116,7 +1137,9 @@ impl ArenaContract {
             let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
             let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Finished);
         } else if config.state == GameState::Cancelled {
-            let _ = rwa_client.try_withdraw_all(&arena_addr);
+            if !Self::release_vault_principal(&env, &config) {
+                ArenaStorage::save_funds_in_vault(&env, true);
+            }
             let _ = factory_client.try_release_arena(&arena_addr);
             let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
             let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Cancelled);
@@ -1174,19 +1197,22 @@ impl ArenaContract {
         ArenaStorage::save_config(&env, &config);
 
         // INTERACTIONS — external calls happen only after state is committed.
+        //
+        // The prize is exactly the tokens the vault withdrawal delivered to the
+        // arena (#1631). There is no fallback to a computed figure: if the vault
+        // refuses, the whole call reverts and the prize stays claimable.
         let arena_addr = env.current_contract_address();
-        let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
+        let token_client = token::TokenClient::new(&env, &config.stake_token);
+        let balance_before = token_client.balance(&arena_addr);
+        if !Self::release_vault_principal(&env, &config) {
+            return Err(ArenaError::VaultWithdrawFailed);
+        }
+        let total = token_client
+            .balance(&arena_addr)
+            .saturating_sub(balance_before);
         let principal = config
             .entry_fee
             .saturating_mul(i128::from(config.player_count));
-        let payout = principal.saturating_add(Self::total_yield(&env));
-        let withdrawn = rwa_client
-            .try_withdraw_all(&arena_addr)
-            .unwrap_or(Ok(payout))
-            .unwrap_or(payout);
-        let total = withdrawn;
-
-        let token_client = token::TokenClient::new(&env, &config.stake_token);
         token_client.transfer(&arena_addr, &winner, &total);
 
         ArenaEvents::prize_claimed(&env, &winner, total, total.saturating_sub(principal));
@@ -1333,13 +1359,16 @@ impl ArenaContract {
         config.state = GameState::Cancelled;
         ArenaStorage::save_config(&env, &config);
 
-        // Attempt to withdraw all funds from the yield vault
+        // Withdraw all principal from the yield vault. A refusal is recorded
+        // rather than ignored, so refunds stay blocked until `retry_withdraw`
+        // succeeds (#1631).
+        if !Self::release_vault_principal(&env, &config) {
+            ArenaStorage::save_funds_in_vault(&env, true);
+        }
         let arena_addr = env.current_contract_address();
-        let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
-        let _ = rwa_client.try_withdraw_all(&arena_addr);
 
         ArenaEvents::arena_cancelled(&env, &config.admin);
-        
+
         // Notify factory of force cancellation: release active pool slot, refund creator stake, and sync status
         let factory_client = FactoryClient::new(&env, &config.factory);
         let _ = factory_client.try_release_arena(&arena_addr);
@@ -1366,6 +1395,13 @@ impl ArenaContract {
             return Err(ArenaError::ArenaNotCancelled);
         }
 
+        // Refunds are paid from the arena's own balance. While the principal is
+        // still in the vault (#1631) that balance is short, so refuse with a
+        // specific error instead of failing on an opaque token transfer.
+        if ArenaStorage::load_funds_in_vault(&env) {
+            return Err(ArenaError::FundsInVault);
+        }
+
         if ArenaStorage::is_refund_claimed(&env, &player) {
             return Err(ArenaError::RefundAlreadyClaimed);
         }
@@ -1382,6 +1418,43 @@ impl ArenaContract {
         ArenaEvents::refund_claimed(&env, &player);
         ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
+    }
+
+    /// Retry the vault withdrawal that failed during a cancellation, expiry, or
+    /// settlement (#1631). Permissionless, because recovering the principal
+    /// benefits every player and cannot move funds to a new destination.
+    ///
+    /// Idempotent: when no withdrawal is pending it succeeds without touching
+    /// the vault. Refunds stay blocked (`FundsInVault`) until a retry succeeds.
+    ///
+    /// # Errors
+    /// - `ArenaError::ContractPaused` / `ArenaError::GloballyPaused` while paused.
+    /// - `ArenaError::InvalidGameState` if the arena is not `Cancelled`.
+    /// - `ArenaError::VaultWithdrawFailed` if the vault still refuses to release.
+    pub fn retry_withdraw(env: Env) -> Result<(), ArenaError> {
+        ArenaStorage::enter_reentrancy_guard(&env)?;
+        let config = ArenaStorage::load_config(&env)?;
+        Self::require_not_paused(&env, &config)?;
+        if config.state != GameState::Cancelled {
+            return Err(ArenaError::InvalidGameState);
+        }
+        if !ArenaStorage::load_funds_in_vault(&env) {
+            ArenaStorage::exit_reentrancy_guard(&env);
+            return Ok(());
+        }
+        if !Self::release_vault_principal(&env, &config) {
+            return Err(ArenaError::VaultWithdrawFailed);
+        }
+        ArenaStorage::save_funds_in_vault(&env, false);
+        ArenaStorage::exit_reentrancy_guard(&env);
+        Ok(())
+    }
+
+    /// Whether the principal is still held by the yield vault because a
+    /// settlement-time withdrawal failed (#1631). `true` blocks refunds until
+    /// `retry_withdraw` succeeds.
+    pub fn funds_in_vault(env: Env) -> bool {
+        ArenaStorage::load_funds_in_vault(&env)
     }
 
     /// Get the sorted top-N leaderboard of players.
@@ -1520,13 +1593,33 @@ impl ArenaContract {
         ArenaStorage::load_round_result(&env, round)
     }
 
-    fn compute_commitment(env: &Env, choice: Choice, salt: &BytesN<32>) -> BytesN<32> {
-        let mut preimage = Bytes::new(env);
+    /// Commitment preimage, bound to one arena, round, and player (#1630):
+    ///
+    /// `SHA-256("IA_COMMIT_V1" || arena || round || player || choice || salt)`
+    ///
+    /// - `arena` / `player`: the ScVal XDR of the address (`Address::to_xdr`),
+    ///   i.e. the 4-byte `SCV_ADDRESS` discriminant followed by the ScAddress.
+    /// - `round`: `u32`, big-endian (the XDR `u32` encoding).
+    /// - `choice`: one byte, `Heads = 0`, `Tails = 1`.
+    /// - `salt`: 32 raw bytes.
+    ///
+    /// A hash copied from another player, arena, or round therefore fails
+    /// `reveal_choice`: the reveal recomputes the hash for the revealing
+    /// caller's own context.
+    fn compute_commitment(
+        env: &Env,
+        arena: &Address,
+        round: u32,
+        player: &Address,
+        choice: Choice,
+        salt: &BytesN<32>,
+    ) -> BytesN<32> {
+        let mut preimage = Bytes::from_slice(env, COMMIT_DOMAIN);
+        preimage.append(&arena.clone().to_xdr(env));
+        preimage.append(&Bytes::from_slice(env, &round.to_be_bytes()));
+        preimage.append(&player.clone().to_xdr(env));
         preimage.push_back(choice.to_byte());
-        let salt_bytes = salt.to_array();
-        for b in salt_bytes.iter() {
-            preimage.push_back(*b);
-        }
+        preimage.append(&Bytes::from_slice(env, &salt.to_array()));
         env.crypto().sha256(&preimage).into()
     }
 
@@ -1562,16 +1655,35 @@ impl ArenaContract {
         config.state = GameState::Cancelled;
         ArenaStorage::save_config(env, config);
 
-        let arena_addr = env.current_contract_address();
-        if config.player_count > 0 {
-            let rwa_client = RwaAdapterClient::new(env, &config.yield_vault);
-            let _ = rwa_client.withdraw_all(&arena_addr);
+        if !Self::release_vault_principal(env, config) {
+            ArenaStorage::save_funds_in_vault(env, true);
         }
 
+        let arena_addr = env.current_contract_address();
         let factory_client = FactoryClient::new(env, &config.factory);
         let _ = factory_client.try_release_arena(&arena_addr);
         let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
         let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Cancelled);
+    }
+
+    /// Pull the arena's principal back from the yield vault during settlement
+    /// (#1631). Returns `false` when the vault did not release it, so the caller
+    /// can record that funds are still parked there. A failed balance read counts
+    /// as a failure, never as "nothing to release".
+    fn release_vault_principal(env: &Env, config: &ArenaConfig) -> bool {
+        if config.player_count == 0 {
+            return true;
+        }
+        let arena_addr = env.current_contract_address();
+        let rwa_client = RwaAdapterClient::new(env, &config.yield_vault);
+        let held = match rwa_client.try_balance_of(&arena_addr) {
+            Ok(Ok(balance)) => balance,
+            _ => return false,
+        };
+        if held <= 0 {
+            return true;
+        }
+        matches!(rwa_client.try_withdraw_all(&arena_addr), Ok(Ok(_)))
     }
 
     /// Release one lobby player's entry fee from the vault and transfer it back
@@ -2018,8 +2130,15 @@ mod test {
         assert!(hundred_second.instructions < 50_000_000);
     }
 
-    fn compute_commitment(env: &Env, choice: Choice, salt: &BytesN<32>) -> BytesN<32> {
-        ArenaContract::compute_commitment(env, choice, salt)
+    fn compute_commitment(
+        env: &Env,
+        arena: &Address,
+        round: u32,
+        player: &Address,
+        choice: Choice,
+        salt: &BytesN<32>,
+    ) -> BytesN<32> {
+        ArenaContract::compute_commitment(env, arena, round, player, choice, salt)
     }
 
     #[test]
@@ -2030,7 +2149,7 @@ mod test {
         let player = Address::generate(&env);
         let salt = BytesN::from_array(&env, &[42u8; 32]);
         let choice = Choice::Tails;
-        let commitment = compute_commitment(&env, choice, &salt);
+        let commitment = compute_commitment(&env, &contract_id, 1, &player, choice, &salt);
 
         env.as_contract(&contract_id, || {
             let config = ArenaConfig {
@@ -2072,7 +2191,7 @@ mod test {
         let player = Address::generate(&env);
         let salt = BytesN::from_array(&env, &[42u8; 32]);
         let choice = Choice::Heads;
-        let commitment = compute_commitment(&env, choice, &salt);
+        let commitment = compute_commitment(&env, &contract_id, 1, &player, choice, &salt);
 
         env.as_contract(&contract_id, || {
             let config = ArenaConfig {
@@ -2109,7 +2228,7 @@ mod test {
         let player = Address::generate(&env);
         let salt = BytesN::from_array(&env, &[42u8; 32]);
         let choice = Choice::Heads;
-        let commitment = compute_commitment(&env, choice, &salt);
+        let commitment = compute_commitment(&env, &contract_id, 1, &player, choice, &salt);
 
         env.as_contract(&contract_id, || {
             let config = ArenaConfig {
@@ -2154,7 +2273,7 @@ mod test {
         let contract_id = env.register(ArenaContract, ());
         let player = Address::generate(&env);
         let salt = BytesN::from_array(&env, &[7u8; 32]);
-        let commitment = compute_commitment(&env, Choice::Heads, &salt);
+        let commitment = compute_commitment(&env, &contract_id, 1, &player, Choice::Heads, &salt);
 
         env.as_contract(&contract_id, || {
             let config = ArenaConfig {
@@ -2191,7 +2310,7 @@ mod test {
         let contract_id = env.register(ArenaContract, ());
         let player = Address::generate(&env);
         let salt = BytesN::from_array(&env, &[3u8; 32]);
-        let commitment = compute_commitment(&env, Choice::Heads, &salt);
+        let commitment = compute_commitment(&env, &contract_id, 1, &player, Choice::Heads, &salt);
 
         env.as_contract(&contract_id, || {
             let config = ArenaConfig {
@@ -2229,7 +2348,7 @@ mod test {
         let player = Address::generate(&env);
         let salt = BytesN::from_array(&env, &[9u8; 32]);
         let choice = Choice::Heads;
-        let commitment = compute_commitment(&env, choice, &salt);
+        let commitment = compute_commitment(&env, &contract_id, 1, &player, choice, &salt);
 
         env.as_contract(&contract_id, || {
             let config = ArenaConfig {
@@ -2376,7 +2495,7 @@ mod test {
         let admin = Address::generate(&env);
         let player = Address::generate(&env);
         let salt = BytesN::from_array(&env, &[1u8; 32]);
-        let commitment = compute_commitment(&env, Choice::Heads, &salt);
+        let commitment = compute_commitment(&env, &contract_id, 1, &player, Choice::Heads, &salt);
 
         env.as_contract(&contract_id, || {
             ArenaStorage::save_config(
@@ -2927,9 +3046,9 @@ mod test {
         let salt1 = BytesN::from_array(&env, &[1u8; 32]);
         let salt2 = BytesN::from_array(&env, &[2u8; 32]);
         let salt3 = BytesN::from_array(&env, &[3u8; 32]);
-        let comm1 = compute_commitment(&env, Choice::Heads, &salt1);
-        let comm2 = compute_commitment(&env, Choice::Heads, &salt2);
-        let comm3 = compute_commitment(&env, Choice::Heads, &salt3);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
         client.submit_commitment(&p1, &comm1);
         client.submit_commitment(&p2, &comm2);
         client.submit_commitment(&p3, &comm3);
@@ -3378,9 +3497,11 @@ mod test {
         env.ledger().with_mut(|li| li.timestamp = 1000);
         client.start_round(&60);
         let salt = BytesN::from_array(&env, &[1u8; 32]);
-        let comm = compute_commitment(&env, Choice::Heads, &salt);
+        let comm = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt);
+        // Each hash is bound to its own player, so p2 cannot reuse p1's (#1630).
+        let comm_p2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt);
         client.submit_commitment(&p1, &comm);
-        client.submit_commitment(&p2, &comm);
+        client.submit_commitment(&p2, &comm_p2);
         env.ledger().with_mut(|li| li.timestamp = 1061);
         // Both reveal Heads — all same choice, both survive
         client.reveal_choice(&p1, &Choice::Heads, &salt);
@@ -3393,9 +3514,10 @@ mod test {
 
         // Verify choices are cleared: players can commit and reveal again
         let salt2 = BytesN::from_array(&env, &[2u8; 32]);
-        let comm2 = compute_commitment(&env, Choice::Heads, &salt2);
+        let comm2 = compute_commitment(&env, &contract_id, 2, &p1, Choice::Heads, &salt2);
+        let comm2_p2 = compute_commitment(&env, &contract_id, 2, &p2, Choice::Heads, &salt2);
         client.submit_commitment(&p1, &comm2);
-        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p2, &comm2_p2);
         env.ledger().with_mut(|li| li.timestamp = 2061);
         // If choices were not cleared, reveal would fail with ChoiceAlreadyRevealed
         // If stale commitment was present, reveal would succeed but use wrong commitment
@@ -3450,11 +3572,12 @@ mod test {
 
         // Only p1 and p2 commit and reveal (p3 goes AFK)
         let salt = BytesN::from_array(&env, &[1u8; 32]);
-        let comm = compute_commitment(&env, Choice::Heads, &salt);
+        let comm = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt);
+        let comm_p2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt);
         client.submit_commitment(&p1, &comm);
-        client.submit_commitment(&p2, &comm);
+        client.submit_commitment(&p2, &comm_p2);
         let salt3 = BytesN::from_array(&env, &[3u8; 32]);
-        let comm3 = compute_commitment(&env, Choice::Heads, &salt3);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
         client.submit_commitment(&p3, &comm3);
 
         env.ledger().with_mut(|li| li.timestamp = 1061);
@@ -3517,8 +3640,8 @@ mod test {
         // Both players commit but neither reveals.
         let salt1 = BytesN::from_array(&env, &[1u8; 32]);
         let salt2 = BytesN::from_array(&env, &[2u8; 32]);
-        let comm1 = compute_commitment(&env, Choice::Heads, &salt1);
-        let comm2 = compute_commitment(&env, Choice::Heads, &salt2);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
         client.submit_commitment(&p1, &comm1);
         client.submit_commitment(&p2, &comm2);
 
@@ -3597,9 +3720,9 @@ mod test {
         let salt1 = BytesN::from_array(&env, &[1u8; 32]);
         let salt2 = BytesN::from_array(&env, &[2u8; 32]);
         let salt3 = BytesN::from_array(&env, &[3u8; 32]);
-        let comm1 = compute_commitment(&env, Choice::Tails, &salt1);
-        let comm2 = compute_commitment(&env, Choice::Heads, &salt2);
-        let comm3 = compute_commitment(&env, Choice::Heads, &salt3);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
         client.submit_commitment(&p1, &comm1);
         client.submit_commitment(&p2, &comm2);
         client.submit_commitment(&p3, &comm3);
@@ -3684,9 +3807,9 @@ mod test {
         let salt1 = BytesN::from_array(&env, &[1u8; 32]);
         let salt2 = BytesN::from_array(&env, &[2u8; 32]);
         let salt3 = BytesN::from_array(&env, &[3u8; 32]);
-        let comm1 = compute_commitment(&env, Choice::Heads, &salt1);
-        let comm2 = compute_commitment(&env, Choice::Heads, &salt2);
-        let comm3 = compute_commitment(&env, Choice::Heads, &salt3);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
         client.submit_commitment(&p1, &comm1);
         client.submit_commitment(&p2, &comm2);
         client.submit_commitment(&p3, &comm3);
@@ -3778,7 +3901,7 @@ mod test {
         env.ledger().with_mut(|li| li.timestamp = 1000);
         client.start_round(&60);
         let salt = BytesN::from_array(&env, &[1u8; 32]);
-        let comm = compute_commitment(&env, Choice::Heads, &salt);
+        let comm = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt);
         client.submit_commitment(&p1, &comm);
         client.submit_commitment(&p2, &comm);
         env.ledger().with_mut(|li| li.timestamp = 1061);
@@ -4809,7 +4932,7 @@ mod test {
         client.start_round(&60);
 
         let salt = BytesN::from_array(&env, &[1u8; 32]);
-        let commitment = compute_commitment(&env, Choice::Heads, &salt);
+        let commitment = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt);
         client.submit_commitment(&p1, &commitment);
         client.submit_commitment(&p2, &commitment);
 
@@ -4917,7 +5040,7 @@ mod test {
         env.ledger().with_mut(|li| li.timestamp = 1000);
         client.start_round(&60);
         let salt = BytesN::from_array(&env, &[1u8; 32]);
-        let comm = compute_commitment(&env, Choice::Heads, &salt);
+        let comm = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt);
         client.submit_commitment(&p1, &comm);
         client.submit_commitment(&p2, &comm);
         env.ledger().with_mut(|li| li.timestamp = 1061);
@@ -5170,3 +5293,5 @@ mod temp_storage_tests;
 mod auth_tests;
 #[cfg(test)]
 mod conservation_tests;
+#[cfg(test)]
+mod settlement_security_tests;

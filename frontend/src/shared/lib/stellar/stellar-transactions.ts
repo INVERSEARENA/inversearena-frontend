@@ -450,7 +450,11 @@ export async function buildSubmitCommitmentTransaction(
     assertCapability("commit", validatedPoolId, FN);
 
     const salt = generateSalt();
-    const commitment = await computeCommitment(validatedChoice, salt);
+    const commitment = await computeCommitment(validatedChoice, salt, {
+      arenaId: validatedPoolId,
+      round: validatedRoundNumber,
+      player: validatedPublicKey,
+    });
     saveCommitment(validatedPoolId, validatedRoundNumber, validatedPublicKey, {
       choice: validatedChoice,
       salt,

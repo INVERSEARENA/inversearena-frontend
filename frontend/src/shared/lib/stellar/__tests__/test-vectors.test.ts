@@ -33,7 +33,9 @@ interface CommitmentVector {
   choice: "Heads" | "Tails";
   choiceByte: number;
   salt: string;
-  context: { arena: number; round: number; player: string };
+  context: { arena: string; round: number; player: string };
+  arenaXdr: string;
+  playerXdr: string;
   preimage: string;
   commitment: string;
 }
@@ -95,7 +97,13 @@ describe("golden test vectors (#1643)", () => {
         expect(salt.length).toBe(32);
         expect(vector.choiceByte).toBe(vector.choice === "Heads" ? 0 : 1);
 
+        const round = Buffer.alloc(4);
+        round.writeUInt32BE(vector.context.round);
         const expectedPreimage = Buffer.concat([
+          Buffer.from("IA_COMMIT_V1", "utf8"),
+          Buffer.from(vector.arenaXdr, "hex"),
+          round,
+          Buffer.from(vector.playerXdr, "hex"),
           Buffer.from([vector.choiceByte]),
           Buffer.from(salt),
         ]);
@@ -104,7 +112,11 @@ describe("golden test vectors (#1643)", () => {
         const expected = createHash("sha256").update(expectedPreimage).digest("hex");
         expect(expected).toBe(vector.commitment);
 
-        const actual = await computeCommitment(vector.choice, salt);
+        const actual = await computeCommitment(vector.choice, salt, {
+          arenaId: vector.context.arena,
+          round: vector.context.round,
+          player: vector.context.player,
+        });
         expect(bytesToHex(actual)).toBe(vector.commitment);
       },
     );

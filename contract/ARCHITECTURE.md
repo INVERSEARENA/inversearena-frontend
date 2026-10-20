@@ -189,6 +189,32 @@ state even if its host disappears.
   - current on-chain guarantees already present in code
   - intended future interactions described here for system understanding
 
+### Settlement security (#1627, #1630, #1631)
+
+- **Expiry griefing (#1627).** `expire_arena` opens only after
+  `commit_deadline + EXPIRY_GRACE_SECONDS` (86,400 s). The commit deadline is
+  also when reveals open and `resolve_round` becomes callable, so an earlier
+  gate would let any account cancel the game before reveals or resolution. The
+  grace period sits well above `HOST_GRACE_SECONDS`, so a keeper-initiated
+  resolution cannot race a stranger's expiry.
+- **Commitment binding (#1630).** The commitment is
+  `SHA-256("IA_COMMIT_V1" || arena || round || player || choice || salt)`, where
+  `arena` and `player` are the ScVal XDR of each address and `round` is `u32`
+  big-endian. A hash copied from another player, arena, or round fails
+  `reveal_choice` with `InvalidReveal`. The layout is shared with the frontend
+  through `contract/test-vectors/commitment.json`.
+  - *Migration:* the preimage changed, so a commitment made under the old
+    layout cannot be revealed after upgrade. Upgrade only while no arena has an
+    open commit phase, or accept that those players are eliminated as
+    non-revealers for that round.
+- **Fail-closed vault withdrawals (#1631).** Every settlement path (cancel,
+  force-cancel, expiry, zero-survivor resolution, claim) pulls principal through
+  one helper. `claim` pays exactly the balance delta the withdrawal delivered,
+  and reverts with `VaultWithdrawFailed` if the vault refuses. A cancellation
+  that cannot withdraw still completes, but sets `funds_in_vault`, which blocks
+  `claim_refund` with `FundsInVault`. `retry_withdraw` is permissionless and
+  idempotent, and clears the flag once the vault releases the principal.
+
 ## Implementation Status Note
 
 This architecture document reflects the current repository structure as of the contracts present in `contract/`. Some described flows, especially staking and deeper payout orchestration, are target architecture and are not yet fully implemented on-chain.

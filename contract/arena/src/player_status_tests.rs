@@ -98,7 +98,14 @@ impl Arena {
 
     fn commit(&self, player: &Address, choice: Choice, salt: u8) {
         let salt = BytesN::from_array(&self.env, &[salt; 32]);
-        let commitment = ArenaContract::compute_commitment(&self.env, choice, &salt);
+        let commitment = ArenaContract::compute_commitment(
+            &self.env,
+            &self.client.address,
+            1,
+            player,
+            choice,
+            &salt,
+        );
         self.client.submit_commitment(player, &commitment);
     }
 

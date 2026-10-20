@@ -8,7 +8,7 @@ mod types;
 mod auth_tests;
 
 use soroban_sdk::{
-    Address, Bytes, BytesN, Env, Vec, contract, contractclient, contractimpl, symbol_short,
+    Address, Bytes, BytesN, Env, Map, Vec, contract, contractclient, contractimpl, symbol_short,
     token, xdr::ToXdr,
 };
 use storage::PayoutStorage;
@@ -188,15 +188,17 @@ impl PayoutContract {
         }
 
         let token_addr = PayoutStorage::get_token(&env)?;
-        // Duplicate check is O(n²) via Vec::contains. With MAX_BATCH_SIZE = 50
-        // this is at most 1,225 comparisons — within compute budget.
+        // Duplicate detection is O(n) via a Map keyed by payout id (#1620), so
+        // the check no longer grows quadratically with the batch size.
         let mut ids: Vec<BytesN<32>> = Vec::new(&env);
+        let mut seen: Map<BytesN<32>, bool> = Map::new(&env);
         let mut total: i128 = 0;
         for (arena, recipient, amount) in payouts.iter() {
             let payout_id = Self::validate_payout(&env, &token_addr, &arena, &recipient, amount)?;
-            if ids.contains(&payout_id) {
+            if seen.contains_key(payout_id.clone()) {
                 return Err(PayoutError::DuplicateRecipient);
             }
+            seen.set(payout_id.clone(), true);
             ids.push_back(payout_id);
             total = total.checked_add(amount).ok_or(PayoutError::InvalidAmount)?;
         }

@@ -329,7 +329,14 @@ impl World {
             Action::Commit { arena, player, tails } => {
                 let choice = if tails { Choice::Tails } else { Choice::Heads };
                 let salt = self.next_salt();
-                let commitment = ArenaContract::compute_commitment(&self.env, choice, &salt);
+                let commitment = ArenaContract::compute_commitment(
+                    &self.env,
+                    &self.arenas[arena].address,
+                    1,
+                    &self.players[player],
+                    choice,
+                    &salt,
+                );
                 let ok = self.arenas[arena]
                     .try_submit_commitment(&self.players[player], &commitment)
                     .is_ok();

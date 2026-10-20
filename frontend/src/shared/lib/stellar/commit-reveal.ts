@@ -20,6 +20,8 @@
  * belt-and-suspenders defence.
  */
 
+import { Address } from "@stellar/stellar-sdk";
+
 export type RoundChoice = "Heads" | "Tails";
 
 const STORAGE_PREFIX = "inversearena:commit-reveal";
@@ -40,21 +42,80 @@ export function generateSalt(): Uint8Array {
 }
 
 /**
- * Computes `SHA256([choice_byte] ++ salt)` in-browser via WebCrypto,
- * matching the arena contract's `compute_commitment` byte-for-byte.
+ * The arena, round, and player a commitment is bound to (#1630). A hash made
+ * for one context fails `reveal_choice` in any other, so a copied commitment
+ * cannot be replayed by another player, round, or arena.
+ */
+export interface CommitmentContext {
+  /** Arena contract id (`C...` strkey). */
+  arenaId: string;
+  /** Round number the commitment is for. */
+  round: number;
+  /** Player account (`G...` strkey) that will reveal. */
+  player: string;
+}
+
+/** Domain separator prepended to every commitment preimage (#1630). */
+const COMMIT_DOMAIN = new TextEncoder().encode("IA_COMMIT_V1");
+
+/**
+ * ScVal XDR of an address, matching Rust's `Address::to_xdr` in the arena
+ * contract. Both sides hash these exact bytes.
+ */
+function addressXdr(address: string): Uint8Array {
+  return new Uint8Array(Address.fromString(address).toScVal().toXDR());
+}
+
+function roundBytes(round: number): Uint8Array {
+  if (!Number.isInteger(round) || round < 0 || round > 0xffffffff) {
+    throw new Error(`round must be a u32, got ${round}`);
+  }
+  const bytes = new Uint8Array(4);
+  new DataView(bytes.buffer).setUint32(0, round, false);
+  return bytes;
+}
+
+/**
+ * Builds the bound preimage
+ * `"IA_COMMIT_V1" || arena_xdr || round_u32_be || player_xdr || choice_byte || salt`.
+ * Byte-for-byte what the contract's `compute_commitment` hashes.
+ */
+export function buildCommitmentPreimage(
+  choice: RoundChoice,
+  salt: Uint8Array,
+  context: CommitmentContext,
+): Uint8Array {
+  if (salt.length !== 32) {
+    throw new Error(`salt must be exactly 32 bytes, got ${salt.length}`);
+  }
+  const parts = [
+    COMMIT_DOMAIN,
+    addressXdr(context.arenaId),
+    roundBytes(context.round),
+    addressXdr(context.player),
+    new Uint8Array([choiceToByte(choice)]),
+    salt,
+  ];
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const preimage = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    preimage.set(part, offset);
+    offset += part.length;
+  }
+  return preimage;
+}
+
+/**
+ * Computes `SHA256("IA_COMMIT_V1" || arena || round || player || choice || salt)`
+ * in-browser via WebCrypto, matching the arena contract's `compute_commitment`.
  */
 export async function computeCommitment(
   choice: RoundChoice,
   salt: Uint8Array,
+  context: CommitmentContext,
 ): Promise<Uint8Array> {
-  if (salt.length !== 32) {
-    throw new Error(`salt must be exactly 32 bytes, got ${salt.length}`);
-  }
-
-  const preimage = new Uint8Array(33);
-  preimage[0] = choiceToByte(choice);
-  preimage.set(salt, 1);
-
+  const preimage = buildCommitmentPreimage(choice, salt, context);
   const digest = await crypto.subtle.digest("SHA-256", preimage);
   return new Uint8Array(digest);
 }

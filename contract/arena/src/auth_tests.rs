@@ -17,7 +17,7 @@ extern crate std;
 mod auth;
 
 use crate::types::Choice;
-use crate::{ArenaContract, ArenaContractClient};
+use crate::{ArenaContract, ArenaContractClient, EXPIRY_GRACE_SECONDS};
 use ::factory::types::{ArenaStatus, PoolConfig};
 use ::factory::{FactoryContract, FactoryContractClient};
 use ::oracle::{OracleContract, OracleContractClient};
@@ -86,12 +86,17 @@ impl Fx {
         });
     }
 
-    fn commitment(&self, choice: Choice, salt: &BytesN<32>) -> BytesN<32> {
-        ArenaContract::compute_commitment(&self.env, choice, salt)
+    fn commitment(
+        &self,
+        player: &Address,
+        choice: Choice,
+        salt: &BytesN<32>,
+    ) -> BytesN<32> {
+        ArenaContract::compute_commitment(&self.env, &self.arena, 1, player, choice, salt)
     }
 
     fn commit(&self, player: &Address, choice: Choice, salt: &BytesN<32>) {
-        let commitment = self.commitment(choice, salt);
+        let commitment = self.commitment(player, choice, salt);
         self.signed(
             player,
             self.tree("submit_commitment", (player.clone(), commitment.clone())),
@@ -568,7 +573,11 @@ fn submit_commitment_requires_exactly_the_player() {
     let fx = fixture();
     let players = fx.players(2);
     fx.start_round();
-    let commitment = fx.commitment(Choice::Heads, &BytesN::from_array(&fx.env, &[9; 32]));
+    let commitment = fx.commitment(
+        &players[0],
+        Choice::Heads,
+        &BytesN::from_array(&fx.env, &[9; 32]),
+    );
     let tree = fx.tree("submit_commitment", (players[0].clone(), commitment.clone()));
     let invoke = || fx.client.try_submit_commitment(&players[0], &commitment).is_ok();
     assert_rejects_signer(&fx.env, &players[1], &tree, invoke);
@@ -689,7 +698,7 @@ fn permissionless_exits_need_no_signature_and_still_reach_the_factory() {
     let fx = fixture();
     fx.players(2);
     fx.start_round();
-    fx.advance(ROUND + 1);
+    fx.advance(ROUND + 1 + EXPIRY_GRACE_SECONDS);
     fx.env.set_auths(&[]);
     fx.client.expire_arena();
     assert!(fx.env.auths().is_empty(), "expire_arena must not require any signature");

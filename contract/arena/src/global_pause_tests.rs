@@ -123,8 +123,14 @@ impl Protocol {
         BytesN::from_array(&self.env, &[byte; 32])
     }
 
-    fn commitment(&self, choice: Choice, salt: u8) -> BytesN<32> {
-        ArenaContract::compute_commitment(&self.env, choice, &self.salt(salt))
+    fn commitment(
+        &self,
+        arena: &Address,
+        player: &Address,
+        choice: Choice,
+        salt: u8,
+    ) -> BytesN<32> {
+        ArenaContract::compute_commitment(&self.env, arena, 1, player, choice, &self.salt(salt))
     }
 
     fn advance(&self, seconds: u64) {
@@ -188,8 +194,10 @@ fn global_pause_blocks_join_commit_reveal_resolve_and_claim_on_two_arenas() {
 
     for index in 0..3 {
         protocol.blocked_then_allowed(&arenas, |arena| {
-            let commitment = protocol.commitment(choice_of(index), index as u8);
-            unwrap_conversion(arena.try_submit_commitment(&player_of(arena, index), &commitment))
+            let player = player_of(arena, index);
+            let commitment =
+                protocol.commitment(&arena.address, &player, choice_of(index), index as u8);
+            unwrap_conversion(arena.try_submit_commitment(&player, &commitment))
         });
     }
 

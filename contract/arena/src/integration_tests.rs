@@ -14,8 +14,15 @@ use soroban_sdk::{
     token::StellarAssetClient,
 };
 
-fn compute_commitment(env: &Env, choice: Choice, salt: &BytesN<32>) -> BytesN<32> {
-    ArenaContract::compute_commitment(env, choice, salt)
+fn compute_commitment(
+    env: &Env,
+    arena: &Address,
+    round: u32,
+    player: &Address,
+    choice: Choice,
+    salt: &BytesN<32>,
+) -> BytesN<32> {
+    ArenaContract::compute_commitment(env, arena, round, player, choice, salt)
 }
 
 #[test]
@@ -114,10 +121,10 @@ fn full_game_lifecycle_commit_reveal() {
     let salt_4 = BytesN::from_array(&env, &[4u8; 32]);
 
     // Player 1 chooses Tails (minority), others choose Heads (majority)
-    let c1 = compute_commitment(&env, Choice::Tails, &salt_1);
-    let c2 = compute_commitment(&env, Choice::Heads, &salt_2);
-    let c3 = compute_commitment(&env, Choice::Heads, &salt_3);
-    let c4 = compute_commitment(&env, Choice::Heads, &salt_4);
+    let c1 = compute_commitment(&env, &arena_id, 1, &p1, Choice::Tails, &salt_1);
+    let c2 = compute_commitment(&env, &arena_id, 1, &p2, Choice::Heads, &salt_2);
+    let c3 = compute_commitment(&env, &arena_id, 1, &p3, Choice::Heads, &salt_3);
+    let c4 = compute_commitment(&env, &arena_id, 1, &p4, Choice::Heads, &salt_4);
 
     arena_client.submit_commitment(&p1, &c1);
     arena_client.submit_commitment(&p2, &c2);
@@ -353,9 +360,9 @@ fn factory_arena_payout_full_lifecycle() {
     let salt2 = BytesN::from_array(&env, &[2u8; 32]);
     let salt3 = BytesN::from_array(&env, &[3u8; 32]);
 
-    let c1 = compute_commitment(&env, Choice::Tails, &salt1);
-    let c2 = compute_commitment(&env, Choice::Heads, &salt2);
-    let c3 = compute_commitment(&env, Choice::Heads, &salt3);
+    let c1 = compute_commitment(&env, &arena_addr, 1, &p1, Choice::Tails, &salt1);
+    let c2 = compute_commitment(&env, &arena_addr, 1, &p2, Choice::Heads, &salt2);
+    let c3 = compute_commitment(&env, &arena_addr, 1, &p3, Choice::Heads, &salt3);
 
     arena_client.submit_commitment(&p1, &c1);
     arena_client.submit_commitment(&p2, &c2);
@@ -496,7 +503,10 @@ fn arena_after_one_elimination_round(
     ];
 
     for i in 0..5 {
-        arena_client.submit_commitment(&players[i], &compute_commitment(env, choices[i], &salts[i]));
+        arena_client.submit_commitment(
+            &players[i],
+            &compute_commitment(env, &arena_id, 1, &players[i], choices[i], &salts[i]),
+        );
     }
     env.ledger().with_mut(|li| li.timestamp = 1000 + 3601);
     for i in 0..5 {
@@ -517,7 +527,9 @@ fn expire_arena_lets_every_joined_player_reclaim_their_stake() {
 
     // Another round is under way and nobody resolves it — the arena is stuck.
     arena_client.start_round(&3600);
-    env.ledger().with_mut(|li| li.timestamp = 1000 + 3601 + 3601);
+    // Expiry opens EXPIRY_GRACE_SECONDS after the second round's commit deadline (#1627).
+    env.ledger()
+        .with_mut(|li| li.timestamp = 1000 + 3601 + 3600 + EXPIRY_GRACE_SECONDS + 1);
     arena_client.expire_arena();
 
     for p in &players {
@@ -541,7 +553,9 @@ fn expire_arena_and_force_cancel_arena_pay_out_identically() {
     let (expire_client, expire_token, _, expire_players) =
         arena_after_one_elimination_round(&expire_env);
     expire_client.start_round(&3600);
-    expire_env.ledger().with_mut(|li| li.timestamp = 1000 + 3601 + 3601);
+    expire_env
+        .ledger()
+        .with_mut(|li| li.timestamp = 1000 + 3601 + 3600 + EXPIRY_GRACE_SECONDS + 1);
     expire_client.expire_arena();
     for p in &expire_players {
         let _ = expire_client.try_claim_refund(p);
@@ -657,7 +671,8 @@ fn expire_arena_does_not_strand_eliminated_players_principal() {
     let (arena_client, token_client, arena_id, players) = arena_after_one_elimination_round(&env);
 
     arena_client.start_round(&3600);
-    env.ledger().with_mut(|li| li.timestamp = 1000 + 3601 + 3601);
+    env.ledger()
+        .with_mut(|li| li.timestamp = 1000 + 3601 + 3600 + EXPIRY_GRACE_SECONDS + 1);
     arena_client.expire_arena();
 
     for p in &players {
