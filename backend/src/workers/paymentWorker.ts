@@ -81,10 +81,8 @@ export class PaymentWorker {
             const result = await this.paymentService.submitQueuedTransaction(transaction.id);
             if (result.submitted) {
               submitted += 1;
-              // Hand off confirmation polling to BullMQ for persistent retry with backoff
-              if (this.txQueue) {
-                await this.txQueue.add("confirm", { transactionId: transaction.id });
-              }
+              // Confirmation job is now enqueued by PaymentService.submitQueuedTransaction
+              // directly with a deterministic jobId (#1602); no duplicate enqueue here.
             }
             if (result.transaction.status === "failed") {
               failed += 1;

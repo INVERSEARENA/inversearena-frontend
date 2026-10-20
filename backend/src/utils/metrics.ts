@@ -1023,6 +1023,19 @@ export const ttlKeeperConfirmationLagSeconds = new Histogram({
   registers: [register],
 });
 
+export const txConfirmEnqueuedTotal = new Counter({
+  name: "inversearena_tx_confirm_enqueued_total",
+  help: "Total tx-confirm jobs enqueued onto the BullMQ queue by PaymentService (#1602)",
+  registers: [register],
+});
+
+export const txConfirmWaitHistogram = new Histogram({
+  name: "inversearena_tx_confirm_enqueue_wait_seconds",
+  help: "Time spent waiting for the BullMQ add() call to resolve when enqueuing a tx-confirm job (#1602)",
+  buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1],
+  registers: [register],
+});
+
 export const cacheRequestsTotal = new Counter({
   name: "cache_requests_total",
   help: "Total cache requests by namespace and result (hit or miss)",
