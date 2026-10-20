@@ -45,10 +45,22 @@ export interface WinnersDeclaredEvent {
     timestamp: number;
 }
 
+export type EliminationReason = 'Majority' | 'NoReveal' | 'NoCommit';
+
+export interface PlayerEliminatedEvent {
+    type: 'PlayerEliminated';
+    arenaId: string;
+    playerWallet: string;
+    roundNumber: number;
+    reason: EliminationReason | null;
+    timestamp: number;
+}
+
 export type ArenaDomainEvent =
     | ArenaCreatedEvent
     | PlayerJoinedEvent
     | RoundStartedEvent
     | ChoiceSubmittedEvent
     | RoundResolvedEvent
-    | WinnersDeclaredEvent;
+    | WinnersDeclaredEvent
+    | PlayerEliminatedEvent;

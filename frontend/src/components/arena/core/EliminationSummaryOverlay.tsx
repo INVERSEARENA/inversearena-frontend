@@ -9,6 +9,7 @@ interface EliminationSummaryOverlayProps {
   isSorobanSynced: boolean;
   vaultStatus: "safe" | "withdrawable" | "processing";
   lockTimeRemaining: number;
+  eliminationReason?: "Majority" | "NoReveal" | "NoCommit" | null;
   txLedgerUrl?: string;
   onExitToLobby: () => void;
   onJoinNewArena: () => void;
@@ -21,6 +22,7 @@ export function EliminationSummaryOverlay({
   isSorobanSynced,
   vaultStatus,
   lockTimeRemaining,
+  eliminationReason = null,
   txLedgerUrl = "#",
   onExitToLobby,
   onJoinNewArena,
@@ -76,6 +78,17 @@ export function EliminationSummaryOverlay({
                 </h1>
               </div>
             </motion.div>
+
+            {eliminationReason && (
+              <div className="w-full max-w-4xl mb-6 border border-neon-pink/40 bg-[#1e293b] p-5">
+                <p className="font-pixel text-[8px] text-neon-pink tracking-wider mb-2">WHY YOU WERE ELIMINATED</p>
+                <p className="text-sm text-zinc-200">
+                  {eliminationReason === "Majority" && "Your revealed choice was in the majority."}
+                  {eliminationReason === "NoReveal" && "You committed a choice but did not reveal it before the round closed."}
+                  {eliminationReason === "NoCommit" && "You did not submit a commitment before the round closed."}
+                </p>
+              </div>
+            )}
 
             {/* Stats Cards */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 w-full max-w-4xl mb-8">

@@ -6,7 +6,8 @@ import {
     RoundStartedEvent,
     ChoiceSubmittedEvent,
     RoundResolvedEvent,
-    WinnersDeclaredEvent
+    WinnersDeclaredEvent,
+    PlayerEliminatedEvent
 } from '@/shared/lib/stellar/arenaTypes';
 
 /**
@@ -39,6 +40,7 @@ export const EVENT_DECODER_REGISTRY: Readonly<Record<number, Readonly<Record<str
         finished: parseWinnersDeclaredEvent,
         claimed: parsePrizeClaimedEvent,
         elim: parsePlayerEliminatedEvent,
+        elim2: parsePlayerEliminatedEventV2,
     },
 };
 
@@ -52,7 +54,9 @@ export function parseArenaEvent(raw: RawContractEvent): ArenaDomainEvent | null 
         if (!raw.topic || raw.topic.length === 0) return null;
 
         // The first topic is usually the event name as a symbol
-        const eventNameScVal = xdr.ScVal.fromXDR(raw.topic[0]!, 'base64');
+        const namespaceOffset = scValToNative(xdr.ScVal.fromXDR(raw.topic[0]!, 'base64')) === 'arena' ? 1 : 0;
+        if (raw.topic.length <= namespaceOffset) return null;
+        const eventNameScVal = xdr.ScVal.fromXDR(raw.topic[namespaceOffset]!, 'base64');
         const eventName = scValToNative(eventNameScVal);
 
         const version = raw.schemaVersion ?? 1;
@@ -193,20 +197,49 @@ function parsePrizeClaimedEvent(raw: RawContractEvent): WinnersDeclaredEvent | n
     };
 }
 
-function parsePlayerEliminatedEvent(raw: RawContractEvent): PlayerJoinedEvent | null {
+function parsePlayerEliminatedEvent(raw: RawContractEvent): PlayerEliminatedEvent | null {
     // Player address is in topic[1], round is in value (#1106)
     if (!raw.topic || raw.topic.length < 2) return null;
     
-    const playerScVal = xdr.ScVal.fromXDR(raw.topic[1]!, 'base64');
+    const namespaced = scValToNative(xdr.ScVal.fromXDR(raw.topic[0]!, 'base64')) === 'arena';
+    const playerScVal = xdr.ScVal.fromXDR(raw.topic[namespaced ? 2 : 1]!, 'base64');
     const player = scValToNative(playerScVal);
     
     const value = decodeValue(raw.value.xdr);
     if (!value) return null;
 
     return {
-        type: 'PlayerJoined',
+        type: 'PlayerEliminated',
         arenaId: raw.contractId,
         playerWallet: player,
+        roundNumber: Number(Array.isArray(value) ? value[1] : value),
+        reason: null,
+        timestamp: getTimestamp(raw),
+    };
+}
+
+function parsePlayerEliminatedEventV2(raw: RawContractEvent): PlayerEliminatedEvent | null {
+    if (!raw.topic || raw.topic.length < 3) return null;
+    const player = scValToNative(xdr.ScVal.fromXDR(raw.topic[2]!, 'base64'));
+    const value = decodeValue(raw.value.xdr);
+    if (!value) return null;
+    const tuple = Array.isArray(value) ? value : null;
+    const rawReason = tuple ? tuple[2] : value.reason;
+    const names = ['Majority', 'NoReveal', 'NoCommit'];
+    const reasonName = typeof rawReason === 'string'
+        ? rawReason
+        : rawReason && typeof rawReason === 'object'
+            ? Object.keys(rawReason)[0]
+            : undefined;
+    const reason = reasonName && names.includes(reasonName)
+        ? reasonName as PlayerEliminatedEvent['reason']
+        : null;
+    return {
+        type: 'PlayerEliminated',
+        arenaId: raw.contractId,
+        playerWallet: player,
+        roundNumber: Number(tuple ? tuple[1] : value.round),
+        reason,
         timestamp: getTimestamp(raw),
     };
 }

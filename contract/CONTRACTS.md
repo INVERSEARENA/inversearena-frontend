@@ -41,6 +41,7 @@
 - `pub fn player_count(env: Env) -> u32`
 - `pub fn get_player_status(env: Env, player: Address) -> Result<PlayerStatus, ArenaError>` — every per-player fact for the current round in one read; `joined: false` for non-players (#1582)
 - `pub fn start_round(env: Env, duration_seconds: u64) -> Result<(), ArenaError>`
+- `pub fn start_next_round(env: Env, caller: Address) -> Result<(), ArenaError>`
 - `pub fn resolve_round(env: Env) -> Result<(), ArenaError>`
 - `pub fn claim(env: Env, winner: Address) -> Result<(), ArenaError>`
 - `pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), ArenaError>`

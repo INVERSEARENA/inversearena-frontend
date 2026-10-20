@@ -27,6 +27,7 @@ use types::{
     ArenaConfig, ArenaError, ArenaStatus, Choice, EliminationReason, GameState, LeaderboardEntry,
     OracleFreshnessPolicy, PendingAdmin, PendingUpgrade, PlayerState, PlayerStatus, RoundResult,
     Settlement, YieldSnapshot,
+    TransitionInitiator, YieldSnapshot,
 };
 
 #[soroban_sdk::contractclient(name = "FactoryClient")]
@@ -85,6 +86,8 @@ pub const MIN_ROUND_DURATION_SECONDS: u64 = 30;
 /// An uncapped duration allows a malicious or misconfigured admin to lock all
 /// player funds indefinitely by starting a round with `u64::MAX`.
 pub const MAX_ROUND_DURATION_SECONDS: u64 = 3_600;
+/// Delay after a round deadline before keepers may act without the host.
+pub const HOST_GRACE_SECONDS: u64 = 3_600;
 
 #[contract]
 /// On-chain arena contract. Manages the full lifecycle of a single elimination
@@ -905,6 +908,46 @@ impl ArenaContract {
         ArenaStorage::save_round_duration(&env, duration_seconds);
 
         ArenaEvents::game_started(&env, config.round_count.saturating_add(1), duration_seconds);
+        ArenaEvents::transition_initiated(
+            &env,
+            config.round_count.saturating_add(1),
+            TransitionInitiator::Host,
+            true,
+        );
+        Ok(())
+    }
+
+    /// Start a subsequent round with the stored duration after the host has
+    /// missed the inter-round grace period.
+    pub fn start_next_round(env: Env, caller: Address) -> Result<(), ArenaError> {
+        caller.require_auth();
+        let mut config = ArenaStorage::load_config(&env)?;
+        Self::require_not_paused(&env, &config)?;
+        if config.state != GameState::Open || config.round_count == 0 {
+            return Err(ArenaError::InvalidGameState);
+        }
+        let previous_start = ArenaStorage::load_round_start(&env).ok_or(ArenaError::RoundNotStarted)?;
+        let duration = ArenaStorage::load_round_duration(&env);
+        if env.ledger().timestamp()
+            < previous_start.saturating_add(duration).saturating_add(HOST_GRACE_SECONDS)
+        {
+            return Err(ArenaError::GracePeriodNotElapsed);
+        }
+        if config.active_player_count < ArenaStorage::load_min_players(&env) {
+            return Err(ArenaError::NotEnoughPlayers);
+        }
+        let round = config.round_count.saturating_add(1);
+        ArenaStorage::clear_round_data(&env, round);
+        let arena_addr = env.current_contract_address();
+        let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
+        let vault_balance = rwa_client.try_balance_of(&arena_addr).unwrap_or(Ok(0)).unwrap_or(0);
+        ArenaStorage::save_last_vault_balance(&env, vault_balance);
+        config.commit_deadline = env.ledger().timestamp().saturating_add(duration);
+        config.state = GameState::Active;
+        ArenaStorage::save_config(&env, &config);
+        ArenaStorage::save_round_start(&env, env.ledger().timestamp());
+        ArenaEvents::game_started(&env, round, duration);
+        ArenaEvents::transition_initiated(&env, round, TransitionInitiator::Keeper, true);
         Ok(())
     }
 
@@ -938,7 +981,6 @@ impl ArenaContract {
     pub fn resolve_round(env: Env) -> Result<(), ArenaError> {
         ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
-        config.admin.require_auth();
         Self::require_not_paused(&env, &config)?;
 
         if config.state != GameState::Active {
@@ -950,6 +992,11 @@ impl ArenaContract {
         let grace = ArenaStorage::load_round_duration(&env);
         if env.ledger().timestamp() < round_start.saturating_add(grace) {
             return Err(ArenaError::GracePeriodNotElapsed);
+        }
+        let keeper_initiated = env.ledger().timestamp()
+            >= round_start.saturating_add(grace).saturating_add(HOST_GRACE_SECONDS);
+        if !keeper_initiated {
+            config.admin.require_auth();
         }
 
         let round = config.round_count.saturating_add(1);
@@ -1029,6 +1076,12 @@ impl ArenaContract {
         ArenaStorage::save_config(&env, &config);
 
         ArenaEvents::round_resolved(&env, round, resolution.eliminated, resolution.survivors);
+        ArenaEvents::transition_initiated(
+            &env,
+            round,
+            if keeper_initiated { TransitionInitiator::Keeper } else { TransitionInitiator::Host },
+            false,
+        );
         // #1394: enriched event carrying the full tally so a client can
         // independently recompute survivor membership (proof-bundle
         // verification) instead of trusting the backend's derived counts.
@@ -1615,6 +1668,7 @@ impl ArenaContract {
                 ArenaStorage::remove_player_choice(env, &player, round);
                 ArenaStorage::save_elimination_reason(env, &player, &reason);
                 ArenaEvents::player_eliminated(env, &player, round);
+                ArenaEvents::player_eliminated_v2(env, &player, round, reason);
             } else {
                 state.rounds_survived = state.rounds_survived.saturating_add(1);
                 survivors += 1;

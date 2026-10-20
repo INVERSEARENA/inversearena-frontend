@@ -32,17 +32,61 @@ jobs:
           cache: "pnpm"
           cache-dependency-path: frontend/pnpm-lock.yaml
 
+      # --frozen-lockfile guards against lockfile drift between commits (#1642).
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile --ignore-scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: TypeScript typecheck
         run: pnpm exec tsc --noEmit
 
+      - name: ESLint (zero warnings) — issue #1642
+        run: pnpm exec eslint . --max-warnings 0
+
       - name: Jest unit tests
         run: pnpm exec jest --ci --runInBand --passWithNoTests
 
-      - name: Build production bundle
+      # Cache .next/cache between runs so incremental builds stay fast.
+      - name: Cache Next.js build cache
+        uses: actions/cache@v4
+        with:
+          path: frontend/.next/cache
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('frontend/pnpm-lock.yaml') }}-${{ hashFiles('frontend/src/**') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-${{ hashFiles('frontend/pnpm-lock.yaml') }}-
+            ${{ runner.os }}-nextjs-
+
+      # Production build validates server/client boundaries and route config.
+      # SENTRY_AUTH_TOKEN="" disables source-map upload in CI (no secrets needed).
+      # NEXT_TELEMETRY_DISABLED=1 avoids network calls during the build step.
+      - name: Production build — issue #1642
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+          SENTRY_AUTH_TOKEN: ""
+          SENTRY_ORG: "placeholder"
+          SENTRY_PROJECT: "placeholder"
+          NEXT_PUBLIC_STELLAR_NETWORK: "testnet"
+          NEXT_PUBLIC_RPC_URL: "https://soroban-testnet.stellar.org"
+          NEXT_PUBLIC_HORIZON_URL: "https://horizon-testnet.stellar.org"
+          NEXT_PUBLIC_FACTORY_CONTRACT_ID: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4"
+          DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci"
         run: pnpm build
+
+      # Post a bundle-size summary to the PR job summary so reviewers can spot
+      # regressions without downloading artifacts.
+      - name: Bundle size summary — issue #1642
+        if: always()
+        run: |
+          echo "## Bundle size report" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f .next/analyze/client.html ]; then
+            echo "Bundle analyzer output available as artifact." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f .next/build-manifest.json ]; then
+            echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+            du -sh .next/static/chunks/*.js 2>/dev/null | sort -rh | head -10 >> "$GITHUB_STEP_SUMMARY" || true
+            echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "_(build output not available — build step may have failed)_" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Lighthouse performance budgets
         run: pnpm dlx @lhci/cli@0.15.x autorun --config=../.lighthouserc.json

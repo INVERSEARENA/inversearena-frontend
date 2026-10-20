@@ -14,7 +14,7 @@
 /// in the topic tuple as `topic[1]` to avoid breaking existing indexers; the
 /// namespace `"arena"` is prepended as `topic[0]`.  The data payload gains a
 /// leading `v: u32` version field.
-use crate::types::Choice;
+use crate::types::{Choice, EliminationReason, TransitionInitiator};
 use soroban_sdk::{Address, BytesN, Env, Symbol, symbol_short};
 
 /// Namespace symbol shared by all arena events.
@@ -137,9 +137,30 @@ impl ArenaEvents {
             .publish((ns(env), symbol_short!("tied")), (EVENT_SCHEMA_VERSION, round, survivors));
     }
 
+    pub fn round_tied_with_count(env: &Env, round: u32, survivors: u32, consecutive: u32) {
+        env.events().publish(
+            (ns(env), symbol_short!("tied2")),
+            (EVENT_SCHEMA_VERSION, round, survivors, consecutive),
+        );
+    }
+
     pub fn player_eliminated(env: &Env, player: &Address, round: u32) {
         env.events()
             .publish((ns(env), symbol_short!("elim"), player.clone()), (EVENT_SCHEMA_VERSION, round));
+    }
+
+    pub fn player_eliminated_v2(env: &Env, player: &Address, round: u32, reason: EliminationReason) {
+        env.events().publish(
+            (ns(env), symbol_short!("elim2"), player.clone()),
+            (EVENT_SCHEMA_VERSION, round, reason),
+        );
+    }
+
+    pub fn transition_initiated(env: &Env, round: u32, initiator: TransitionInitiator, starting: bool) {
+        env.events().publish(
+            (ns(env), symbol_short!("trans"), round),
+            (EVENT_SCHEMA_VERSION, initiator, starting),
+        );
     }
 
     pub fn game_finished(env: &Env, winner: &Address, round: u32) {

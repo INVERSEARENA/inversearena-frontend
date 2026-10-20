@@ -174,6 +174,13 @@ pub struct PendingUpgrade {
 /// tools, and the backend event processor can sync arena state without
 /// replaying the `player_joined` event log.
 #[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransitionInitiator {
+    Host,
+    Keeper,
+}
+
+#[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct PlayerState {
     /// Whether the player is still in the game (not yet eliminated).
