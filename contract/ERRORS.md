@@ -115,6 +115,8 @@ A transaction invokes one contract, which may call others (the arena calls the f
 | 19 | `NoPendingAdmin` | — |
 | 20 | `ArithmeticOverflow` | Scaling `min_stake` to a token's decimals overflowed i128 (#1361). |
 | 21 | `InvalidStartDeadline` | `PoolConfig.start_deadline` was outside the allowed window relative to the creation ledger (#1579). |
+| 22 | `VaultTokenMismatch` | The vault's stake token differs from `PoolConfig.stake_token`, or from the token the vault was approved with — e.g. the vault was upgraded to a different asset after approval (#1634). |
+| 23 | `OracleMismatch` | `PoolConfig.oracle_contract` is not the oracle the vault accrues yield from, so the arena's yield snapshots would disagree with what the vault actually pays (#1634). |
 
 ### `fee_router` — `FeeRouterError`
 
@@ -149,15 +151,23 @@ A transaction invokes one contract, which may call others (the arena calls the f
 | 1 | `NotInitialised` | The contract has not been initialised with an admin and token. |
 | 2 | `AlreadyInitialised` | `initialize` was called on an already-initialised contract. |
 | 3 | `Unauthorized` | Caller is not the configured admin. |
-| 4 | `AlreadyPaid` | A payout with this id has already been executed (idempotency guard). |
+| 4 | `AlreadyPaid` | This `(arena, recipient)` pair has already been paid (idempotency guard). |
 | 5 | `InvalidAmount` | A payout amount was zero or negative. |
-| 6 | `EmptyBatch` | A batch payout was submitted with no recipients. |
+| 6 | `EmptyBatch` | A batch payout was submitted with no entries. |
 | 8 | `InsufficientBalance` | Contract token balance is insufficient for the payout total. |
-| 9 | `DuplicateRecipient` | A batch contains duplicate recipient addresses. |
-| 10 | `BatchTooLarge` | Batch recipient count exceeds the configured maximum. |
+| 9 | `DuplicateRecipient` | A batch pays the same `(arena, recipient)` pair twice. |
+| 10 | `BatchTooLarge` | Batch entry count exceeds the configured maximum. |
 | 11 | `NoPendingAdmin` | No pending admin transfer has been proposed. |
-| 12 | `DestinationMismatch` | `distribute_winnings` was called with a destination that does not match the address pre-registered by `register_destination`. Issue #1450 — payout destination binding. |
-| 13 | `DestinationNotRegistered` | `distribute_winnings` was called for a payout_id that has no registered destination. Call `register_destination` first. Issue #1450 — payout destination binding. |
+| 14 | `ArenaSettlementUnavailable` | The arena does not answer `get_settlement` — it is not an arena, or it runs WASM older than #1632. Upgrade the arena before paying out (#1632). |
+| 15 | `UnknownArena` | The factory has no record of this arena at the pool id it reports, so it was not deployed by the protocol (#1632). |
+| 16 | `ArenaNotSettled` | The arena has not finished with a single winner (#1632). |
+| 17 | `NotArenaWinner` | The recipient is not the arena's recorded winner (#1632). |
+| 18 | `ExceedsEntitlement` | The amount exceeds the prize the arena records for its winner (#1632). |
+| 19 | `DailyCapExceeded` | Paying this would push today's outflow over the daily cap (#1632). |
+| 20 | `TokenMismatch` | The arena's prize is denominated in a different token from the one this contract pays out (#1632). |
+| 21 | `NoPendingCap` | `apply_daily_cap` was called with no cap increase pending (#1632). |
+| 22 | `CapTimelockPending` | The cap increase's timelock has not elapsed yet (#1632). |
+| 23 | `InvalidCap` | A daily cap must be positive (#1632). |
 
 ### `rwa_adapter` — `RwaError`
 

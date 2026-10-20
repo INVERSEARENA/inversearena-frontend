@@ -28,7 +28,7 @@ use types::{
     ArenaConfig, ArenaError, ArenaStatus, Choice, EliminationReason, GameState, LeaderboardEntry,
     OracleFreshnessPolicy, PendingAdmin, PendingUpgrade, PlayerState, PlayerStatus, RoundResult,
     Settlement, YieldSnapshot,
-    TransitionInitiator, YieldSnapshot,
+    TransitionInitiator,
 };
 
 #[soroban_sdk::contractclient(name = "FactoryClient")]
