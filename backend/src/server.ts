@@ -13,6 +13,7 @@ import { getPaymentConfig } from "./config/paymentConfig";
 import { PaymentService } from "./services/paymentService";
 import { PaymentWorker } from "./workers/paymentWorker";
 import { ArenaBackfillWorker } from "./workers/arenaBackfillWorker";
+import { RetentionWorker } from "./workers/retentionWorker";
 import { AdminService } from "./services/adminService";
 import { AuthService } from "./services/authService";
 import { RoundService } from "./services/roundService";
@@ -65,11 +66,15 @@ async function main() {
     );
   }
   const arenaBackfillWorker = new ArenaBackfillWorker(prisma, arenaFactoryContractId);
+  // #1622: monthly partition maintenance + retention for high-volume tables;
+  // triggered via POST /api/worker/retention/run (admin-gated).
+  const retentionWorker = new RetentionWorker(prisma);
 
   const app = createApp({
     paymentService,
     paymentWorker,
     arenaBackfillWorker,
+    retentionWorker,
     transactions,
     adminService,
     authService,

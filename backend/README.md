@@ -172,3 +172,4 @@ Returns a paginated list of participants in a specific arena with their status (
 - **[Admin Maintenance Windows](./docs/MAINTENANCE_WINDOWS.md)** - #1399 design note
 - **[Authenticated Device Sessions](./docs/DEVICE_SESSIONS.md)** - #1410 design note
 - **[Settlement Manifest & Receipts](./docs/SETTLEMENT_RECEIPTS.md)** - #1407 design note
+- **[Partitioning & Retention Runbook](./docs/PARTITION_RETENTION_RUNBOOK.md)** - #1622 monthly partitioning of `elimination_logs`/`transactions`, retention worker, archive restore

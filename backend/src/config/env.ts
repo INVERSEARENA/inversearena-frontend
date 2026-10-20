@@ -453,6 +453,27 @@ export const ENV_VARS = {
   TTL_KEEPER_RENEW_BELOW_LEDGERS: { section: "Workers", description: "Renew entries whose TTL is below this many ledgers.", schema: int(1) },
   TTL_KEEPER_MAX_RENEWALS_PER_RUN: { section: "Workers", description: "Renewal cap per `ttl:plan` run.", schema: int(1) },
   TTL_KEEPER_MAX_RENEWALS_PER_CONTRACT: { section: "Workers", description: "Renewal cap per contract per run.", schema: int(1) },
+  PARTITION_AHEAD_MONTHS: {
+    section: "Workers",
+    description:
+      "Monthly partitions to keep created ahead of the current month for the partitioned high-volume tables (#1622).",
+    default: "3",
+    schema: int(0, 120),
+  },
+  RETENTION_TRANSACTIONS_ARCHIVE_AFTER_MONTHS: {
+    section: "Workers",
+    description:
+      "Age after which a `transactions` monthly partition is moved to the cold archive schema by the retention worker (#1622).",
+    default: "13",
+    schema: int(1, 1200),
+  },
+  RETENTION_ELIMINATION_LOGS_ARCHIVE_AFTER_MONTHS: {
+    section: "Workers",
+    description:
+      "Age after which an `elimination_logs` monthly partition is moved to the cold archive schema by the retention worker (#1622).",
+    default: "13",
+    schema: int(1, 1200),
+  },
 
   // ── Rate limiting ─────────────────────────────────────────────────────────
   RATE_LIMIT_APP_NAMESPACE: {

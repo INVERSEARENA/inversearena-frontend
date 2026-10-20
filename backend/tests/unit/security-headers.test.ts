@@ -2,6 +2,7 @@ import { createApp, AppDependencies } from "../../src/app";
 import type { PaymentService } from "../../src/services/paymentService";
 import type { PaymentWorker } from "../../src/workers/paymentWorker";
 import type { ArenaBackfillWorker } from "../../src/workers/arenaBackfillWorker";
+import type { RetentionWorker } from "../../src/workers/retentionWorker";
 import type { TransactionRepository } from "../../src/repositories/transactionRepository";
 import type { AdminService } from "../../src/services/adminService";
 import type { AuthService } from "../../src/services/authService";
@@ -14,6 +15,7 @@ const mockDeps: AppDependencies = {
   paymentService: {} as PaymentService,
   paymentWorker: {} as PaymentWorker,
   arenaBackfillWorker: {} as ArenaBackfillWorker,
+  retentionWorker: {} as RetentionWorker,
   transactions: {} as TransactionRepository,
   adminService: {} as AdminService,
   authService: {

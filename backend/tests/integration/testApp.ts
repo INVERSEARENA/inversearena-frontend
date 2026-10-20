@@ -4,6 +4,7 @@ import { PaymentService } from "../../src/services/paymentService";
 import type { PaymentConfig } from "../../src/config/paymentConfig";
 import { PaymentWorker } from "../../src/workers/paymentWorker";
 import { ArenaBackfillWorker } from "../../src/workers/arenaBackfillWorker";
+import { RetentionWorker } from "../../src/workers/retentionWorker";
 import { AdminService } from "../../src/services/adminService";
 import { AuthService } from "../../src/services/authService";
 import { RoundService } from "../../src/services/roundService";
@@ -48,6 +49,7 @@ export function setupTestApp(overrides: { roundService?: RoundService } = {}) {
     const paymentService = new PaymentService(transactions, { config: TEST_PAYMENT_CONFIG });
     const paymentWorker = new PaymentWorker(transactions, paymentService, dummyTxQueue as any);
     const arenaBackfillWorker = new ArenaBackfillWorker(prisma, TEST_ARENA_FACTORY_CONTRACT_ID);
+    const retentionWorker = new RetentionWorker(prisma);
     const adminService = new AdminService();
     const authService = new AuthService();
     const roundService = overrides.roundService ?? new RoundService(prisma);
@@ -65,6 +67,7 @@ export function setupTestApp(overrides: { roundService?: RoundService } = {}) {
         paymentService,
         paymentWorker,
         arenaBackfillWorker,
+        retentionWorker,
         transactions,
         adminService,
         authService,
