@@ -12,6 +12,7 @@ import {
 } from "@/shared/lib/stellar/scval-helpers";
 import type { CreatePoolParamsValidated } from "@/shared/lib/stellar/stellar-transaction-schemas";
 import { stellarConfig } from "@/shared/config/stellarConfig";
+import type { ArenaCommandPlan } from "@/shared/lib/stellar/arena-command-plan";
 
 type SorobanOperation = ReturnType<Contract["call"]>;
 
@@ -184,6 +185,53 @@ export function buildClaimCallOperation(
   winnerPublicKey: string,
 ): SorobanOperation {
   return poolContract.call("claim", encodeAddress(winnerPublicKey));
+}
+
+function decodePlanHex(value: string, field: string): Uint8Array {
+  if (!/^(?:[0-9a-f]{2})+$/i.test(value)) {
+    throw new Error(`Command plan ${field} must be an even-length hexadecimal string`);
+  }
+  return Uint8Array.from(value.match(/.{2}/g)!, (byte) => Number.parseInt(byte, 16));
+}
+
+function decodePlanAmount(value: string): bigint {
+  if (!/^[1-9]\d*$/.test(value)) {
+    throw new Error("Command plan atomic amount must be a positive integer string");
+  }
+  return BigInt(value);
+}
+
+/** SDK adapter: translates a domain plan into one Soroban operation. */
+export function buildArenaOperationFromPlan(
+  poolContract: Contract,
+  plan: ArenaCommandPlan,
+): SorobanOperation {
+  if (!Number.isFinite(Date.parse(plan.expiresAt)) || Date.parse(plan.expiresAt) <= Date.now()) {
+    throw new Error("Arena command plan has expired");
+  }
+  switch (plan.call.name) {
+    case "join_arena":
+      return buildJoinCallOperation(poolContract, plan.actor);
+    case "submit_commitment":
+      return buildSubmitCommitmentOperation(
+        poolContract,
+        plan.actor,
+        decodePlanHex(plan.call.commitmentHex, "commitmentHex"),
+      );
+    case "reveal_choice":
+      return buildRevealChoiceOperation(
+        poolContract,
+        plan.actor,
+        plan.call.choice,
+        decodePlanHex(plan.call.saltHex, "saltHex"),
+      );
+    case "claim":
+      return buildClaimCallOperation(poolContract, plan.actor);
+    case "stake":
+      return buildStakeCallOperation(poolContract, decodePlanAmount(plan.call.amountAtomic), plan.actor);
+    case "unstake":
+      return buildUnstakeCallOperation(poolContract, decodePlanAmount(plan.call.amountAtomic), plan.actor);
+  }
 }
 
 export function buildGetArenaStateCallOperation(

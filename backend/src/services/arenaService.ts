@@ -18,9 +18,9 @@ import { getStellarConfig } from "../config/stellarConfig";
 import { ArenaStatsService } from "./arenaStatsService";
 import { enforcePayloadLimits } from "../validation/payloadLimits";
 import { ArenaProjectionCheckpointStore } from "./projection/arenaProjectionCheckpointStore";
+import { OutboxStore } from "./outbox/outboxStore";
 import { initialArenaProjection, type ArenaProjectionState } from "./projection/arenaProjectionFold";
 import { replayArenaProjection, type ArenaReplayOptions } from "./projection/arenaProjectionReplay";
-import { cache, invalidateArena, tags } from "../cache/cacheService";
 import { env } from "../config/env";
 
 const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
@@ -134,6 +134,7 @@ export interface ArenaProjectionResponse {
 
 export class ArenaService {
   private readonly projectionCheckpoints: ArenaProjectionCheckpointStore;
+  private readonly outbox: OutboxStore;
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -141,6 +142,7 @@ export class ArenaService {
     private readonly stellarRpcGateway = new StellarRpcGateway(),
   ) {
     this.projectionCheckpoints = new ArenaProjectionCheckpointStore(prisma);
+    this.outbox = new OutboxStore(prisma);
   }
 
   /**
@@ -210,15 +212,21 @@ export class ArenaService {
       }),
     ) as Prisma.InputJsonValue, "arena_metadata");
 
-    const arena = await this.prisma.arena.create({
-      data: {
-        id: arenaId,
-        metadata,
-      },
+    const arena = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.arena.create({
+        data: {
+          id: arenaId,
+          metadata,
+        },
+      });
+      await this.outbox.append(tx, {
+        eventType: "arena.created",
+        aggregateId: created.id,
+        dedupeKey: `arena.created:${created.id}`,
+        payload: { arenaId: created.id },
+      });
+      return created;
     });
-
-    await invalidateArena(arena.id).catch(() => {});
-    await cache.invalidate(tags.arenas()).catch(() => {});
 
     return {
       id: arena.id,

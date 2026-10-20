@@ -15,7 +15,11 @@ import { RoundRepository } from "../repositories/roundRepository";
 import { ParticipantEligibilityService } from "../services/participantEligibilityService";
 import { apiError } from "../utils/apiError";
 import type { ArenaParticipant } from "../types/arena";
-import { readOnChainPlayerStatus, readOnChainPlayers } from "../services/onChainReader";
+import {
+  readOnChainPlayerCount,
+  readOnChainPlayerStatus,
+  readOnChainPlayers,
+} from "../services/onChainReader";
 import { hasReadValue } from "../types/onChainRead";
 import { isAuthorizedAdminWallet } from "../services/walletRoleService";
 import { createRateLimitMiddleware, getSyncPlayersRateLimitConfig } from "../middleware/rateLimit";
@@ -144,7 +148,11 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   const arenaStatsService = new ArenaStatsService(prisma);
   const arenaYieldService = new ArenaYieldService(prisma);
   const roundRepository = new RoundRepository(prisma);
-  const eligibilityService = new ParticipantEligibilityService(prisma, readOnChainPlayerStatus);
+  const eligibilityService = new ParticipantEligibilityService(
+    prisma,
+    readOnChainPlayerStatus,
+    readOnChainPlayerCount,
+  );
   const sseConnectionLimiter = createSseConnectionLimitMiddleware();
   // Issue #1411
   const stakeService = new ActiveStakeLimitsService(prisma);
@@ -569,15 +577,37 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
         throw apiError(401, "UNAUTHORIZED", "Wallet address required");
       }
 
-      const eligibility = await eligibilityService.checkEligibility(id, playerWallet, balance, balanceAsset);
+      const eligibility = await eligibilityService.checkFreshEligibility(id, playerWallet, balance, balanceAsset);
 
       res.status(eligibility.isEligible ? 200 : 403).json({
         isEligible: eligibility.isEligible,
         errors: eligibility.errors,
         warnings: eligibility.warnings,
+        snapshot: eligibility.snapshot,
         metadata: eligibility.metadata,
         requestId: randomUUID(),
       });
+    }),
+  );
+
+  router.get(
+    "/:id/eligibility-snapshot/:snapshotId",
+    authMiddleware,
+    asyncHandler(async (req, res) => {
+      const arenaId = req.params.id;
+      const snapshotId = req.params.snapshotId;
+      const playerWallet = req.user?.walletAddress;
+      if (!arenaId || !snapshotId) {
+        throw apiError(400, "INVALID_ELIGIBILITY_SNAPSHOT", "Arena and snapshot IDs are required");
+      }
+      if (!playerWallet) {
+        throw apiError(401, "UNAUTHORIZED", "Wallet address required");
+      }
+      const snapshot = eligibilityService.getSnapshot(snapshotId, arenaId, playerWallet);
+      if (!snapshot) {
+        throw apiError(404, "ELIGIBILITY_SNAPSHOT_EXPIRED", "Eligibility snapshot is missing or expired");
+      }
+      res.json(snapshot);
     }),
   );
 

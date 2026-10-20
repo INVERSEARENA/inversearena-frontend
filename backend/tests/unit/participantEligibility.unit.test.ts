@@ -74,6 +74,67 @@ test("eligibility: a non-player in the lobby may join, read for the caller's wal
   assert.deepStrictEqual(calls, [[ARENA_ID, WALLET]]);
   assert.strictEqual(result.isEligible, true);
   assert.strictEqual(result.metadata.arenaPhase, "Lobby");
+  assert.deepStrictEqual(result.snapshot && {
+    network: result.snapshot.network,
+    ledgerSequence: result.snapshot.ledgerSequence,
+  }, { network: "test", ledgerSequence: 1 });
+});
+
+test("eligibility: a verified snapshot is reusable by its wallet without another RPC read", async () => {
+  let reads = 0;
+  const service = new ParticipantEligibilityService(prisma, async () => {
+    reads += 1;
+    return verifiedRead(lobbyStatus(), provenance);
+  });
+
+  test("eligibility: the player count and wallet status must share one verified ledger", async () => {
+    const countService = new ParticipantEligibilityService(
+      prisma,
+      async () => verifiedRead(lobbyStatus(), provenance),
+      async () => verifiedRead(3, provenance),
+    );
+    const matching = await countService.checkEligibility(ARENA_ID, WALLET, 100, "USDC");
+    assert.strictEqual(matching.isEligible, true);
+    assert.strictEqual(matching.metadata.currentPlayers, 3);
+    assert.strictEqual(matching.snapshot?.ledgerSequence, 1);
+
+    const mismatchedService = new ParticipantEligibilityService(
+      prisma,
+      async () => verifiedRead(lobbyStatus(), provenance),
+      async () =>
+        verifiedRead(
+          3,
+          buildProvenance({
+            functionName: "get_player_count",
+            contractId: ARENA_ID,
+            network: "test",
+            ledgerSequence: 2,
+          }),
+        ),
+    );
+    const mismatched = await mismatchedService.checkEligibility(ARENA_ID, WALLET, 100, "USDC");
+    assert.strictEqual(mismatched.isEligible, false);
+    assert.ok(errorCodes(mismatched).includes("LEDGER_BOUNDARY_MISMATCH"));
+    assert.strictEqual(mismatched.snapshot, null);
+  });
+  const fresh = await service.checkEligibility(ARENA_ID, WALLET, 100, "USDC");
+  const reused = service.getSnapshot(fresh.snapshot!.id, ARENA_ID, WALLET);
+
+  assert.ok(reused);
+  assert.strictEqual(reused.snapshot?.ledgerSequence, 1);
+  assert.strictEqual(reads, 1);
+});
+
+test("eligibility: final mutation check performs a fresh verified read", async () => {
+  let reads = 0;
+  const service = new ParticipantEligibilityService(prisma, async () => {
+    reads += 1;
+    return verifiedRead(lobbyStatus(), provenance);
+  });
+  await service.checkEligibility(ARENA_ID, WALLET, 100, "USDC");
+  await service.checkFreshEligibility(ARENA_ID, WALLET, 100, "USDC");
+
+  assert.strictEqual(reads, 2);
 });
 
 test("eligibility: a player who already joined is a duplicate", async () => {
@@ -98,4 +159,21 @@ test("eligibility: an unreadable status fails closed", async () => {
   assert.strictEqual(result.isEligible, false);
   assert.deepStrictEqual(errorCodes(result), ["PLAYER_STATUS_UNAVAILABLE"]);
   assert.strictEqual(result.metadata.arenaPhase, "UNKNOWN");
+});
+
+test("eligibility: a value without a verified ledger boundary fails closed", async () => {
+  const result = await check(async () =>
+    verifiedRead(
+      lobbyStatus(),
+      buildProvenance({
+        functionName: "get_player_status",
+        contractId: ARENA_ID,
+        network: "test",
+        ledgerSequence: null,
+      }),
+    ),
+  );
+  assert.strictEqual(result.isEligible, false);
+  assert.deepStrictEqual(errorCodes(result), ["LEDGER_BOUNDARY_UNAVAILABLE"]);
+  assert.strictEqual(result.snapshot, null);
 });

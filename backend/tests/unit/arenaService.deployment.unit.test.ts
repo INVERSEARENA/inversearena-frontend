@@ -68,7 +68,8 @@ function stubServer(envelopeXdr: string) {
 
 function serviceWithRecordingPrisma() {
   const created: unknown[] = [];
-  const prisma = {
+  const outboxEvents: unknown[] = [];
+  const transactionClient = {
     arena: {
       create: async (args: { data: { id: string; metadata: unknown } }) => {
         created.push(args.data);
@@ -80,10 +81,20 @@ function serviceWithRecordingPrisma() {
         };
       },
     },
+    outboxEvent: {
+      create: async (args: { data: unknown }) => {
+        outboxEvents.push(args.data);
+      },
+    },
+  };
+  const prisma = {
+    $transaction: async <T>(callback: (tx: typeof transactionClient) => Promise<T>) =>
+      callback(transactionClient),
   };
 
   return {
     created,
+    outboxEvents,
     service: new ArenaService(prisma as never, {} as never),
   };
 }
@@ -95,34 +106,43 @@ test.afterEach(() => {
 
 test("confirmArenaDeployment rejects a successful transaction that invoked an unrelated contract", async () => {
   setRpcServerForTest(stubServer(buildEnvelope(IMPOSTOR_ID, "create_pool")));
-  const { service, created } = serviceWithRecordingPrisma();
+  const { service, created, outboxEvents } = serviceWithRecordingPrisma();
 
   await assert.rejects(
     () => service.confirmArenaDeployment(input, SOURCE, TX_HASH),
     /did not invoke the arena factory contract/,
   );
   assert.strictEqual(created.length, 0, "no arena row may be written for a forged deployment");
+  assert.strictEqual(outboxEvents.length, 0);
 });
 
 test("confirmArenaDeployment rejects a factory transaction that did not call create_pool", async () => {
   setRpcServerForTest(stubServer(buildEnvelope(FACTORY_ID, "join_pool")));
-  const { service, created } = serviceWithRecordingPrisma();
+  const { service, created, outboxEvents } = serviceWithRecordingPrisma();
 
   await assert.rejects(
     () => service.confirmArenaDeployment(input, SOURCE, TX_HASH),
     /did not call create_pool/,
   );
   assert.strictEqual(created.length, 0);
+  assert.strictEqual(outboxEvents.length, 0);
 });
 
 test("confirmArenaDeployment accepts a real factory create_pool invocation", async () => {
   setRpcServerForTest(stubServer(buildEnvelope(FACTORY_ID, "create_pool")));
-  const { service, created } = serviceWithRecordingPrisma();
+  const { service, created, outboxEvents } = serviceWithRecordingPrisma();
 
   const arena = await service.confirmArenaDeployment(input, SOURCE, TX_HASH);
 
   assert.strictEqual(arena.id, DEPLOYED_ARENA_ID);
   assert.strictEqual(created.length, 1);
+  assert.strictEqual(outboxEvents.length, 1);
+  assert.deepStrictEqual(outboxEvents[0], {
+    eventType: "arena.created",
+    aggregateId: DEPLOYED_ARENA_ID,
+    dedupeKey: `arena.created:${DEPLOYED_ARENA_ID}`,
+    payload: { arenaId: DEPLOYED_ARENA_ID },
+  });
 });
 
 test("confirmArenaDeployment refuses to run when the factory contract is unconfigured", async () => {

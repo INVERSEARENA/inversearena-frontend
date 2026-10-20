@@ -349,3 +349,22 @@ model IdempotentCommand {
   @@index([roundId])
   @@map("idempotent_commands")
 }
+
+model OutboxEvent {
+  id             String    @id @default(uuid())
+  eventType      String    @map("event_type")
+  aggregateId    String    @map("aggregate_id")
+  dedupeKey      String    @unique @map("dedupe_key")
+  payload        Json
+  attempts       Int       @default(0)
+  availableAt    DateTime  @default(now()) @map("available_at")
+  leaseOwner     String?   @map("lease_owner")
+  leaseExpiresAt DateTime? @map("lease_expires_at")
+  publishedAt    DateTime? @map("published_at")
+  lastError      String?   @map("last_error")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  @@index([publishedAt, availableAt, createdAt])
+  @@index([leaseExpiresAt])
+  @@map("outbox_events")
+}

@@ -21,6 +21,7 @@
  *    untouched, so replay can always proceed.
  */
 
+import { createHash } from "crypto";
 import type { ArenaProjectionEvent } from "./arenaEventTypes";
 
 export type ArenaProjectionGameState =
@@ -48,16 +49,14 @@ export interface ArenaProjectionState {
   prizeClaimed: boolean;
   /** Cumulative RWA yield received, in stroops, as a decimal string to avoid float precision loss. */
   totalYieldStroops: string;
-  /**
-   * Event ids already folded, used to make folding idempotent under
-   * duplicate delivery. Bounded by the number of events in the arena's
-   * lifetime, which is small (join/choice/elim per player per round) —
-   * acceptable to keep in the snapshot; see the design note for the
-   * tradeoff against a separate dedupe table.
-   */
+  /** Event ids retained for duplicate protection inside the verified replay window. */
   appliedEventIds: string[];
   /** Event ids that were folded but could not be interpreted (unknown topic / malformed payload). */
   skippedEventIds: string[];
+  /** Ledger of each retained id, used to prune dedupe history at verified boundaries. */
+  eventLedgerSequences: Record<string, number>;
+  /** Digest of the canonical state at the last compaction boundary. */
+  historyAnchor: { compactedThroughLedger: number; projectionHash: string } | null;
 }
 
 /** The projection state for an arena that has not observed any events yet. */
@@ -76,7 +75,58 @@ export function initialArenaProjection(arenaId: string): ArenaProjectionState {
     totalYieldStroops: "0",
     appliedEventIds: [],
     skippedEventIds: [],
+    eventLedgerSequences: {},
+    historyAnchor: null,
   };
+}
+
+const ACTIVE_HISTORY_RETENTION_LEDGERS = 10_000;
+const TERMINAL_HISTORY_RETENTION_LEDGERS = 256;
+
+function digestProjection(state: ArenaProjectionState): string {
+  const { historyAnchor: _anchor, ...canonicalState } = state;
+  return createHash("sha256").update(JSON.stringify(canonicalState)).digest("hex");
+}
+
+/**
+ * Drop event-id dedupe entries older than the verified retention floor.
+ * Events below the checkpoint watermark are rejected as stale, while ids
+ * at and above the floor remain available for same-ledger duplicate delivery.
+ */
+export function compactArenaProjectionState(
+  state: ArenaProjectionState,
+): ArenaProjectionState {
+  if (state.lastLedgerSequence === null) return state;
+  const terminal = state.gameState === "finished" || state.gameState === "cancelled";
+  const retention = terminal
+    ? TERMINAL_HISTORY_RETENTION_LEDGERS
+    : ACTIVE_HISTORY_RETENTION_LEDGERS;
+  const retentionFloor = Math.max(0, state.lastLedgerSequence - retention + 1);
+  const keep = (eventId: string): boolean => {
+    const ledger = state.eventLedgerSequences[eventId];
+    return ledger === undefined || ledger >= retentionFloor;
+  };
+  const compacted = {
+    ...state,
+    appliedEventIds: state.appliedEventIds.filter(keep),
+    skippedEventIds: state.skippedEventIds.filter(keep),
+    eventLedgerSequences: Object.fromEntries(
+      Object.entries(state.eventLedgerSequences).filter(([, ledger]) => ledger >= retentionFloor),
+    ),
+    historyAnchor: null,
+  };
+  return {
+    ...compacted,
+    historyAnchor: {
+      compactedThroughLedger: retentionFloor - 1,
+      projectionHash: digestProjection(compacted),
+    },
+  };
+}
+
+export function hasValidProjectionHistoryAnchor(state: ArenaProjectionState): boolean {
+  if (!state.historyAnchor) return true;
+  return state.historyAnchor.projectionHash === digestProjection(state);
 }
 
 function addStroops(a: string, b: string): string {
@@ -113,12 +163,14 @@ export function foldArenaProjectionEvent(
     return {
       ...state,
       skippedEventIds: [...state.skippedEventIds, event.id],
+      eventLedgerSequences: { ...state.eventLedgerSequences, [event.id]: event.ledgerSequence },
     };
   }
 
   const advanced: ArenaProjectionState = {
     ...state,
     lastLedgerSequence: event.ledgerSequence,
+    eventLedgerSequences: { ...state.eventLedgerSequences, [event.id]: event.ledgerSequence },
   };
 
   switch (event.topic) {

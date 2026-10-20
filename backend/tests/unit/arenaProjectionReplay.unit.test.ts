@@ -52,6 +52,7 @@ function joinEvent(id: string, ledger: number, player: string): ArenaProjectionE
 }
 
 async function cleanup(id: string) {
+  await prisma.outboxEvent.deleteMany({ where: { aggregateId: id } });
   await prisma.arenaProjectionCheckpoint.deleteMany({ where: { arenaId: id } });
 }
 
