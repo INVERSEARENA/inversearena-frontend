@@ -47,6 +47,14 @@ const int = (min: number, max = Number.MAX_SAFE_INTEGER) =>
       `must be between ${min} and ${max}`,
     );
 const flag = z.enum(["true", "false", "1", "0"], { message: 'must be "true" or "false"' });
+const decimal = (min: number, max = Number.MAX_VALUE) =>
+  z
+    .string()
+    .regex(/^-?\d+(\.\d+)?$/, "must be a number")
+    .refine(
+      (value) => !/^-?\d+(\.\d+)?$/.test(value) || (Number(value) >= min && Number(value) <= max),
+      `must be between ${min} and ${max}`,
+    );
 const contractId = z.string().regex(/^C[A-Z2-7]{55}$/, "must be a Stellar contract id (C + 55 base32 chars)");
 const accountId = z.string().regex(/^G[A-Z2-7]{55}$/, "must be a Stellar account id (G + 55 base32 chars)");
 const secretSeed = z.string().regex(/^S[A-Z2-7]{55}$/, "must be a Stellar secret seed (S + 55 base32 chars)");
@@ -473,6 +481,59 @@ export const ENV_VARS = {
       "Age after which an `elimination_logs` monthly partition is moved to the cold archive schema by the retention worker (#1622).",
     default: "13",
     schema: int(1, 1200),
+  },
+  SYBIL_FUNDING_HOPS: {
+    section: "Workers",
+    description: "Funding-graph BFS depth scanned by the sybil detection worker.",
+    default: "2",
+    schema: int(1, 20),
+  },
+  SYBIL_COOCCURRENCE_MIN: {
+    section: "Workers",
+    description: "Minimum shared arenas before a common-funder co-occurrence signal is recorded.",
+    default: "3",
+    schema: int(1),
+  },
+  SYBIL_TIMING_WINDOW_MS: {
+    section: "Workers",
+    description: "Commit-timing burst window in milliseconds for sybil detection.",
+    default: "2000",
+    schema: int(1),
+  },
+  SYBIL_RISK_THRESHOLD: {
+    section: "Workers",
+    description: "Minimum composite sybil score required to write a flag.",
+    default: "0.6",
+    schema: decimal(0, 1),
+  },
+  SYBIL_FUNDING_ALLOWLIST: {
+    section: "Workers",
+    description: "Comma-separated exchange/funder addresses exempt from sybil funding-graph flags.",
+    schema: csv(text, "address"),
+  },
+  VAULT_WARN_COVERAGE_RATIO: {
+    section: "Workers",
+    description: "Vault coverage ratio at which a warning is emitted by the shortfall monitor.",
+    default: "1.05",
+    schema: decimal(0, 1_000),
+  },
+  VAULT_CRIT_COVERAGE_RATIO: {
+    section: "Workers",
+    description: "Vault coverage ratio at which a critical alert is emitted by the shortfall monitor.",
+    default: "1.00",
+    schema: decimal(0, 1_000),
+  },
+  VAULT_ALERT_DEDUP_MS: {
+    section: "Workers",
+    description: "Deduplication window for vault shortfall alerts in milliseconds.",
+    default: "300000",
+    schema: int(1),
+  },
+  VAULT_CHECK_INTERVAL_MS: {
+    section: "Workers",
+    description: "Vault coverage check interval in milliseconds.",
+    default: "60000",
+    schema: int(1),
   },
 
   // ── Rate limiting ─────────────────────────────────────────────────────────
