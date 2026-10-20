@@ -32,6 +32,18 @@ Prometheus-compatible metrics at `/metrics`:
 
 See [docs/METRICS.md](./docs/METRICS.md) for details.
 
+### Edge Caching & Revalidation
+
+Public read endpoints (landing stats, protocol config, arena list/stats) carry a
+shared-cache `Cache-Control` with `stale-while-revalidate` so a CDN can serve
+anonymous traffic without reaching the origin. Personalized/authenticated
+responses are `no-store` by default, and an on-chain configuration change fires
+a signed webhook that revalidates the frontend's ISR caches.
+
+See [docs/EDGE_CACHE_POLICY.md](./docs/EDGE_CACHE_POLICY.md) for the per-endpoint
+policy table, the revalidation flow, and load-test evidence
+(`npm run bench:edge-cache`).
+
 ---
 
 ## Quick Start

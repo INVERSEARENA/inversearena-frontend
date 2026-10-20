@@ -13,6 +13,7 @@ import { requestContextMiddleware } from "./middleware/requestContext";
 import { metricsMiddleware } from "./middleware/metrics";
 import { queryBudgetMiddleware } from "./middleware/queryBudgetMiddleware";
 import { maintenanceGuard } from "./middleware/maintenance";
+import { privateNoStore } from "./middleware/cachePolicy";
 import {
   ApiKeyAuthProvider,
   requireAdmin,
@@ -40,6 +41,8 @@ import type { AdminService } from "./services/adminService";
 import type { AuthService } from "./services/authService";
 import type { RoundService } from "./services/roundService";
 import type { RoundProofBundleService } from "./services/roundProofBundleService";
+import { LandingStatsService } from "./services/landingStatsService";
+import { RevalidationService } from "./services/revalidationService";
 import { prisma } from "./db/prisma";
 import { env } from "./config/env";
 
@@ -55,6 +58,8 @@ export interface AppDependencies {
   queueCapacity?: number;
   roundProofBundleService: RoundProofBundleService;
   transactionIntentService: TransactionIntentService;
+  landingStatsService?: LandingStatsService;
+  revalidationService?: RevalidationService;
 }
 
 export function createApp(deps: AppDependencies): express.Application {
@@ -112,11 +117,29 @@ export function createApp(deps: AppDependencies): express.Application {
       },
     }),
   );
+  // On-chain configuration-change webhook (#1626): same raw-body capture as
+  // the oracle webhook so its HMAC is verified over the exact wire bytes.
+  app.use(
+    "/api/webhooks",
+    express.json({
+      limit: "16kb",
+      verify: (req, _res, buf) => {
+        (req as express.Request).rawBody = Buffer.from(buf);
+      },
+    }),
+  );
   app.use(express.json());
   app.use(requestLogger);
   app.use(requestContextMiddleware);
   app.use(metricsMiddleware);
   app.use(queryBudgetMiddleware);
+
+  // #1626: default response policy. Every response is non-cacheable in a
+  // shared or private cache unless a route explicitly opts in with
+  // `publicCache(...)`. This is what keeps personalized/authenticated reads
+  // out of a CDN that may be configured to ignore cookies. Applied before the
+  // routers so it runs first; a public handler overwrites the header.
+  app.use(privateNoStore());
 
   const maintenanceService = new MaintenanceService();
   app.use(maintenanceGuard(maintenanceService));
@@ -185,6 +208,15 @@ export function createApp(deps: AppDependencies): express.Application {
   const adminAuthMiddleware = requireAdmin(new ApiKeyAuthProvider());
   const userAuthMiddleware = requireAuth(deps.authService);
 
+  const landingStatsService =
+    deps.landingStatsService ?? new LandingStatsService(prisma);
+  const revalidationService =
+    deps.revalidationService ??
+    new RevalidationService({
+      frontendOrigin: env.FRONTEND_ORIGIN ?? env.PUBLIC_WEB_ORIGIN ?? "https://app.inversearena.com",
+      secret: env.REVALIDATION_WEBHOOK_SECRET,
+    });
+
   app.use(
     "/api",
     createApiRouter(
@@ -200,6 +232,8 @@ export function createApp(deps: AppDependencies): express.Application {
       deps.authService,
       deps.roundProofBundleService,
       deps.transactions,
+      landingStatsService,
+      revalidationService,
       prisma,
     ),
   );
