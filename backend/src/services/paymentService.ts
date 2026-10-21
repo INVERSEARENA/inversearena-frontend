@@ -19,8 +19,10 @@ import { readOnChainGameState } from "./onChainReader";
 import { requireReadValue } from "../types/onChainRead";
 import { getPaymentConfig, type PaymentConfig } from "../config/paymentConfig";
 import type { TransactionRepository } from "../repositories/transactionRepository";
-import { payoutsSuccessTotal } from "../utils/metrics";
+import { payoutsSuccessTotal, txConfirmEnqueuedTotal, txConfirmWaitHistogram } from "../utils/metrics";
 import { CircuitOpenError, getSorobanBreaker, resetSorobanBreakerForTest, type CircuitBreaker } from "../utils/circuitBreaker";
+import type { Queue } from "bullmq";
+import type { ConfirmJobData } from "../queues/txQueue";
 import type {
   BuildPayoutResult,
   CreatePayoutRequest,
@@ -107,15 +109,16 @@ function deriveResponseMode(status: TransactionRecord["status"]): BuildPayoutRes
   return status === "queued" ? "queued" : "build_only";
 }
 
-const delay = async (ms: number): Promise<void> =>
-  new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-
 export interface PaymentServiceOptions {
   config?: PaymentConfig;
   rpcServer?: any;
   circuitBreaker?: CircuitBreaker;
+  /**
+   * BullMQ queue for persistent confirmation jobs (#1602). When provided,
+   * `submitQueuedTransaction` enqueues a `tx-confirm` job with a deterministic
+   * `jobId` equal to `transactionId` so duplicate enqueues are idempotent.
+   */
+  txQueue?: Queue<ConfirmJobData>;
 }
 
 /**
@@ -142,6 +145,7 @@ export class PaymentService {
   private readonly config: PaymentConfig;
   private readonly rpcServer: any;
   private readonly breaker: CircuitBreaker;
+  private readonly txQueue: Queue<ConfirmJobData> | undefined;
 
   constructor(
     private readonly transactions: TransactionRepository,
@@ -150,6 +154,7 @@ export class PaymentService {
     this.config = options.config ?? getPaymentConfig();
     this.rpcServer = options.rpcServer ?? new Server(this.config.sorobanRpcUrl);
     this.breaker = options.circuitBreaker ?? getSorobanBreaker();
+    this.txQueue = options.txQueue;
   }
 
   async getClaimReadiness(arenaId: string): Promise<{ version: 1; arenaId: string; ready: boolean; chainState: string; payoutStatus: string | null; reason: string }> {
@@ -353,6 +358,21 @@ export class PaymentService {
         errorMessage: null,
         updatedAt: new Date(),
       });
+
+      // Enqueue a confirmation job onto the BullMQ queue (#1602). The jobId is
+      // the transactionId so duplicate enqueues (e.g. a retry that finds the
+      // transaction already submitted) are silently deduped by BullMQ.
+      if (this.txQueue) {
+        const enqueuedAt = Date.now();
+        await this.txQueue.add(
+          "confirm",
+          { transactionId: transaction.id },
+          { jobId: transaction.id },
+        );
+        txConfirmEnqueuedTotal.inc();
+        txConfirmWaitHistogram.observe((Date.now() - enqueuedAt) / 1000);
+      }
+
       return { transaction: submitted, submitted: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown submission failure";
@@ -404,20 +424,6 @@ export class PaymentService {
     }
 
     return transaction;
-  }
-
-  async pollConfirmation(transactionId: string): Promise<TransactionRecord> {
-    let current = await this.requireTransaction(transactionId);
-
-    for (let poll = 0; poll < this.config.confirmMaxPolls; poll += 1) {
-      current = await this.confirmSubmittedTransaction(current.id);
-      if (current.status === "confirmed" || current.status === "failed") {
-        return current;
-      }
-      await delay(this.config.confirmPollMs);
-    }
-
-    return current;
   }
 
   /**
