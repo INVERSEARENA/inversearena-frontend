@@ -368,3 +368,19 @@ model OutboxEvent {
   @@index([leaseExpiresAt])
   @@map("outbox_events")
 }
+
+model CreatorTemplate {
+  id            String   @id @default(uuid())
+  ownerAddress  String   @map("owner_address")
+  name          String
+  schemaVersion Int      @default(1) @map("schema_version")
+  status        String   @default("active")
+  payload       Json
+  revision      Int      @default(1)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@unique([ownerAddress, name])
+  @@index([ownerAddress, status, createdAt(sort: Desc)])
+  @@map("creator_templates")
+}
