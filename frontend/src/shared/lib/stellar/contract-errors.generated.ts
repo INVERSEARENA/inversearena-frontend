@@ -58,6 +58,8 @@ export const CONTRACT_ERRORS = {
       46: "ResolutionCursorMismatch",
       47: "ResolutionIncomplete",
       48: "ResolutionInProgress",
+      49: "FundsInVault",
+      50: "NoProtocolAdmin",
     },
   },
   factory: {

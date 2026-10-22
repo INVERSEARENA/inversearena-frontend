@@ -298,6 +298,22 @@ impl FactoryContract {
         FactoryStorage::is_globally_paused(&env)
     }
 
+    /// The factory's current protocol admin (#1629).
+    ///
+    /// Every arena this factory deploys reads this address to resolve its
+    /// protocol-admin role — the powers over an arena that its host must not
+    /// hold: upgrading the arena's WASM, changing the platform fee, pausing
+    /// it, and force-cancelling it. Reading the admin here rather than
+    /// caching it per arena means a factory-level admin rotation
+    /// (`propose_admin` / `accept_admin`) withdraws the old admin's powers
+    /// over every arena at once.
+    ///
+    /// Panics when the factory has not been initialised, because there is no
+    /// admin to name in that case.
+    pub fn admin(env: Env) -> Address {
+        FactoryStorage::load_admin(&env).unwrap_or_else(|_| panic!("factory not initialized"))
+    }
+
     /// Release an arena from a creator's active pool count.
     ///
     /// Called by the arena contract itself (verified via creator stake record)

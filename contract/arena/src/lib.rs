@@ -41,6 +41,10 @@ pub trait FactoryInterface {
     fn reclaim_creator_stake(env: Env, arena: Address);
     fn update_arena_status(env: Env, pool_id: u32, status: ArenaStatus);
     fn is_globally_paused(env: Env) -> bool;
+    /// The factory's current protocol admin (#1629). The arena reads this to
+    /// resolve who holds the protocol powers — upgrade, platform fee, pause —
+    /// so a factory-level admin rotation takes effect on every arena at once.
+    fn admin(env: Env) -> Address;
 }
 
 pub(crate) const PAGE_SIZE: u32 = 50;
@@ -57,10 +61,22 @@ pub const MAX_PLAYERS_ALLOWED: u32 = 100;
 /// points now honour the factory-wide pause and may return `GloballyPaused`).
 /// Bumped to 5 for #1632: adds `get_settlement`, which the payout contract
 /// requires before it will pay out for an arena.
-const CONTRACT_VERSION: u32 = 5;
+/// Bumped to 6 for #1629: splits the arena's powers into a host role and a
+/// protocol-admin role, and adds `host`, `protocol_admin` and `pause_expired`.
+/// The protocol powers (upgrade, platform fee, pause, force-cancel) now need
+/// the factory's admin, and a pause is time-boxed by
+/// `MAX_PAUSE_DURATION_SECONDS`.
+const CONTRACT_VERSION: u32 = 6;
 const UPGRADE_TIMELOCK_SECONDS: u64 = 86_400; // 1 day
 /// Maximum allowed platform fee: 1000 bps (10%). Enforced by `update_platform_fee`.
 const MAX_PLATFORM_FEE_BPS: u32 = 1000;
+/// Maximum time a protocol-admin pause may hold an arena shut (#1629).
+///
+/// A pause is protocol-governed, so it must not be able to lock players out
+/// of their funds indefinitely: once this many seconds have passed since the
+/// pause was set, the pause no longer blocks anything — claims and refunds
+/// included. The protocol admin may pause again, which restarts the clock.
+pub const MAX_PAUSE_DURATION_SECONDS: u64 = 86_400; // 1 day
 
 /// This crate's own compiled WASM, used by `integration_tests.rs` so the
 /// in-process factory contract can dynamically deploy a real arena instance
@@ -208,19 +224,67 @@ impl ArenaContract {
         CONTRACT_VERSION
     }
 
+    /// Return the host of this arena — the address that runs the game and
+    /// moderates the lobby (#1629).
+    ///
+    /// The host is stored in `ArenaConfig.admin`; the field keeps its old
+    /// name so the on-chain layout of every deployed arena stays readable.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    pub fn host(env: Env) -> Result<Address, ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        Ok(config.admin)
+    }
+
+    /// Return the protocol admin of this arena (#1629) — the deploying
+    /// factory's current admin, which holds the arena's protocol powers:
+    /// upgrade, platform fee, pause and force-cancel.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    /// - `ArenaError::NoProtocolAdmin` if the deploying factory cannot name a
+    ///   protocol admin.
+    pub fn protocol_admin(env: Env) -> Result<Address, ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        Self::resolve_protocol_admin(&env, &config)
+    }
+
+    /// Whether this arena's own pause has outlived
+    /// `MAX_PAUSE_DURATION_SECONDS` and therefore no longer blocks anything
+    /// (#1629).
+    ///
+    /// `false` for an arena that is not paused.
+    pub fn pause_expired(env: Env) -> bool {
+        match ArenaStorage::load_config(&env) {
+            Ok(config) => Self::pause_has_expired(&env, &config),
+            Err(_) => false,
+        }
+    }
+
     /// Propose an upgrade to `new_wasm_hash`.
     ///
     /// Stores the proposal and records the current ledger timestamp. The upgrade
-    /// is NOT applied immediately — the admin must call `execute_upgrade` after
-    /// `UPGRADE_TIMELOCK_SECONDS` have elapsed, giving users time to review the
-    /// new code.
+    /// is NOT applied immediately — the protocol admin must call `execute_upgrade`
+    /// after `UPGRADE_TIMELOCK_SECONDS` have elapsed, giving users time to review
+    /// the new code.
+    ///
+    /// Protocol-only (#1629): the host of the arena cannot upgrade it. The
+    /// protocol admin — the deploying factory's admin — must authorise this.
     ///
     /// Callable while paused so an emergency pause can be followed by a
     /// timelocked recovery upgrade. If a prior proposal exists it is silently
     /// overwritten.
+    ///
+    /// # Errors
+    /// - `ArenaError::NoProtocolAdmin` if the deploying factory cannot name a
+    ///   protocol admin.
+    ///
+    /// # Events
+    /// Emits `upgrade_proposed`.
     pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), ArenaError> {
         let config = ArenaStorage::load_config(&env)?;
-        config.admin.require_auth();
+        Self::require_protocol_admin(&env, &config)?;
         let proposed_at = env.ledger().timestamp();
         ArenaStorage::save_pending_upgrade(
             &env,
@@ -235,17 +299,19 @@ impl ArenaContract {
 
     /// Execute a previously proposed upgrade after the timelock has elapsed.
     ///
-    /// Only the admin may execute. The timelock gives users a window to review
-    /// the proposed WASM hash before it takes effect.
+    /// Only the protocol admin may execute (#1629). The timelock gives users a
+    /// window to review the proposed WASM hash before it takes effect.
     ///
     /// # Errors
     /// - `ArenaError::NoPendingUpgrade` if no proposal exists.
     /// - `ArenaError::UpgradeTimelockPending` if the timelock has not elapsed.
+    /// - `ArenaError::NoProtocolAdmin` if the deploying factory cannot name a
+    ///   protocol admin.
     pub fn execute_upgrade(env: Env) -> Result<(), ArenaError> {
         let pending =
             ArenaStorage::load_pending_upgrade(&env).ok_or(ArenaError::NoPendingUpgrade)?;
         let config = ArenaStorage::load_config(&env)?;
-        config.admin.require_auth();
+        Self::require_protocol_admin(&env, &config)?;
         let now = env.ledger().timestamp();
         if now < pending.proposed_at.saturating_add(UPGRADE_TIMELOCK_SECONDS) {
             return Err(ArenaError::UpgradeTimelockPending);
@@ -1291,7 +1357,15 @@ impl ArenaContract {
     ///
     /// While paused, calls to `join_arena`, `submit_commitment`, `reveal_choice`,
     /// `resolve_round`, and `claim` all fail with `ArenaError::ContractPaused`.
-    /// Read-only queries are unaffected. Only the admin can pause.
+    /// Read-only queries are unaffected.
+    ///
+    /// Protocol-only (#1629): the host of the arena cannot pause it. The
+    /// protocol admin — the deploying factory's admin — must authorise this.
+    ///
+    /// The pause is time-boxed: it stops blocking after
+    /// `MAX_PAUSE_DURATION_SECONDS` (24 hours), so a protocol pause can never
+    /// hold an arena — or the funds in it — shut indefinitely. `pause_expired`
+    /// reports whether that has happened.
     ///
     /// Independent of the factory-wide pause (#1583): unpausing here does not
     /// lift a protocol-wide pause, which surfaces as `ArenaError::GloballyPaused`.
@@ -1303,38 +1377,44 @@ impl ArenaContract {
     ///
     /// # Errors
     /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    /// - `ArenaError::NoProtocolAdmin` if the deploying factory cannot name a
+    ///   protocol admin.
     ///
     /// # Events
-    /// Emits `paused` with the admin address and reason symbol.
+    /// Emits `paused` with the protocol admin address and reason symbol.
     pub fn pause(env: Env, reason: Symbol) -> Result<(), ArenaError> {
         let mut config = ArenaStorage::load_config(&env)?;
-        config.admin.require_auth();
+        let protocol_admin = Self::require_protocol_admin(&env, &config)?;
         config.paused = true;
         ArenaStorage::save_config(&env, &config);
-        ArenaEvents::paused(&env, &config.admin, &reason);
+        ArenaStorage::save_paused_at(&env, env.ledger().timestamp());
+        ArenaEvents::paused(&env, &protocol_admin, &reason);
         Ok(())
     }
 
     /// Resume normal operation after a `pause`.
     ///
     /// Clears the paused flag so all gameplay entry points become callable
-    /// again. Only the admin can unpause.
+    /// again. Only the protocol admin can unpause (#1629).
     ///
     /// # Errors
     /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    /// - `ArenaError::NoProtocolAdmin` if the deploying factory cannot name a
+    ///   protocol admin.
     ///
     /// # Events
-    /// Emits `unpaused` with the admin address.
+    /// Emits `unpaused` with the protocol admin address.
     pub fn unpause(env: Env) -> Result<(), ArenaError> {
         let mut config = ArenaStorage::load_config(&env)?;
-        config.admin.require_auth();
+        let protocol_admin = Self::require_protocol_admin(&env, &config)?;
         config.paused = false;
         ArenaStorage::save_config(&env, &config);
-        ArenaEvents::unpaused(&env, &config.admin);
+        ArenaStorage::clear_paused_at(&env);
+        ArenaEvents::unpaused(&env, &protocol_admin);
         Ok(())
     }
 
-    /// Force-cancel the arena (admin only).
+    /// Force-cancel the arena (protocol admin only, #1629).
     /// Can be called at any state except Finished or Settled.
     ///
     /// Allowed while this arena is locally paused, but not while the
@@ -1343,7 +1423,7 @@ impl ArenaContract {
     pub fn force_cancel_arena(env: Env) -> Result<(), ArenaError> {
         ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
-        config.admin.require_auth();
+        Self::require_protocol_admin(&env, &config)?;
         Self::require_not_globally_paused(&env, &config)?;
 
         if config.state == GameState::Finished || config.state == GameState::Settled {
@@ -1476,7 +1556,11 @@ impl ArenaContract {
         Ok(())
     }
 
-    /// Update this arena instance's stored platform fee (0-1000 bps, max 10%). Admin only.
+    /// Update this arena instance's stored platform fee (0-1000 bps, max 10%).
+    ///
+    /// Protocol-only (#1629): the host of the arena cannot change the fee.
+    /// The protocol admin — the deploying factory's admin — must authorise
+    /// this.
     ///
     /// Each arena is deployed as its own contract instance (one per pool, via
     /// the factory), so this only affects `get_platform_fee_bps` reads on
@@ -1488,16 +1572,22 @@ impl ArenaContract {
     /// contract's deploy call instead. This value is also not currently
     /// deducted anywhere in `claim`'s payout calculation; it is stored and
     /// exposed for a future payout integration.
+    ///
+    /// # Errors
+    /// - `ArenaError::InvalidPlatformFee` if `new_fee_bps` exceeds
+    ///   `MAX_PLATFORM_FEE_BPS`.
+    /// - `ArenaError::NoProtocolAdmin` if the deploying factory cannot name a
+    ///   protocol admin.
     pub fn update_platform_fee(env: Env, new_fee_bps: u32) -> Result<(), ArenaError> {
         let config = ArenaStorage::load_config(&env)?;
-        config.admin.require_auth();
+        let protocol_admin = Self::require_protocol_admin(&env, &config)?;
 
         if new_fee_bps > MAX_PLATFORM_FEE_BPS {
             return Err(ArenaError::InvalidPlatformFee);
         }
 
         ArenaStorage::save_platform_fee_bps(&env, new_fee_bps);
-        ArenaEvents::platform_fee_updated(&env, &config.admin, new_fee_bps);
+        ArenaEvents::platform_fee_updated(&env, &protocol_admin, new_fee_bps);
         Ok(())
     }
 
@@ -1506,7 +1596,11 @@ impl ArenaContract {
         ArenaStorage::load_platform_fee_bps(&env)
     }
 
-    /// Configure this arena instance's oracle freshness policy (#1512). Admin only.
+    /// Configure this arena instance's oracle freshness policy (#1512).
+    ///
+    /// Protocol-only (#1629): the host of the arena cannot change the oracle
+    /// policy. The protocol admin — the deploying factory's admin — must
+    /// authorise this.
     ///
     /// `max_age_secs`: an oracle observation older than this makes
     /// `resolve_round` refuse with `ArenaError::StaleOracleData`.
@@ -1516,13 +1610,18 @@ impl ArenaContract {
     ///
     /// Like `update_platform_fee`, this only affects *this* arena instance
     /// going forward — each arena has independent storage.
+    ///
+    /// # Errors
+    /// - `ArenaError::InvalidFreshnessPolicy` if the policy is out of range.
+    /// - `ArenaError::NoProtocolAdmin` if the deploying factory cannot name a
+    ///   protocol admin.
     pub fn set_oracle_freshness_policy(
         env: Env,
         max_age_secs: u64,
         warn_age_secs: u64,
     ) -> Result<(), ArenaError> {
         let config = ArenaStorage::load_config(&env)?;
-        config.admin.require_auth();
+        let protocol_admin = Self::require_protocol_admin(&env, &config)?;
 
         let policy = OracleFreshnessPolicy {
             max_age_secs,
@@ -1534,7 +1633,7 @@ impl ArenaContract {
         ArenaStorage::save_oracle_freshness_policy(&env, &policy);
         ArenaEvents::oracle_freshness_policy_updated(
             &env,
-            &config.admin,
+            &protocol_admin,
             max_age_secs,
             warn_age_secs,
         );
@@ -1626,11 +1725,65 @@ impl ArenaContract {
     /// Gameplay runs only while neither this arena's own pause nor the
     /// factory-wide emergency pause (#1583) is set. The two flags are
     /// independent: clearing one never clears the other.
+    ///
+    /// The arena's own pause is protocol-governed and time-boxed (#1629): once
+    /// it has been held for `MAX_PAUSE_DURATION_SECONDS` it no longer blocks
+    /// anything, so a protocol pause can never lock players out of their
+    /// entry fees, prizes or refunds.
     fn require_not_paused(env: &Env, config: &ArenaConfig) -> Result<(), ArenaError> {
-        if config.paused {
+        if config.paused && !Self::pause_has_expired(env, config) {
             return Err(ArenaError::ContractPaused);
         }
         Self::require_not_globally_paused(env, config)
+    }
+
+    /// Whether the arena's own pause has outlived `MAX_PAUSE_DURATION_SECONDS`.
+    ///
+    /// A pause recorded by the protocol admin carries the timestamp of the
+    /// pause, so it expires on schedule. A pause inherited from before the
+    /// role split (#1629) carries no timestamp and therefore no bound: it is
+    /// treated as already expired, because an unbounded pause must never be
+    /// able to hold a player's funds.
+    fn pause_has_expired(env: &Env, config: &ArenaConfig) -> bool {
+        if !config.paused {
+            return false;
+        }
+        match ArenaStorage::load_paused_at(env) {
+            Some(paused_at) if paused_at > 0 => {
+                env.ledger().timestamp() >= paused_at.saturating_add(MAX_PAUSE_DURATION_SECONDS)
+            }
+            _ => true,
+        }
+    }
+
+    /// Resolve the protocol admin of this arena (#1629).
+    ///
+    /// The protocol admin is the deploying factory's current admin. Reading it
+    /// from the factory — rather than caching it in the arena — means a
+    /// factory-level admin rotation (`propose_admin` / `accept_admin` on the
+    /// factory) immediately withdraws the old admin's protocol powers over
+    /// every arena, with no per-arena bookkeeping to keep in sync.
+    ///
+    /// Fails closed: an arena whose factory cannot answer has no protocol
+    /// admin, so the protocol-only entry points stay unavailable rather than
+    /// falling back to the host — that fallback is exactly the conflated
+    /// authority #1629 removes.
+    fn resolve_protocol_admin(env: &Env, config: &ArenaConfig) -> Result<Address, ArenaError> {
+        match FactoryClient::new(env, &config.factory).try_admin() {
+            Ok(Ok(admin)) => Ok(admin),
+            _ => Err(ArenaError::NoProtocolAdmin),
+        }
+    }
+
+    /// Require the protocol admin's authorisation for a protocol-only entry
+    /// point (#1629).
+    fn require_protocol_admin(
+        env: &Env,
+        config: &ArenaConfig,
+    ) -> Result<Address, ArenaError> {
+        let protocol_admin = Self::resolve_protocol_admin(env, config)?;
+        protocol_admin.require_auth();
+        Ok(protocol_admin)
     }
 
     /// Reject while the deploying factory reports the protocol-wide pause.

@@ -117,6 +117,17 @@ impl Choice {
 #[contracttype]
 #[derive(Clone)]
 pub struct ArenaConfig {
+    /// The **host** of this arena: the address that runs the game and
+    /// moderates the lobby.
+    ///
+    /// The field is still called `admin` on chain. Renaming it would change
+    /// the stored map's keys and break every deployed arena, so the role split
+    /// of #1629 keeps the name and redefines what it authorises: the host
+    /// drives the game (`start_round`, lobby moderation, `resolve_round`) and
+    /// hands the role on through `propose_admin` / `accept_admin`, while the
+    /// protocol powers — upgrade, platform fee, pause, force-cancel — belong
+    /// to the protocol admin the factory names. See `contract/ARCHITECTURE.md`
+    /// for the full role matrix.
     pub admin: Address,
     pub stake_token: Address,
     /// Address of the yield-bearing RWA vault adapter contract.
@@ -124,7 +135,8 @@ pub struct ArenaConfig {
     pub entry_fee: i128,
     pub state: GameState,
     /// Emergency circuit breaker. When true, state-mutating gameplay entry
-    /// points reject until the admin unpauses the arena.
+    /// points reject until the protocol admin unpauses the arena, or until
+    /// the pause outlives `MAX_PAUSE_DURATION_SECONDS` (#1629).
     pub paused: bool,
     /// Total number of players that have ever joined this arena. Kept in sync
     /// by `ArenaStorage::add_player` so it can be read without scanning storage.
@@ -525,6 +537,12 @@ pub enum ArenaError {
     /// The arena cannot pay refunds from its own balance until `retry_withdraw`
     /// succeeds. Appended; existing ordinals unchanged.
     FundsInVault = 49,
+
+    /// Returned by a protocol-only entry point when the arena cannot resolve a
+    /// protocol admin (#1629). The arena reads its protocol admin from the
+    /// factory that deployed it, so this means the factory is not a contract,
+    /// or predates the `admin` view that #1629 added.
+    NoProtocolAdmin = 50,
 }
 
 /// Stage of the paged `resolve_round` pipeline (#1639).
