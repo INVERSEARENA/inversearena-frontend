@@ -175,6 +175,8 @@ frontend/src/
     config/               runtime configuration (stellarConfig, csp, arenaConstants)
     lib/                  framework-agnostic utilities and generic hooks
     lib/stellar/          Soroban / Horizon access layer used by every feature
+                           (including the shared wallet-balance cache, #1625 —
+                           see frontend/docs/BALANCE_CACHE.md)
   test/                   test doubles and fixtures (mock factories, sample data)
   __mocks__/              Jest module mocks
 ```

@@ -18,7 +18,8 @@
  */
 
 import { useState, useCallback, useRef } from "react";
-import { parseStellarError } from "@/shared-d/utils/stellar-transactions";
+import { parseStellarError } from "@/shared/lib/stellar/stellar-transactions";
+import { invalidateWalletBalances } from "@/shared/lib/stellar/balance-cache";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -74,6 +75,10 @@ export type UseTransactionFlowResult = TransactionFlowState & TransactionFlowAct
  * @param onFailure Called after any terminal failure.
  * @param network  Stellar network for explorer URLs (`"testnet"` | `"mainnet"`).
  * @param timeoutMs Milliseconds before a submitted-but-unconfirmed tx is timed out.
+ * @param publicKey The signing wallet's public key. When supplied, the
+ *                  wallet's cached balances are invalidated once the
+ *                  transaction confirms, so every balance consumer refreshes
+ *                  from the post-transaction state (#1625).
  */
 export interface UseTransactionFlowOptions {
   builder: () => Promise<string>;
@@ -84,6 +89,7 @@ export interface UseTransactionFlowOptions {
   onFailure?: (reason: TransactionFailureReason, detail: string) => void;
   network?: "testnet" | "mainnet";
   timeoutMs?: number;
+  publicKey?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +145,7 @@ export function useTransactionFlow(
     onFailure,
     network = "testnet",
     timeoutMs = DEFAULT_TIMEOUT_MS,
+    publicKey,
   } = options;
 
   const [state, setState] = useState<TransactionFlowState>({
@@ -243,9 +250,15 @@ export function useTransactionFlow(
 
     // ── 5. Confirmed ────────────────────────────────────────────────────────
     setState((prev) => ({ ...prev, stage: "confirmed" }));
+    // The transaction confirmed, so the wallet's balance has changed
+    // on-chain. Drop the cached copy so the header, the join modal and the
+    // stake modal stop showing the pre-transaction amount (#1625).
+    if (publicKey) {
+      invalidateWalletBalances(publicKey);
+    }
     onSuccess?.(txHash);
     inFlightRef.current = false;
-  }, [builder, sign, submit, confirm, onSuccess, onFailure, network, timeoutMs]);
+  }, [builder, sign, submit, confirm, onSuccess, onFailure, network, timeoutMs, publicKey]);
 
   return { ...state, run, reset };
 }

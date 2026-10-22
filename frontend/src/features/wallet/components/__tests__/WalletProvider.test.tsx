@@ -10,9 +10,10 @@
  * stellarConfig.network (which throws lazily when misconfigured).
  */
 import React, { useContext } from "react";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { WalletProvider, WalletContext } from "../WalletProvider";
 import { useWallet } from "@/features/wallet/hooks/useWallet";
+import { invalidateWalletBalances, resetBalanceCache } from "@/shared/lib/stellar/balance-cache";
 
 jest.mock("@creit-tech/stellar-wallets-kit", () => ({
   StellarWalletsKit: {
@@ -59,6 +60,16 @@ jest.mock("@/shared/config/stellarConfig", () => ({
 const { StellarWalletsKit } = require("@creit-tech/stellar-wallets-kit");
 
 const VALID_KEY = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
+
+/**
+ * The balance cache is a module-level singleton (#1625), so every test has
+ * to start from an empty cache — otherwise a value cached by an earlier test
+ * would be served to the next one and the balance assertions would read the
+ * previous case's numbers.
+ */
+beforeEach(() => {
+  resetBalanceCache();
+});
 
 function NetworkProbe() {
   const ctx = useContext(WalletContext);
@@ -360,4 +371,89 @@ describe("WalletProvider balance-fetch failure surfacing (#1295)", () => {
     // Balance is NOT reset to 0 — that would misread as an empty wallet.
     expect(screen.getByTestId("xlm").textContent).toBe("42");
   });
+});
+
+/**
+ * #1625 — the provider reads balances through the shared cache, so:
+ *  - the header, the join modal and the stake modal share one Horizon read
+ *    instead of issuing one each;
+ *  - a confirmed transaction invalidates the cache and the provider picks
+ *    up the new amount without anyone polling.
+ */
+describe("WalletProvider shared balance cache (#1625)", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    window.localStorage.clear();
+    mockStellarConfigState.isStellarConfigured = true;
+    mockStellarConfigState.stellarConfig = {
+      network: "configured-network",
+      horizonUrl: "https://horizon.example",
+    };
+    StellarWalletsKit.authModal.mockResolvedValue({ address: VALID_KEY });
+    jest.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("issues one Horizon read per asset no matter how many times the balance is requested", async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(horizonOk([{ asset_type: "native", balance: "42.0" }]));
+
+    render(
+      <WalletProvider>
+        <StakeModalLikeConsumer />
+        <BalanceProbe />
+      </WalletProvider>,
+    );
+
+    fireEvent.click(screen.getByText("Connect from StakeModal"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("xlm").textContent).toBe("42");
+    });
+
+    // The provider asks for the balance on connect and again when the cache
+    // write lands; both must collapse onto a single in-flight read per asset
+    // (XLM + USDC), not one read per ask.
+    expect((global.fetch as jest.Mock).mock.calls.length).toBe(2);
+
+    // A second, explicit refresh re-reads from Horizon.
+    fireEvent.click(screen.getByText("refresh"));
+    await waitFor(() => {
+      expect((global.fetch as jest.Mock).mock.calls.length).toBe(4);
+    });
+  });
+
+  it("refetches the balance after a confirmed transaction invalidates the cache", async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(horizonOk([{ asset_type: "native", balance: "42.0" }]));
+
+    render(
+      <WalletProvider>
+        <StakeModalLikeConsumer />
+        <BalanceProbe />
+      </WalletProvider>,
+    );
+
+    fireEvent.click(screen.getByText("Connect from StakeModal"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("xlm").textContent).toBe("42");
+    });
+
+    // The wallet moved funds on-chain: the cached amount is now wrong.
+    (global.fetch as jest.Mock).mockResolvedValue(
+      horizonOk([{ asset_type: "native", balance: "7.0" }]),
+    );
+    act(() => {
+      invalidateWalletBalances(VALID_KEY);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("xlm").textContent).toBe("7");
+    });  });
 });
