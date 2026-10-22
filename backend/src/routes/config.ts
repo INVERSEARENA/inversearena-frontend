@@ -4,6 +4,10 @@ import { getStellarConfig } from "../config/stellarConfig";
 import { apiError } from "../utils/apiError";
 import { z } from "zod";
 import { buildCompatibilityManifest } from "../services/compatibilityManifest";
+import {
+  readRegistryLifecycle,
+  readRegistryRevision,
+} from "../services/registryLifecycle";
 import type { Request, Response } from "express";
 
 interface ProtocolConfig {
@@ -58,6 +62,21 @@ async function getLedgerVersion(): Promise<{ version: number; timestamp: string 
 const CompatibilityQuerySchema = z.object({
   arenaId: z.string().regex(/^C[A-Z2-7]{55}$/).optional(),
 });
+
+/**
+ * The integrations whose lifecycle the caller wants to know about (#1688).
+ * At least one is required — the endpoint answers a question about specific
+ * integrations, not about the whole registry.
+ */
+const RegistryQuerySchema = z
+  .object({
+    token: z.string().regex(/^C[A-Z2-7]{55}$/).optional(),
+    vault: z.string().regex(/^C[A-Z2-7]{55}$/).optional(),
+    oracle: z.string().regex(/^C[A-Z2-7]{55}$/).optional(),
+  })
+  .refine((query) => Boolean(query.token || query.vault || query.oracle), {
+    message: "at least one of token, vault or oracle is required",
+  });
 
 /**
  * A manifest may be cached briefly, but a client can never act on an old one
@@ -136,6 +155,55 @@ export function createConfigRouter(
         // The manifest carries no partial answer: without a ledger there is no revision to stamp.
         throw apiError(503, "CONFIG_FETCH_ERROR", "Failed to build compatibility manifest");
       }
+    }),
+  );
+
+  /**
+   * GET /api/config/registry?token=C...&vault=C...&oracle=C...
+   * Returns the deprecation lifecycle of the requested integrations (#1688)
+   * together with the registry revision the answer was read at.
+   *
+   * The revision is the cache-invalidation key: it moves on every lifecycle
+   * change, so a client holding a snapshot with an older revision knows it
+   * is stale without replaying events.
+   *
+   * An integration the factory has no record of reads as `Active` — the same
+   * rule the contract applies — so a deployment that predates the lifecycle
+   * never looks like a deprecation.
+   */
+  router.get(
+    "/registry",
+    asyncHandler(async (req: Request, res: Response) => {
+      const parsed = RegistryQuerySchema.safeParse({
+        token: req.query.token,
+        vault: req.query.vault,
+        oracle: req.query.oracle,
+      });
+      if (!parsed.success) {
+        throw apiError(400, "INVALID_REGISTRY_QUERY", parsed.error.issues[0]?.message ?? "invalid query");
+      }
+
+      const snapshot = await readRegistryLifecycle(parsed.data);
+      res.setHeader("Cache-Control", COMPATIBILITY_CACHE_CONTROL);
+      res.json({
+        revision: snapshot.revision,
+        available: snapshot.available,
+        entries: snapshot.entries,
+      });
+    }),
+  );
+
+  /**
+   * GET /api/config/registry/revision
+   * The registry revision alone — the cheap poll a client uses to decide
+   * whether its cached lifecycle snapshot is still current (#1688).
+   */
+  router.get(
+    "/registry/revision",
+    asyncHandler(async (_req: Request, res: Response) => {
+      const revision = await readRegistryRevision();
+      res.setHeader("Cache-Control", COMPATIBILITY_CACHE_CONTROL);
+      res.json({ revision });
     }),
   );
 

@@ -24,6 +24,7 @@ import {
   type ContractKind,
 } from "./contractCapability";
 import { getCurrentLedgerSequence } from "./ledgerClock";
+import { readRegistryRevision } from "./registryLifecycle";
 import { env } from "../config/env";
 
 export const COMPATIBILITY_MANIFEST_SCHEMA_VERSION = 1 as const;
@@ -56,6 +57,12 @@ export interface CompatibilityManifestDeps {
   requiredVersion: (kind: ContractKind, entrypoint: string) => number | undefined;
   factoryContractId: () => string | undefined;
   payoutContractId: () => string | undefined;
+  /**
+   * The factory's registry revision (#1688) — the cache-invalidation key for
+   * the deprecation lifecycle of tokens, vaults and oracles. `undefined`
+   * when it cannot be read.
+   */
+  registryRevision?: () => Promise<number | undefined>;
   now: () => Date;
 }
 
@@ -66,6 +73,13 @@ const defaultDeps: CompatibilityManifestDeps = {
   requiredVersion: getRequiredCapabilityVersion,
   factoryContractId: () => env.ARENA_FACTORY_CONTRACT_ID || undefined,
   payoutContractId: () => env.PAYOUT_CONTRACT_ID || undefined,
+  registryRevision: async () => {
+    const revision = await readRegistryRevision();
+    // `0` means "no revision could be read" as well as "nothing ever
+    // changed" — report it as absent so a client does not cache a revision
+    // that was never observed.
+    return revision > 0 ? revision : undefined;
+  },
   now: () => new Date(),
 };
 
@@ -87,6 +101,12 @@ export interface CompatibilityManifest {
   network: { passphrase: string };
   /** Ledger sequence the manifest was derived at. */
   configRevision: number;
+  /**
+   * The factory's registry revision (#1688): the cache-invalidation key for
+   * the deprecation lifecycle of tokens, vaults and oracles. Absent when it
+   * could not be read.
+   */
+  registryRevision?: number;
   generatedAt: string;
   contracts: ContractEntry[];
   capabilities: Record<string, Capability>;
@@ -154,10 +174,16 @@ export async function buildCompatibilityManifest(
     capabilities[name] = evaluateCapability(name, byKind, deps.requiredVersion);
   }
 
+  // The registry revision is best-effort: a factory that cannot answer must
+  // not fail the whole manifest, it only means the lifecycle snapshot cannot
+  // be invalidated reliably right now.
+  const registryRevision = deps.registryRevision ? await deps.registryRevision() : undefined;
+
   return {
     schemaVersion: COMPATIBILITY_MANIFEST_SCHEMA_VERSION,
     network: { passphrase: deps.networkPassphrase() },
     configRevision,
+    ...(registryRevision === undefined ? {} : { registryRevision }),
     generatedAt: deps.now().toISOString(),
     contracts: negotiated,
     capabilities,

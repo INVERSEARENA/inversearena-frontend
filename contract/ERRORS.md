@@ -89,7 +89,7 @@ A transaction invokes one contract, which may call others (the arena calls the f
 | 46 | `ResolutionCursorMismatch` | Returned by `resolve_round_page` when `start` is ahead of the persisted cursor (#1639). Tallying or applying out of order would silently skip players, so the gap is refused; replaying a page at or behind the cursor is a no-op instead. |
 | 47 | `ResolutionIncomplete` | Returned by `finalize_resolution` before every resolution page has been applied (#1639), or when no paged resolution has been started. |
 | 48 | `ResolutionInProgress` | Returned by the one-shot `resolve_round` while a paged resolution (#1639) is in progress. Mixing the two would double-apply the round: drive the existing resolution to completion first. |
-| 49 | `FundsInVault` | Returned by `claim_refund` while the arena's principal is still held by the yield vault because a cancellation-time withdrawal failed (#1631). Refunds are paid from the arena's own balance, so they stay blocked until `retry_withdraw` succeeds. |
+| 49 | `FundsInVault` | Returned by `claim_refund` while the arena's principal is still held by the yield vault because a cancellation-time withdrawal failed (#1631). The arena cannot pay refunds from its own balance until `retry_withdraw` succeeds. Appended; existing ordinals unchanged. |
 
 ### `factory` — `FactoryError`
 
@@ -118,6 +118,9 @@ A transaction invokes one contract, which may call others (the arena calls the f
 | 21 | `InvalidStartDeadline` | `PoolConfig.start_deadline` was outside the allowed window relative to the creation ledger (#1579). |
 | 22 | `VaultTokenMismatch` | The vault's stake token differs from `PoolConfig.stake_token`, or from the token the vault was approved with — e.g. the vault was upgraded to a different asset after approval (#1634). |
 | 23 | `OracleMismatch` | `PoolConfig.oracle_contract` is not the oracle the vault accrues yield from, so the arena's yield snapshots would disagree with what the vault actually pays (#1634). |
+| 24 | `DeprecatedIntegration` | The registry entry exists but is deprecated or disabled, so it is not accepted for a new arena (#1688). Existing arenas that already use it are unaffected. |
+| 25 | `OutstandingLiabilities` | The integration still carries liabilities — indexed pools that are still live, or pools created before the registry tracked them — so it cannot be disabled yet (#1688). The emergency removal path (`remove_approved_vault` and friends) is unaffected by this guard. |
+| 26 | `IntegrationNotApproved` | The entry is not approved, so it cannot be reactivated (#1688). |
 
 ### `fee_router` — `FeeRouterError`
 

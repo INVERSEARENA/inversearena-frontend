@@ -58,6 +58,7 @@ export const CONTRACT_ERRORS = {
       46: "ResolutionCursorMismatch",
       47: "ResolutionIncomplete",
       48: "ResolutionInProgress",
+      49: "FundsInVault",
     },
   },
   factory: {
@@ -86,6 +87,9 @@ export const CONTRACT_ERRORS = {
       21: "InvalidStartDeadline",
       22: "VaultTokenMismatch",
       23: "OracleMismatch",
+      24: "DeprecatedIntegration",
+      25: "OutstandingLiabilities",
+      26: "IntegrationNotApproved",
     },
   },
   fee_router: {

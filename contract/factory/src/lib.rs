@@ -15,8 +15,14 @@ mod integration_tests;
 #[cfg(test)]
 mod auth_tests;
 
+#[cfg(test)]
+mod registry_lifecycle_tests;
+
 use storage::{CreatorStakeRecord, FactoryStorage};
-use types::{ArenaMetadata, ArenaStatus, FactoryError, PoolConfig, VaultConfig};
+use types::{
+    ArenaMetadata, ArenaStatus, FactoryError, PoolConfig, PoolIntegration, RegistryEntry,
+    RegistryKind, RegistryState, VaultConfig,
+};
 
 use soroban_sdk::{
     Address, BytesN, Env, Symbol, Vec, contract, contractclient, contractimpl, symbol_short,
@@ -174,15 +180,37 @@ impl FactoryContract {
         let vault_config = Self::read_vault_config(&env, &vault)?;
         FactoryStorage::set_approved_vault(&env, &vault, true);
         FactoryStorage::save_approved_vault_token(&env, &vault, &vault_config.stake_token);
+        // #1688: approving an integration is also a (re)activation: it is
+        // usable for new arenas again.
+        Self::set_lifecycle(
+            &env,
+            &RegistryKind::Vault,
+            &vault,
+            RegistryState::Active,
+            symbol_short!("approved"),
+        );
         env.events()
             .publish((symbol_short!("VLT_ADD"),), (vault, vault_config.stake_token));
         Ok(())
     }
 
+    /// Emergency removal of an approved vault (#1688).
+    ///
+    /// This is the pre-existing escape hatch and stays unconditional: it is
+    /// the procedure that covers liabilities the guarded `disable_approved_vault`
+    /// path would refuse. The entry is marked `Disabled` so clients stop
+    /// offering it for new arenas.
     pub fn remove_approved_vault(env: Env, vault: Address) -> Result<(), FactoryError> {
         Self::require_admin(&env)?;
         FactoryStorage::set_approved_vault(&env, &vault, false);
         FactoryStorage::remove_approved_vault_token(&env, &vault);
+        Self::set_lifecycle(
+            &env,
+            &RegistryKind::Vault,
+            &vault,
+            RegistryState::Disabled,
+            symbol_short!("removed"),
+        );
         env.events().publish((symbol_short!("VLT_REM"),), vault);
         Ok(())
     }
@@ -200,13 +228,29 @@ impl FactoryContract {
     pub fn add_approved_oracle(env: Env, oracle: Address) -> Result<(), FactoryError> {
         Self::require_admin(&env)?;
         FactoryStorage::set_approved_oracle(&env, &oracle, true);
+        Self::set_lifecycle(
+            &env,
+            &RegistryKind::Oracle,
+            &oracle,
+            RegistryState::Active,
+            symbol_short!("approved"),
+        );
         env.events().publish((symbol_short!("ORC_ADD"),), oracle);
         Ok(())
     }
 
+    /// Emergency removal of an approved oracle (#1688) — unconditional, like
+    /// `remove_approved_vault`.
     pub fn remove_approved_oracle(env: Env, oracle: Address) -> Result<(), FactoryError> {
         Self::require_admin(&env)?;
         FactoryStorage::set_approved_oracle(&env, &oracle, false);
+        Self::set_lifecycle(
+            &env,
+            &RegistryKind::Oracle,
+            &oracle,
+            RegistryState::Disabled,
+            symbol_short!("removed"),
+        );
         env.events().publish((symbol_short!("ORC_REM"),), oracle);
         Ok(())
     }
@@ -222,19 +266,266 @@ impl FactoryContract {
     pub fn add_supported_token(env: Env, token: Address) -> Result<(), FactoryError> {
         Self::require_admin(&env)?;
         FactoryStorage::set_supported_token(&env, &token, true);
+        Self::set_lifecycle(
+            &env,
+            &RegistryKind::Token,
+            &token,
+            RegistryState::Active,
+            symbol_short!("approved"),
+        );
         env.events().publish((symbol_short!("TOK_ADD"),), token);
         Ok(())
     }
 
+    /// Emergency removal of a supported token (#1688) — unconditional, like
+    /// `remove_approved_vault`.
     pub fn remove_supported_token(env: Env, token: Address) -> Result<(), FactoryError> {
         Self::require_admin(&env)?;
         FactoryStorage::set_supported_token(&env, &token, false);
+        Self::set_lifecycle(
+            &env,
+            &RegistryKind::Token,
+            &token,
+            RegistryState::Disabled,
+            symbol_short!("removed"),
+        );
         env.events().publish((symbol_short!("TOK_REM"),), token);
         Ok(())
     }
 
     pub fn is_token_supported(env: Env, token: Address) -> bool {
         FactoryStorage::is_supported_token(&env, &token)
+    }
+
+    // ── #1688: registry lifecycle ────────────────────────────────────────
+
+    /// Mark an approved vault as deprecated (#1688).
+    ///
+    /// A deprecated vault is no longer accepted for new arenas, but the
+    /// arenas that already use it stay readable and settleable: the arena
+    /// contract talks to the vault directly and never consults the factory's
+    /// approval flags.
+    ///
+    /// # Errors
+    /// - `FactoryError::Unauthorized` if the caller is not the factory admin.
+    pub fn deprecate_approved_vault(
+        env: Env,
+        vault: Address,
+        reason: Symbol,
+    ) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        Self::set_lifecycle(
+            &env,
+            &RegistryKind::Vault,
+            &vault,
+            RegistryState::Deprecated,
+            reason,
+        );
+        Ok(())
+    }
+
+    /// Disable an approved vault (#1688).
+    ///
+    /// Refused while the vault still carries liabilities: pools that are
+    /// still live, or pools created before the registry tracked their
+    /// integrations. The emergency path (`remove_approved_vault`) is not
+    /// affected by this guard.
+    ///
+    /// # Errors
+    /// - `FactoryError::Unauthorized` if the caller is not the factory admin.
+    /// - `FactoryError::OutstandingLiabilities` if the vault is still in use.
+    pub fn disable_approved_vault(env: Env, vault: Address, reason: Symbol) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        Self::require_no_liabilities(&env, &RegistryKind::Vault, &vault)?;
+        Self::set_lifecycle(
+            &env,
+            &RegistryKind::Vault,
+            &vault,
+            RegistryState::Disabled,
+            reason,
+        );
+        Ok(())
+    }
+
+    /// Bring a deprecated vault back into service (#1688).
+    ///
+    /// # Errors
+    /// - `FactoryError::Unauthorized` if the caller is not the factory admin.
+    /// - `FactoryError::IntegrationNotApproved` if the vault is not approved.
+    pub fn reactivate_approved_vault(env: Env, vault: Address) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        if !FactoryStorage::is_approved_vault(&env, &vault) {
+            return Err(FactoryError::IntegrationNotApproved);
+        }
+        Self::set_lifecycle(
+            &env,
+            &RegistryKind::Vault,
+            &vault,
+            RegistryState::Active,
+            symbol_short!("reactd"),
+        );
+        Ok(())
+    }
+
+    /// Mark an approved oracle as deprecated (#1688).
+    ///
+    /// # Errors
+    /// - `FactoryError::Unauthorized` if the caller is not the factory admin.
+    pub fn deprecate_approved_oracle(
+        env: Env,
+        oracle: Address,
+        reason: Symbol,
+    ) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        Self::set_lifecycle(
+            &env,
+            &RegistryKind::Oracle,
+            &oracle,
+            RegistryState::Deprecated,
+            reason,
+        );
+        Ok(())
+    }
+
+    /// Disable an approved oracle (#1688).
+    ///
+    /// # Errors
+    /// - `FactoryError::Unauthorized` if the caller is not the factory admin.
+    /// - `FactoryError::OutstandingLiabilities` if the oracle is still in use.
+    pub fn disable_approved_oracle(
+        env: Env,
+        oracle: Address,
+        reason: Symbol,
+    ) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        Self::require_no_liabilities(&env, &RegistryKind::Oracle, &oracle)?;
+        Self::set_lifecycle(
+            &env,
+            &RegistryKind::Oracle,
+            &oracle,
+            RegistryState::Disabled,
+            reason,
+        );
+        Ok(())
+    }
+
+    /// Bring a deprecated oracle back into service (#1688).
+    ///
+    /// # Errors
+    /// - `FactoryError::Unauthorized` if the caller is not the factory admin.
+    /// - `FactoryError::IntegrationNotApproved` if the oracle is not approved.
+    pub fn reactivate_approved_oracle(env: Env, oracle: Address) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        if !FactoryStorage::is_approved_oracle(&env, &oracle) {
+            return Err(FactoryError::IntegrationNotApproved);
+        }
+        Self::set_lifecycle(
+            &env,
+            &RegistryKind::Oracle,
+            &oracle,
+            RegistryState::Active,
+            symbol_short!("reactd"),
+        );
+        Ok(())
+    }
+
+    /// Mark a supported stake token as deprecated (#1688).
+    ///
+    /// # Errors
+    /// - `FactoryError::Unauthorized` if the caller is not the factory admin.
+    pub fn deprecate_supported_token(
+        env: Env,
+        token: Address,
+        reason: Symbol,
+    ) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        Self::set_lifecycle(
+            &env,
+            &RegistryKind::Token,
+            &token,
+            RegistryState::Deprecated,
+            reason,
+        );
+        Ok(())
+    }
+
+    /// Disable a supported stake token (#1688).
+    ///
+    /// # Errors
+    /// - `FactoryError::Unauthorized` if the caller is not the factory admin.
+    /// - `FactoryError::OutstandingLiabilities` if the token is still in use.
+    pub fn disable_supported_token(
+        env: Env,
+        token: Address,
+        reason: Symbol,
+    ) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        Self::require_no_liabilities(&env, &RegistryKind::Token, &token)?;
+        Self::set_lifecycle(
+            &env,
+            &RegistryKind::Token,
+            &token,
+            RegistryState::Disabled,
+            reason,
+        );
+        Ok(())
+    }
+
+    /// Bring a deprecated stake token back into service (#1688).
+    ///
+    /// # Errors
+    /// - `FactoryError::Unauthorized` if the caller is not the factory admin.
+    /// - `FactoryError::IntegrationNotApproved` if the token is not supported.
+    pub fn reactivate_supported_token(env: Env, token: Address) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        if !FactoryStorage::is_supported_token(&env, &token) {
+            return Err(FactoryError::IntegrationNotApproved);
+        }
+        Self::set_lifecycle(
+            &env,
+            &RegistryKind::Token,
+            &token,
+            RegistryState::Active,
+            symbol_short!("reactd"),
+        );
+        Ok(())
+    }
+
+    /// The lifecycle record of an approved vault (#1688).
+    ///
+    /// An entry that predates the lifecycle — an unknown legacy entry — reads
+    /// as `Active` with ledger `0` and reason `legacy`, so existing
+    /// integrations keep working unchanged.
+    pub fn get_vault_lifecycle(env: Env, vault: Address) -> RegistryEntry {
+        Self::lifecycle_of(&env, &RegistryKind::Vault, &vault)
+    }
+
+    /// The lifecycle record of an approved oracle (#1688).
+    pub fn get_oracle_lifecycle(env: Env, oracle: Address) -> RegistryEntry {
+        Self::lifecycle_of(&env, &RegistryKind::Oracle, &oracle)
+    }
+
+    /// The lifecycle record of a supported stake token (#1688).
+    pub fn get_token_lifecycle(env: Env, token: Address) -> RegistryEntry {
+        Self::lifecycle_of(&env, &RegistryKind::Token, &token)
+    }
+
+    /// The current registry revision (#1688).
+    ///
+    /// Bumped on every lifecycle change. Off-chain caches record the revision
+    /// they were built from and invalidate themselves when it moves.
+    pub fn get_registry_revision(env: Env) -> u64 {
+        FactoryStorage::registry_revision(&env)
+    }
+
+    /// How many live pools still carry a liability against an integration
+    /// (#1688).
+    ///
+    /// Counts the pools the registry has tracked since it started recording
+    /// integrations. Pools created before that are not counted here — they
+    /// are what makes `disable_*` refuse: see `require_no_liabilities`.
+    pub fn count_live_pools_using(env: Env, kind: RegistryKind, address: Address) -> u32 {
+        FactoryStorage::live_use(&env, &kind, &address)
     }
 
     /// Returns up to 50 supported tokens starting at the requested offset.
@@ -381,6 +672,11 @@ impl FactoryContract {
         if !FactoryStorage::is_approved_oracle(&env, &config.oracle_contract) {
             return Err(FactoryError::InvalidOracle);
         }
+        // #1688: a deprecated or disabled integration is not accepted for a
+        // new arena. Arenas that already use it keep working.
+        Self::require_active(&env, &RegistryKind::Token, &config.stake_token)?;
+        Self::require_active(&env, &RegistryKind::Vault, &config.yield_vault)?;
+        Self::require_active(&env, &RegistryKind::Oracle, &config.oracle_contract)?;
         Self::check_vault_compatibility(&env, &config)?;
 
         // Check active pool limit for this host
@@ -439,6 +735,22 @@ impl FactoryContract {
         };
         FactoryStorage::save_pool(&env, pool_id, &pool_metadata);
         FactoryStorage::increment_pool_count(&env);
+
+        // #1688: record which integrations this pool was created with, so
+        // the factory can tell which registry entries still carry
+        // liabilities and can refuse to disable them too early.
+        FactoryStorage::save_pool_integration(
+            &env,
+            pool_id,
+            &PoolIntegration {
+                stake_token: config.stake_token.clone(),
+                yield_vault: config.yield_vault.clone(),
+                oracle_contract: config.oracle_contract.clone(),
+            },
+        );
+        FactoryStorage::increment_live_use(&env, &RegistryKind::Token, &config.stake_token);
+        FactoryStorage::increment_live_use(&env, &RegistryKind::Vault, &config.yield_vault);
+        FactoryStorage::increment_live_use(&env, &RegistryKind::Oracle, &config.oracle_contract);
 
         // #1613: update secondary indexes atomically with pool creation.
         FactoryStorage::index_host_pool(&env, &host, pool_id);
@@ -599,6 +911,29 @@ impl FactoryContract {
             FactoryStorage::transition_pool_status(&env, pool_id, &old_status, &status);
         }
 
+        // #1688: a finished or cancelled pool no longer carries a liability
+        // against the integrations it was created with, so they may be
+        // disabled once every pool has settled.
+        if matches!(status, ArenaStatus::Finished | ArenaStatus::Cancelled) {
+            if let Some(integration) = FactoryStorage::load_pool_integration(&env, pool_id) {
+                FactoryStorage::decrement_live_use(
+                    &env,
+                    &RegistryKind::Token,
+                    &integration.stake_token,
+                );
+                FactoryStorage::decrement_live_use(
+                    &env,
+                    &RegistryKind::Vault,
+                    &integration.yield_vault,
+                );
+                FactoryStorage::decrement_live_use(
+                    &env,
+                    &RegistryKind::Oracle,
+                    &integration.oracle_contract,
+                );
+            }
+        }
+
         // #1607: emit via typed helper with normalized topics + versioned payload.
         events::pool_status_updated(&env, &meta.arena_address, pool_id, FactoryStorage::arena_status_ordinal(&status));
         env.events()
@@ -669,6 +1004,110 @@ impl FactoryContract {
             }
         }
         result
+    }
+
+
+    // ── #1688: registry lifecycle helpers ────────────────────────────────
+
+    /// Record a lifecycle transition and bump the registry revision (#1688).
+    fn set_lifecycle(
+        env: &Env,
+        kind: &RegistryKind,
+        address: &Address,
+        state: RegistryState,
+        reason: Symbol,
+    ) {
+        let effective_ledger = env.ledger().timestamp();
+        FactoryStorage::save_lifecycle(
+            env,
+            kind,
+            address,
+            &RegistryEntry {
+                state: state.clone(),
+                effective_ledger,
+                reason: reason.clone(),
+            },
+        );
+        let revision = FactoryStorage::bump_registry_revision(env);
+        env.events().publish(
+            (Self::lifecycle_event(env, kind, &state),),
+            (address.clone(), effective_ledger, reason, revision),
+        );
+    }
+
+    /// The lifecycle record of an entry (#1688).
+    ///
+    /// An entry that predates the lifecycle — an unknown legacy entry — reads
+    /// as `Active` with ledger `0` and reason `legacy`.
+    fn lifecycle_of(env: &Env, kind: &RegistryKind, address: &Address) -> RegistryEntry {
+        FactoryStorage::load_lifecycle(env, kind, address).unwrap_or(RegistryEntry {
+            state: RegistryState::Active,
+            effective_ledger: 0,
+            reason: Symbol::new(env, "legacy"),
+        })
+    }
+
+    /// Reject an entry that is not `Active` (#1688).
+    fn require_active(env: &Env, kind: &RegistryKind, address: &Address) -> Result<(), FactoryError> {
+        if Self::lifecycle_of(env, kind, address).state != RegistryState::Active {
+            return Err(FactoryError::DeprecatedIntegration);
+        }
+        Ok(())
+    }
+
+    /// Reject a transition to `Disabled` while liabilities remain (#1688).
+    fn require_no_liabilities(
+        env: &Env,
+        kind: &RegistryKind,
+        address: &Address,
+    ) -> Result<(), FactoryError> {
+        if FactoryStorage::live_use(env, kind, address) > 0 {
+            return Err(FactoryError::OutstandingLiabilities);
+        }
+        if Self::has_untracked_live_pools(env) {
+            return Err(FactoryError::OutstandingLiabilities);
+        }
+        Ok(())
+    }
+
+    /// Whether a live pool predates the registry's integration tracking
+    /// (#1688).
+    ///
+    /// Such a pool's integrations are unknown, so the factory cannot prove
+    /// that no liability is left against any entry: disabling is refused
+    /// until those pools are finished or cancelled.
+    fn has_untracked_live_pools(env: &Env) -> bool {
+        for status in [ArenaStatus::Pending, ArenaStatus::Active].iter() {
+            let mut offset = 0u32;
+            loop {
+                let page = FactoryStorage::get_pools_by_status(env, status, offset, 50);
+                if page.is_empty() {
+                    break;
+                }
+                for pool_id in page.iter() {
+                    if FactoryStorage::load_pool_integration(env, pool_id).is_none() {
+                        return true;
+                    }
+                }
+                offset += 50;
+            }
+        }
+        false
+    }
+
+    /// The event topic of a lifecycle transition (#1688).
+    fn lifecycle_event(env: &Env, kind: &RegistryKind, state: &RegistryState) -> Symbol {
+        match (kind, state) {
+            (RegistryKind::Vault, RegistryState::Deprecated) => Symbol::new(env, "VLT_DEP"),
+            (RegistryKind::Vault, RegistryState::Disabled) => Symbol::new(env, "VLT_DIS"),
+            (RegistryKind::Vault, RegistryState::Active) => Symbol::new(env, "VLT_REA"),
+            (RegistryKind::Oracle, RegistryState::Deprecated) => Symbol::new(env, "ORC_DEP"),
+            (RegistryKind::Oracle, RegistryState::Disabled) => Symbol::new(env, "ORC_DIS"),
+            (RegistryKind::Oracle, RegistryState::Active) => Symbol::new(env, "ORC_REA"),
+            (RegistryKind::Token, RegistryState::Deprecated) => Symbol::new(env, "TOK_DEP"),
+            (RegistryKind::Token, RegistryState::Disabled) => Symbol::new(env, "TOK_DIS"),
+            (RegistryKind::Token, RegistryState::Active) => Symbol::new(env, "TOK_REA"),
+        }
     }
 
     fn require_admin(env: &Env) -> Result<Address, FactoryError> {

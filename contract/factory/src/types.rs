@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, BytesN, contracterror, contracttype};
+use soroban_sdk::{Address, BytesN, Symbol, contracterror, contracttype};
 
 /// Schema-level limits for untrusted, size-variable inputs (#1455).
 ///
@@ -68,6 +68,64 @@ pub struct ArenaMetadata {
     pub metadata_hash: BytesN<32>,
 }
 
+/// Lifecycle state of a registry entry (#1688).
+///
+/// Approval used to be binary: an approved token, vault or oracle was either
+/// usable or not. A deprecation lifecycle separates the three states that
+/// actually matter for an integration that already backs live arenas.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RegistryState {
+    /// Usable for new arenas and fully supported for the ones already live.
+    Active,
+    /// No longer accepted for new arenas, but still readable and settleable
+    /// for the arenas that already use it.
+    Deprecated,
+    /// Not usable at all. Only reachable once every indexed and on-chain
+    /// liability against the integration is settled.
+    Disabled,
+}
+
+/// Lifecycle metadata of one registry entry (#1688).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegistryEntry {
+    /// The state the entry is in.
+    pub state: RegistryState,
+    /// Ledger timestamp at which the state took effect. `0` for an entry
+    /// that predates the lifecycle (an unknown legacy entry), which is
+    /// treated as `Active`.
+    pub effective_ledger: u64,
+    /// Machine-readable reason for the transition, e.g. `migrated` or
+    /// `issuer_sunset`.
+    pub reason: Symbol,
+}
+
+/// Which registry an entry belongs to (#1688).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RegistryKind {
+    /// Supported stake tokens.
+    Token,
+    /// Approved yield vaults.
+    Vault,
+    /// Approved oracles.
+    Oracle,
+}
+
+/// The integrations a pool was created with (#1688).
+///
+/// Recorded per pool so the factory can tell which entries still carry
+/// liabilities, and so a deprecation can be checked against the pools that
+/// were created before it.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PoolIntegration {
+    pub stake_token: Address,
+    pub yield_vault: Address,
+    pub oracle_contract: Address,
+}
+
 #[contracterror]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FactoryError {
@@ -103,4 +161,15 @@ pub enum FactoryError {
     /// from, so the arena's yield snapshots would disagree with what the
     /// vault actually pays (#1634).
     OracleMismatch = 23,
+    /// The registry entry exists but is deprecated or disabled, so it is not
+    /// accepted for a new arena (#1688). Existing arenas that already use it
+    /// are unaffected.
+    DeprecatedIntegration = 24,
+    /// The integration still carries liabilities — indexed pools that are
+    /// still live, or pools created before the registry tracked them — so it
+    /// cannot be disabled yet (#1688). The emergency removal path
+    /// (`remove_approved_vault` and friends) is unaffected by this guard.
+    OutstandingLiabilities = 25,
+    /// The entry is not approved, so it cannot be reactivated (#1688).
+    IntegrationNotApproved = 26,
 }

@@ -34,6 +34,10 @@ import {
   clearPoolDraft,
 } from "@/features/pools/model/pool-draft";
 import { usePoolCompatibility } from "@/features/pools/model/usePoolCompatibility";
+import { useRegistryLifecycle } from "@/features/pools/model/useRegistryLifecycle";
+import { creatorLifecycleWarning } from "@/shared/lib/stellar/registry-lifecycle";
+import { POOL_TOKEN_IDS } from "@/shared/lib/stellar/stellar-transactions";
+import { stellarConfig } from "@/shared/config/stellarConfig";
 
 const ALL_CURRENCIES: Currency[] = ["USDC", "XLM"];
 
@@ -92,6 +96,25 @@ export function PoolCreationModal({
   const compatibility = usePoolCompatibility(isOpen);
   const offeredCurrencies = compatibility.currencies ?? ALL_CURRENCIES;
   const noCompatibleCurrency = compatibility.status === "ready" && offeredCurrencies.length === 0;
+
+  // #1688: the factory refuses new arenas on a deprecated or withdrawn
+  // integration. The lifecycle is read while the form is open and the
+  // creator is told before they sign, not after the transaction is rejected.
+  const registryLifecycle = useRegistryLifecycle({
+    enabled: isOpen,
+    token: POOL_TOKEN_IDS[currency],
+    vault: stellarConfig.rwaVaultContractId,
+    oracle: stellarConfig.oracleContractId,
+  });
+  const lifecycleWarning = creatorLifecycleWarning(
+    registryLifecycle,
+    {
+      token: POOL_TOKEN_IDS[currency],
+      vault: stellarConfig.rwaVaultContractId,
+      oracle: stellarConfig.oracleContractId,
+    },
+    { token: currency },
+  );
   const { runTrackedTransaction } = useTransactionIntent();
   const [showTxModal, setShowTxModal] = useState(false);
   const [txDetails, setTxDetails] = useState<{ label: string; value: string | number }[]>([]);
@@ -546,6 +569,13 @@ export function PoolCreationModal({
               </div>
             </div>
 
+            {lifecycleWarning && (
+              <div className="col-span-12 mt-4 rounded-2xl border border-amber-400/40 bg-amber-950/40 p-4 text-sm text-amber-200">
+                <p className="font-semibold uppercase tracking-[0.2em]">Integration deprecated</p>
+                <p className="mt-1">{lifecycleWarning}</p>
+              </div>
+            )}
+
             <div className="col-span-12 mt-4">
               {/* Fee and Total Cost Display */}
               {isConnected && isFormValid && (
@@ -566,7 +596,7 @@ export function PoolCreationModal({
                 onClick={async () => {
                   if (!isConnected) {
                     await connect();
-                  } else if (isFormValid && !noCompatibleCurrency) {
+                  } else if (isFormValid && !noCompatibleCurrency && !lifecycleWarning) {
                     setTxDetails([
                       { label: "Operation", value: "Create Pool" },
                       { label: "Stake Amount", value: `${stakeAmount} ${currency}` },
@@ -578,7 +608,7 @@ export function PoolCreationModal({
                     setShowTxModal(true);
                   }
                 }}
-                disabled={isConnected && (!isFormValid || noCompatibleCurrency || whitelistState === "checking" || whitelistState === "required")}
+                disabled={isConnected && (!isFormValid || noCompatibleCurrency || Boolean(lifecycleWarning) || whitelistState === "checking" || whitelistState === "required")}
                 className="w-full bg-primary text-black border-3 border-black py-6 text-2xl lg:text-3xl font-black uppercase italic tracking-tighter shadow-[4px_4px_0px_0px_#000] hover:translate-x-1 hover:translate-y-1 hover:shadow-none transition-all flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-x-0 disabled:hover:translate-y-0 disabled:hover:shadow-[4px_4px_0px_0px_#000]"
                 aria-label={isConnected ? "Initialize arena" : "Connect wallet"}
               >
@@ -588,7 +618,13 @@ export function PoolCreationModal({
                 </span>
               </button>
 
-              {/* Validation hint when form is invalid */}
+              {/* Validation hint when the form is invalid or an integration is deprecated */}
+              {isConnected && lifecycleWarning && (
+                <div className="mt-3 text-sm font-bold text-amber-300 text-center">
+                  {lifecycleWarning}
+                </div>
+              )}
+
               {isConnected && !isFormValid && (
                 <div className="mt-3 text-sm font-bold text-slate-500 text-center">
                   Please correct the errors above to continue
