@@ -13,6 +13,10 @@ enum DataKey {
     /// Kept beside `Position` rather than inside `YieldAccrual` so existing
     /// position entries still decode; a position without one has basis 0.
     Basis(Address),
+    /// Reserved for future use/extensions.
+    _YieldReserve,
+    /// Tracks the total principal deposited across all positions (#1628).
+    _PrincipalTotal,
 }
 
 pub struct RwaStorage;
