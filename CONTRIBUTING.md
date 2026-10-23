@@ -57,3 +57,48 @@ If you intentionally make a breaking change to a `contracttype` (e.g., adding a 
 2. Copy the "Actual" byte array from the test output.
 3. Update the hard-coded byte array in `snapshot_test.rs`.
 4. Document why the breaking change was necessary in your pull request.
+
+## Backend tests
+
+Backend tests live under `backend/tests/` in three tiers (#1644):
+
+| Directory | Needs services? | Run with |
+| --- | --- | --- |
+| `tests/unit/` | no | `npm run test:unit` |
+| `tests/integration/` | Postgres + Redis (+ Mongo via `mongodb-memory-server`) | `npm run test:integration` |
+| `tests/contract-fixtures/` | no (data only) | — |
+
+Shared helpers are in `tests/helpers/`; shared setup in `tests/setup/`
+(`unit-setup.ts` for the unit project, `setup.ts` for integration).
+
+**Where to put a new test**
+
+- Pure function / service with no I/O → `tests/unit/`
+- Anything that touches Prisma, Redis, Mongo, or the HTTP app → `tests/integration/`
+- Golden fixtures shared with the contracts → `tests/contract-fixtures/`
+
+A small number of suites run under `node --test` instead of Jest (see
+`test:node` in `backend/package.json`). Prefer Jest for new tests.
+
+**CI** (`.github/workflows/backend-ci.yml`) runs `unit` on every PR and
+`integration` only after `unit` passes, with Postgres/Redis service containers.
+
+## Local development stack
+
+`make dev` (#1647) is the supported way to get a working app from a clean
+clone:
+
+```bash
+make dev         # quickstart + contracts + seed + backend + frontend
+make dev-reset   # clean slate
+make dev-seed    # re-seed arenas only
+```
+
+It writes `contract/deployment-manifest.json` (contract ids + network
+passphrase) and the `.env` / `.env.local` files the apps auto-load. Do not
+commit those generated files. Seed state lives in `scripts/.seed-state.json`.
+
+See `README.md` → *One-command local stack* for the full walkthrough and
+`docker-compose.dev.yml` for the service topology (note the offset ports:
+Postgres 5433, Redis 6380, Mongo 27018 — chosen so the stack can sit next to a
+system Postgres/Redis without clobbering it).

@@ -119,9 +119,10 @@ inversearena-frontend/
 ├── frontend/               # Next.js 15 application
 │   ├── src/
 │   │   ├── app/            # Next.js App Router pages
-│   │   ├── features/       # Feature modules (arena, wallet, leaderboard…)
+│   │   ├── features/       # Domain modules: api/ hooks/ components/ model/ + index.ts
 │   │   ├── components/     # Shared UI components
-│   │   └── lib/            # Utilities and SDK wrappers
+│   │   ├── shared/         # config/ and lib/ (incl. the Stellar access layer)
+│   │   └── test/           # Test doubles and fixtures (see ARCHITECTURE.md §8)
 │   ├── public/             # Static assets
 │   └── .env.example        # Frontend environment variable template
 │
@@ -137,6 +138,8 @@ inversearena-frontend/
 │   ├── tests/              # Integration and unit tests
 │   └── .env.example        # Backend environment variable template
 │
+├── tools/ops-cli/          # inverse-ops: operator CLI for contract inspection and lifecycle ops
+│
 └── CONTRIBUTING.md         # Contribution guide (snapshot tests, XDR serialization)
 ```
 
@@ -148,9 +151,9 @@ inversearena-frontend/
 
 - Node.js 20+
 - pnpm 9+ (`npm install -g pnpm`)
-- PostgreSQL 15+
-- Redis 7+
-- Docker (optional, for monitoring stack)
+- Docker (for the one-command local stack)
+- Stellar CLI (`cargo install --locked stellar-cli`) — only needed if you want
+  to build/deploy the contracts yourself; `make dev` warns and skips without it
 
 ### 1. Clone the Repository
 
@@ -159,21 +162,33 @@ git clone https://github.com/your-org/inversearena-frontend.git
 cd inversearena-frontend
 ```
 
-### 2. Quick Start with Make
+### 2. One-command local stack (#1647)
 
-A root-level `Makefile` provides a single discoverable entry point for all common tasks:
+```bash
+make dev         # quickstart + contracts + seed + backend + frontend
+make dev-reset   # clean slate (wipe volumes, manifests, build artifacts)
+make dev-seed    # re-seed open/active/finished/cancelled arenas
+```
+
+`make dev` brings up a **local Stellar standalone network** (`stellar/quickstart`),
+Postgres, Redis, and Mongo; builds and deploys the Soroban contracts; writes
+`contract/deployment-manifest.json` plus the `.env` files the backend and
+frontend auto-load; seeds arenas in every lifecycle state; and starts both apps.
+
+**Manual setup** (if you prefer running against testnet or your own services):
 
 ```bash
 make help          # List all available targets
-make dev           # Start frontend + backend in development mode
+make infra         # Start PostgreSQL + Redis via Docker Compose
+make migrate       # Apply pending Prisma migrations (development)
+make backend-dev   # Start backend in watch mode
+make frontend-dev  # Start Next.js dev server
 make test          # Run all tests (backend + frontend)
 make build         # Build both services for production
-make migrate       # Apply pending Prisma migrations (development)
-make migrate-prod  # Apply migrations in production (no seed)
-make infra         # Start PostgreSQL + Redis via Docker Compose
-make monitoring    # Start Prometheus + Grafana monitoring stack
-make clean         # Remove build artifacts and node_modules
 ```
+
+The full stack (including a cold Docker pull) is designed to be working in
+**under 10 minutes** from a clean clone.
 
 ### 3. Set Up the Frontend
 
@@ -200,34 +215,7 @@ npm run dev            # Start API server on port 3001
 
 ## Environment Variables
 
-### Frontend (`frontend/.env.local`)
-
-| Variable | Required | Description |
-|---|---|---|
-| `NEXT_PUBLIC_STELLAR_NETWORK` | No | `testnet` (default) or `mainnet` |
-| `NEXT_PUBLIC_SOROBAN_RPC_URL` | Yes | Soroban RPC endpoint |
-| `NEXT_PUBLIC_HORIZON_URL` | Yes | Stellar Horizon endpoint |
-| `NEXT_PUBLIC_FACTORY_CONTRACT_ID` | Yes | Arena factory contract address |
-| `NEXT_PUBLIC_USDC_CONTRACT_ID` | Yes | USDC token contract address |
-| `NEXT_PUBLIC_APP_ORIGIN` | Yes | Canonical app URL (used for CORS) |
-| `ALLOWED_ORIGINS` | Yes | Comma-separated allowed CORS origins |
-| `REDIS_URL` | Yes | Redis connection string (rate limiting) |
-| `NEXT_PUBLIC_SENTRY_DSN` | No | Sentry DSN — leave blank to disable error reporting |
-
-### Backend (`backend/.env`)
-
-| Variable | Required | Description |
-|---|---|---|
-| `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `REDIS_URL` | Yes | Redis connection string |
-| `JWT_SECRET` | Yes | Minimum 32-character secret for JWT signing |
-| `SOROBAN_RPC_URL` | Yes | Soroban RPC endpoint |
-| `STELLAR_NETWORK_PASSPHRASE` | Yes | Network passphrase |
-| `PAYOUT_CONTRACT_ID` | Yes | Payout contract address |
-| `PAYOUT_SOURCE_ACCOUNT` | Yes | Stellar account that submits payout transactions |
-| `PAYOUTS_LIVE_EXECUTION` | No | `false` (default) — set `true` to submit real transactions |
-| `PAYOUTS_SIGN_WITH_HOT_KEY` | No | `false` recommended in production; use external KMS |
-| `ADMIN_API_KEY` | Yes | Secret key for admin endpoints |
+Every variable is declared in a typed schema, and `frontend/.env.example` and `backend/.env.example` are generated from it, with a description, default and format for each. The backend refuses to boot, and `next build` refuses to build, when a variable is missing or malformed, listing every problem at once. See [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) for how to add a variable.
 
 > Never commit `.env` files. Use a secrets manager (AWS Secrets Manager, HashiCorp Vault, etc.) for production credentials.
 
@@ -262,6 +250,20 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for snapshot testing requirements.
 cargo test --manifest-path contract/arena/Cargo.toml
 cargo test --manifest-path contract/payout/Cargo.toml
 ```
+
+---
+
+## Operator CLI
+
+`inverse-ops` (`tools/ops-cli`) reads the deployment manifest and each contract's spec to inspect arenas, decode events and run lifecycle operations. State-changing commands are dry runs unless `--submit`, and mainnet submits need confirmation:
+
+```bash
+inverse-ops arena show 7
+inverse-ops arena events 7 --round 2 --json
+inverse-ops --signer ledger --submit arena resolve 7
+```
+
+See [tools/ops-cli/README.md](tools/ops-cli/README.md).
 
 ---
 

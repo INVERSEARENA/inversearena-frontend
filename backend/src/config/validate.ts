@@ -1,8 +1,11 @@
 import { checkRotationReadiness, type RotationReadiness, type SecretPurpose } from "./secretKeyring";
+import { getTreasuryConfig } from "./treasuryConfig";
+import { getOracleFreshnessConfig } from "./oracleFreshnessConfig";
 import { logger } from "../utils/logger";
+import { processEnv } from "./env";
 
 export function validateConfig(): void {
-  const apiKey = process.env.ADMIN_API_KEY ?? "";
+  const apiKey = processEnv.ADMIN_API_KEY ?? "";
   if (apiKey === "change-me-in-production") {
     throw new Error(
       "ADMIN_API_KEY must be changed from the default value"
@@ -15,7 +18,7 @@ export function validateConfig(): void {
     );
   }
 
-  const ttl = parseInt(process.env.ADMIN_TOKEN_TTL_SECONDS ?? "", 10);
+  const ttl = parseInt(processEnv.ADMIN_TOKEN_TTL_SECONDS ?? "", 10);
   if (Number.isFinite(ttl) && ttl > 0 && ttl < 300) {
     throw new Error(
       "ADMIN_TOKEN_TTL_SECONDS must be at least 300 seconds (5 minutes) " +
@@ -24,6 +27,14 @@ export function validateConfig(): void {
   }
 
   assertSecretRotationReadiness();
+
+  // #1511: fail fast on a malformed treasury/reconciliation config rather
+  // than discovering it the first time a reconciliation run tries to use it.
+  getTreasuryConfig();
+  // #1512: fail fast on an invalid oracle freshness policy (warn threshold
+  // above max age, or either non-positive) rather than discovering it the
+  // first time a yield-dependent mutation tries to use it.
+  getOracleFreshnessConfig();
 }
 
 /**
@@ -32,7 +43,7 @@ export function validateConfig(): void {
  * rotation state so operators can confirm an overlap window is open/closed.
  */
 export function assertSecretRotationReadiness(
-  env: Record<string, string | undefined> = process.env,
+  env: Record<string, string | undefined> = processEnv,
   now: Date = new Date(),
 ): RotationReadiness[] {
   const purposes: SecretPurpose[] = ["jwt", "webhook"];

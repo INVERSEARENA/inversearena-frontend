@@ -20,6 +20,65 @@ pub fn validate_leaderboard_limit(limit: u32) -> Result<u32, ArenaError> {
     Ok(limit)
 }
 
+// ── Oracle freshness policy (#1512) ─────────────────────────────────────────
+//
+// Defines how old an oracle observation may be before yield-dependent
+// mutations (currently `resolve_round`) must refuse to use it. Per-instance,
+// admin-configurable via `set_oracle_freshness_policy` (mirrors
+// `update_platform_fee`'s pattern — no `initialize` signature change), with
+// a validated hard-coded default applied until the admin reconfigures it.
+
+/// Schema version of `OracleFreshnessPolicy`. Bumped only on a breaking shape
+/// change, so an indexer/backend reading `set_oracle_freshness_policy`
+/// events can tell which fields to expect.
+pub const FRESHNESS_POLICY_VERSION: u32 = 1;
+
+/// Applied at first read until an admin calls `set_oracle_freshness_policy`.
+pub const DEFAULT_ORACLE_MAX_AGE_SECS: u64 = 3_600;
+pub const DEFAULT_ORACLE_WARN_AGE_SECS: u64 = 1_800;
+/// Hard ceiling no policy may exceed, regardless of admin configuration —
+/// keeps a misconfigured policy from silently disabling freshness
+/// enforcement altogether (e.g. a multi-year max age).
+pub const MAX_ORACLE_MAX_AGE_SECS: u64 = 86_400;
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OracleFreshnessPolicy {
+    /// An observation older than this many seconds is `Stale` and
+    /// `resolve_round` refuses to use it.
+    pub max_age_secs: u64,
+    /// An observation older than this many seconds (but not yet
+    /// `max_age_secs`) is `Warning` — still usable, but surfaced via event
+    /// for alerting before it actually blocks anything.
+    pub warn_age_secs: u64,
+    pub version: u32,
+}
+
+impl OracleFreshnessPolicy {
+    pub fn default_policy() -> Self {
+        OracleFreshnessPolicy {
+            max_age_secs: DEFAULT_ORACLE_MAX_AGE_SECS,
+            warn_age_secs: DEFAULT_ORACLE_WARN_AGE_SECS,
+            version: FRESHNESS_POLICY_VERSION,
+        }
+    }
+}
+
+/// Validate a freshness policy before persisting it (startup/reconfiguration
+/// validation, per #1512's acceptance criteria).
+pub fn validate_freshness_policy(policy: &OracleFreshnessPolicy) -> Result<(), ArenaError> {
+    if policy.max_age_secs == 0 || policy.warn_age_secs == 0 {
+        return Err(ArenaError::InvalidFreshnessPolicy);
+    }
+    if policy.warn_age_secs > policy.max_age_secs {
+        return Err(ArenaError::InvalidFreshnessPolicy);
+    }
+    if policy.max_age_secs > MAX_ORACLE_MAX_AGE_SECS {
+        return Err(ArenaError::InvalidFreshnessPolicy);
+    }
+    Ok(())
+}
+
 /// Lifecycle state of an arena.
 ///
 /// Transitions: Open → Active → Finished
@@ -115,6 +174,13 @@ pub struct PendingUpgrade {
 /// tools, and the backend event processor can sync arena state without
 /// replaying the `player_joined` event log.
 #[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransitionInitiator {
+    Host,
+    Keeper,
+}
+
+#[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct PlayerState {
     /// Whether the player is still in the game (not yet eliminated).
@@ -148,6 +214,104 @@ pub struct YieldSnapshot {
 pub struct LeaderboardEntry {
     pub player: Address,
     pub rounds_survived: u32,
+}
+
+/// Why a player is out of the game (#1582). `resolve_round` persists one of
+/// `Majority`, `NoReveal` or `NoCommit` at elimination time, because the
+/// round's commitments and choices are cleared when it resolves.
+///
+/// `NotEliminated` and `Unrecorded` exist so `PlayerStatus` can carry the
+/// reason without an `Option` of a custom type, which `#[contracttype]` does
+/// not support as a struct field.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EliminationReason {
+    /// The player is still in the game, or never joined.
+    NotEliminated,
+    /// Revealed the side chosen by the majority.
+    Majority,
+    /// Committed but did not reveal before the round resolved.
+    NoReveal,
+    /// Did not commit during the round.
+    NoCommit,
+    /// Eliminated before reasons were recorded.
+    Unrecorded,
+}
+
+/// Where the arena currently is in its lifecycle (#1582).
+///
+/// Derived from `GameState`, the round counter, and the ledger clock; never
+/// stored. `Open` is split into `Lobby` and `Intermission`, and `Active` into
+/// `Commit` and `Reveal`, because each pair gates different player actions.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArenaPhase {
+    /// Recruiting players; no round has been played yet.
+    Lobby,
+    /// A round is running and commitments are accepted.
+    Commit,
+    /// The commit deadline has passed; reveals are accepted until resolution.
+    Reveal,
+    /// Between rounds: more than one survivor remains and the next round has not started.
+    Intermission,
+    /// One survivor remains and the prize is unclaimed.
+    Finished,
+    /// The prize has been claimed.
+    Settled,
+    /// The arena was cancelled; joined players may claim refunds.
+    Cancelled,
+}
+
+/// What an arena owes and to whom, for the payout contract's on-chain
+/// validation (#1632). Returned by `ArenaContract::get_settlement`.
+///
+/// The payout contract decodes this with its own mirror of the struct, so the
+/// field names and types are an ABI shared with `payout::ArenaSettlement`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Settlement {
+    /// `true` once the final round left exactly one survivor (`Finished`),
+    /// and still `true` after that winner claimed (`Settled`).
+    pub finished: bool,
+    /// The recorded winner; `None` until the arena finishes, and forever for
+    /// an arena that was cancelled.
+    pub winner: Option<Address>,
+    /// Upper bound on what the winner is owed: every entry fee plus the yield
+    /// recorded across resolved rounds.
+    pub prize: i128,
+    /// Token the prize is denominated in.
+    pub stake_token: Address,
+    /// Factory pool id, so the payout contract can confirm with the factory
+    /// that this arena is genuine.
+    pub pool_id: u32,
+}
+
+/// Every per-player fact a client needs to gate arena actions, returned by
+/// `get_player_status` in a single read (#1582).
+///
+/// `committed` and `revealed` describe `current_round` and are only `true`
+/// while a round is running (`Commit`/`Reveal`).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayerStatus {
+    /// The address is on the roster.
+    pub joined: bool,
+    /// Joined and not eliminated.
+    pub active: bool,
+    /// Submitted a commitment for `current_round`.
+    pub committed: bool,
+    /// Revealed a choice for `current_round`.
+    pub revealed: bool,
+    /// Round in which the player was eliminated, if any.
+    pub eliminated_round: Option<u32>,
+    /// Why the player was eliminated; `NotEliminated` otherwise.
+    pub elimination_reason: EliminationReason,
+    pub refund_claimed: bool,
+    /// The player is the recorded winner.
+    pub winner: bool,
+    /// The round in progress, or the last completed round when none is running.
+    pub current_round: u32,
+    pub phase: ArenaPhase,
 }
 
 /// Error codes returned by arena contract functions.
@@ -298,6 +462,104 @@ pub enum ArenaError {
     /// Returned by `configure_leaderboard_limit` when `limit` is 0 or above
     /// `MAX_LEADERBOARD_LIMIT` (#1455). Appended; existing ordinals unchanged.
     InvalidLeaderboardLimit = 38,
+
+    /// Returned by `set_oracle_freshness_policy` when `warn_age_secs`
+    /// exceeds `max_age_secs`, either is 0, or `max_age_secs` exceeds
+    /// `MAX_ORACLE_MAX_AGE_SECS` (#1512). Appended; existing ordinals unchanged.
+    InvalidFreshnessPolicy = 39,
+
+    /// Returned by `resolve_round` when the oracle's latest observation is
+    /// older than the arena's configured `max_age_secs`, or was never
+    /// recorded at all (#1512). Recoverable: the admin can retry once the
+    /// oracle has published a fresh observation, or raise the policy's
+    /// `max_age_secs` via `set_oracle_freshness_policy` if the
+    /// existing threshold is inappropriate for this arena.
+    StaleOracleData = 40,
+
+    /// Returned by `join_arena` when the arena's configured start deadline has
+    /// passed and the first round has not started (#1579). The lobby is
+    /// closed, so entry is refused and the arena can be cancelled by anyone
+    /// via `cancel_unstarted`.
+    StartDeadlinePassed = 41,
+
+    /// Returned by `cancel_unstarted` when this arena has no start deadline
+    /// configured (#1579). Arenas deployed by a factory always have one; the
+    /// explicit error keeps an unconfigured arena from being cancelled under
+    /// the permissionless path.
+    NoStartDeadline = 42,
+
+    /// Returned by `leave_arena` or `ban_player` when the vault cannot release
+    /// the player's entry fee (#1580, #1581). The whole call reverts, so the
+    /// player is neither removed nor refunded partially.
+    VaultWithdrawFailed = 43,
+
+    /// Returned by fund-moving entry points while the protocol admin has set
+    /// the factory-wide emergency pause (#1583). Distinct from
+    /// `ContractPaused`, which is this arena's own host-controlled pause.
+    GloballyPaused = 44,
+
+    /// Returned by `configure_player_limits` once at least one player has
+    /// joined (#1640). Players joined under advertised limits, so those
+    /// limits are frozen for them: a host must not lower the minimum to
+    /// start with a smaller field than promised, nor the maximum below the
+    /// count already present.
+    ArenaAlreadyHasPlayers = 45,
+
+    /// Returned by `resolve_round_page` when `start` is ahead of the
+    /// persisted cursor (#1639). Tallying or applying out of order would
+    /// silently skip players, so the gap is refused; replaying a page at or
+    /// behind the cursor is a no-op instead.
+    ResolutionCursorMismatch = 46,
+
+    /// Returned by `finalize_resolution` before every resolution page has
+    /// been applied (#1639), or when no paged resolution has been started.
+    ResolutionIncomplete = 47,
+
+    /// Returned by the one-shot `resolve_round` while a paged resolution
+    /// (#1639) is in progress. Mixing the two would double-apply the round:
+    /// drive the existing resolution to completion first.
+    ResolutionInProgress = 48,
+
+    /// Returned by `claim_refund` while the arena's principal is still held by
+    /// the yield vault because a cancellation-time withdrawal failed (#1631).
+    /// The arena cannot pay refunds from its own balance until `retry_withdraw`
+    /// succeeds. Appended; existing ordinals unchanged.
+    FundsInVault = 49,
+}
+
+/// Stage of the paged `resolve_round` pipeline (#1639).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResolutionPhase {
+    /// Pages are reading choices to build the round-wide tally.
+    Tally,
+    /// The tally is final; pages are applying eliminations to the working
+    /// list and clearing each slice's round data.
+    Apply,
+    /// Everything is applied; if this round ends the game, pages are
+    /// reading the roster to build the leaderboard.
+    Leaderboard,
+    /// All pages are done; `finalize_resolution` may run.
+    Ready,
+}
+
+/// Progress of a paged resolution (#1639), returned by `resolve_round_page`.
+///
+/// `processed` is the idempotent cursor: the next call must pass it as
+/// `start`. `total` is the length of the current phase's list (the working
+/// list for `Tally`/`Apply`, the full roster for `Leaderboard`). A phase
+/// transition resets `processed` to 0 and switches `total`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolutionProgress {
+    pub round: u32,
+    pub phase: ResolutionPhase,
+    pub processed: u32,
+    pub total: u32,
+    pub heads: u32,
+    pub tails: u32,
+    pub eliminated: u32,
+    pub survivors: u32,
 }
 
 #[contracttype]

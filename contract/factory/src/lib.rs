@@ -1,17 +1,26 @@
 #![no_std]
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+mod events;
 mod snapshot_tests;
 mod storage;
 pub mod types;
 
 #[cfg(test)]
+mod index_tests;
+
+#[cfg(test)]
 mod integration_tests;
 
+#[cfg(test)]
+mod auth_tests;
+
 use storage::{CreatorStakeRecord, FactoryStorage};
-use types::{ArenaMetadata, ArenaStatus, FactoryError, PoolConfig};
+use types::{ArenaMetadata, ArenaStatus, FactoryError, PoolConfig, VaultConfig};
 
 use soroban_sdk::{
-    Address, BytesN, Env, Vec, contract, contractclient, contractimpl, symbol_short, token,
+    Address, BytesN, Env, Symbol, Vec, contract, contractclient, contractimpl, symbol_short,
+    token,
 };
 
 /// Must match `arena::MAX_PLAYERS_ALLOWED` (contract/arena/src/lib.rs) exactly
@@ -48,15 +57,39 @@ pub trait ArenaInterface {
         max_players: u32,
         round_duration: u64,
     );
+    /// Set right after `initialize`; see arena's `set_start_deadline` (#1579).
+    fn set_start_deadline(env: Env, deadline: u64);
+}
+
+/// Local stub for the RWA adapter's `config()` read (#1634). Local for the
+/// same link-time reason as `ArenaClient` above.
+#[contractclient(name = "VaultClient")]
+pub trait VaultInterface {
+    fn config(env: Env) -> VaultConfig;
 }
 
 const MIN_ROUND_DURATION: u64 = 60;
 const MAX_ROUND_DURATION: u64 = 604_800;
 const MIN_PLAYERS: u32 = 2;
+/// The lobby must stay open for at least this long after pool creation, so a
+/// host cannot create an arena that is effectively already expired (#1579).
+const MIN_START_DELAY_SECONDS: u64 = 300;
+/// Upper bound for `PoolConfig.start_deadline` (30 days). A longer window
+/// would let entry fees sit locked with no realistic cancellation path.
+const MAX_START_DELAY_SECONDS: u64 = 2_592_000;
 /// Factory contract ABI/storage version, for client-side capability
 /// negotiation across mixed deployment versions (see arena::CONTRACT_VERSION
 /// for the sibling contract's own counter — these are independent).
-const CONTRACT_VERSION: u32 = 1;
+/// Bumped to 2 for #1583: adds `set_global_pause` and `is_globally_paused`.
+const CONTRACT_VERSION: u32 = 2;
+
+/// The decimal precision `min_stake` is denominated in, matching Stellar's
+/// native asset (and the staking contract's own `MIN_INITIAL_STAKE`
+/// convention). `create_pool` scales it to each `stake_token`'s actual
+/// on-chain decimals so the same admin-configured "real-world" minimum
+/// applies uniformly regardless of which approved token a creator picks
+/// (#1361).
+const MIN_STAKE_REFERENCE_DECIMALS: u32 = 7;
 
 /// Factory contract — deploys arena instances and enforces protocol-level rules.
 ///
@@ -124,18 +157,44 @@ impl FactoryContract {
         FactoryStorage::is_whitelisted(&env, &host)
     }
 
+    /// Approve `vault` for new pools, registering it together with its
+    /// stake token (#1634).
+    ///
+    /// Reads the vault's `config()` and stores the token, so a later
+    /// `create_pool` can detect a vault whose asset has since changed (for
+    /// example through an upgrade). Calling it again for an approved vault
+    /// re-reads and re-registers the token; that is also how a vault
+    /// approved before #1634 is migrated.
+    ///
+    /// # Errors
+    /// - `FactoryError::InvalidVault` if `vault` does not answer `config()`
+    ///   (not a contract, not an RWA adapter, or not initialised).
     pub fn add_approved_vault(env: Env, vault: Address) -> Result<(), FactoryError> {
         Self::require_admin(&env)?;
+        let vault_config = Self::read_vault_config(&env, &vault)?;
         FactoryStorage::set_approved_vault(&env, &vault, true);
-        env.events().publish((symbol_short!("VLT_ADD"),), vault);
+        FactoryStorage::save_approved_vault_token(&env, &vault, &vault_config.stake_token);
+        env.events()
+            .publish((symbol_short!("VLT_ADD"),), (vault, vault_config.stake_token));
         Ok(())
     }
 
     pub fn remove_approved_vault(env: Env, vault: Address) -> Result<(), FactoryError> {
         Self::require_admin(&env)?;
         FactoryStorage::set_approved_vault(&env, &vault, false);
+        FactoryStorage::remove_approved_vault_token(&env, &vault);
         env.events().publish((symbol_short!("VLT_REM"),), vault);
         Ok(())
+    }
+
+    /// The stake token `vault` was approved with (#1634), or `None` if it is
+    /// not approved. Lets clients offer only vault/token pairs that
+    /// `create_pool` will accept.
+    pub fn get_approved_vault_token(env: Env, vault: Address) -> Option<Address> {
+        if !FactoryStorage::is_approved_vault(&env, &vault) {
+            return None;
+        }
+        FactoryStorage::load_approved_vault_token(&env, &vault)
     }
 
     pub fn add_approved_oracle(env: Env, oracle: Address) -> Result<(), FactoryError> {
@@ -178,6 +237,11 @@ impl FactoryContract {
         FactoryStorage::is_supported_token(&env, &token)
     }
 
+    /// Returns up to 50 supported tokens starting at the requested offset.
+    pub fn list_supported_tokens(env: Env, offset: u32, limit: u32) -> Vec<Address> {
+        FactoryStorage::list_supported_tokens(&env, offset, limit)
+    }
+
     pub fn get_min_stake(env: Env) -> Result<i128, FactoryError> {
         FactoryStorage::load_min_stake(&env)
     }
@@ -207,6 +271,31 @@ impl FactoryContract {
         FactoryStorage::set_paused(&env, false);
         env.events().publish((symbol_short!("UNPAUS"),), ());
         Ok(())
+    }
+
+    /// Set or clear the protocol-wide emergency pause (#1583).
+    ///
+    /// While set, every arena deployed by this factory rejects its
+    /// fund-moving entry points with `ArenaError::GloballyPaused`, on top of
+    /// (not instead of) each arena's own host-controlled pause. Only the
+    /// protocol admin may call this. The admin is expected to be a Stellar
+    /// multisig account whose medium threshold needs two signers, so the
+    /// call carries two-person approval through `require_auth`.
+    ///
+    /// # Events
+    /// Emits `GPAUSE` with `(paused, reason)`.
+    pub fn set_global_pause(env: Env, paused: bool, reason: Symbol) -> Result<(), FactoryError> {
+        Self::require_admin(&env)?;
+        FactoryStorage::set_globally_paused(&env, paused);
+        env.events()
+            .publish((symbol_short!("GPAUSE"),), (paused, reason));
+        Ok(())
+    }
+
+    /// Whether the protocol-wide emergency pause is set (#1583). Read by every
+    /// arena's fund-moving entry points.
+    pub fn is_globally_paused(env: Env) -> bool {
+        FactoryStorage::is_globally_paused(&env)
     }
 
     /// Release an arena from a creator's active pool count.
@@ -246,6 +335,7 @@ impl FactoryContract {
         env: Env,
         host: Address,
         config: PoolConfig,
+        metadata_hash: BytesN<32>,
     ) -> Result<Address, FactoryError> {
         if FactoryStorage::is_paused(&env) {
             return Err(FactoryError::ContractPaused);
@@ -261,18 +351,29 @@ impl FactoryContract {
         {
             return Err(FactoryError::InvalidConfig);
         }
+
+        // #1579: bound the lobby lifetime relative to creation. Too short and
+        // the pool is stillborn; too long and entry fees are locked for an
+        // unreasonable period.
+        let now = env.ledger().timestamp();
+        if config.start_deadline < now.saturating_add(MIN_START_DELAY_SECONDS)
+            || config.start_deadline > now.saturating_add(MAX_START_DELAY_SECONDS)
+        {
+            return Err(FactoryError::InvalidStartDeadline);
+        }
         if !FactoryStorage::is_whitelisted(&env, &host) {
             return Err(FactoryError::HostNotWhitelisted);
         }
         if config.entry_fee <= 0 {
             return Err(FactoryError::EntryFeeTooLow);
         }
-        let min_stake = FactoryStorage::load_min_stake(&env)?;
-        if config.entry_fee < min_stake {
-            return Err(FactoryError::StakeBelowMinimum);
-        }
         if !FactoryStorage::is_supported_token(&env, &config.stake_token) {
             return Err(FactoryError::UnsupportedToken);
+        }
+        let min_stake = FactoryStorage::load_min_stake(&env)?;
+        let effective_min_stake = Self::normalize_min_stake(&env, &config.stake_token, min_stake)?;
+        if config.entry_fee < effective_min_stake {
+            return Err(FactoryError::StakeBelowMinimum);
         }
         if !FactoryStorage::is_approved_vault(&env, &config.yield_vault) {
             return Err(FactoryError::InvalidVault);
@@ -280,6 +381,7 @@ impl FactoryContract {
         if !FactoryStorage::is_approved_oracle(&env, &config.oracle_contract) {
             return Err(FactoryError::InvalidOracle);
         }
+        Self::check_vault_compatibility(&env, &config)?;
 
         // Check active pool limit for this host
         let max_pools = FactoryStorage::load_max_active_pools(&env);
@@ -313,6 +415,7 @@ impl FactoryContract {
             &config.max_players,
             &config.round_duration,
         );
+        ArenaClient::new(&env, &arena).set_start_deadline(&config.start_deadline);
 
         FactoryStorage::save_creator_stake(
             &env,
@@ -332,20 +435,28 @@ impl FactoryContract {
             entry_fee: config.entry_fee,
             status: ArenaStatus::Active,
             created_at: env.ledger().timestamp(),
+            metadata_hash: metadata_hash.clone(),
         };
         FactoryStorage::save_pool(&env, pool_id, &pool_metadata);
         FactoryStorage::increment_pool_count(&env);
 
+        // #1613: update secondary indexes atomically with pool creation.
+        FactoryStorage::index_host_pool(&env, &host, pool_id);
+        FactoryStorage::index_pool_status(&env, pool_id, &ArenaStatus::Active);
+
+        // #1607: emit via typed helper with normalized topics + versioned payload.
+        events::pool_created(&env, &host, pool_id, &arena, config.entry_fee);
         env.events().publish(
             (symbol_short!("POOL_CRE"),),
             (
                 pool_id,
-                host,
+                host.clone(),
                 config.entry_fee,
                 arena.clone(),
                 config.min_players,
                 config.max_players,
                 config.round_duration,
+                metadata_hash,
             ),
         );
         Ok(arena)
@@ -384,12 +495,89 @@ impl FactoryContract {
         Ok(())
     }
 
+    /// Reject a pool whose vault would hold a different asset, or accrue
+    /// yield from a different oracle, than the arena expects (#1634).
+    ///
+    /// Each check exists because the separate approvals cannot catch it: an
+    /// approved vault for token B plus a supported token A passes them all,
+    /// and the arena then fails at its first join (or moves the wrong asset).
+    /// The vault's live config is read every time, so a vault upgraded to a
+    /// different token after approval no longer matches its registered token
+    /// and is refused until the admin re-approves it.
+    fn check_vault_compatibility(env: &Env, config: &PoolConfig) -> Result<(), FactoryError> {
+        // A vault approved before #1634 has no registered token; it must be
+        // re-approved (which records one) before it can back new pools.
+        let registered_token = FactoryStorage::load_approved_vault_token(env, &config.yield_vault)
+            .ok_or(FactoryError::InvalidVault)?;
+        let vault_config = Self::read_vault_config(env, &config.yield_vault)?;
+
+        if vault_config.stake_token != registered_token
+            || vault_config.stake_token != config.stake_token
+        {
+            return Err(FactoryError::VaultTokenMismatch);
+        }
+        if vault_config.oracle != config.oracle_contract {
+            return Err(FactoryError::OracleMismatch);
+        }
+        Ok(())
+    }
+
+    /// Read `vault`'s `config()`, mapping any failure — no contract at that
+    /// address, a contract without the entry point, or an uninitialised
+    /// adapter — to `InvalidVault`.
+    fn read_vault_config(env: &Env, vault: &Address) -> Result<VaultConfig, FactoryError> {
+        match VaultClient::new(env, vault).try_config() {
+            Ok(Ok(vault_config)) => Ok(vault_config),
+            _ => Err(FactoryError::InvalidVault),
+        }
+    }
+
     /// Transfer `amount` of `stake_token` from the host into the factory.
     /// Separated out so the collection logic can be exercised directly in unit
     /// tests without standing up a full arena deployment.
     fn collect_creator_stake(env: &Env, host: &Address, stake_token: &Address, amount: i128) {
         let token_client = token::TokenClient::new(env, stake_token);
         token_client.transfer(host, &env.current_contract_address(), &amount);
+    }
+
+    /// Scale the admin-configured `min_stake` (denominated in
+    /// `MIN_STAKE_REFERENCE_DECIMALS`) to `stake_token`'s actual on-chain
+    /// decimals, so the effective real-world minimum creator stake is
+    /// consistent across every supported token regardless of its precision
+    /// (#1361). Reads `decimals()` from the standard token interface, which
+    /// every approved token must already implement.
+    fn normalize_min_stake(
+        env: &Env,
+        stake_token: &Address,
+        min_stake: i128,
+    ) -> Result<i128, FactoryError> {
+        let token_decimals = token::TokenClient::new(env, stake_token).decimals();
+        if token_decimals == MIN_STAKE_REFERENCE_DECIMALS {
+            return Ok(min_stake);
+        }
+        if token_decimals > MIN_STAKE_REFERENCE_DECIMALS {
+            let scale = 10i128
+                .checked_pow(token_decimals - MIN_STAKE_REFERENCE_DECIMALS)
+                .ok_or(FactoryError::ArithmeticOverflow)?;
+            min_stake
+                .checked_mul(scale)
+                .ok_or(FactoryError::ArithmeticOverflow)
+        } else {
+            let scale = 10i128
+                .checked_pow(MIN_STAKE_REFERENCE_DECIMALS - token_decimals)
+                .ok_or(FactoryError::ArithmeticOverflow)?;
+            // Round up: a token with fewer decimals than the reference must
+            // never let a floor computation round down to a weaker minimum
+            // than intended.
+            let (quotient, remainder) = (min_stake / scale, min_stake % scale);
+            if remainder == 0 {
+                Ok(quotient)
+            } else {
+                quotient
+                    .checked_add(1)
+                    .ok_or(FactoryError::ArithmeticOverflow)
+            }
+        }
     }
 
     /// Update the status of a deployed arena pool.
@@ -403,7 +591,16 @@ impl FactoryContract {
     ) -> Result<(), FactoryError> {
         let meta = FactoryStorage::load_pool(&env, pool_id).ok_or(FactoryError::PoolNotFound)?;
         meta.arena_address.require_auth();
+        let old_status = meta.status.clone();
         FactoryStorage::update_pool_status(&env, pool_id, &status);
+
+        // #1613: O(1) swap-remove from old bucket, append to new bucket.
+        if old_status != status {
+            FactoryStorage::transition_pool_status(&env, pool_id, &old_status, &status);
+        }
+
+        // #1607: emit via typed helper with normalized topics + versioned payload.
+        events::pool_status_updated(&env, &meta.arena_address, pool_id, FactoryStorage::arena_status_ordinal(&status));
         env.events()
             .publish((symbol_short!("POOL_ST"),), (pool_id, status));
         Ok(())
@@ -427,6 +624,45 @@ impl FactoryContract {
         let end = core::cmp::min(total, offset.saturating_add(limit));
         if start <= end {
             for pool_id in start..=end {
+                if let Some(meta) = FactoryStorage::load_pool(&env, pool_id) {
+                    result.push_back(meta);
+                }
+            }
+        }
+        result
+    }
+
+    /// #1613: Return pools created by `host`, paged by `page` (0-indexed).
+    ///
+    /// Each page contains up to `HOST_POOLS_PAGE_SIZE` pool IDs.  The caller
+    /// iterates pages until an empty page is returned.
+    pub fn get_arenas_by_host(env: Env, host: Address, page: u32) -> Vec<ArenaMetadata> {
+        let pool_ids = FactoryStorage::get_host_pools_page(&env, &host, page);
+        let mut result: Vec<ArenaMetadata> = Vec::new(&env);
+        for i in 0..pool_ids.len() {
+            if let Some(pool_id) = pool_ids.get(i) {
+                if let Some(meta) = FactoryStorage::load_pool(&env, pool_id) {
+                    result.push_back(meta);
+                }
+            }
+        }
+        result
+    }
+
+    /// #1613: Return pools in `status`, paged by `offset` / `limit`.
+    ///
+    /// Uses the StatusBucket secondary index.  Stable ordering is NOT
+    /// guaranteed across status transitions (swap-remove may reorder IDs).
+    pub fn get_arenas_by_status(
+        env: Env,
+        status: ArenaStatus,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<ArenaMetadata> {
+        let pool_ids = FactoryStorage::get_pools_by_status(&env, &status, offset, limit);
+        let mut result: Vec<ArenaMetadata> = Vec::new(&env);
+        for i in 0..pool_ids.len() {
+            if let Some(pool_id) = pool_ids.get(i) {
                 if let Some(meta) = FactoryStorage::load_pool(&env, pool_id) {
                     result.push_back(meta);
                 }
@@ -474,6 +710,7 @@ impl FactoryContract {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod test {
     use super::*;
     use soroban_sdk::testutils::Address as _;
@@ -498,7 +735,90 @@ mod test {
             min_players: 2,
             max_players: 10,
             round_duration: 60,
+            start_deadline: env.ledger().timestamp() + 86_400,
         }
+    }
+
+    fn metadata_hash(env: &Env) -> BytesN<32> {
+        BytesN::from_array(env, &[7u8; 32])
+    }
+
+    /// A stand-in RWA adapter that only answers `config()` (#1634), with a
+    /// stake token and oracle the test can change afterwards — which is how
+    /// these tests model a vault upgraded to a different asset.
+    mod vault_mock {
+        use crate::types::VaultConfig;
+        use soroban_sdk::{Address, Env, contract, contractimpl, symbol_short};
+
+        #[contract]
+        pub struct MockVault;
+
+        #[contractimpl]
+        impl MockVault {
+            pub fn set_config(env: Env, stake_token: Address, oracle: Address) {
+                env.storage()
+                    .instance()
+                    .set(&symbol_short!("CFG"), &VaultConfig { stake_token, oracle });
+            }
+
+            pub fn config(env: Env) -> VaultConfig {
+                env.storage()
+                    .instance()
+                    .get(&symbol_short!("CFG"))
+                    .expect("mock vault not configured")
+            }
+        }
+    }
+
+    fn mock_vault(env: &Env, stake_token: &Address, oracle: &Address) -> Address {
+        let vault = env.register(vault_mock::MockVault, ());
+        vault_mock::MockVaultClient::new(env, &vault).set_config(stake_token, oracle);
+        vault
+    }
+
+    /// A whitelisted host plus a config whose token, vault and oracle are all
+    /// approved and mutually consistent, so the only thing `create_pool` can
+    /// still object to is whatever a test changes next.
+    fn compatible_pool(
+        env: &Env,
+        client: &FactoryContractClient<'static>,
+        host: &Address,
+    ) -> PoolConfig {
+        client.add_to_whitelist(host);
+        let mut cfg = pool_config_with_real_token(env, 100);
+        cfg.yield_vault = mock_vault(env, &cfg.stake_token, &cfg.oracle_contract);
+        client.add_supported_token(&cfg.stake_token);
+        client.add_approved_vault(&cfg.yield_vault);
+        client.add_approved_oracle(&cfg.oracle_contract);
+        cfg
+    }
+
+    fn create_pool_error(
+        env: &Env,
+        client: &FactoryContractClient<'static>,
+        host: &Address,
+        cfg: &PoolConfig,
+    ) -> FactoryError {
+        client
+            .try_create_pool(host, cfg, &metadata_hash(env))
+            .err()
+            .expect("create_pool must be rejected")
+            .expect("error must be a contract error")
+    }
+
+    /// A `pool_config` whose `stake_token` is a real deployed token contract
+    /// (7 decimals, matching `MIN_STAKE_REFERENCE_DECIMALS`) rather than a
+    /// bare `Address::generate`. Needed by any test that exercises
+    /// `create_pool` past the `is_supported_token` check, since #1361's
+    /// `normalize_min_stake` calls the real `decimals()` entry point on
+    /// `stake_token` and traps on an address with no contract behind it.
+    fn pool_config_with_real_token(env: &Env, entry_fee: i128) -> PoolConfig {
+        let mut cfg = pool_config(env, entry_fee);
+        let token_admin = Address::generate(env);
+        cfg.stake_token = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        cfg
     }
 
     #[test]
@@ -538,7 +858,7 @@ mod test {
     fn create_pool_rejects_unwhitelisted_host() {
         let (env, client, _admin, host) = setup();
         let err = client
-            .try_create_pool(&host, &pool_config(&env, 100))
+            .try_create_pool(&host, &pool_config(&env, 100), &metadata_hash(&env))
             .err()
             .expect("unwhitelisted host must error")
             .expect("error must be a contract error");
@@ -551,7 +871,7 @@ mod test {
         let mut config = pool_config(&env, 100);
         update(&mut config);
         let error = client
-            .try_create_pool(&host, &config)
+            .try_create_pool(&host, &config, &metadata_hash(&env))
             .err()
             .expect("invalid config must be rejected")
             .expect("error must be a contract error");
@@ -567,6 +887,32 @@ mod test {
     fn create_pool_rejects_round_duration_above_maximum() {
         assert_invalid_config(|config| {
             config.round_duration = 604_801
+        });
+    }
+
+    fn assert_invalid_start_deadline(update: impl FnOnce(&mut PoolConfig)) {
+        let (env, client, _admin, host) = setup();
+        let mut config = pool_config(&env, 100);
+        update(&mut config);
+        let error = client
+            .try_create_pool(&host, &config, &metadata_hash(&env))
+            .err()
+            .expect("invalid start deadline must be rejected")
+            .expect("error must be a contract error");
+        assert_eq!(error, FactoryError::InvalidStartDeadline);
+    }
+
+    #[test]
+    fn create_pool_rejects_start_deadline_below_minimum() {
+        assert_invalid_start_deadline(|config| {
+            config.start_deadline = MIN_START_DELAY_SECONDS - 1
+        });
+    }
+
+    #[test]
+    fn create_pool_rejects_start_deadline_above_maximum() {
+        assert_invalid_start_deadline(|config| {
+            config.start_deadline = MAX_START_DELAY_SECONDS + 1
         });
     }
 
@@ -602,7 +948,7 @@ mod test {
             let mut config = pool_config(&env, 100);
             config.max_players = *max_players;
             let err = client
-                .try_create_pool(&host, &config)
+                .try_create_pool(&host, &config, &metadata_hash(&env))
                 .err()
                 .expect("max_players > 100 must be rejected")
                 .expect("error must be a contract error");
@@ -623,7 +969,7 @@ mod test {
         client.pause();
 
         let err = client
-            .try_create_pool(&host, &pool_config(&env, 100))
+            .try_create_pool(&host, &pool_config(&env, 100), &metadata_hash(&env))
             .err()
             .expect("paused factory must error")
             .expect("error must be a contract error");
@@ -638,7 +984,7 @@ mod test {
         // proceeds past the pause check — fails on missing WASM hash).
         client.unpause();
         let err_after = client
-            .try_create_pool(&host, &pool_config(&env, 100))
+            .try_create_pool(&host, &pool_config(&env, 100), &metadata_hash(&env))
             .err()
             .expect("must still error (no wasm hash configured)")
             .expect("error must be a contract error");
@@ -655,8 +1001,11 @@ mod test {
         let (env, client, _admin, host) = setup();
         client.add_to_whitelist(&host);
 
+        let cfg = pool_config_with_real_token(&env, 99);
+        client.add_supported_token(&cfg.stake_token);
+
         let err = client
-            .try_create_pool(&host, &pool_config(&env, 99))
+            .try_create_pool(&host, &cfg, &metadata_hash(&env))
             .err()
             .expect("stake below minimum must error")
             .expect("error must be a contract error");
@@ -670,9 +1019,9 @@ mod test {
         client.add_to_whitelist(&host);
 
         // No token registered — must be rejected.
-        let cfg = pool_config(&env, 100);
+        let cfg = pool_config_with_real_token(&env, 100);
         let err = client
-            .try_create_pool(&host, &cfg)
+            .try_create_pool(&host, &cfg, &metadata_hash(&env))
             .err()
             .expect("unsupported token must error")
             .expect("error must be a contract error");
@@ -682,7 +1031,7 @@ mod test {
         // missing WASM hash, not on token validation).
         client.add_supported_token(&cfg.stake_token);
         let err_after = client
-            .try_create_pool(&host, &cfg)
+            .try_create_pool(&host, &cfg, &metadata_hash(&env))
             .err()
             .expect("must still error (no wasm hash configured)")
             .expect("error must be a contract error");
@@ -815,8 +1164,8 @@ mod test {
     #[test]
     fn approved_vault_and_oracle_add_and_remove_controls_status() {
         let (env, client, _admin, _host) = setup();
-        let vault = Address::generate(&env);
         let oracle = Address::generate(&env);
+        let vault = mock_vault(&env, &Address::generate(&env), &oracle);
 
         assert!(!client.is_approved_vault(&vault));
         client.add_approved_vault(&vault);
@@ -835,13 +1184,13 @@ mod test {
     fn create_pool_rejects_unapproved_vault() {
         let (env, client, _admin, host) = setup();
         client.add_to_whitelist(&host);
-        
-        let cfg = pool_config(&env, 100);
+
+        let cfg = pool_config_with_real_token(&env, 100);
         client.add_supported_token(&cfg.stake_token);
         client.add_approved_oracle(&cfg.oracle_contract);
 
         let err = client
-            .try_create_pool(&host, &cfg)
+            .try_create_pool(&host, &cfg, &metadata_hash(&env))
             .err()
             .expect("unapproved vault must error")
             .expect("error must be a contract error");
@@ -852,13 +1201,14 @@ mod test {
     fn create_pool_rejects_unapproved_oracle() {
         let (env, client, _admin, host) = setup();
         client.add_to_whitelist(&host);
-        
-        let cfg = pool_config(&env, 100);
+
+        let mut cfg = pool_config_with_real_token(&env, 100);
+        cfg.yield_vault = mock_vault(&env, &cfg.stake_token, &cfg.oracle_contract);
         client.add_supported_token(&cfg.stake_token);
         client.add_approved_vault(&cfg.yield_vault);
 
         let err = client
-            .try_create_pool(&host, &cfg)
+            .try_create_pool(&host, &cfg, &metadata_hash(&env))
             .err()
             .expect("unapproved oracle must error")
             .expect("error must be a contract error");
@@ -952,7 +1302,7 @@ mod test {
         // Removing the gate from release_arena must not weaken the pause switch
         // where it actually matters.
         let err = client
-            .try_create_pool(&host, &pool_config(&env, 100))
+            .try_create_pool(&host, &pool_config(&env, 100), &metadata_hash(&env))
             .err()
             .expect("paused factory must still refuse new pools")
             .expect("error must be a contract error");
@@ -971,5 +1321,326 @@ mod test {
             .expect("error must be a contract error");
 
         assert_eq!(err, FactoryError::ArenaNotFound);
+    }
+
+    // ── #1361: min_stake decimal-precision normalization ─────────────────────
+    //
+    // `register_stellar_asset_contract_v2` always deploys a 7-decimal token
+    // (matching MIN_STAKE_REFERENCE_DECIMALS), so exercising the actual
+    // scaling math needs a token whose `decimals()` differs from 7. This mock
+    // implements only that one SEP-41 entry point — the sole thing
+    // `normalize_min_stake` calls on the token before deployment/transfer
+    // logic is ever reached.
+    mod decimals_mock {
+        mod high {
+            use soroban_sdk::{Env, contract, contractimpl};
+
+            #[contract]
+            pub struct MockDecimalsToken;
+
+            #[contractimpl]
+            impl MockDecimalsToken {
+                pub fn decimals(_env: Env) -> u32 {
+                    18
+                }
+            }
+        }
+
+        mod low {
+            use soroban_sdk::{Env, contract, contractimpl};
+
+            #[contract]
+            pub struct MockLowDecimalsToken;
+
+            #[contractimpl]
+            impl MockLowDecimalsToken {
+                pub fn decimals(_env: Env) -> u32 {
+                    2
+                }
+            }
+        }
+
+        pub use high::MockDecimalsToken;
+        pub use low::MockLowDecimalsToken;
+    }
+
+    #[test]
+    fn normalize_min_stake_unchanged_when_token_matches_reference_decimals() {
+        let (env, client, _admin, host) = setup();
+        client.add_to_whitelist(&host);
+        let cfg = pool_config_with_real_token(&env, 100);
+        client.add_supported_token(&cfg.stake_token);
+
+        let effective = env.as_contract(&client.address, || {
+            FactoryContract::normalize_min_stake(&env, &cfg.stake_token, 100)
+        });
+        assert_eq!(effective, Ok(100));
+    }
+
+    #[test]
+    fn normalize_min_stake_scales_up_for_higher_decimal_tokens() {
+        let env = Env::default();
+        let factory_id = env.register(FactoryContract, ());
+        let token_id = env.register(decimals_mock::MockDecimalsToken, ());
+
+        // 18-decimal token vs. the 7-decimal reference: scale by 10^11.
+        let effective = env.as_contract(&factory_id, || {
+            FactoryContract::normalize_min_stake(&env, &token_id, 100)
+        });
+        assert_eq!(effective, Ok(100 * 10i128.pow(11)));
+    }
+
+    #[test]
+    fn normalize_min_stake_rounds_up_for_lower_decimal_tokens() {
+        let env = Env::default();
+        let factory_id = env.register(FactoryContract, ());
+        let token_id = env.register(decimals_mock::MockLowDecimalsToken, ());
+
+        // 2-decimal token vs. the 7-decimal reference: divide by 10^5,
+        // rounding up so the effective floor never weakens.
+        let exact = env.as_contract(&factory_id, || {
+            FactoryContract::normalize_min_stake(&env, &token_id, 500_000)
+        });
+        assert_eq!(exact, Ok(5), "500_000 / 10^5 divides evenly");
+
+        let remainder = env.as_contract(&factory_id, || {
+            FactoryContract::normalize_min_stake(&env, &token_id, 500_001)
+        });
+        assert_eq!(
+            remainder,
+            Ok(6),
+            "a nonzero remainder must round the floor up, never down"
+        );
+    }
+
+    #[test]
+    fn create_pool_applies_effective_minimum_across_differing_token_decimals() {
+        let (env, client, _admin, host) = setup();
+        client.add_to_whitelist(&host);
+
+        // min_stake is 100 (7-decimal reference units). Against an 18-decimal
+        // token that is 100 * 10^11 raw units — an entry_fee of just 100 raw
+        // units on that token must still be rejected as below the real-world
+        // minimum, not silently accepted because it clears the unscaled
+        // integer floor.
+        let token_id = env.register(decimals_mock::MockDecimalsToken, ());
+        let mut cfg = pool_config(&env, 100);
+        cfg.stake_token = token_id.clone();
+        client.add_supported_token(&token_id);
+
+        let err = client
+            .try_create_pool(&host, &cfg, &metadata_hash(&env))
+            .err()
+            .expect("entry_fee far below the decimal-scaled minimum must error")
+            .expect("error must be a contract error");
+        assert_eq!(err, FactoryError::StakeBelowMinimum);
+    }
+
+    // ── #1583: protocol-wide emergency pause ─────────────────────────────────
+
+    #[test]
+    fn set_global_pause_toggles_the_flag_and_emits_an_event() {
+        use soroban_sdk::{IntoVal, testutils::Events as _};
+
+        let (env, client, _admin, _host) = setup();
+        assert!(!client.is_globally_paused());
+
+        let reason = Symbol::new(&env, "vault_exploit");
+        client.set_global_pause(&true, &reason);
+        let (contract, topics, data) = env.events().all().last().unwrap();
+        assert_eq!(contract, client.address);
+        assert_eq!(topics, (symbol_short!("GPAUSE"),).into_val(&env));
+        let data: (bool, Symbol) = data.into_val(&env);
+        assert_eq!(data, (true, reason.clone()));
+        assert!(client.is_globally_paused());
+
+        client.set_global_pause(&false, &reason);
+        assert!(!client.is_globally_paused());
+    }
+
+    #[test]
+    fn set_global_pause_requires_the_protocol_admin() {
+        let (env, client, _admin, _host) = setup();
+        env.set_auths(&[]);
+        assert!(
+            client
+                .try_set_global_pause(&true, &Symbol::new(&env, "x"))
+                .is_err()
+        );
+        assert!(!client.is_globally_paused());
+    }
+
+    #[test]
+    fn global_pause_is_independent_of_the_pool_creation_pause() {
+        let (env, client, _admin, _host) = setup();
+        client.pause();
+        assert!(!client.is_globally_paused());
+        client.unpause();
+        client.set_global_pause(&true, &Symbol::new(&env, "incident"));
+        assert!(client.is_globally_paused());
+    }
+
+    #[test]
+    fn normalize_min_stake_reports_overflow_instead_of_wrapping() {
+        let env = Env::default();
+        let factory_id = env.register(FactoryContract, ());
+        let token_id = env.register(decimals_mock::MockDecimalsToken, ());
+
+        // i128::MAX scaled by 10^11 overflows i128.
+        let result = env.as_contract(&factory_id, || {
+            FactoryContract::normalize_min_stake(&env, &token_id, i128::MAX)
+        });
+        assert_eq!(result, Err(FactoryError::ArithmeticOverflow));
+    }
+
+    // ── #1634: vault / token / oracle compatibility ──────────────────────────
+
+    #[test]
+    fn add_approved_vault_registers_the_vaults_token() {
+        let (env, client, _admin, _host) = setup();
+        let token = Address::generate(&env);
+        let vault = mock_vault(&env, &token, &Address::generate(&env));
+
+        assert_eq!(client.get_approved_vault_token(&vault), None);
+        client.add_approved_vault(&vault);
+        assert_eq!(client.get_approved_vault_token(&vault), Some(token));
+
+        client.remove_approved_vault(&vault);
+        assert_eq!(client.get_approved_vault_token(&vault), None);
+        assert!(!client.is_approved_vault(&vault));
+    }
+
+    #[test]
+    fn add_approved_vault_rejects_an_address_without_a_vault_config() {
+        let (env, client, _admin, _host) = setup();
+        let not_a_vault = Address::generate(&env);
+
+        let err = client
+            .try_add_approved_vault(&not_a_vault)
+            .err()
+            .expect("approving a non-vault must error")
+            .expect("error must be a contract error");
+        assert_eq!(err, FactoryError::InvalidVault);
+        assert!(!client.is_approved_vault(&not_a_vault));
+    }
+
+    #[test]
+    fn create_pool_accepts_a_compatible_vault() {
+        let (env, client, _admin, host) = setup();
+        let cfg = compatible_pool(&env, &client, &host);
+
+        // Every compatibility check passes; the call only fails later because
+        // no arena wasm hash is configured in this unit test.
+        assert_eq!(
+            create_pool_error(&env, &client, &host, &cfg),
+            FactoryError::WasmHashNotSet
+        );
+    }
+
+    #[test]
+    fn create_pool_rejects_a_vault_for_a_different_token() {
+        let (env, client, _admin, host) = setup();
+        let mut cfg = compatible_pool(&env, &client, &host);
+
+        // An approved vault for token B, with the pool staking supported token A.
+        let other_token = pool_config_with_real_token(&env, 100).stake_token;
+        let vault_b = mock_vault(&env, &other_token, &cfg.oracle_contract);
+        client.add_approved_vault(&vault_b);
+        cfg.yield_vault = vault_b;
+
+        assert_eq!(
+            create_pool_error(&env, &client, &host, &cfg),
+            FactoryError::VaultTokenMismatch
+        );
+    }
+
+    #[test]
+    fn create_pool_rejects_a_vault_using_a_different_oracle() {
+        let (env, client, _admin, host) = setup();
+        let mut cfg = compatible_pool(&env, &client, &host);
+
+        // Both oracles are approved; the arena would still snapshot yield from
+        // one while the vault accrues from the other.
+        let other_oracle = Address::generate(&env);
+        client.add_approved_oracle(&other_oracle);
+        cfg.oracle_contract = other_oracle;
+
+        assert_eq!(
+            create_pool_error(&env, &client, &host, &cfg),
+            FactoryError::OracleMismatch
+        );
+    }
+
+    #[test]
+    fn create_pool_rejects_a_vault_whose_token_changed_after_approval() {
+        let (env, client, _admin, host) = setup();
+        let mut cfg = compatible_pool(&env, &client, &host);
+        let original_token = cfg.stake_token.clone();
+
+        // The vault is "upgraded" to a different asset, and the host asks for
+        // a pool in that new (also supported) asset.
+        let new_token = pool_config_with_real_token(&env, 100).stake_token;
+        client.add_supported_token(&new_token);
+        vault_mock::MockVaultClient::new(&env, &cfg.yield_vault)
+            .set_config(&new_token, &cfg.oracle_contract);
+        cfg.stake_token = new_token.clone();
+        assert_eq!(
+            create_pool_error(&env, &client, &host, &cfg),
+            FactoryError::VaultTokenMismatch,
+            "a vault must not back pools in an asset it was not approved for"
+        );
+
+        // The original asset no longer matches what the vault actually holds.
+        cfg.stake_token = original_token;
+        assert_eq!(
+            create_pool_error(&env, &client, &host, &cfg),
+            FactoryError::VaultTokenMismatch
+        );
+
+        // Re-approving records the new token and makes the new pairing valid.
+        client.add_approved_vault(&cfg.yield_vault);
+        assert_eq!(client.get_approved_vault_token(&cfg.yield_vault), Some(new_token.clone()));
+        cfg.stake_token = new_token;
+        assert_eq!(
+            create_pool_error(&env, &client, &host, &cfg),
+            FactoryError::WasmHashNotSet
+        );
+    }
+
+    #[test]
+    fn create_pool_rejects_a_vault_approved_before_token_registration() {
+        let (env, client, _admin, host) = setup();
+        let cfg = compatible_pool(&env, &client, &host);
+
+        // Simulate an approval written by the pre-#1634 factory: the flag is
+        // set but no token was registered alongside it.
+        env.as_contract(&client.address, || {
+            FactoryStorage::remove_approved_vault_token(&env, &cfg.yield_vault);
+        });
+
+        assert_eq!(
+            create_pool_error(&env, &client, &host, &cfg),
+            FactoryError::InvalidVault
+        );
+    }
+
+    #[test]
+    fn create_pool_rejects_a_vault_that_stops_answering_config() {
+        let (env, client, _admin, host) = setup();
+        let mut cfg = compatible_pool(&env, &client, &host);
+
+        // An approved vault whose config read now fails (e.g. upgraded to
+        // code without the entry point) must not be trusted.
+        let broken = Address::generate(&env);
+        env.as_contract(&client.address, || {
+            FactoryStorage::set_approved_vault(&env, &broken, true);
+            FactoryStorage::save_approved_vault_token(&env, &broken, &cfg.stake_token);
+        });
+        cfg.yield_vault = broken;
+
+        assert_eq!(
+            create_pool_error(&env, &client, &host, &cfg),
+            FactoryError::InvalidVault
+        );
     }
 }

@@ -69,6 +69,7 @@ pub fn is_eliminated(choice: Choice, tally: &Tally) -> bool {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use soroban_sdk::{Env, Vec};

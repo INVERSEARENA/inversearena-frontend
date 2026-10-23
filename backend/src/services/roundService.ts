@@ -1,13 +1,18 @@
 import { PrismaClient } from '@prisma/client';
 import { Contract, Keypair, TransactionBuilder, xdr } from "@stellar/stellar-sdk";
-import { StellarRpcGateway } from "../../frontend/src/shared-d/services/stellarRpcGateway";
+import { StellarRpcGateway } from "../../../frontend/src/shared/lib/stellar/stellarRpcGateway";
 
 import { RoundRepository } from '../repositories/roundRepository';
+import {
+  IdempotentCommandRepository,
+  type IdempotentCommandAction,
+} from '../repositories/idempotentCommandRepository';
 import type {
   RoundInput,
   RoundMetadata,
   RoundResolution,
   CommitReceipt,
+  Payout,
 } from '../types/round';
 import { RoundState } from '../types/round';
 import {
@@ -18,33 +23,51 @@ import {
   roundResolutionDuration,
   commitReceiptLookupsTotal,
   commitReceiptLookupDuration,
+  lifecycleCommandOutcomeTotal,
+  lifecycleCommandDurationSeconds,
 } from '../utils/metrics';
-import { invalidateArenaStats } from '../cache/cacheService';
+import { invalidateArenaStats, invalidateRound } from '../cache/cacheService';
 import {
   getOnChainActivePlayerIds,
   getOnChainWinner,
+  getOnChainRoundResult,
+  getArenaOracleContract,
+  getOracleReading,
 } from './onChainReader';
+import { NotificationPreferencesService } from './notificationPreferencesService';
+import { PushService } from './pushService';
 import { getStellarConfig, type StellarConfig } from '../config/stellarConfig';
 import { buildRoundResolution } from '../domain/roundResolution';
 import { contextLogger, maskWalletAddress } from '../utils/logger';
+import { OracleFreshnessService, StaleOracleDataError, type OracleReading } from './oracleFreshnessService';
+import { env } from "../config/env";
 
 export interface OnChainRoundState {
   roundId: string;
-  oracleYield: number;
+  oracleYield: bigint;
   isFinalized: boolean;
+  eliminated?: bigint;
+  survivors?: bigint;
 }
 
+// TODO(#1508): derive authoritative phase from contract + signature time.
+export const PHASE_PRECONDITION = "preflight:phase-check";
+
 export interface OnChainReader {
-  getRoundState(roundId: string): Promise<OnChainRoundState>;
+  getRoundState(contractId: string, round: number): Promise<OnChainRoundState>;
   /** Returns wallet addresses of players still active after the latest resolve_round. */
   getActivePlayers(contractId: string): Promise<string[]>;
   /** Returns the single on-chain winner address once the game is finished, or null. */
   getWinner(contractId: string): Promise<string | null>;
+  /** #1512: the oracle contract this arena instance reads its yield rate from. */
+  getOracleContract(arenaContractId: string): Promise<string>;
+  /** #1512: the oracle's rate + observation provenance, or null if unavailable. */
+  getOracleReading(oracleContractId: string): Promise<OracleReading | null>;
 }
 
 export class NoOpOnChainReader implements OnChainReader {
-  async getRoundState(roundId: string): Promise<OnChainRoundState> {
-    return { roundId, oracleYield: 0, isFinalized: false };
+  async getRoundState(_contractId: string, round: number): Promise<OnChainRoundState> {
+    return { roundId: String(round), oracleYield: 0n, isFinalized: false };
   }
   async getActivePlayers(_contractId: string): Promise<string[]> {
     return [];
@@ -52,12 +75,26 @@ export class NoOpOnChainReader implements OnChainReader {
   async getWinner(_contractId: string): Promise<string | null> {
     return null;
   }
+  async getOracleContract(_arenaContractId: string): Promise<string> {
+    return '';
+  }
+  async getOracleReading(_oracleContractId: string): Promise<OracleReading | null> {
+    return null;
+  }
 }
 
 /** Production implementation backed by the Soroban simulation helpers. */
 export class SorobanOnChainReader implements OnChainReader {
-  async getRoundState(roundId: string): Promise<OnChainRoundState> {
-    return { roundId, oracleYield: 0, isFinalized: false };
+  async getRoundState(contractId: string, round: number): Promise<OnChainRoundState> {
+    const result = await getOnChainRoundResult(contractId, round);
+    if (!result) return { roundId: String(round), oracleYield: 0n, isFinalized: false };
+    return {
+      roundId: String(round),
+      oracleYield: result.yieldSnapshot,
+      isFinalized: true,
+      eliminated: result.eliminated,
+      survivors: result.survivors,
+    };
   }
   async getActivePlayers(contractId: string): Promise<string[]> {
     return getOnChainActivePlayerIds(contractId);
@@ -65,23 +102,99 @@ export class SorobanOnChainReader implements OnChainReader {
   async getWinner(contractId: string): Promise<string | null> {
     return getOnChainWinner(contractId);
   }
+  async getOracleContract(arenaContractId: string): Promise<string> {
+    return getArenaOracleContract(arenaContractId);
+  }
+  async getOracleReading(oracleContractId: string): Promise<OracleReading | null> {
+    return getOracleReading(oracleContractId);
+  }
 }
+
+/**
+ * Raised when an idempotency key is already claimed by a request that is
+ * still genuinely in flight (not stale). Distinct from a generic Error so
+ * the controller can map it to 409 rather than string-matching on the
+ * message like it does for the underlying state-guard errors.
+ */
+export class IdempotencyConflictError extends Error {
+  readonly status = 409;
+  readonly code = 'IDEMPOTENCY_KEY_IN_PROGRESS';
+
+  constructor(idempotencyKey: string) {
+    super(`A request with idempotency key ${idempotencyKey} is already in progress`);
+    this.name = 'IdempotencyConflictError';
+  }
+}
+
+// A claim older than this is treated as abandoned (process crash, restart
+// during work) rather than a genuinely concurrent request, and may be
+// released so a retry can proceed. Comfortably longer than
+// submitOnChainResolve's worst realistic case (roundConfirmMaxPolls *
+// ~30s cap), so a slow-but-alive resolution is never mistaken for a dead
+// one.
+const STALE_CLAIM_MS = 10 * 60 * 1000;
 
 export class RoundService {
   private roundRepo: RoundRepository;
   private onChainReader: OnChainReader;
+  private oracleFreshnessService: OracleFreshnessService;
   private explicitStellarConfig: StellarConfig | undefined;
   private resolvedStellarConfig: StellarConfig | undefined;
+  private idempotentCommands: IdempotentCommandRepository;
+
+  private pushService: PushService | null = null;
 
   constructor(
     private prisma: PrismaClient,
     stellarConfig?: StellarConfig,
     onChainReader?: OnChainReader,
     private stellarRpcGateway: StellarRpcGateway = new StellarRpcGateway(),
+    pushService?: PushService,
   ) {
     this.roundRepo = new RoundRepository(prisma);
     this.onChainReader = onChainReader ?? new SorobanOnChainReader();
+    // The freshness service only needs `getOracleReading`, which
+    // `OnChainReader` already exposes — no separate wiring.
+    this.oracleFreshnessService = new OracleFreshnessService(this.onChainReader);
     this.explicitStellarConfig = stellarConfig;
+    this.idempotentCommands = new IdempotentCommandRepository(prisma);
+    if (pushService) this.pushService = pushService;
+  }
+
+
+  /**
+   * Best-effort Web Push fan-out after a round resolves (#1571): alerts the
+   * round's players that the next commit window is opening. Never throws —
+   * resolution must not fail because push is unconfigured or unreachable.
+   */
+  private async notifyRoundResolved(
+    arenaId: string,
+    roundNumber: number,
+    userIds: string[],
+  ): Promise<void> {
+    try {
+      if (!this.pushService) {
+        if (!env.VAPID_PUBLIC_KEY) return;
+        this.pushService = new PushService(
+          this.prisma,
+          new NotificationPreferencesService(this.prisma),
+        );
+      }
+      await this.pushService.scheduleRoundPhasePushes({
+        arenaId,
+        roundNumber,
+        type: "round-started",
+        message: {
+          title: "Round resolved",
+          body: `Round ${roundNumber} resolved — the next commit window is opening.`,
+          url: `/arena/${arenaId}`,
+          tag: `arena-${arenaId}-round-${roundNumber}-started`,
+        },
+        userIds,
+      });
+    } catch {
+      // Push is advisory; resolution already succeeded.
+    }
   }
 
   /**
@@ -102,6 +215,7 @@ export class RoundService {
       this.resolvedStellarConfig = this.explicitStellarConfig ?? getStellarConfig();
     }
     return this.resolvedStellarConfig;
+
   }
 
   /**
@@ -112,7 +226,7 @@ export class RoundService {
     contractId: string,
     roundNumber: number,
   ): Promise<number> {
-    const signerSecret = process.env.ARENA_ADMIN_SECRET;
+    const signerSecret = env.ARENA_ADMIN_SECRET;
 
     if (!signerSecret) {
       throw new Error("ARENA_ADMIN_SECRET is not configured. Cannot submit on-chain resolve_round.");
@@ -179,6 +293,115 @@ export class RoundService {
     throw new Error(`resolve_round send failed: ${sendResult.status}`);
   }
 
+  /**
+   * Run `action` exactly once per idempotencyKey, ahead of any side effect
+   * the action performs (#1386). Three outcomes:
+   *  - No prior row for this key: claim it, run the action, record the
+   *    outcome, return the fresh result ("executed").
+   *  - A prior COMPLETED row: return its stored result without running the
+   *    action again ("replayed") — a genuine duplicate delivery.
+   *  - A prior FAILED row, or an IN_PROGRESS row stale enough to be
+   *    abandoned: release it and retry ("retried_after_failure") — a
+   *    legitimate retry of a request that never completed must still be
+   *    allowed to proceed (#1344's retryability guarantee), so this is
+   *    deliberately NOT rejected the way a fresh IN_PROGRESS conflict is.
+   *  - A prior IN_PROGRESS row that is still fresh: reject with
+   *    IdempotencyConflictError — a genuinely concurrent request with the
+   *    same key, not a retry.
+   */
+  private async runIdempotentCommand<T>(
+    idempotencyKey: string,
+    action: IdempotentCommandAction,
+    roundId: string,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const claimed = await this.idempotentCommands.tryClaim(idempotencyKey, action, roundId);
+
+    if (claimed) {
+      return this.executeAndRecord(idempotencyKey, action, run);
+    }
+
+    // The key already exists — decide how to respond based on its current
+    // status rather than recursing back into tryClaim, which would just
+    // fail again for the same reason.
+    const existing = await this.idempotentCommands.findByKey(idempotencyKey);
+    if (!existing) {
+      // The row we just failed to claim was deleted between tryClaim and
+      // this read (vanishingly unlikely). One retry is enough — if it
+      // still can't claim, something else is racing this exact key
+      // unusually fast, which the conflict path below handles safely.
+      const reclaimed = await this.idempotentCommands.tryClaim(idempotencyKey, action, roundId);
+      if (reclaimed) return this.executeAndRecord(idempotencyKey, action, run);
+      lifecycleCommandOutcomeTotal.inc({ action, outcome: 'conflict' });
+      throw new IdempotencyConflictError(idempotencyKey);
+    }
+
+    if (existing.status === 'completed') {
+      lifecycleCommandOutcomeTotal.inc({ action, outcome: 'replayed' });
+      contextLogger().info({ idempotencyKey, action, roundId }, 'Replaying completed lifecycle command');
+      return existing.result as T;
+    }
+
+    const ageMs = Date.now() - existing.updatedAt.getTime();
+    const isStaleInProgress = existing.status === 'in_progress' && ageMs >= STALE_CLAIM_MS;
+
+    if (existing.status === 'failed' || isStaleInProgress) {
+      const reclaimed = await this.idempotentCommands.reclaimForRetry(
+        idempotencyKey,
+        existing.status === 'failed' ? 'failed' : 'in_progress',
+        STALE_CLAIM_MS,
+      );
+
+      if (!reclaimed) {
+        // A concurrent caller reclaimed this same retry first — this
+        // caller is now the duplicate of THAT retry, not the original
+        // owner. Reject rather than run a second concurrent execution.
+        lifecycleCommandOutcomeTotal.inc({ action, outcome: 'conflict' });
+        throw new IdempotencyConflictError(idempotencyKey);
+      }
+
+      lifecycleCommandOutcomeTotal.inc({ action, outcome: 'retried_after_failure' });
+      contextLogger().info(
+        { idempotencyKey, action, roundId, priorStatus: existing.status },
+        'Retrying lifecycle command after a prior failure or abandoned attempt',
+      );
+      return this.executeAndRecord(idempotencyKey, action, run);
+    }
+
+    lifecycleCommandOutcomeTotal.inc({ action, outcome: 'conflict' });
+    throw new IdempotencyConflictError(idempotencyKey);
+  }
+
+  private async executeAndRecord<T>(
+    idempotencyKey: string,
+    action: IdempotentCommandAction,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const start = Date.now();
+    try {
+      const result = await run();
+      await this.idempotentCommands.markCompleted(idempotencyKey, result);
+      lifecycleCommandOutcomeTotal.inc({ action, outcome: 'executed' });
+      lifecycleCommandDurationSeconds.observe({ action }, (Date.now() - start) / 1000);
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Lifecycle command failed';
+      await this.idempotentCommands.markFailed(idempotencyKey, message);
+      lifecycleCommandDurationSeconds.observe({ action }, (Date.now() - start) / 1000);
+      throw error;
+    }
+  }
+
+  async resolveRoundIdempotent(idempotencyKey: string, input: RoundInput): Promise<RoundResolution> {
+    return this.runIdempotentCommand(idempotencyKey, 'resolve_round', input.roundId, () =>
+      this.resolveRound(input),
+    );
+  }
+
+  async closeRoundIdempotent(idempotencyKey: string, roundId: string): Promise<{ state: RoundState }> {
+    return this.runIdempotentCommand(idempotencyKey, 'close_round', roundId, () => this.closeRound(roundId));
+  }
+
   async resolveRound(input: RoundInput): Promise<RoundResolution> {
     const start = Date.now();
 
@@ -188,6 +411,19 @@ export class RoundService {
       if (round.state !== RoundState.OPEN && round.state !== RoundState.CLOSED) {
         throw new Error(`Round already in state: ${round.state}`);
       }
+
+      // ── #1512: reject resolution against stale oracle data ───────────────
+      // `input.oracleYield` is caller-supplied and feeds this round's actual
+      // settlement math (buildRoundResolution/computeSettlementBreakdown)
+      // with no independent re-verification of its own — the on-chain
+      // contract's own resolve_round has its own freshness guard (#1512,
+      // contract/arena/src/lib.rs), but that only protects the on-chain
+      // rate snapshot, not this backend's off-chain payout computation.
+      // Unavailable (oracle unreachable, or predates freshness metadata)
+      // does not block — see OracleFreshnessService.assertFresh's doc
+      // comment — only a reading known to be stale does.
+      const oracleContractId = await this.onChainReader.getOracleContract(input.arenaContractId);
+      await this.oracleFreshnessService.assertFresh(oracleContractId, 'resolve_round');
 
       // Submit on-chain resolve_round BEFORE computing eliminations so that
       // the contract's authoritative state is available to read back via
@@ -225,13 +461,17 @@ export class RoundService {
         from_state: round.state,
         to_state: RoundState.RESOLVED,
       });
-      playersEliminatedTotal.inc(eliminatedPlayers.length);
+      playersEliminatedTotal.inc(result.eliminatedPlayers.length);
       await refreshArenaMetrics(this.prisma);
 
       // Drop the now-stale arena stats cache so watchers see the resolved round
       // immediately rather than after the TTL. Best-effort — a Redis outage
       // must not fail an otherwise-successful resolution.
       await invalidateArenaStats(round.arenaId).catch(() => {});
+      await invalidateRound(round.id).catch(() => {});
+
+      // Best-effort round phase push fan-out (#1571); never fails resolution.
+      void this.notifyRoundResolved(round.arenaId, round.roundNumber, input.allActivePlayerIds).catch(() => {});
 
       const duration = (Date.now() - start) / 1000;
       roundResolutionDuration.observe(duration);
@@ -386,7 +626,9 @@ export class RoundService {
     if (round.state !== RoundState.OPEN) {
       throw new Error(`Round is not OPEN (current state: ${round.state})`);
     }
-    await this.roundRepo.updateState(roundId, RoundState.CLOSED);
+    // Conditional UPDATE (#1386) — closes the same TOCTOU race
+    // resolveAtomically already guards against for resolveRound.
+    await this.roundRepo.closeAtomically(roundId, RoundState.OPEN, RoundState.CLOSED);
     arenaStateTransitionsTotal.inc({ from_state: RoundState.OPEN, to_state: RoundState.CLOSED });
     return { state: RoundState.CLOSED };
   }

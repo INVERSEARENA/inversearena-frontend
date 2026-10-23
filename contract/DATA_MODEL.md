@@ -131,6 +131,51 @@ Returns a combined snapshot of the entire contract state in a single call, reduc
 
 **Errors**: `ArenaError::NotInitialized` if `init` has not been called.
 
+### `get_player_status(player: Address) → Result<PlayerStatus, ArenaError>` (#1582)
+
+Returns every per-player fact a client needs to gate Join, Commit, Reveal,
+Claim and Refund, in one simulation. Backend eligibility checks and the
+frontend arena view treat it as the source of truth.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `joined` | `bool` | The address is on the roster. `false` (not an error) for non-players and players who left the lobby |
+| `active` | `bool` | Joined and not eliminated |
+| `committed` | `bool` | Commitment stored for `current_round`; only `true` while a round runs |
+| `revealed` | `bool` | Choice revealed for `current_round`; only `true` while a round runs |
+| `eliminated_round` | `Option<u32>` | Round of elimination, `rounds_survived + 1` (only lobby joins are allowed and every resolution visits every active player) |
+| `elimination_reason` | `EliminationReason` | `NotEliminated`, `Majority`, `NoReveal`, `NoCommit`, or `Unrecorded` for players eliminated before reasons were stored |
+| `refund_claimed` | `bool` | Refund taken from a `Cancelled` arena |
+| `winner` | `bool` | Recorded winner of a `Finished`/`Settled` arena |
+| `current_round` | `u32` | Round in progress, or the last completed round when none is running |
+| `phase` | `ArenaPhase` | `Lobby`, `Commit`, `Reveal`, `Intermission`, `Finished`, `Settled`, `Cancelled` |
+
+`ArenaPhase` splits `GameState::Open` into `Lobby` (no round played) and
+`Intermission`, and `GameState::Active` into `Commit` (`now < commit_deadline`)
+and `Reveal`, matching the guards in `submit_commitment` and `reveal_choice`.
+
+**Read path.** O(1) in time and space, independent of roster size: at most four
+contract entries (`CONFIG`, `Player`, then `CommitmentForRound` + `ChoiceForRound`
+during a round, or one of `EliminationReason` / `RefundClaimed` / `Winner`).
+It uses dedicated `peek_*` accessors that never extend TTLs or run the roster
+migration, so it writes nothing. `player_status_tests.rs` asserts the ledger
+snapshot (entries and `live_until`) is unchanged, and measures the compiled
+WASM in the commit phase at 6 read entries (including contract code and
+instance), 0 writes, 0 rent bumps, about 8.9M instructions, identical for 2
+and 10 players.
+
+**Write path.** `resolve_round` stores `EliminationReason(player)` once per
+eliminated player, decided while that round's commitment and choice still
+exist. `NoReveal` vs `NoCommit` costs one extra read for non-revealers only.
+
+**Archived entries.** The read never bumps rent. Since Protocol 23 (CAP-66),
+archived persistent entries in an `InvokeHostFunction` footprint are restored
+automatically, so an archived entry does not make the read fail inside the
+contract; RPC simulation reports any restoration it needs. A key that was never
+written (for example a refund flag) reads as its default.
+
+**Errors**: `ArenaError::NotInitialized` if `initialize` has not been called.
+
 ## TTL Policy Baseline
 
 All **persistent** storage entries in the arena contract are explicitly extended on
@@ -239,6 +284,54 @@ governance functions exempt, the admin retains full ability to:
 > NOT call `require_not_paused`. Any future addition of new governance or
 > admin-only recovery functions should follow the same exemption rule and update
 > this table.
+
+### Protocol-wide pause (#1583)
+
+A host's own `pause` only stops their arena. When a vault, oracle or token is
+compromised, the protocol admin stops every arena at once with the factory's
+`set_global_pause(paused, reason)`, which emits `GPAUSE (paused, reason)`.
+
+**Authority.** Only the factory admin may call it, through `require_auth`.
+Deploy the admin as a Stellar multisig account whose medium threshold needs
+two signers: `require_auth` on a Stellar account enforces its signers at the
+medium threshold, which gives the call two-person approval without extra
+contract logic.
+
+**Enforcement.** Each arena's `require_not_paused` checks its local flag first
+(`ContractPaused`), then asks its factory `is_globally_paused()`
+(`GloballyPaused`, code 44). That covers `join_arena`, `leave_arena`,
+`submit_commitment`, `reveal_choice`, `start_round`, `resolve_round`, `claim`,
+`claim_refund`, `cancel_arena`, `cancel_unstarted`, `expire_arena`,
+`propose_admin` and `accept_admin`. `ban_player` (refunds) and
+`force_cancel_arena` (drains the vault) also move funds, so they check the
+global flag only; the host's local pause still exempts them as before. Reads,
+`pause`/`unpause` and upgrade functions are never gated.
+
+**Refunds and claims while paused.** `claim`, `claim_refund` and every
+cancellation path are blocked, so no funds move. Nothing is forfeited: a pause
+changes no game state, and deadlines that pass meanwhile only make
+`expire_arena` / `cancel_unstarted` available after the unpause, which leads to
+refunds. `global_pause_tests.rs` verifies that a refund blocked during the
+pause is paid exactly once afterwards.
+
+**Unpause ordering.** The two flags are independent and gameplay needs both
+clear. A host unpause never lifts the global pause, and a global unpause never
+lifts a host pause. With both set, `ContractPaused` is reported.
+
+**Factory unavailable or upgraded: fail open.** If the factory cannot answer
+(not a contract, or a version older than `is_globally_paused`), the check
+passes. Such a factory cannot set the pause, so there is nothing to enforce,
+whereas failing closed would freeze every arena, refunds included, on a
+deployment-ordering mistake. A factory upgrade keeps instance storage, so a set
+pause survives it. Budget exhaustion aborts the whole transaction, so callers
+cannot force the open path. Upgrade the factory before arenas.
+
+**Cost.** The flag lives in factory instance storage, which invoking the
+factory loads anyway, so a check adds exactly two read-only entries (factory
+instance and code), no writes and no rent bumps. Measured against the compiled
+factory WASM: 5.69M instructions and 48,856 read bytes per check, most of it VM
+instantiation, which Protocol 23's module cache amortises on-chain. A full
+`join_arena` with both contracts as WASM measures 17.1M instructions.
 
 ## Historical baseline note
 

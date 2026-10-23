@@ -21,6 +21,9 @@ model User {
 
   transactions   Transaction[]
   eliminationLogs EliminationLog[]
+  notificationPreference NotificationPreference?
+  notificationDeliveries NotificationDelivery[]
+  pushSubscriptions PushSubscription[]
 
   @@map("users")
 }
@@ -33,8 +36,26 @@ model Arena {
 
   pools       Pool[]
   rounds      Round[]
+  stats       ArenaStats?
 
+  @@index([createdAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
   @@map("arenas")
+}
+
+model ArenaStats {
+  id             String   @id @default(uuid())
+  arenaId        String   @unique @map("arena_id")
+  players        Int      @default(0)
+  rounds         Int      @default(0)
+  eliminations   Int      @default(0)
+  yieldAccrued   Float    @default(0) @map("yield_accrued")
+  version        Int      @default(0)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  arena          Arena    @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+
+  @@map("arena_stats")
 }
 
 model Pool {
@@ -47,6 +68,7 @@ model Pool {
   arena       Arena    @relation(fields: [arenaId], references: [id])
 
   @@index([arenaId]) // Index to quickly find pools for an arena
+  @@index([arenaId, createdAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
   @@map("pools")
 }
 
@@ -69,6 +91,7 @@ model Round {
 
   @@unique([arenaId, roundNumber]) // Each round is unique per arena
   @@index([arenaId])
+  @@index([arenaId, roundNumber(sort: Asc), id(sort: Asc)]) // Keyset pagination index (#1520)
   @@index([state])
   @@map("rounds")
 }
@@ -112,8 +135,84 @@ model EliminationLog {
   user        User     @relation(fields: [userId], references: [id])
 
   @@index([roundId])
+  @@index([roundId, eliminatedAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
   @@index([userId])
   @@map("elimination_logs")
+}
+
+model NotificationPreference {
+  id          String   @id @default(uuid())
+  userId      String   @unique @map("user_id")
+  emailEnabled Boolean @default(false) @map("email_enabled")
+  pushEnabled Boolean @default(false) @map("push_enabled")
+  inAppEnabled Boolean @default(true) @map("in_app_enabled")
+  roundNotifications Boolean @default(true) @map("round_notifications")
+  payoutNotifications Boolean @default(true) @map("payout_notifications")
+  eliminationNotifications Boolean @default(true) @map("elimination_notifications")
+  email       String?
+  pushToken   String?  @map("push_token")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@map("notification_preferences")
+}
+
+model NotificationDelivery {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  type        String   // "round" | "payout" | "elimination"
+  channel     String   // "email" | "push" | "in_app"
+  status      String   // "pending" | "sent" | "delivered" | "failed"
+  dedupeKey   String   @map("dedupe_key")
+  sentAt      DateTime? @map("sent_at")
+  error       String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([userId, dedupeKey, channel])
+  @@map("notification_deliveries")
+}
+
+// Web Push subscriptions, one row per (user, device endpoint) (#1571).
+// p256dh/auth are AES-256-GCM encrypted at rest (see pushService);
+// the service never returns them to clients.
+model PushSubscription {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  endpoint    String   @unique
+  p256dh      String
+  auth        String
+  userAgent   String?  @map("user_agent")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("push_subscriptions")
+}
+
+model HostWhitelistApplication {
+  id          String   @id @default(uuid())
+  wallet      String
+  contact     String
+  intent      String
+  status      String   @default("PENDING") // PENDING | APPROVED | REJECTED | CONFIRMED
+  reviewer    String?
+  reviewNote  String?  @map("review_note")
+  unsignedXdr String?  @map("unsigned_xdr")
+  txHash      String?  @map("tx_hash")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  reviewedAt  DateTime? @map("reviewed_at")
+  confirmedAt DateTime? @map("confirmed_at")
+
+  @@index([wallet, status])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("host_whitelist_applications")
 }
 
 // Checkpointed on-chain arena projection state (#1382).
@@ -145,4 +244,127 @@ model ArenaProjectionCheckpoint {
   @@unique([arenaId, network])
   @@index([status])
   @@map("arena_projection_checkpoints")
+}
+
+// Protocol treasury fee reconciliation (#1511).
+//
+// One row per canonical fee expectation, derived from an authoritative
+// on-chain event (currently: the platform fee implied by an arena's
+// `claimed` event) and matched against actual on-chain token movement.
+// Read-only reporting — this table never drives a transfer. See
+// backend/docs/TREASURY_RECONCILIATION_DESIGN.md.
+model TreasuryFeeRecord {
+  id     String @id @default(uuid())
+  // networkPassphrase-derived key; keeps testnet/mainnet records isolated,
+  // same convention as ArenaProjectionCheckpoint.network.
+  network String
+  // "platform_fee" today; the schema leaves room for other treasury record
+  // types (e.g. creator-stake collect/refund) as a documented follow-up.
+  recordType String @default("platform_fee") @map("record_type")
+  arenaId    String @map("arena_id")
+  asset      String
+  assetIssuer String? @map("asset_issuer")
+
+  // Canonical source event identity — the idempotency key (network, tx hash,
+  // event/operation index) required by #1511's ingestion acceptance criterion.
+  sourceTxHash         String   @map("source_tx_hash")
+  sourceEventId        String   @map("source_event_id")
+  sourceLedgerSequence Int      @map("source_ledger_sequence")
+  sourceLedgerClosedAt DateTime @map("source_ledger_closed_at")
+
+  // Expected side — derived from authoritative on-chain data (the claimed
+  // event's yield_amount) and a versioned protocol config snapshot, using
+  // exact integer (atomic-unit) math.
+  expectedAmountAtomic BigInt  @map("expected_amount_atomic")
+  configVersion        Int     @map("config_version")
+  feeBpsApplied         Int     @map("fee_bps_applied")
+  destination           String? @map("destination")
+
+  // Actual side — filled in only once/if a matching transfer is found.
+  actualAmountAtomic  BigInt? @map("actual_amount_atomic")
+  actualTxHash        String? @map("actual_tx_hash")
+  actualDestination   String? @map("actual_destination")
+
+  // pending | balanced | discrepant
+  status String @default("pending")
+  // missing_transfer | unexpected_transfer | amount_mismatch | destination_mismatch | unfinalized_ledger
+  discrepancyType String?   @map("discrepancy_type")
+  reconciledAt    DateTime? @map("reconciled_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([network, sourceTxHash, sourceEventId])
+  @@index([arenaId])
+  @@index([status])
+  @@index([sourceLedgerSequence])
+  @@map("treasury_fee_records")
+}
+
+// Idempotent ingestion checkpoint for treasury reconciliation (#1511).
+// Mirrors ArenaProjectionCheckpoint's per-(arenaId, network) lease pattern,
+// scoped to this ingestion job specifically (a distinct job from the #1382
+// arena state projection).
+model TreasuryReconciliationCheckpoint {
+  id                 String   @id @default(uuid())
+  arenaId            String   @map("arena_id")
+  network            String
+  lastLedgerSequence Int      @map("last_ledger_sequence")
+  // The `platform_fee_bps` in effect as of `lastLedgerSequence`, carried
+  // forward across ingestion runs so a resumed run knows which fee rate
+  // applied to a `claimed` event without re-scanning full history. Defaults
+  // to the contract's own global default (see `load_platform_fee_bps`).
+  lastKnownFeeBps Int @default(1000) @map("last_known_fee_bps")
+  // idle | ingesting | caught_up | failed
+  status     String    @default("idle")
+  lastError  String?   @map("last_error")
+  leaseOwner String?   @map("lease_owner")
+  leaseExpiresAt DateTime? @map("lease_expires_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  @@unique([arenaId, network])
+  @@index([status])
+  @@map("treasury_reconciliation_checkpoints")
+}
+
+// Request-level idempotency for arena lifecycle commands (#1386).
+// One row per (idempotencyKey), checked BEFORE any side effect
+// (on-chain submission, state transition) runs, so a duplicate/retried
+// request returns the prior durable result instead of re-executing.
+// Deliberately separate from Round.state: that field is coarse and
+// shared across every caller, not a substitute for per-request dedup —
+// see docs/ARENA_LIFECYCLE_IDEMPOTENCY.md.
+model IdempotentCommand {
+  id             String   @id @default(uuid())
+  idempotencyKey String   @unique @map("idempotency_key")
+  action         String   // "resolve_round" | "close_round"
+  roundId        String   @map("round_id")
+  status         String   // "in_progress" | "completed" | "failed"
+  result         Json?    // The durable response body to replay on retry, once completed
+  errorMessage   String?  @map("error_message")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([roundId])
+  @@map("idempotent_commands")
+}
+
+model OutboxEvent {
+  id             String    @id @default(uuid())
+  eventType      String    @map("event_type")
+  aggregateId    String    @map("aggregate_id")
+  dedupeKey      String    @unique @map("dedupe_key")
+  payload        Json
+  attempts       Int       @default(0)
+  availableAt    DateTime  @default(now()) @map("available_at")
+  leaseOwner     String?   @map("lease_owner")
+  leaseExpiresAt DateTime? @map("lease_expires_at")
+  publishedAt    DateTime? @map("published_at")
+  lastError      String?   @map("last_error")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  @@index([publishedAt, availableAt, createdAt])
+  @@index([leaseExpiresAt])
+  @@map("outbox_events")
 }

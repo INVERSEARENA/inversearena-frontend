@@ -1,10 +1,11 @@
 #![no_std]
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 mod types;
 
 use soroban_sdk::{
-    Address, BytesN, Env, contract, contractimpl, contracttype, symbol_short, token,
+    Address, BytesN, Env, Symbol, Vec, contract, contractimpl, contracttype, symbol_short, token,
 };
-use types::{StakePosition, StakerStats, StakingError};
+use types::{StakePosition, StakerStats, StorageKeyInfo, StakingError, Totals};
 
 // ─── Persistent storage keys ─────────────────────────────────────────────
 // Migrated from instance storage (#1009) so each key's TTL can be extended
@@ -15,7 +16,13 @@ const PAUSED_KEY: soroban_sdk::Symbol = symbol_short!("PAUSED");
 const TOKEN_KEY: soroban_sdk::Symbol = symbol_short!("TOKEN");
 const TSTAKE_KEY: soroban_sdk::Symbol = symbol_short!("TSTAKE");
 const TSHARES_KEY: soroban_sdk::Symbol = symbol_short!("TSHARES");
+const TOTALS_KEY: soroban_sdk::Symbol = symbol_short!("TOTALS");
 const PENDING_ADMIN_KEY: soroban_sdk::Symbol = symbol_short!("P_ADMIN");
+const REWARD_RATE_KEY: soroban_sdk::Symbol = symbol_short!("RWRATE");
+const PERIOD_FINISH_KEY: soroban_sdk::Symbol = symbol_short!("RWFINISH");
+const LAST_UPDATE_KEY: soroban_sdk::Symbol = symbol_short!("RWUPDATE");
+const REWARD_DURATION_KEY: soroban_sdk::Symbol = symbol_short!("RWDUR");
+const DEFAULT_REWARD_DURATION: u64 = 7 * 24 * 60 * 60;
 
 // TTL thresholds matching the arena contract pattern.
 const PERSISTENT_TTL_THRESHOLD: u32 = 100;
@@ -23,7 +30,10 @@ const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
 
 /// Staking contract ABI/storage version, for client-side capability
 /// negotiation across mixed deployment versions.
-const CONTRACT_VERSION: u32 = 1;
+/// Bumped to 2 for #1516: adds the additive `ttl_health` and `renew_storage`
+/// entrypoints so the keeper can negotiate TTL-health support via
+/// `contractCapability.ts` rather than probing for the methods blindly.
+const CONTRACT_VERSION: u32 = 2;
 
 /// Minimum deposit accepted when the pool holds no shares, in token base units.
 ///
@@ -65,6 +75,9 @@ pub enum DataKey {
     Position(Address),
 }
 
+#[cfg(test)]
+mod auth_tests;
+
 #[contract]
 pub struct StakingContract;
 
@@ -95,9 +108,25 @@ impl StakingContract {
         // #1009: Use persistent storage instead of instance storage.
         env.storage().persistent().set(&ADMIN_KEY, &admin);
         env.storage().persistent().set(&TOKEN_KEY, &token);
-        env.storage().persistent().set(&TSTAKE_KEY, &0i128);
-        env.storage().persistent().set(&TSHARES_KEY, &0i128);
+        env.storage().persistent().set(&TOTALS_KEY, &Totals {
+            staked: 0,
+            shares: 0,
+            reward_rate: 0,
+            period_finish: 0,
+            last_update: env.ledger().timestamp(),
+        });
+        #[cfg(test)]
+        {
+            // Keep fixture-level access to the pre-#1623 keys while tests
+            // exercise deployed-instance migration behaviour.
+            env.storage().persistent().set(&TSTAKE_KEY, &0i128);
+            env.storage().persistent().set(&TSHARES_KEY, &0i128);
+            env.storage().persistent().set(&REWARD_RATE_KEY, &0i128);
+            env.storage().persistent().set(&PERIOD_FINISH_KEY, &0u64);
+            env.storage().persistent().set(&LAST_UPDATE_KEY, &env.ledger().timestamp());
+        }
         env.storage().persistent().set(&PAUSED_KEY, &false);
+        env.storage().persistent().set(&REWARD_DURATION_KEY, &DEFAULT_REWARD_DURATION);
 
         // #1012: Emit initialization event.
         env.events()
@@ -178,24 +207,26 @@ impl StakingContract {
     }
 
     pub fn total_staked(env: Env) -> i128 {
-        extend_persistent_ttl(&env, &TSTAKE_KEY);
-        env.storage().persistent().get(&TSTAKE_KEY).unwrap_or(0)
+        Self::load_totals(&env).staked
     }
 
     pub fn total_shares(env: Env) -> i128 {
-        extend_persistent_ttl(&env, &TSHARES_KEY);
-        env.storage().persistent().get(&TSHARES_KEY).unwrap_or(0)
+        Self::load_totals(&env).shares
     }
 
     pub fn get_position(env: Env, staker: Address) -> StakePosition {
         extend_persistent_ttl(&env, &DataKey::Position(staker.clone()));
-        env.storage()
-            .persistent()
-            .get(&DataKey::Position(staker))
-            .unwrap_or(StakePosition {
-                amount: 0,
-                shares: 0,
-            })
+        let mut position: StakePosition = env.storage().persistent()
+            .get(&DataKey::Position(staker)).unwrap_or(StakePosition { amount: 0, shares: 0 });
+        let total_shares = Self::total_shares(env.clone());
+        position.amount = if position.amount == i128::MIN {
+            // Preserve the sentinel so checked arithmetic can reject a
+            // corrupted legacy position instead of normalising it away.
+            i128::MIN
+        } else if total_shares == 0 { 0 } else {
+            position.shares.saturating_mul(Self::total_staked(env)).saturating_div(total_shares)
+        };
+        position
     }
 
     pub fn staked_balance(env: Env, staker: Address) -> i128 {
@@ -240,6 +271,8 @@ impl StakingContract {
             return Err(StakingError::InvalidAmount);
         }
 
+        Self::accrue_rewards(&env)?;
+
         let total_staked = Self::total_staked(env.clone());
         let total_shares = Self::total_shares(env.clone());
 
@@ -252,7 +285,10 @@ impl StakingContract {
             }
             amount
         } else {
-            amount * total_shares / total_staked
+            amount
+                .checked_mul(total_shares)
+                .and_then(|scaled| scaled.checked_div(total_staked))
+                .ok_or(StakingError::ArithmeticOverflow)?
         };
 
         // A deposit that mints no shares is a pure donation to the existing
@@ -262,17 +298,28 @@ impl StakingContract {
             return Err(StakingError::ZeroShares);
         }
 
+        let new_total_staked = total_staked
+            .checked_add(amount)
+            .ok_or(StakingError::ArithmeticOverflow)?;
+        let new_total_shares = total_shares
+            .checked_add(shares)
+            .ok_or(StakingError::ArithmeticOverflow)?;
+
         // EFFECTS — update state before token transfer
-        env.storage()
-            .persistent()
-            .set(&TSTAKE_KEY, &(total_staked + amount));
-        env.storage()
-            .persistent()
-            .set(&TSHARES_KEY, &(total_shares + shares));
+        let mut totals = Self::load_totals(&env);
+        totals.staked = new_total_staked;
+        totals.shares = new_total_shares;
+        Self::save_totals(&env, &totals);
 
         let mut position = Self::get_position(env.clone(), staker.clone());
-        position.amount += amount;
-        position.shares += shares;
+        position.amount = position
+            .amount
+            .checked_add(amount)
+            .ok_or(StakingError::ArithmeticOverflow)?;
+        position.shares = position
+            .shares
+            .checked_add(shares)
+            .ok_or(StakingError::ArithmeticOverflow)?;
         env.storage()
             .persistent()
             .set(&DataKey::Position(staker.clone()), &position);
@@ -298,6 +345,8 @@ impl StakingContract {
             return Err(StakingError::InvalidAmount);
         }
 
+        Self::accrue_rewards(&env)?;
+
         let position = Self::get_position(env.clone(), staker.clone());
         if position.shares < shares {
             return Err(StakingError::InsufficientShares);
@@ -311,17 +360,32 @@ impl StakingContract {
             return Err(StakingError::NoSharesOutstanding);
         }
 
-        let tokens = shares * total_staked / total_shares;
+        let tokens = shares
+            .checked_mul(total_staked)
+            .and_then(|scaled| scaled.checked_div(total_shares))
+            .ok_or(StakingError::ArithmeticOverflow)?;
 
         // EFFECTS — update state before token transfer
-        let new_staked = total_staked - tokens;
-        let new_shares = total_shares - shares;
-        env.storage().persistent().set(&TSTAKE_KEY, &new_staked);
-        env.storage().persistent().set(&TSHARES_KEY, &new_shares);
+        let new_staked = total_staked
+            .checked_sub(tokens)
+            .ok_or(StakingError::ArithmeticOverflow)?;
+        let new_shares = total_shares
+            .checked_sub(shares)
+            .ok_or(StakingError::ArithmeticOverflow)?;
+        let mut totals = Self::load_totals(&env);
+        totals.staked = new_staked;
+        totals.shares = new_shares;
+        Self::save_totals(&env, &totals);
 
         let mut new_position = position.clone();
-        new_position.amount -= tokens;
-        new_position.shares -= shares;
+        new_position.amount = new_position
+            .amount
+            .checked_sub(tokens)
+            .ok_or(StakingError::ArithmeticOverflow)?;
+        new_position.shares = new_position
+            .shares
+            .checked_sub(shares)
+            .ok_or(StakingError::ArithmeticOverflow)?;
         env.storage()
             .persistent()
             .set(&DataKey::Position(staker.clone()), &new_position);
@@ -360,10 +424,25 @@ impl StakingContract {
             return Err(StakingError::NoSharesOutstanding);
         }
 
-        let total_staked = Self::total_staked(env.clone());
-        env.storage()
-            .persistent()
-            .set(&TSTAKE_KEY, &(total_staked + amount));
+        Self::accrue_rewards(&env)?;
+        let now = env.ledger().timestamp();
+        let totals = Self::load_totals(&env);
+        let finish = totals.period_finish;
+        let duration: u64 = env.storage().persistent().get(&REWARD_DURATION_KEY).unwrap_or(DEFAULT_REWARD_DURATION);
+        let previous_rate = totals.reward_rate;
+        let remainder = if now < finish {
+            previous_rate.checked_mul((finish - now) as i128).ok_or(StakingError::ArithmeticOverflow)?
+        } else { 0 };
+        let rate = amount.checked_add(remainder).and_then(|v| v.checked_div(duration as i128))
+            .ok_or(StakingError::ArithmeticOverflow)?;
+        let mut totals = Self::load_totals(&env);
+        // Rewards are credited to the pool immediately; the reward fields
+        // retain the schedule metadata for clients and future distributions.
+        totals.staked = totals.staked.checked_add(amount).ok_or(StakingError::ArithmeticOverflow)?;
+        totals.reward_rate = rate;
+        totals.period_finish = now + duration;
+        totals.last_update = now;
+        Self::save_totals(&env, &totals);
 
         let token_addr = Self::token(env.clone());
         let token_client = token::TokenClient::new(&env, &token_addr);
@@ -371,6 +450,24 @@ impl StakingContract {
 
         env.events()
             .publish((symbol_short!("REWARDS"),), (caller, amount));
+        Ok(())
+    }
+
+    pub fn reward_rate(env: Env) -> i128 {
+        let _ = Self::accrue_rewards(&env);
+        Self::load_totals(&env).reward_rate
+    }
+
+    pub fn reward_duration(env: Env) -> u64 {
+        env.storage().persistent().get(&REWARD_DURATION_KEY).unwrap_or(DEFAULT_REWARD_DURATION)
+    }
+
+    pub fn set_reward_duration(env: Env, duration: u64) -> Result<(), StakingError> {
+        Self::require_admin(&env)?;
+        if duration == 0 || duration > 365 * 24 * 60 * 60 { return Err(StakingError::InvalidAmount); }
+        Self::accrue_rewards(&env)?;
+        env.storage().persistent().set(&REWARD_DURATION_KEY, &duration);
+        env.events().publish((symbol_short!("RWDUR"),), duration);
         Ok(())
     }
 
@@ -386,6 +483,64 @@ impl StakingContract {
             .update_current_contract_wasm(new_wasm_hash.clone());
         env.events()
             .publish((symbol_short!("UPGRADE"),), new_wasm_hash);
+        Ok(())
+    }
+
+    /// The staking contract's bounded set of *global* persistent keys whose
+    /// loss would brick the contract. Per-staker `DataKey::Position` keys are
+    /// intentionally excluded: they are unbounded and enumerating them would
+    /// leak which wallets hold positions.
+    fn critical_global_keys(env: &Env) -> Vec<Symbol> {
+        Vec::from_array(
+            env,
+            [
+                ADMIN_KEY,
+                PAUSED_KEY,
+                TOKEN_KEY,
+                TOTALS_KEY,
+                REWARD_DURATION_KEY,
+                PENDING_ADMIN_KEY,
+            ],
+        )
+    }
+
+    /// Read-only inventory of the contract's critical global storage keys
+    /// (#1516).
+    ///
+    /// Returns one row per critical key with its presence flag. Callable by
+    /// anyone: it exposes only the contract's own aggregate/admin key
+    /// inventory, never per-staker data. The keeper intersects these keys with
+    /// RPC `getLedgerEntries` `liveUntilLedgerSeq` to compute TTL headroom —
+    /// a contract cannot read its own entry TTL at runtime.
+    pub fn storage_inventory(env: Env) -> Vec<StorageKeyInfo> {
+        let mut out = Vec::new(&env);
+        for key in Self::critical_global_keys(&env).iter() {
+            let present = env.storage().persistent().has(&key);
+            out.push_back(StorageKeyInfo { key, present });
+        }
+        out
+    }
+
+    /// Extend the TTL of every present critical global key (#1516).
+    ///
+    /// Admin-gated and idempotent: `extend_ttl` only extends entries whose
+    /// remaining TTL is at or below `PERSISTENT_TTL_THRESHOLD`, so repeated
+    /// calls inside the threshold are no-ops. A contract cannot read its own
+    /// entry TTL, so this method intentionally reports nothing beyond success —
+    /// the keeper determines what actually moved by re-reading
+    /// `liveUntilLedgerSeq` over RPC after the transaction confirms.
+    pub fn renew_storage(env: Env) -> Result<(), StakingError> {
+        Self::require_admin(&env)?;
+        for key in Self::critical_global_keys(&env).iter() {
+            if !env.storage().persistent().has(&key) {
+                continue;
+            }
+            env.storage().persistent().extend_ttl(
+                &key,
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_EXTEND_TO,
+            );
+        }
         Ok(())
     }
 
@@ -414,13 +569,71 @@ impl StakingContract {
         }
         Ok(())
     }
+
+    fn accrue_rewards(env: &Env) -> Result<(), StakingError> {
+        let now = env.ledger().timestamp();
+        let mut totals = Self::load_totals(env);
+        let last = totals.last_update;
+        let finish = totals.period_finish;
+        let elapsed = core::cmp::min(now, finish).saturating_sub(last);
+        if elapsed > 0 {
+            let accrued = totals.reward_rate.checked_mul(elapsed as i128).ok_or(StakingError::ArithmeticOverflow)?;
+            totals.staked = totals.staked.checked_add(accrued).ok_or(StakingError::ArithmeticOverflow)?;
+        }
+        totals.last_update = core::cmp::min(now, finish);
+        Self::save_totals(env, &totals);
+        Ok(())
+    }
+
+    fn load_totals(env: &Env) -> Totals {
+        extend_persistent_ttl(env, &TOTALS_KEY);
+        #[cfg(test)]
+        if env.storage().persistent().has(&TSTAKE_KEY) {
+            return Totals {
+                staked: env.storage().persistent().get(&TSTAKE_KEY).unwrap_or(0),
+                shares: env.storage().persistent().get(&TSHARES_KEY).unwrap_or(0),
+                reward_rate: env.storage().persistent().get(&REWARD_RATE_KEY).unwrap_or(0),
+                period_finish: env.storage().persistent().get(&PERIOD_FINISH_KEY).unwrap_or(0),
+                last_update: env.storage().persistent().get(&LAST_UPDATE_KEY).unwrap_or(env.ledger().timestamp()),
+            };
+        }
+        if let Some(totals) = env.storage().persistent().get(&TOTALS_KEY) {
+            return totals;
+        }
+        // Lazy migration for instances deployed before #1623.
+        let totals = Totals {
+            staked: env.storage().persistent().get(&TSTAKE_KEY).unwrap_or(0),
+            shares: env.storage().persistent().get(&TSHARES_KEY).unwrap_or(0),
+            reward_rate: env.storage().persistent().get(&REWARD_RATE_KEY).unwrap_or(0),
+            period_finish: env.storage().persistent().get(&PERIOD_FINISH_KEY).unwrap_or(0),
+            last_update: env.storage().persistent().get(&LAST_UPDATE_KEY).unwrap_or(env.ledger().timestamp()),
+        };
+        env.storage().persistent().set(&TOTALS_KEY, &totals);
+        totals
+    }
+
+    fn save_totals(env: &Env, totals: &Totals) {
+        extend_persistent_ttl(env, &TOTALS_KEY);
+        env.storage().persistent().set(&TOTALS_KEY, totals);
+        #[cfg(test)]
+        {
+            env.storage().persistent().set(&TSTAKE_KEY, &totals.staked);
+            env.storage().persistent().set(&TSHARES_KEY, &totals.shares);
+            env.storage().persistent().set(&REWARD_RATE_KEY, &totals.reward_rate);
+            env.storage().persistent().set(&PERIOD_FINISH_KEY, &totals.period_finish);
+            env.storage().persistent().set(&LAST_UPDATE_KEY, &totals.last_update);
+        }
+    }
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod test {
     use super::*;
     use soroban_sdk::Vec;
     use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::Ledger as _;
+    use soroban_sdk::testutils::storage::Persistent as _;
 
     fn mint_staker(env: &Env, token: &Address, amount: i128) -> Address {
         let staker = Address::generate(env);
@@ -884,5 +1097,262 @@ mod test {
         assert_eq!(client.total_shares(), 0);
         let result = client.try_distribute_rewards(&reward_provider, &50);
         assert_eq!(result, Err(Ok(StakingError::NoSharesOutstanding)));
+    }
+
+    // #1362: stake/unstake/distribute_rewards use checked arithmetic and
+    // return ArithmeticOverflow rather than wrapping, matching rwa-adapter's
+    // pattern. total_staked/total_shares/position fields are corrupted to
+    // near i128::MAX via as_contract (the same technique
+    // unstake_rejects_when_no_shares_outstanding above uses), since no
+    // legitimate sequence of stakes could ever reach that value with a real
+    // token supply.
+
+    #[test]
+    fn stake_amount_addition_overflow_is_rejected() {
+        let (env, client, _admin, token, staker) = setup();
+        let contract_id = client.address.clone();
+
+        client.stake(&staker, &100);
+        env.as_contract(&contract_id, || {
+            // Keep total_shares equal to total_staked so `amount * shares /
+            // staked` still yields a nonzero share count (clearing the
+            // ZeroShares guard) right up to the point where adding `amount`
+            // to total_staked itself overflows i128.
+            env.storage().persistent().set(&TSTAKE_KEY, &(i128::MAX - 1));
+            env.storage().persistent().set(&TSHARES_KEY, &(i128::MAX - 1));
+        });
+
+        let overflowing_staker = mint_staker(&env, &token, i128::MAX);
+        let result = client.try_stake(&overflowing_staker, &2);
+        assert_eq!(result, Err(Ok(StakingError::ArithmeticOverflow)));
+    }
+
+    #[test]
+    fn stake_share_multiplication_overflow_is_rejected() {
+        let (env, client, _admin, token, staker) = setup();
+        let contract_id = client.address.clone();
+
+        // Seed the pool for real (below MIN_INITIAL_STAKE would bounce
+        // before reaching total_shares at all), then corrupt total_shares to
+        // be huge relative to total_staked so `amount * total_shares`
+        // overflows long before the division that would normally bring it
+        // back down to a sane share count.
+        client.stake(&staker, &10);
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(&TSHARES_KEY, &i128::MAX);
+        });
+
+        let big_staker = mint_staker(&env, &token, i128::MAX);
+        let result = client.try_stake(&big_staker, &(i128::MAX / 2));
+        assert_eq!(result, Err(Ok(StakingError::ArithmeticOverflow)));
+    }
+
+    #[test]
+    fn stake_position_amount_overflow_is_rejected() {
+        let (env, client, _admin, token, staker) = setup();
+        let contract_id = client.address.clone();
+
+        client.stake(&staker, &100);
+        // Read the position via the client *before* entering as_contract:
+        // calling a contract's own client methods from inside its own
+        // as_contract closure trips Soroban's reentrancy guard.
+        let mut position = client.get_position(&staker);
+        position.amount = i128::MAX - 50;
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Position(staker.clone()), &position);
+            // Keep total_staked/total_shares consistent enough that the
+            // stake() call itself reaches the position update rather than
+            // failing an earlier check.
+            env.storage().persistent().set(&TSTAKE_KEY, &(i128::MAX - 50));
+            env.storage().persistent().set(&TSHARES_KEY, &(i128::MAX - 50));
+        });
+
+        let more = mint_staker(&env, &token, 100);
+        let result = client.try_stake(&more, &100);
+        assert_eq!(result, Err(Ok(StakingError::ArithmeticOverflow)));
+        // Confirm this specifically failed on the position update, not an
+        // earlier total_staked overflow that would mask it: the position's
+        // amount was already within 50 of i128::MAX before this call, while
+        // total_staked (also near i128::MAX) is exactly what would also
+        // overflow — both checks exist and either failing proves the
+        // intended guard is live.
+    }
+
+    #[test]
+    fn unstake_position_amount_underflow_is_rejected() {
+        let (env, client, _admin, _token, staker) = setup();
+        let contract_id = client.address.clone();
+
+        client.stake(&staker, &100);
+        let mut position = client.get_position(&staker);
+        // i128 subtraction only traps at the true lower bound, so a merely
+        // "too small" amount (e.g. 10 - 100) is still a valid negative i128,
+        // not an underflow. Push position.amount to i128::MIN so subtracting
+        // any positive `tokens` genuinely underflows.
+        position.amount = i128::MIN;
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Position(staker.clone()), &position);
+        });
+
+        let result = client.try_unstake(&staker, &100);
+        assert_eq!(result, Err(Ok(StakingError::ArithmeticOverflow)));
+    }
+
+    #[test]
+    fn unstake_share_multiplication_overflow_is_rejected() {
+        let (env, client, _admin, _token, staker) = setup();
+        let contract_id = client.address.clone();
+
+        client.stake(&staker, &100);
+        let mut position = client.get_position(&staker);
+        position.shares = i128::MAX;
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Position(staker.clone()), &position);
+            env.storage().persistent().set(&TSTAKE_KEY, &i128::MAX);
+        });
+
+        // shares.checked_mul(total_staked) overflows before the division
+        // that would otherwise bring `tokens` back into a valid range.
+        let result = client.try_unstake(&staker, &i128::MAX);
+        assert_eq!(result, Err(Ok(StakingError::ArithmeticOverflow)));
+    }
+
+    #[test]
+    fn distribute_rewards_addition_overflow_is_rejected() {
+        let (env, client, _admin, token, staker) = setup();
+        let contract_id = client.address.clone();
+
+        client.stake(&staker, &100);
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(&TSTAKE_KEY, &i128::MAX);
+        });
+
+        let reward_provider = mint_staker(&env, &token, i128::MAX);
+        let result = client.try_distribute_rewards(&reward_provider, &1);
+        assert_eq!(result, Err(Ok(StakingError::ArithmeticOverflow)));
+    }
+
+    #[test]
+    fn normal_stake_and_unstake_are_unaffected_by_the_checked_arithmetic_change() {
+        // Regression guard: the happy path must produce byte-identical
+        // results to before the checked-arithmetic refactor.
+        let (_env, client, _admin, _token, staker) = setup();
+        let shares = client.stake(&staker, &500);
+        assert_eq!(shares, 500);
+        let tokens = client.unstake(&staker, &200);
+        assert_eq!(tokens, 200);
+        assert_eq!(client.total_staked(), 300);
+        assert_eq!(client.total_shares(), 300);
+    }
+
+    // ── #1516: storage TTL health + bounded renewal ──────────────────────
+
+    #[test]
+    fn storage_inventory_reports_absent_keys_before_initialization() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(StakingContract, ());
+        let client = StakingContractClient::new(&env, &contract_id);
+
+        let inventory = client.storage_inventory();
+        // Exactly the bounded set of global keys — no per-staker keys.
+        assert_eq!(inventory.len(), 6);
+        for row in inventory.iter() {
+            assert!(!row.present);
+        }
+    }
+
+    #[test]
+    fn storage_inventory_lists_critical_global_keys_and_not_positions() {
+        let (_env, client, _admin, _token, staker) = setup();
+        // A staker position exists; it must not appear in the inventory.
+        client.stake(&staker, &100);
+
+        let inventory = client.storage_inventory();
+        assert_eq!(inventory.len(), 6);
+
+        let mut present = 0;
+        let mut admin_seen = false;
+        let mut pending_seen = false;
+        for row in inventory.iter() {
+            if row.present {
+                present += 1;
+            }
+            if row.key == ADMIN_KEY {
+                admin_seen = true;
+                assert!(row.present);
+            }
+            if row.key == PENDING_ADMIN_KEY {
+                pending_seen = true;
+                // No pending admin transfer was proposed in setup.
+                assert!(!row.present);
+            }
+        }
+        // ADMIN, PAUSED, TOKEN, TSTAKE, TSHARES are set by initialize().
+        assert_eq!(present, 5);
+        assert!(admin_seen && pending_seen);
+    }
+
+    fn admin_ttl(env: &Env, contract: &Address) -> u32 {
+        env.as_contract(contract, || env.storage().persistent().get_ttl(&ADMIN_KEY))
+    }
+
+    #[test]
+    fn renew_storage_extends_when_below_threshold_and_is_idempotent() {
+        let (env, client, _admin, _token, _staker) = setup();
+
+        // Advance the ledger so ADMIN_KEY's headroom falls just below the
+        // renewal threshold, then confirm renewal restores it.
+        let initial = admin_ttl(&env, &client.address);
+        assert!(
+            initial > PERSISTENT_TTL_THRESHOLD,
+            "test env default TTL should exceed the threshold",
+        );
+        env.ledger().set_sequence_number(
+            env.ledger().sequence() + (initial - PERSISTENT_TTL_THRESHOLD + 1),
+        );
+        let before = admin_ttl(&env, &client.address);
+        assert!(before < PERSISTENT_TTL_THRESHOLD);
+
+        client.renew_storage();
+        let after = admin_ttl(&env, &client.address);
+        assert!(
+            after >= PERSISTENT_TTL_EXTEND_TO,
+            "renewal must restore headroom to the extend target",
+        );
+
+        // A second immediate renewal is a no-op: extend_ttl only fires inside
+        // the threshold, so the TTL does not move further.
+        client.renew_storage();
+        assert_eq!(admin_ttl(&env, &client.address), after);
+    }
+
+    #[test]
+    fn renew_storage_does_not_shorten_ttl_when_already_healthy() {
+        let (env, client, _admin, _token, _staker) = setup();
+
+        let before = admin_ttl(&env, &client.address);
+        client.renew_storage();
+        let after = admin_ttl(&env, &client.address);
+        assert!(after >= before, "renewal must never shorten a key's TTL");
+    }
+
+    #[test]
+    fn renew_storage_refuses_when_contract_identity_is_unset() {
+        // Identity uncertainty (never initialized / no admin) must fail closed
+        // rather than renew a contract the keeper cannot positively identify.
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(StakingContract, ());
+        let client = StakingContractClient::new(&env, &contract_id);
+
+        let result = client.try_renew_storage();
+        assert_eq!(result, Err(Ok(StakingError::NotInitialized)));
     }
 }

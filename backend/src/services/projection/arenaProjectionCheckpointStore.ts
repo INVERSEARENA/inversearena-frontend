@@ -12,8 +12,14 @@
  */
 
 import type { Prisma, PrismaClient } from "@prisma/client";
-import { randomUUID } from "crypto";
-import { initialArenaProjection, type ArenaProjectionState } from "./arenaProjectionFold";
+import { createHash, randomUUID } from "crypto";
+import {
+  compactArenaProjectionState,
+  hasValidProjectionHistoryAnchor,
+  initialArenaProjection,
+  type ArenaProjectionState,
+} from "./arenaProjectionFold";
+import { OutboxStore } from "../outbox/outboxStore";
 
 export type ArenaProjectionCheckpointStatus =
   | "idle"
@@ -85,6 +91,23 @@ function isUniqueConstraintError(error: unknown): boolean {
  */
 const NEVER_CHECKPOINTED_SENTINEL = -1;
 
+function isLedgerSequenceMap(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  return Object.values(value).every(
+    (ledger) => typeof ledger === "number" && Number.isInteger(ledger) && ledger >= 0,
+  );
+}
+
+function isHistoryAnchor(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const anchor = value as Record<string, unknown>;
+  return (
+    typeof anchor.compactedThroughLedger === "number" &&
+    Number.isInteger(anchor.compactedThroughLedger) &&
+    typeof anchor.projectionHash === "string"
+  );
+}
+
 /** Minimal structural check — enough to catch truncated/malformed JSON without over-validating every field. */
 function isPlausibleProjectionState(value: unknown): value is ArenaProjectionState {
   if (typeof value !== "object" || value === null) return false;
@@ -95,12 +118,20 @@ function isPlausibleProjectionState(value: unknown): value is ArenaProjectionSta
     Array.isArray(v.eliminated) &&
     Array.isArray(v.appliedEventIds) &&
     Array.isArray(v.skippedEventIds) &&
-    typeof v.totalYieldStroops === "string"
+    typeof v.totalYieldStroops === "string" &&
+    (v.eventLedgerSequences === undefined || isLedgerSequenceMap(v.eventLedgerSequences)) &&
+    (v.historyAnchor === undefined ||
+      v.historyAnchor === null ||
+      isHistoryAnchor(v.historyAnchor))
   );
 }
 
 export class ArenaProjectionCheckpointStore {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly outbox: OutboxStore;
+
+  constructor(private readonly prisma: PrismaClient) {
+    this.outbox = new OutboxStore(prisma);
+  }
 
   /**
    * Load the current checkpoint for `(arenaId, network)`, or null if replay
@@ -135,11 +166,30 @@ export class ArenaProjectionCheckpointStore {
       );
     }
 
+    const storedState = row.projectionState as unknown as Partial<ArenaProjectionState>;
+    const legacyEventLedgerSequences = Object.fromEntries(
+      [...(storedState.appliedEventIds ?? []), ...(storedState.skippedEventIds ?? [])].map(
+        (eventId) => [eventId, row.lastLedgerSequence],
+      ),
+    );
+    const projectionState = {
+      ...storedState,
+      eventLedgerSequences: storedState.eventLedgerSequences ?? legacyEventLedgerSequences,
+      historyAnchor: storedState.historyAnchor ?? null,
+    } as ArenaProjectionState;
+    if (!hasValidProjectionHistoryAnchor(projectionState)) {
+      throw new CorruptCheckpointError(
+        arenaId,
+        network,
+        "projectionState history anchor digest does not match its compacted state",
+      );
+    }
+
     return {
       arenaId: row.arenaId,
       network: row.network,
       lastLedgerSequence: row.lastLedgerSequence,
-      projectionState: row.projectionState as unknown as ArenaProjectionState,
+      projectionState,
       status: row.status as ArenaProjectionCheckpointStatus,
       lastError: row.lastError,
       leaseOwner: row.leaseOwner,
@@ -163,25 +213,36 @@ export class ArenaProjectionCheckpointStore {
     status: ArenaProjectionCheckpointStatus,
     lastError: string | null = null,
   ): Promise<void> {
-    const lastLedgerSequence = state.lastLedgerSequence ?? 0;
-    const projectionState = state as unknown as Prisma.InputJsonValue;
+    const compactedState = compactArenaProjectionState(state);
+    const lastLedgerSequence = compactedState.lastLedgerSequence ?? 0;
+    const projectionState = compactedState as unknown as Prisma.InputJsonValue;
+    const stateDigest = createHash("sha256").update(JSON.stringify(compactedState)).digest("hex");
+    const dedupeKey = `arena.projection.updated:${network}:${arenaId}:${lastLedgerSequence}:${status}:${stateDigest}`;
 
-    await this.prisma.arenaProjectionCheckpoint.upsert({
-      where: { arenaId_network: { arenaId, network } },
-      create: {
-        arenaId,
-        network,
-        lastLedgerSequence,
-        projectionState,
-        status,
-        lastError,
-      },
-      update: {
-        lastLedgerSequence,
-        projectionState,
-        status,
-        lastError,
-      },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.arenaProjectionCheckpoint.upsert({
+        where: { arenaId_network: { arenaId, network } },
+        create: {
+          arenaId,
+          network,
+          lastLedgerSequence,
+          projectionState,
+          status,
+          lastError,
+        },
+        update: {
+          lastLedgerSequence,
+          projectionState,
+          status,
+          lastError,
+        },
+      });
+      await this.outbox.appendOnce(tx, {
+        eventType: "arena.projection.updated",
+        aggregateId: arenaId,
+        dedupeKey,
+        payload: { arenaId, network, lastLedgerSequence, status },
+      });
     });
   }
 

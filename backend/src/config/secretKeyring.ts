@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { logger } from "../utils/logger";
 import { secretKeyVerificationsTotal } from "../utils/metrics";
+import { processEnv } from "./env";
 
 /**
  * Secret rotation keyrings for JWT signing and webhook HMAC keys (#1456).
@@ -83,7 +84,7 @@ function read(env: Env, name: string): string | undefined {
  * Validate the rotation configuration for one purpose without throwing.
  * Used both at boot (validateConfig) and by loadKeyring.
  */
-export function checkRotationReadiness(purpose: SecretPurpose, env: Env = process.env, now: Date = new Date()): RotationReadiness {
+export function checkRotationReadiness(purpose: SecretPurpose, env: Env = processEnv, now: Date = new Date()): RotationReadiness {
   const prefix = ENV_PREFIX[purpose];
   const min = MIN_SECRET_LENGTH[purpose];
   const errors: string[] = [];
@@ -158,7 +159,7 @@ export class SecretConfigError extends Error {
  * Build the keyring from env. Returns null only for an unconfigured optional
  * purpose (webhook). Throws SecretConfigError on misconfiguration.
  */
-export function loadKeyring(purpose: SecretPurpose, env: Env = process.env, now: Date = new Date()): SecretKeyring | null {
+export function loadKeyring(purpose: SecretPurpose, env: Env = processEnv, now: Date = new Date()): SecretKeyring | null {
   const readiness = checkRotationReadiness(purpose, env, now);
   if (readiness.errors.length > 0) throw new SecretConfigError(readiness);
   const prefix = ENV_PREFIX[purpose];
@@ -204,7 +205,7 @@ let cache: { env: string; keyrings: Partial<Record<SecretPurpose, SecretKeyring 
 
 function envSignature(purpose: SecretPurpose): string {
   const p = ENV_PREFIX[purpose];
-  return [p, `${p}_KID`, `${p}_PREVIOUS`, `${p}_PREVIOUS_KID`, `${p}_PREVIOUS_EXPIRES_AT`].map((k) => process.env[k] ?? "").join("\u0000");
+  return [p, `${p}_KID`, `${p}_PREVIOUS`, `${p}_PREVIOUS_KID`, `${p}_PREVIOUS_EXPIRES_AT`].map((k) => processEnv[k] ?? "").join("\u0000");
 }
 
 /**

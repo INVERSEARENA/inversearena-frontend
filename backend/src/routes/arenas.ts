@@ -3,18 +3,24 @@ import { Router, type RequestHandler } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../middleware/validate";
 import { cacheMiddleware } from "../middleware/cache";
-import { cacheKeys, cacheTTL } from "../cache/cacheService";
+import { CacheKeys, cacheKeys, cacheTTL } from "../cache/cacheService";
 import { subscribeArena } from "../cache/arenaPoller";
 import { prisma } from "../db/prisma";
 import type { CreateArenaInput } from "../types/arena";
 import { ArenaService } from "../services/arenaService";
 import { ArenaStatsService } from "../services/arenaStatsService";
+import { ArenaYieldService } from "../services/arenaYieldService";
 import { RoundService } from "../services/roundService";
 import { RoundRepository } from "../repositories/roundRepository";
 import { ParticipantEligibilityService } from "../services/participantEligibilityService";
 import { apiError } from "../utils/apiError";
 import type { ArenaParticipant } from "../types/arena";
-import { getOnChainPlayers } from "../services/onChainReader";
+import {
+  readOnChainPlayerCount,
+  readOnChainPlayerStatus,
+  readOnChainPlayers,
+} from "../services/onChainReader";
+import { hasReadValue } from "../types/onChainRead";
 import { isAuthorizedAdminWallet } from "../services/walletRoleService";
 import { createRateLimitMiddleware, getSyncPlayersRateLimitConfig } from "../middleware/rateLimit";
 import { createSseConnectionLimitMiddleware } from "../middleware/sseConnectionLimit";
@@ -25,15 +31,21 @@ import { ActiveStakeLimitsService, ActiveStakeLimitError } from "../services/act
 import { ArenaHealthService } from "../services/arenaHealthService";
 // Issue #1401 — Signed server-time synchronization
 import { arenaTimeRouter } from "./arenaTime";
+// Issue #1517 — Player dispute evidence packages
+import {
+  DisputeEvidenceService,
+  EvidenceArenaNotFoundError,
+  EvidenceRoundNotFoundError,
+  EvidenceNotParticipantError,
+} from "../services/disputeEvidenceService";
+import { CancellationRecoveryService } from "../services/cancellationRecoveryService";
+import { decodeCursorInput, encodeKeysetCursor } from "../utils/keysetPagination";
 
 const PaginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
   cursor: z.string().optional(),
 });
 
-interface DecodedCursor {
-  offset: number;
-}
 
 function encodeCursor(offset: number): string {
   return Buffer.from(JSON.stringify({ offset } as DecodedCursor)).toString("base64url");
@@ -134,8 +146,13 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   const router = Router();
   const arenaService = new ArenaService(prisma);
   const arenaStatsService = new ArenaStatsService(prisma);
+  const arenaYieldService = new ArenaYieldService(prisma);
   const roundRepository = new RoundRepository(prisma);
-  const eligibilityService = new ParticipantEligibilityService(prisma);
+  const eligibilityService = new ParticipantEligibilityService(
+    prisma,
+    readOnChainPlayerStatus,
+    readOnChainPlayerCount,
+  );
   const sseConnectionLimiter = createSseConnectionLimitMiddleware();
   // Issue #1411
   const stakeService = new ActiveStakeLimitsService(prisma);
@@ -164,6 +181,21 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
       roundService = new RoundService(prisma);
     }
     return roundService;
+  }
+
+  // Same lazy-construction reasoning as getRoundService() above — this
+  // service's dependencies (RoundProofBundleService) also resolve
+  // getStellarConfig() at construction time.
+  let disputeEvidenceService: DisputeEvidenceService | undefined;
+  function getDisputeEvidenceService(): DisputeEvidenceService {
+    if (!disputeEvidenceService) {
+      disputeEvidenceService = new DisputeEvidenceService(
+        prisma,
+        getRoundService(),
+        new CancellationRecoveryService(prisma),
+      );
+    }
+    return disputeEvidenceService;
   }
 
   /**
@@ -203,13 +235,127 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   );
 
   /**
+   * GET /api/arenas
+   * Returns a paginated list of all arenas for arena discovery.
+   * Replaces mock arena data with real server-backed search and filters (#1514).
+   * Cached for 30s — arena list changes infrequently during play.
+   */
+  router.get(
+    "/",
+    cacheMiddleware((req) => {
+      const filter = (req.query.filter as string) || "all";
+      const search = (req.query.q as string) || "";
+      const limit = (req.query.limit as string) || "25";
+      const cursor = (req.query.cursor as string) || "0";
+      return CacheKeys.arena.list(filter, search, limit, cursor);
+    }, cacheTTL.ARENA_LIST ?? 30),
+    asyncHandler(async (req, res) => {
+      const parsed = z
+        .object({
+          limit: z.coerce.number().int().min(1).max(100).default(25),
+          cursor: z.string().optional(),
+          filter: z.enum(["all", "active", "pending", "closed"]).default("all"),
+          q: z.string().optional(),
+        })
+        .parse(req.query);
+
+      const limit = parsed.limit;
+      const rawCursor = parsed.cursor;
+      const filter = parsed.filter;
+      const search = parsed.q || "";
+
+      const decoded = decodeCursorInput(rawCursor);
+
+      let where: any = {};
+
+      if (filter !== "all") {
+        where.metadata = {
+          path: ["status"],
+          equals: filter === "active" ? "ACTIVE" : filter === "pending" ? "PENDING" : "CLOSED",
+        };
+      }
+
+      let skip: number | undefined = undefined;
+
+      if (decoded.mode === "keyset") {
+        const lastCreatedAt = new Date(decoded.cursor.sortValues.createdAt as string);
+        const lastId = decoded.cursor.id;
+        where.OR = [
+          { createdAt: { lt: lastCreatedAt } },
+          { createdAt: lastCreatedAt, id: { lt: lastId } },
+        ];
+      } else if (decoded.mode === "legacy") {
+        skip = decoded.offset;
+      }
+
+      const rows = await prisma.arena.findMany({
+        where,
+        include: {
+          pools: true,
+          rounds: {
+            orderBy: { roundNumber: "desc" },
+            take: 1,
+          },
+        },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: limit + 1,
+        ...(skip !== undefined ? { skip } : {}),
+      });
+
+      let pageRows = rows;
+      if (search) {
+        const searchLower = search.toLowerCase();
+        pageRows = pageRows.filter((arena) => {
+          const metadata = arena.metadata as any;
+          return (
+            arena.id.toLowerCase().includes(searchLower) ||
+            metadata?.number?.toLowerCase().includes(searchLower) ||
+            metadata?.name?.toLowerCase().includes(searchLower)
+          );
+        });
+      }
+
+      const hasMore = pageRows.length > limit;
+      const items = pageRows.slice(0, limit);
+
+      let nextCursor: string | null = null;
+      if (hasMore && items.length > 0) {
+        const last = items[items.length - 1];
+        nextCursor = encodeKeysetCursor(
+          { createdAt: last.createdAt.toISOString() },
+          last.id,
+        );
+      }
+
+      res.json({
+        items: items.map((arena) => ({
+          id: arena.id,
+          number: (arena.metadata as any)?.number ?? `#${arena.id.substring(0, 4)}`,
+          name: (arena.metadata as any)?.name ?? "Unnamed Arena",
+          playersJoined: arena.pools.length,
+          maxPlayers: (arena.metadata as any)?.maxPlayers ?? 100,
+          roundSpeed: (arena.metadata as any)?.roundSpeed ?? "1 MIN",
+          stake: (arena.metadata as any)?.entryFee ? `${(arena.metadata as any).entryFee} USDC` : "Unknown",
+          poolYield: "+8.0% APY",
+          status: (arena.metadata as any)?.status ?? "ACTIVE",
+          badge: (arena.metadata as any)?.badge,
+          isFeatured: (arena.metadata as any)?.isFeatured ?? false,
+          createdAt: arena.createdAt.toISOString(),
+        })),
+        cursor: nextCursor,
+        hasMore,
+      });
+    }),
+  );
+
+  /**
    * GET /api/arenas/:id/stats
    * Returns stats for a specific arena.
    * Cached for 15s — arena state changes with game rounds.
    */
   router.get(
     "/:id/stats",
-    cacheMiddleware((req) => cacheKeys.arenaStats(req.params.id ?? ""), cacheTTL.ARENA_STATS),
+    cacheMiddleware((req) => CacheKeys.arena.stats(req.params.id ?? ""), cacheTTL.ARENA_STATS),
     asyncHandler(async (req, res) => {
       const id = req.params.id;
       if (!id) {
@@ -228,11 +374,67 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
     }),
   );
 
+  /**
+   * GET /api/arenas/:id/yield
+   * Returns the per-round yield time-series for an arena (#1568), sourced
+   * from indexed on-chain resolutions (round metadata). Ordered by round
+   * ascending with offset pagination; `cumulative` is computed over the full
+   * series so it stays correct across pages. Cached 60s with ETag support;
+   * finished arenas (SETTLED) additionally carry an immutable Cache-Control
+   * header since their series can no longer change.
+   */
+  router.get(
+    "/:id/yield",
+    cacheMiddleware(
+      (req) =>
+        CacheKeys.arena.yield(
+          req.params.id ?? "",
+          Number(req.query.limit ?? 100),
+          typeof req.query.cursor === "string" ? req.query.cursor : "",
+        ),
+      cacheTTL.ARENA_YIELD,
+    ),
+    asyncHandler(async (req, res) => {
+      const id = req.params.id;
+      if (!id) {
+        throw apiError(400, "INVALID_ARENA_ID", "Arena id is required");
+      }
+      const { limit, cursor } = z
+        .object({
+          limit: z.coerce.number().int().min(1).max(500).default(100),
+          cursor: z.string().optional(),
+        })
+        .parse(req.query);
+
+      try {
+        const series = await arenaYieldService.getYieldSeries(id, {
+          limit,
+          ...(cursor !== undefined ? { cursor } : {}),
+        });
+        if (series.finished) {
+          // Immutable: a SETTLED arena's series can never gain new points.
+          res.setHeader("Cache-Control", "public, max-age=3600, immutable");
+        }
+        res.json(series);
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("not found")) {
+          throw apiError(404, "ARENA_NOT_FOUND", error.message);
+        }
+        throw error;
+      }
+    }),
+  );
+
   router.get(
     "/:id/rounds",
     authMiddleware,
     cacheMiddleware(
-      (req) => `arena:rounds:${req.params.id}:${req.query.limit ?? 25}:${req.query.cursor ?? "0"}`,
+      (req) =>
+        CacheKeys.arena.rounds(
+          req.params.id ?? "",
+          (req.query.limit as string) ?? 25,
+          (req.query.cursor as string) ?? "0",
+        ),
       cacheTTL.ARENA_ROUNDS,
     ),
     asyncHandler(async (req, res) => {
@@ -375,15 +577,37 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
         throw apiError(401, "UNAUTHORIZED", "Wallet address required");
       }
 
-      const eligibility = await eligibilityService.checkEligibility(id, playerWallet, balance, balanceAsset);
+      const eligibility = await eligibilityService.checkFreshEligibility(id, playerWallet, balance, balanceAsset);
 
       res.status(eligibility.isEligible ? 200 : 403).json({
         isEligible: eligibility.isEligible,
         errors: eligibility.errors,
         warnings: eligibility.warnings,
+        snapshot: eligibility.snapshot,
         metadata: eligibility.metadata,
         requestId: randomUUID(),
       });
+    }),
+  );
+
+  router.get(
+    "/:id/eligibility-snapshot/:snapshotId",
+    authMiddleware,
+    asyncHandler(async (req, res) => {
+      const arenaId = req.params.id;
+      const snapshotId = req.params.snapshotId;
+      const playerWallet = req.user?.walletAddress;
+      if (!arenaId || !snapshotId) {
+        throw apiError(400, "INVALID_ELIGIBILITY_SNAPSHOT", "Arena and snapshot IDs are required");
+      }
+      if (!playerWallet) {
+        throw apiError(401, "UNAUTHORIZED", "Wallet address required");
+      }
+      const snapshot = eligibilityService.getSnapshot(snapshotId, arenaId, playerWallet);
+      if (!snapshot) {
+        throw apiError(404, "ELIGIBILITY_SNAPSHOT_EXPIRED", "Eligibility snapshot is missing or expired");
+      }
+      res.json(snapshot);
     }),
   );
 
@@ -422,6 +646,66 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
 
       const receipt = await getRoundService().getCommitStatus(arenaId, roundNumber, callerWallet);
       res.json(receipt);
+    }),
+  );
+
+  /**
+   * GET /api/arenas/:id/rounds/:roundNumber/evidence
+   *
+   * Player dispute evidence package (#1517): a read-only, privacy-scoped
+   * bundle of canonical identifiers, the caller's own commit/reveal/
+   * elimination/payout/refund status, config/contract versions and
+   * freshness provenance for one arena/round, with a checksum and schema
+   * version for offline integrity validation. See
+   * backend/docs/DISPUTE_EVIDENCE_PACKAGE_DESIGN.md.
+   *
+   * Scoped to the caller's own wallet (from the auth token) — same
+   * reasoning as commit-status above, plus an explicit rejection of any
+   * caller-supplied wallet/user identifier in the query string, so this
+   * endpoint can never be used to probe another wallet's private evidence.
+   *
+   * Not cached: per-player private data, and each package is checksummed
+   * against its own generation time — serving a stale cached copy under a
+   * fresh checksum would be actively misleading.
+   */
+  router.get(
+    "/:id/rounds/:roundNumber/evidence",
+    authMiddleware,
+    asyncHandler(async (req, res) => {
+      if (req.query.walletAddress !== undefined || req.query.userId !== undefined) {
+        throw apiError(
+          400,
+          "EVIDENCE_SCOPE_NOT_OVERRIDABLE",
+          "Evidence is always scoped to the authenticated caller's own wallet; walletAddress/userId query parameters are not accepted",
+        );
+      }
+
+      const { id: arenaId, roundNumber } = EvidenceParamsSchema.parse(req.params);
+      const userId = req.user?.id;
+      const walletAddress = req.user?.walletAddress;
+
+      if (!userId || !walletAddress) {
+        throw apiError(401, "UNAUTHORIZED", "Unauthorized");
+      }
+
+      try {
+        const evidence = await getDisputeEvidenceService().generatePackage(arenaId, roundNumber, {
+          userId,
+          walletAddress,
+        });
+        res.json({ success: true, data: evidence });
+      } catch (error) {
+        if (error instanceof EvidenceArenaNotFoundError) {
+          throw apiError(404, "ARENA_NOT_FOUND", error.message);
+        }
+        if (error instanceof EvidenceRoundNotFoundError) {
+          throw apiError(404, "ROUND_NOT_FOUND", error.message);
+        }
+        if (error instanceof EvidenceNotParticipantError) {
+          throw apiError(403, "EVIDENCE_NOT_PARTICIPANT", error.message);
+        }
+        throw error;
+      }
     }),
   );
 
@@ -538,8 +822,18 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
         throw apiError(400, "NO_CONTRACT_ADDRESS", "Arena has no contract address");
       }
 
-      // Fetch on-chain player list
-      const onChainPlayers = await getOnChainPlayers(contractAddress);
+      // Fetch on-chain player list. #1519: if the read is unavailable we must
+      // NOT treat it as an empty roster — that would silently sync zero
+      // players and report an outage as an empty arena. Surface it instead.
+      const playersResult = await readOnChainPlayers(contractAddress);
+      if (!hasReadValue(playersResult)) {
+        throw apiError(
+          503,
+          "CHAIN_READ_UNAVAILABLE",
+          `Could not read the on-chain player list for arena ${id}`,
+        );
+      }
+      const onChainPlayers = playersResult.value;
 
       // Batch-create User records for any wallet addresses that don't exist
       // yet. `skipDuplicates` makes this a single round trip instead of one
@@ -575,7 +869,7 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   router.get(
     "/:id/health",
     cacheMiddleware(
-      (req) => `arena:health:${req.params.id}`,
+      (req) => CacheKeys.arena.health(req.params.id ?? ""),
       10, // 10 second TTL
     ),
     asyncHandler(async (req, res) => {

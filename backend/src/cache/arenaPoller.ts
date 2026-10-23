@@ -15,6 +15,9 @@
  */
 
 import { randomUUID } from "crypto";
+// TODO(#1497): move exclusive ownership, checkpoints and bounded jittered
+// retries onto the shared lease/checkpoint primitive instead of poller-local
+// lifecycle handling.
 import type { ArenaService } from "../services/arenaService";
 import { getSorobanBreaker } from "../utils/circuitBreaker";
 import { refreshLedgerIdentity } from "../services/ledgerClock";
@@ -443,6 +446,42 @@ export function subscribeArena(
   };
 }
 
+export interface ArenaProjectionStreamUpdate {
+  id: string;
+  dedupeKey: string;
+  arenaId: string;
+  network: string;
+  lastLedgerSequence: number;
+  status: string;
+}
+
+/** Fan a durable projection notification into this process's active SSE subscribers. */
+export function publishArenaProjectionUpdate(update: ArenaProjectionStreamUpdate): void {
+  const state = pollers.get(update.arenaId);
+  if (!state) return;
+
+  const sequence = ++state.sequence;
+  const envelope = {
+    type: "projection_updated",
+    sequence,
+    arenaId: update.arenaId,
+    payload: update,
+    createdAt: new Date().toISOString(),
+    instanceId: state.instanceId,
+  };
+  state.history.push({ event: "projection_updated", payload: envelope, sequence });
+  if (state.history.length > HISTORY_LIMIT) {
+    state.history.splice(0, state.history.length - HISTORY_LIMIT);
+  }
+  for (const subscriber of state.subscribers) {
+    try {
+      subscriber.sendEvent("projection_updated", envelope, sequence);
+    } catch {
+      // Client disconnection is handled by the stream cleanup path.
+    }
+  }
+}
+
 /** Reset all poller state. Test seam only. */
 export function resetPollersForTest(): void {
   for (const state of pollers.values()) stopPollLoop(state);
@@ -659,5 +698,4 @@ function stopPollLoop(state: ArenaPollerState): void {
     state.heartbeatTimer = null;
   }
 }
-
 

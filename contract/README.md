@@ -54,6 +54,17 @@ cargo build --target wasm32-unknown-unknown --release
 cargo test --workspace
 ```
 
+Several tests embed compiled WASM, so run `cargo build --workspace --target wasm32v1-none --release` first.
+
+### Coverage and Cost Benchmarks
+
+CI gates per-crate line and branch coverage (#1651) and per-entry-point resource costs (#1649):
+
+```bash
+make contracts-coverage     # from the repo root; see docs/COVERAGE.md
+make contracts-cost-bench   # see docs/COST_BENCHMARKS.md
+```
+
 ### ABI Snapshots
 
 ABI snapshots live at `<contract>/abi_snapshot.json` and are generated from compiled WASM artifacts.
@@ -67,6 +78,18 @@ ABI snapshots live at `<contract>/abi_snapshot.json` and are generated from comp
 ```
 
 After regenerating, commit the updated snapshot file and document the interface change in your PR.
+
+### Error Mappings
+
+The error tables in `ERRORS.md` and the frontend's `contract-errors.generated.ts` are generated from each contract's `#[contracterror]` enum in its compiled spec (#1597). Regenerate them whenever a variant is added or renumbered:
+
+```bash
+cargo build --workspace --target wasm32v1-none --release
+node scripts/generate-contract-errors.mjs          # needs frontend/node_modules
+
+# Verify they match the WASM (runs in CI)
+node scripts/generate-contract-errors.mjs --check
+```
 
 ## Contributing
 

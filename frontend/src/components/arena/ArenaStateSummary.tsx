@@ -5,7 +5,7 @@ import {
   selectArenaHealth,
   selectArenaState,
   useArenaStore,
-} from "@/features/arena/arenaStore";
+} from "@/features/arena/model/arenaStore";
 
 export interface ArenaStateSummaryProps {
   className?: string;

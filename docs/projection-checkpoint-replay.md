@@ -62,6 +62,17 @@ needs projected arena state calls `ArenaService.getProjection` (or, for
 lower-level use, `replayArenaProjection` directly) rather than
 re-implementing the fold.
 
+## Verified history retention
+
+Checkpoint saves compact retained event-ID dedupe history against the saved
+ledger watermark. Active arenas retain the last 10,000 ledgers; finished or
+cancelled arenas retain the last 256. The checkpoint stores a SHA-256 digest of
+the compacted projection state as a verified anchor, checked whenever it is
+loaded. Event IDs without ledger provenance are retained rather than pruned.
+Older events are still rejected by the monotonic checkpoint watermark, and
+the chain's event log remains the audit source; this compaction does not delete
+on-chain history or reduce the projection state needed for rollback recovery.
+
 ## State machine
 
 The replay engine for a given `(arenaId, network)` moves through these

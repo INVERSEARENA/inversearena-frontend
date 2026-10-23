@@ -18,11 +18,15 @@ const { Server } = rpc;
 import { getSorobanBreaker, type CircuitBreaker } from "../utils/circuitBreaker";
 import { logger } from "../utils/logger";
 import type { LedgerIdentity } from "./ledgerContinuity";
+import { env } from "../config/env";
 
 let rpcServer: rpc.Server | null = null;
 let breakerOverride: CircuitBreaker | null = null;
 
 let ledgerObserver: ((identity: LedgerIdentity) => Promise<unknown>) | null = null;
+
+// TODO(#1505): expose a typable test clock for deterministic wall-time schedules.
+export const TEST_CLOCK_TICK_MS = 1;
 
 /**
  * Installs the continuity detector that sees every fresh ledger read (#1490).
@@ -34,7 +38,7 @@ export function setLedgerObserver(observer: ((identity: LedgerIdentity) => Promi
 
 function getRpcServer(): rpc.Server {
   if (!rpcServer) {
-    const url = process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
+    const url = env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
     rpcServer = new Server(url, { allowHttp: false });
   }
   return rpcServer;

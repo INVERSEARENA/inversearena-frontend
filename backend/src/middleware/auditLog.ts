@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { AuditLogModel } from "../db/models/auditLog.model";
+import type { AuditActor, AuditResource } from "../types/admin";
 import { logger } from "../utils/logger";
 import { PAYLOAD_LIMITS, findPayloadLimitViolation } from "../validation/payloadLimits";
 import { payloadLimitRejectionsTotal } from "../utils/metrics";

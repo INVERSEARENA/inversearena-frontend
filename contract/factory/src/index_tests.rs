@@ -1,0 +1,186 @@
+//! Tests for the HostPools and StatusBucket secondary indexes (#1613).
+//!
+//! These are unit-level storage tests — no cross-contract calls, no WASM
+//! deployment. They exercise the FactoryStorage helpers directly inside an
+//! `Env::default()` contract sandbox. The arena temporary-storage TTL tests
+//! (#1612) live in `arena/src/temp_storage_tests.rs`, next to `ArenaStorage`.
+
+#![cfg(test)]
+
+use soroban_sdk::testutils::Address as _;
+use soroban_sdk::{Address, Env};
+
+// ---------------------------------------------------------------------------
+// #1613 — Factory secondary indexes
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod factory_indexes {
+    use super::*;
+    use crate::FactoryContract;
+    use crate::storage::FactoryStorage;
+    use crate::types::{ArenaMetadata, ArenaStatus};
+    use soroban_sdk::BytesN;
+
+    fn make_pool_meta(env: &Env, pool_id: u32, host: &Address) -> ArenaMetadata {
+        ArenaMetadata {
+            arena_address: Address::generate(env),
+            pool_id,
+            host: host.clone(),
+            entry_fee: 100,
+            status: ArenaStatus::Active,
+            created_at: 0,
+            metadata_hash: BytesN::<32>::from_array(env, &[0u8; 32]),
+        }
+    }
+
+    #[test]
+    fn index_host_pool_pages_correctly() {
+        let env = Env::default();
+        let factory = env.register(crate::FactoryContract, ());
+        env.as_contract(&factory, || {
+            let host = Address::generate(&env);
+
+            // Insert 1 pool — should go to page 0.
+            FactoryStorage::index_host_pool(&env, &host, 1);
+            assert_eq!(FactoryStorage::host_pool_count(&env, &host), 1);
+            let page0 = FactoryStorage::get_host_pools_page(&env, &host, 0);
+            assert_eq!(page0.len(), 1);
+            assert_eq!(page0.get(0), Some(1));
+
+            // Insert up to HOST_POOLS_PAGE_SIZE.
+            for i in 2..=FactoryStorage::HOST_POOLS_PAGE_SIZE {
+                FactoryStorage::index_host_pool(&env, &host, i as u32);
+            }
+            assert_eq!(
+                FactoryStorage::host_pool_count(&env, &host),
+                FactoryStorage::HOST_POOLS_PAGE_SIZE
+            );
+
+            // Insert one more — should overflow to page 1.
+            FactoryStorage::index_host_pool(&env, &host, 51);
+            assert_eq!(
+                FactoryStorage::host_pool_count(&env, &host),
+                FactoryStorage::HOST_POOLS_PAGE_SIZE + 1
+            );
+            let page1 = FactoryStorage::get_host_pools_page(&env, &host, 1);
+            assert_eq!(page1.len(), 1);
+            assert_eq!(page1.get(0), Some(51));
+        });
+    }
+
+    #[test]
+    fn index_host_pool_separate_hosts() {
+        let env = Env::default();
+        let factory = env.register(crate::FactoryContract, ());
+        env.as_contract(&factory, || {
+            let host_a = Address::generate(&env);
+            let host_b = Address::generate(&env);
+
+            FactoryStorage::index_host_pool(&env, &host_a, 1);
+            FactoryStorage::index_host_pool(&env, &host_b, 2);
+            FactoryStorage::index_host_pool(&env, &host_a, 3);
+
+            assert_eq!(FactoryStorage::host_pool_count(&env, &host_a), 2);
+            assert_eq!(FactoryStorage::host_pool_count(&env, &host_b), 1);
+
+            let a_page0 = FactoryStorage::get_host_pools_page(&env, &host_a, 0);
+            assert_eq!(a_page0.get(0), Some(1));
+            assert_eq!(a_page0.get(1), Some(3));
+
+            let b_page0 = FactoryStorage::get_host_pools_page(&env, &host_b, 0);
+            assert_eq!(b_page0.get(0), Some(2));
+        });
+    }
+
+    #[test]
+    fn status_bucket_transition_moves_pool_between_buckets() {
+        let env = Env::default();
+        let factory = env.register(crate::FactoryContract, ());
+        env.as_contract(&factory, || {
+
+            // Start in Pending.
+            FactoryStorage::index_pool_status(&env, 1, &ArenaStatus::Pending);
+            let pending = FactoryStorage::get_pools_by_status(&env, &ArenaStatus::Pending, 0, 50);
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending.get(0), Some(1));
+
+            // Transition Pending → Active.
+            FactoryStorage::transition_pool_status(&env, 1, &ArenaStatus::Pending, &ArenaStatus::Active);
+            let pending_after = FactoryStorage::get_pools_by_status(&env, &ArenaStatus::Pending, 0, 50);
+            let active_after = FactoryStorage::get_pools_by_status(&env, &ArenaStatus::Active, 0, 50);
+            assert_eq!(pending_after.len(), 0);
+            assert_eq!(active_after.len(), 1);
+            assert_eq!(active_after.get(0), Some(1));
+        });
+    }
+
+    #[test]
+    fn status_bucket_transition_is_o1_swap_remove() {
+        let env = Env::default();
+        let factory = env.register(crate::FactoryContract, ());
+        env.as_contract(&factory, || {
+
+            // Fill a bucket with 3 pools.
+            FactoryStorage::index_pool_status(&env, 1, &ArenaStatus::Pending);
+            FactoryStorage::index_pool_status(&env, 2, &ArenaStatus::Pending);
+            FactoryStorage::index_pool_status(&env, 3, &ArenaStatus::Pending);
+
+            // Remove pool 1 (not the last) — swap-remove should work.
+            FactoryStorage::transition_pool_status(&env, 1, &ArenaStatus::Pending, &ArenaStatus::Active);
+
+            let pending = FactoryStorage::get_pools_by_status(&env, &ArenaStatus::Pending, 0, 50);
+            let active = FactoryStorage::get_pools_by_status(&env, &ArenaStatus::Active, 0, 50);
+
+            // Pending should have 2 entries (3 and 2, with 3 moved into slot 0 by swap).
+            assert_eq!(pending.len(), 2);
+            assert_eq!(active.len(), 1);
+            assert_eq!(active.get(0), Some(1));
+
+            // Both 2 and 3 should be present in pending.
+            let mut found_2 = false;
+            let mut found_3 = false;
+            for i in 0..pending.len() {
+                if let Some(id) = pending.get(i) {
+                    if id == 2 { found_2 = true; }
+                    if id == 3 { found_3 = true; }
+                }
+            }
+            assert!(found_2);
+            assert!(found_3);
+        });
+    }
+
+    #[test]
+    fn index_pool_status_is_idempotent() {
+        let env = Env::default();
+        let factory = env.register(crate::FactoryContract, ());
+        env.as_contract(&factory, || {
+            FactoryStorage::index_pool_status(&env, 1, &ArenaStatus::Active);
+            FactoryStorage::index_pool_status(&env, 1, &ArenaStatus::Active);
+            let active = FactoryStorage::get_pools_by_status(&env, &ArenaStatus::Active, 0, 50);
+            assert_eq!(active.len(), 1);
+        });
+    }
+
+    /// `pool_id` round-trips through the metadata helper the index readers
+    /// (`get_arenas_by_host` / `get_arenas_by_status`) rely on, so an index
+    /// entry can always be resolved back to its pool record.
+    #[test]
+    fn indexed_pool_id_resolves_through_load_pool() {
+        let env = Env::default();
+        let factory = env.register(crate::FactoryContract, ());
+        let host = Address::generate(&env);
+
+        env.as_contract(&factory, || {
+            FactoryStorage::save_pool(&env, 7, &make_pool_meta(&env, 7, &host));
+            FactoryStorage::index_host_pool(&env, &host, 7);
+
+            let page0 = FactoryStorage::get_host_pools_page(&env, &host, 0);
+            let pool_id = page0.get(0).expect("indexed pool id");
+            let meta = FactoryStorage::load_pool(&env, pool_id).expect("pool record");
+            assert_eq!(meta.pool_id, 7);
+            assert_eq!(meta.host, host);
+        });
+    }
+}

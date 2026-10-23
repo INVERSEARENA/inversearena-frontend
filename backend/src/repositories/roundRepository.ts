@@ -10,16 +10,21 @@ import { RoundState } from '../types/round';
 import { enforcePayloadLimits } from '../validation/payloadLimits';
 import { roundMetadataMismatchesTotal } from '../utils/metrics';
 import { logger } from '../utils/logger';
+import { decodeCursorInput, encodeKeysetCursor } from '../utils/keysetPagination';
 
 export class RoundRepository {
   constructor(private prisma: PrismaClient) {}
 
   async create(arenaId: string, roundNumber: number): Promise<RoundData> {
-    const round = await this.prisma.round.create({
-      data: {
-        arenaId,
-        roundNumber,
-      },
+    const round = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.round.create({ data: { arenaId, roundNumber } });
+      const players = await tx.pool.count({ where: { arenaId } });
+      await tx.arenaStats.upsert({
+        where: { arenaId },
+        create: { arenaId, rounds: 1, players },
+        update: { rounds: { increment: 1 }, players, version: { increment: 1 } },
+      });
+      return created;
     });
 
     return this.mapRound(round);
@@ -72,36 +77,56 @@ export class RoundRepository {
     limit: number,
     cursor?: string,
   ): Promise<PaginatedResult<RoundData>> {
-    const offset = cursor ? this.decodeCursor(cursor) : 0;
+    const decoded = decodeCursorInput(cursor);
+
+    let whereClause: Prisma.RoundWhereInput = { arenaId };
+    let skip: number | undefined = undefined;
+
+    if (decoded.mode === "keyset") {
+      const lastRoundNumber = Number(decoded.cursor.sortValues.roundNumber);
+      const lastId = decoded.cursor.id;
+      whereClause = {
+        arenaId,
+        OR: [
+          { roundNumber: { gt: lastRoundNumber } },
+          { roundNumber: lastRoundNumber, id: { gt: lastId } },
+        ],
+      };
+    } else if (decoded.mode === "legacy") {
+      skip = decoded.offset;
+    }
+
     const rounds = await this.prisma.round.findMany({
-      where: { arenaId },
-      orderBy: [{ roundNumber: 'asc' }, { id: 'asc' }],
+      where: whereClause,
+      orderBy: [{ roundNumber: "asc" }, { id: "asc" }],
       take: limit + 1,
-      skip: offset,
+      ...(skip !== undefined ? { skip } : {}),
     });
 
     const hasMore = rounds.length > limit;
-    const items = rounds.slice(0, limit).map((round) => this.mapRound(round));
+    const pageRounds = rounds.slice(0, limit);
+    const items = pageRounds.map((round) => this.mapRound(round));
+
+    let nextCursor: string | null = null;
+    if (hasMore && pageRounds.length > 0) {
+      const last = pageRounds[pageRounds.length - 1];
+      nextCursor = encodeKeysetCursor({ roundNumber: last.roundNumber }, last.id);
+    }
 
     return {
       items,
-      cursor: hasMore ? this.encodeCursor(offset + limit) : null,
+      cursor: nextCursor,
       hasMore,
     };
   }
 
   private encodeCursor(offset: number): string {
-    return Buffer.from(JSON.stringify({ offset })).toString('base64url');
+    return Buffer.from(JSON.stringify({ offset })).toString("base64url");
   }
 
   private decodeCursor(cursor: string): number {
-    try {
-      const payload = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf-8')) as { offset: number };
-      if (typeof payload.offset !== 'number' || payload.offset < 0) return 0;
-      return payload.offset;
-    } catch {
-      return 0;
-    }
+    const res = decodeCursorInput(cursor);
+    return res.mode === "legacy" ? res.offset : 0;
   }
 
   async findByArenaAndNumber(
@@ -165,6 +190,24 @@ export class RoundRepository {
           })),
         });
       }
+
+      const arenaId = (await tx.round.findUniqueOrThrow({ where: { id: roundId }, select: { arenaId: true } })).arenaId;
+      const players = await tx.pool.count({ where: { arenaId } });
+      await tx.arenaStats.upsert({
+        where: { arenaId },
+        create: {
+          arenaId,
+          players,
+          eliminations: resolution.eliminatedPlayers.length,
+          yieldAccrued: metadata.oracleYield ?? 0,
+        },
+        update: {
+          eliminations: { increment: resolution.eliminatedPlayers.length },
+          players,
+          yieldAccrued: { increment: metadata.oracleYield ?? 0 },
+          version: { increment: 1 },
+        },
+      });
     });
   }
 
@@ -313,6 +356,26 @@ export class RoundRepository {
       where: { id: roundId },
       data: { state, updatedAt: new Date() },
     });
+  }
+
+  /**
+   * Conditionally transition a round from `fromState` to `toState`, only
+   * if it is still in `fromState` (#1386). Mirrors resolveAtomically's
+   * optimistic-lock pattern: two concurrent closeRound calls can both pass
+   * the service-level state check at ReadCommitted isolation, but only one
+   * matches this conditional UPDATE — the loser sees zero updated rows and
+   * throws instead of silently double-transitioning (and double-counting
+   * arenaStateTransitionsTotal).
+   */
+  async closeAtomically(roundId: string, fromState: RoundState, toState: RoundState): Promise<void> {
+    const claimed = await this.prisma.round.updateMany({
+      where: { id: roundId, state: fromState },
+      data: { state: toState, updatedAt: new Date() },
+    });
+
+    if (claimed.count === 0) {
+      throw new Error(`Round ${roundId} was already closed by a concurrent request`);
+    }
   }
 
   private parseState(state: string): RoundState {

@@ -5,7 +5,7 @@
  * transaction. See docs/design/transaction-diagnostics.md.
  *
  * Uses @stellar/stellar-sdk's rpc.Server directly rather than
- * frontend/src/shared-d/services/stellarRpcGateway: that class (and its
+ * frontend/src/shared/lib/stellar/stellarRpcGateway: that class (and its
  * own dependency chain) lives outside backend/src, which this package's
  * tsconfig rootDir:"src" rejects for any import, confirmed by the
  * pre-existing, currently-broken cross-boundary import in
@@ -44,7 +44,7 @@ const RESTORE_REMEDIATION =
 /**
  * Extracts a Soroban contract panic code from a raw RPC error string, e.g.
  * "HostError: Error(Contract, #4)". Mirrors the pattern in
- * frontend/src/shared-d/utils/contract-error.ts's parseHostError, kept as
+ * frontend/src/shared/lib/stellar/contract-error.ts's parseHostError, kept as
  * a small local copy for the same rootDir reason documented above.
  */
 function extractContractPanicCode(rawError: string): number | null {

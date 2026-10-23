@@ -5,11 +5,13 @@ on:
     branches: ["main"]
     paths:
       - "contract/**"
+      - "frontend/src/shared/lib/stellar/contract-errors.generated.ts"
       - ".github/workflows/contract-ci.yml"
   pull_request:
     branches: ["main"]
     paths:
       - "contract/**"
+      - "frontend/src/shared/lib/stellar/contract-errors.generated.ts"
       - ".github/workflows/contract-ci.yml"
 
 jobs:
@@ -20,13 +22,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Add wasm32 targets
-        run: |
-          rustup target add wasm32-unknown-unknown
-          rustup target add wasm32v1-none
+      # Reads contract/rust-toolchain.toml — pinned channel for reproducible
+      # WASM hashes (issue #1638).  Do NOT change to @stable or @nightly.
+      - name: Setup Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.82.0"
+          targets: "wasm32-unknown-unknown,wasm32v1-none"
+          components: "rustfmt,clippy"
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -44,19 +47,34 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libdbus-1-dev libudev-dev libusb-1.0-0-dev
 
-      - name: Build arena WASM
+      - name: Build contract WASM
         working-directory: ./contract
-        run: cargo build -p arena --target wasm32v1-none --release
+        run: cargo build --workspace --target wasm32v1-none --release
         # arena/src/integration_tests.rs embeds this crate's own compiled WASM
         # (via crate::WASM) to test the factory's real dynamic-deployment path,
-        # so it must exist before `cargo test` compiles that test module.
-        # - Scoped to -p arena: a whole-workspace wasm build currently fails
-        #   separately (factory statically links arena and both export an
-        #   `unpause` symbol, colliding when factory's wasm links arena's code
-        #   in) — a pre-existing, unrelated issue not fixed here.
+        # and arena/src/global_pause_tests.rs embeds factory.wasm to measure
+        # the cross-contract pause check (#1583), so both must exist before
+        # `cargo test` compiles those test modules. Every contract is built
+        # because the error-mapping drift check (#1597) reads each contract's
+        # spec from its WASM.
         # - wasm32v1-none, not wasm32-unknown-unknown: the latter can emit
         #   reference-types instructions that soroban-env-host rejects at
         #   runtime ("reference-types not enabled").
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: "pnpm"
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Check contract error mappings are generated from the specs (#1597)
+        run: |
+          pnpm --dir frontend install --no-frozen-lockfile --ignore-scripts
+          node contract/scripts/generate-contract-errors.mjs --check
 
       - name: Run contract tests
         working-directory: ./contract
@@ -80,8 +98,146 @@ jobs:
           path: contract/target/wasm-metrics/sizes.md
           if-no-files-found: error
 
+      # Publish sha256 hashes for every optimised WASM so any two independent
+      # builds of the same commit can be compared (issue #1638).
+      - name: Generate WASM hash manifest
+        working-directory: ./contract
+        run: |
+          mkdir -p target/wasm-metrics
+          MANIFEST="target/wasm-metrics/wasm-hashes.txt"
+          echo "# WASM sha256 manifest — $(git rev-parse HEAD)" > "$MANIFEST"
+          echo "# Built with: $(rustc --version)" >> "$MANIFEST"
+          echo "" >> "$MANIFEST"
+          for f in target/wasm32v1-none/release/*.optimized.wasm \
+                   target/wasm32-unknown-unknown/release/*.optimized.wasm; do
+            [ -f "$f" ] && echo "$(sha256sum "$f")" >> "$MANIFEST" || true
+          done
+          cat "$MANIFEST"
+
+      - name: Upload WASM hash manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-wasm-hashes
+          path: contract/target/wasm-metrics/wasm-hashes.txt
+          if-no-files-found: warn
+
       - name: Build contract docs
         working-directory: ./contract
         env:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --workspace --no-deps
+
+  # #1651: line/branch coverage per crate, gated by contract/coverage-thresholds.json.
+  # Branch coverage and coverage(off) on inline test modules need nightly, so
+  # the toolchain is pinned to a dated nightly; bump it deliberately.
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      NIGHTLY: nightly-2026-10-01
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust nightly with llvm-tools
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.NIGHTLY }}
+          targets: wasm32v1-none
+          components: llvm-tools-preview
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contract -> target
+          shared-key: coverage
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.9.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+
+      - name: Coverage script tests
+        run: node --test contract/scripts/coverage.test.mjs
+
+      - name: Build contract WASM
+        # Tests embed the compiled WASM via include_bytes!, so it must exist
+        # before the instrumented test build. It is built uninstrumented.
+        working-directory: ./contract
+        run: cargo build --workspace --target wasm32v1-none --release
+
+      - name: Run tests with coverage
+        working-directory: ./contract
+        run: cargo llvm-cov --workspace --branch --no-report
+
+      - name: Generate reports
+        working-directory: ./contract
+        run: |
+          IGNORE='(^|/)(test|tests|[a-z_]+_tests?|storage_layout_fixture)\.rs$'
+          cargo llvm-cov report --branch --lcov --output-path target/coverage/lcov.info --ignore-filename-regex "$IGNORE"
+          cargo llvm-cov report --branch --html --output-dir target/coverage --ignore-filename-regex "$IGNORE"
+          cargo llvm-cov report --branch --json --summary-only --output-path target/coverage/summary.json --ignore-filename-regex "$IGNORE"
+
+      - name: Enforce per-crate thresholds
+        run: node contract/scripts/coverage.mjs
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-coverage
+          path: |
+            contract/target/coverage/lcov.info
+            contract/target/coverage/html/
+            contract/target/coverage/summary.md
+          if-no-files-found: warn
+
+  # #1649: per-entry-point resource costs compared against contract/cost-baseline.json.
+  # Costs depend on the rustc that compiled the WASM, so this job pins the
+  # toolchain the baseline was recorded with (see the baseline's "toolchain").
+  cost-bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+          targets: wasm32v1-none
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contract -> target
+          shared-key: cost-bench
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+
+      - name: Cost benchmark script tests
+        run: node --test contract/scripts/cost-bench.test.mjs
+
+      - name: Run benchmarks and compare with baseline
+        run: node contract/scripts/cost-bench.mjs
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-cost-bench
+          path: contract/target/cost-bench/
+          if-no-files-found: warn

@@ -3,6 +3,8 @@ import cors from "cors";
 import helmet from "helmet";
 import { createApiRouter } from "./routes";
 import { createAdminRouter } from "./routes/admin";
+import { createTreasuryRouter } from "./routes/treasury";
+import { refreshTreasuryMetrics } from "./services/treasury/treasuryMetrics";
 import { createWalletRoleRouter } from "./routes/walletRole";
 import { createMaintenanceStatusRouter } from "./routes/maintenance";
 import { errorHandler } from "./middleware/errorHandler";
@@ -24,6 +26,7 @@ import { AuthController } from "./controllers/auth.controller";
 import { UsersController } from "./controllers/users.controller";
 import { LeaderboardController } from "./controllers/leaderboard.controller";
 import { TransactionsController } from "./controllers/transactions.controller";
+import { TransactionIntentsController } from "./controllers/transactionIntents.controller";
 import { RoundController } from "./controllers/round.controller";
 import { refreshArenaMetrics, refreshQueueMetrics, register } from "./utils/metrics";
 import { redis } from "./cache/redisClient";
@@ -33,11 +36,13 @@ import type { PaymentService } from "./services/paymentService";
 import type { PaymentWorker } from "./workers/paymentWorker";
 import type { ArenaBackfillWorker } from "./workers/arenaBackfillWorker";
 import type { TransactionRepository } from "./repositories/transactionRepository";
+import type { TransactionIntentService } from "./services/transactionIntentService";
 import type { AdminService } from "./services/adminService";
 import type { AuthService } from "./services/authService";
 import type { RoundService } from "./services/roundService";
 import type { RoundProofBundleService } from "./services/roundProofBundleService";
 import { prisma } from "./db/prisma";
+import { env } from "./config/env";
 
 export interface AppDependencies {
   paymentService: PaymentService;
@@ -50,6 +55,7 @@ export interface AppDependencies {
   queueSnapshotSource?: QueueSnapshotSource;
   queueCapacity?: number;
   roundProofBundleService: RoundProofBundleService;
+  transactionIntentService: TransactionIntentService;
 }
 
 export function createApp(deps: AppDependencies): express.Application {
@@ -84,7 +90,7 @@ export function createApp(deps: AppDependencies): express.Application {
       },
     })
   );
-  const allowedOrigins = (process.env.ALLOWED_ORIGINS || "").split(",").filter(Boolean);
+  const allowedOrigins = (env.ALLOWED_ORIGINS || "").split(",").filter(Boolean);
   app.use(cors({
     origin: allowedOrigins.length > 0 ? allowedOrigins : undefined,
     credentials: true,
@@ -112,8 +118,6 @@ export function createApp(deps: AppDependencies): express.Application {
   app.use(requestContextMiddleware);
   app.use(metricsMiddleware);
   app.use(queryBudgetMiddleware);
-  // Load-test rate-limit bypass: no-op unless LOAD_TEST_BYPASS_KEY is set.
-  app.use(createLoadTestBypassMiddleware());
   // Load-test rate-limit bypass: no-op unless LOAD_TEST_BYPASS_KEY is set.
   app.use(createLoadTestBypassMiddleware());
 
@@ -148,7 +152,7 @@ export function createApp(deps: AppDependencies): express.Application {
   });
 
   app.get("/metrics", async (_req, res) => {
-    const refreshes: Promise<unknown>[] = [refreshArenaMetrics(prisma)];
+    const refreshes: Promise<unknown>[] = [refreshArenaMetrics(prisma), refreshTreasuryMetrics(prisma)];
     if (deps.queueSnapshotSource) {
       const queueOptions =
         deps.queueCapacity === undefined
@@ -178,6 +182,7 @@ export function createApp(deps: AppDependencies): express.Application {
   const usersController = new UsersController(prisma);
   const leaderboardController = new LeaderboardController(prisma);
   const transactionsController = new TransactionsController(deps.transactions);
+  const transactionIntentsController = new TransactionIntentsController(deps.transactionIntentService);
   const roundController = new RoundController(deps.roundService);
 
   const adminAuthMiddleware = requireAdmin(new ApiKeyAuthProvider());
@@ -192,10 +197,13 @@ export function createApp(deps: AppDependencies): express.Application {
       usersController,
       leaderboardController,
       transactionsController,
+      transactionIntentsController,
       adminAuthMiddleware,
       userAuthMiddleware,
       deps.authService,
       deps.roundProofBundleService,
+      deps.transactions,
+      prisma,
     ),
   );
   app.use("/api/admin", createWalletRoleRouter());
@@ -203,6 +211,7 @@ export function createApp(deps: AppDependencies): express.Application {
     "/api/admin",
     createAdminRouter(adminController, roundController, adminAuthMiddleware),
   );
+  app.use("/api/admin", createTreasuryRouter(adminAuthMiddleware, prisma));
   app.use("/api", createMaintenanceStatusRouter(maintenanceService));
 
   app.use(errorHandler);

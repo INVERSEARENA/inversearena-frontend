@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
-import { cache } from "../cache/cacheService";
+import { cache, type TypedCacheKeyDescriptor } from "../cache/cacheService";
 
 /**
  * Derives a deterministic weak ETag from a serialised response body.
@@ -10,20 +10,21 @@ function generateETag(serialized: string): string {
   return `"${createHash("sha1").update(serialized).digest("hex").slice(0, 20)}"`;
 }
 
-type KeyGenerator = (req: Request) => string;
+export type KeyGenerator = (req: Request) => string | TypedCacheKeyDescriptor;
 
 /**
- * Express middleware that caches JSON responses in Redis.
+ * Express middleware that caches JSON responses in Redis with typed keys and tag support.
  *
  * On cache hit: returns cached response immediately.
  * On cache miss: intercepts res.json(), caches the result, then sends it.
  */
 export function cacheMiddleware(keyGen: KeyGenerator, ttlSeconds: number): RequestHandler {
   return async (req: Request, res: Response, next: NextFunction) => {
-    const key = keyGen(req);
+    const keyOrDescriptor = keyGen(req);
+    const key = typeof keyOrDescriptor === "string" ? keyOrDescriptor : keyOrDescriptor.key;
 
     try {
-      const cached = await cache.get<unknown>(key);
+      const cached = await cache.get<unknown>(keyOrDescriptor);
       if (cached !== null) {
         const etag = generateETag(JSON.stringify(cached));
         res.setHeader("ETag", etag);
@@ -51,7 +52,7 @@ export function cacheMiddleware(keyGen: KeyGenerator, ttlSeconds: number): Reque
         const serialized = JSON.stringify(body);
         res.setHeader("ETag", generateETag(serialized));
         // Cache in background — don't block the response
-        cache.set(key, body, ttlSeconds).catch(() => {});
+        cache.set(keyOrDescriptor, body, ttlSeconds).catch(() => {});
       }
 
       return originalJson(body);

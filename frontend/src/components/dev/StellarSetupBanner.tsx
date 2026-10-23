@@ -1,6 +1,6 @@
 "use client";
 
-import { isStellarConfigured, stellarConfigError } from "@/lib/stellarConfig";
+import { isStellarConfigured, stellarConfigError } from "@/shared/config/stellarConfig";
 
 /**
  * Issue #1134 — surfaces missing/invalid Stellar env vars as a visible,

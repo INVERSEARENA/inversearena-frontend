@@ -15,13 +15,23 @@ use arena::{ArenaContract, ArenaContractClient};
 use oracle::{OracleContract, OracleContractClient};
 use rwa_adapter::{RwaAdapter, RwaAdapterClient};
 
-fn compute_commitment(env: &Env, choice: arena::types::Choice, salt: &BytesN<32>) -> BytesN<32> {
-    let mut preimage = soroban_sdk::Bytes::new(env);
+/// Mirrors the arena's bound commitment preimage (#1630):
+/// `SHA-256("IA_COMMIT_V1" || arena || round || player || choice || salt)`.
+fn compute_commitment(
+    env: &Env,
+    arena: &Address,
+    round: u32,
+    player: &Address,
+    choice: arena::types::Choice,
+    salt: &BytesN<32>,
+) -> BytesN<32> {
+    use soroban_sdk::{Bytes, xdr::ToXdr};
+    let mut preimage = Bytes::from_slice(env, b"IA_COMMIT_V1");
+    preimage.append(&arena.clone().to_xdr(env));
+    preimage.append(&Bytes::from_slice(env, &round.to_be_bytes()));
+    preimage.append(&player.clone().to_xdr(env));
     preimage.push_back(choice.to_byte());
-    let salt_bytes = salt.to_array();
-    for b in salt_bytes.iter() {
-        preimage.push_back(*b);
-    }
+    preimage.append(&Bytes::from_slice(env, &salt.to_array()));
     env.crypto().sha256(&preimage).into()
 }
 
@@ -112,6 +122,7 @@ fn factory_deploys_arena_and_full_game_plays() {
                 entry_fee: 100,
                 status: ArenaStatus::Active,
                 created_at: env.ledger().timestamp(),
+                metadata_hash: soroban_sdk::BytesN::from_array(&env, &[0u8; 32]),
             },
         );
         crate::storage::FactoryStorage::increment_pool_count(&env);
@@ -155,9 +166,9 @@ fn factory_deploys_arena_and_full_game_plays() {
     let salt3 = BytesN::from_array(&env, &[3u8; 32]);
 
     // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
-    let c1 = compute_commitment(&env, arena::types::Choice::Tails, &salt1);
-    let c2 = compute_commitment(&env, arena::types::Choice::Heads, &salt2);
-    let c3 = compute_commitment(&env, arena::types::Choice::Heads, &salt3);
+    let c1 = compute_commitment(&env, &arena_id, 1, &p1, arena::types::Choice::Tails, &salt1);
+    let c2 = compute_commitment(&env, &arena_id, 1, &p2, arena::types::Choice::Heads, &salt2);
+    let c3 = compute_commitment(&env, &arena_id, 1, &p3, arena::types::Choice::Heads, &salt3);
 
     arena_client.submit_commitment(&p1, &c1);
     arena_client.submit_commitment(&p2, &c2);
@@ -170,6 +181,9 @@ fn factory_deploys_arena_and_full_game_plays() {
     arena_client.reveal_choice(&p3, &arena::types::Choice::Heads, &salt3);
 
     // ── 9. Resolve round ────────────────────────────────────────────────
+    // Refresh the oracle observation so the #1512 freshness check passes at
+    // the advanced ledger timestamp.
+    oracle_client.set_yield_bps(&500);
     arena_client.resolve_round();
 
     // Verify round result

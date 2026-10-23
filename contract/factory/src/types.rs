@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, contracterror, contracttype};
+use soroban_sdk::{Address, BytesN, contracterror, contracttype};
 
 /// Schema-level limits for untrusted, size-variable inputs (#1455).
 ///
@@ -24,6 +24,24 @@ pub struct PoolConfig {
     pub min_players: u32,
     pub max_players: u32,
     pub round_duration: u64,
+    /// Unix timestamp after which the lobby no longer accepts joins and may be
+    /// cancelled permissionlessly via `cancel_unstarted` (#1579). Bounded by
+    /// the factory relative to the creation ledger.
+    pub start_deadline: u64,
+}
+
+/// The vault settings `create_pool` checks a pool against (#1634).
+///
+/// Decoded from the RWA adapter's `config()` read. It mirrors
+/// `rwa_adapter::VaultConfig` field for field — a contracttype struct is
+/// encoded as a map keyed by field name, so the two must keep the same names
+/// and types. It is duplicated rather than imported for the same link-time
+/// reason as `ArenaClient` in `lib.rs`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VaultConfig {
+    pub stake_token: Address,
+    pub oracle: Address,
 }
 
 #[contracttype]
@@ -44,6 +62,10 @@ pub struct ArenaMetadata {
     pub entry_fee: i128,
     pub status: ArenaStatus,
     pub created_at: u64,
+    /// SHA-256 of the canonical metadata JSON committed at creation (#1577).
+    /// Lets clients verify that off-chain name/description/rules/banner match
+    /// what the host published on-chain.
+    pub metadata_hash: BytesN<32>,
 }
 
 #[contracterror]
@@ -68,4 +90,17 @@ pub enum FactoryError {
     EntryFeeTooLow = 17,
     InvalidConfig = 18,
     NoPendingAdmin = 19,
+    /// Scaling `min_stake` to a token's decimals overflowed i128 (#1361).
+    ArithmeticOverflow = 20,
+    /// `PoolConfig.start_deadline` was outside the allowed window relative to
+    /// the creation ledger (#1579).
+    InvalidStartDeadline = 21,
+    /// The vault's stake token differs from `PoolConfig.stake_token`, or from
+    /// the token the vault was approved with — e.g. the vault was upgraded to
+    /// a different asset after approval (#1634).
+    VaultTokenMismatch = 22,
+    /// `PoolConfig.oracle_contract` is not the oracle the vault accrues yield
+    /// from, so the arena's yield snapshots would disagree with what the
+    /// vault actually pays (#1634).
+    OracleMismatch = 23,
 }

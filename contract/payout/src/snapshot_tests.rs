@@ -29,4 +29,17 @@ mod snapshot_tests {
         //   cargo test snapshot_data_key_paid -- --nocapture
         // and record the printed hex in place of these structural assertions.
     }
+
+    /// DataKey::Payout(BytesN<32>) is the #1632 idempotency guard, keyed by
+    /// the id derived from `(arena, recipient)`. Changing its shape would make
+    /// paid prizes look unpaid.
+    #[test]
+    fn snapshot_data_key_payout() {
+        let env = Env::default();
+        let a = to_xdr(&env, DataKey::Payout(soroban_sdk::BytesN::from_array(&env, &[0u8; 32])));
+        let b = to_xdr(&env, DataKey::Payout(soroban_sdk::BytesN::from_array(&env, &[1u8; 32])));
+        assert!(a.len() > 0);
+        assert_ne!(a, b);
+        assert_ne!(a, to_xdr(&env, DataKey::Paid(0u64)));
+    }
 }

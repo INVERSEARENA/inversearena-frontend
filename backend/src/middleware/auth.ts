@@ -2,6 +2,10 @@ import { timingSafeEqual } from "crypto";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import type { AuthService } from "../services/authService";
 import { apiError } from "../utils/apiError";
+import { env } from "../config/env";
+
+// TODO(#1504): bind an authorization epoch claim to privileged sessions.
+const CLAIM_AUTH_EPOCH = "authz_epoch";
 
 // Augment Express Request so controllers can read adminId / user without casting
 declare global {
@@ -52,7 +56,7 @@ export class ApiKeyAuthProvider implements AdminAuthProvider {
   private readonly apiKey: string;
 
   constructor() {
-    const key = process.env.ADMIN_API_KEY;
+    const key = env.ADMIN_API_KEY;
     if (!key) throw new Error("ADMIN_API_KEY environment variable is required");
     if (key.length < 32) {
       throw new Error("ADMIN_API_KEY must be at least 32 characters to resist brute-force and timing attacks");

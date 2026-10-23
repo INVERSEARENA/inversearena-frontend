@@ -48,6 +48,6 @@ Focused tests live in `frontend/src/features/arena/__tests__`. They cover normal
 
 ```bash
 pnpm exec jest --runInBand \
-  src/features/arena/__tests__/arenaStore.test.tsx \
-  src/features/arena/__tests__/useArenaState.store.test.tsx
+  src/features/arena/model/__tests__/arenaStore.test.tsx \
+  src/features/arena/hooks/__tests__/useArenaState.store.test.tsx
 ```

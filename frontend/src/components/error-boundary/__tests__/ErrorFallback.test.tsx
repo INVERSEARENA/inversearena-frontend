@@ -20,7 +20,7 @@ function withNodeEnv(value: string, fn: () => void): void {
 }
 
 const testError = new Error("Something exploded in useWallet.ts");
-testError.stack = "Error: Something exploded in useWallet.ts\n    at useWallet (/app/src/features/wallet/useWallet.ts:42:11)";
+testError.stack = "Error: Something exploded in useWallet.ts\n    at useWallet (/app/src/features/wallet/hooks/useWallet.ts:42:11)";
 
 describe("ErrorFallback — technical details visibility (issue #1287)", () => {
   it("hides the 'View Technical Details' section in production", () => {

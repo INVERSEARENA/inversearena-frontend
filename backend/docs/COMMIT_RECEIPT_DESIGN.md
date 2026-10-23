@@ -15,7 +15,7 @@ Inverse Arena rounds use a commit-reveal scheme, not a single-step
 
 1. `submit_commitment(player, commitment)` — the player hashes their choice
    (`Heads`/`Tails`) with a random 32-byte salt client-side
-   (`frontend/src/shared-d/utils/commit-reveal.ts`), and submits only
+   (`frontend/src/shared/lib/stellar/commit-reveal.ts`), and submits only
    `SHA256([choice_byte] ++ salt)` on-chain
    (`contract/arena/src/lib.rs:356`). The salt itself is never sent on-chain
    and is persisted **only in the browser's `localStorage`**
@@ -119,7 +119,7 @@ the explicit `CLOSED` transition) does.
 
 ### Why not use the on-chain `commit_deadline` timestamp directly?
 
-`fetchArenaState` on the frontend (`frontend/src/shared-d/utils/stellar-transactions.ts:443`)
+`fetchArenaState` on the frontend (`frontend/src/shared/lib/stellar/stellar-transactions.ts:443`)
 already has `commitDeadline: number | null` in `ArenaStateResponse`, but it
 is hardcoded to `null` with a comment that `get_full_state` doesn't return it
 yet — a pre-existing contract-level gap (#1330), not something this issue's

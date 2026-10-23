@@ -1,8 +1,9 @@
 import pino from "pino";
 // @ts-ignore
 import * as Sentry from "@sentry/node";
-import { redactSecrets } from "../../../frontend/src/shared-d/security/redaction";
+import { redactSecrets } from "../../../frontend/src/shared/lib/security/redaction";
 import { getRequestId } from "./requestContext";
+import { env } from "../config/env";
 
 const redactPaths = [
     "req.headers.authorization",
@@ -19,12 +20,12 @@ export const maskWalletAddress = (address?: string) => {
 };
 
 const configuredSecrets = [
-    process.env.JWT_SECRET,
-    process.env.ADMIN_API_KEY,
+    env.JWT_SECRET,
+    env.ADMIN_API_KEY,
 ].filter(Boolean) as string[];
 
 export const logger = pino({
-    level: process.env.LOG_LEVEL || "info",
+    level: env.LOG_LEVEL || "info",
     redact: {
         paths: redactPaths,
         censor: "[REDACTED]",

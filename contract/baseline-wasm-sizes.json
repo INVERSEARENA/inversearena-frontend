@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "updatedAt": "2026-10-16T12:00:00Z",
+  "contracts": {
+    "arena.wasm": {
+      "baselineBytes": 57344,
+      "maxAllowedBytes": 65536,
+      "maxAllowedRegressionPercent": 5.0
+    },
+    "factory.wasm": {
+      "baselineBytes": 49152,
+      "maxAllowedBytes": 65536,
+      "maxAllowedRegressionPercent": 5.0
+    },
+    "payout.wasm": {
+      "baselineBytes": 45056,
+      "maxAllowedBytes": 65536,
+      "maxAllowedRegressionPercent": 5.0
+    },
+    "staking.wasm": {
+      "baselineBytes": 43008,
+      "maxAllowedBytes": 65536,
+      "maxAllowedRegressionPercent": 5.0
+    }
+  }
+}

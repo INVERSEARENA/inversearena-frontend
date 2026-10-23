@@ -1,3 +1,4 @@
+import { env } from "../config/env";
 // Stellar public keys start with G and are exactly 56 alphanumeric (base32) characters.
 const STELLAR_PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
 
@@ -6,7 +7,7 @@ export function isValidStellarAddress(address: string): boolean {
 }
 
 function getAdminWalletAllowlist(): Set<string> {
-  const raw = process.env.ADMIN_WALLET_ADDRESSES ?? "";
+  const raw = env.ADMIN_WALLET_ADDRESSES ?? "";
   return new Set(
     raw
       .split(",")

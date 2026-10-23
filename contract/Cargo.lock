@@ -47,6 +47,8 @@ dependencies = [
  "payout",
  "proptest",
  "rwa-adapter",
+ "serde_json",
+ "sha2",
  "soroban-sdk",
 ]
 
@@ -294,6 +296,18 @@ name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
+
+[[package]]
+name = "cost-bench"
+version = "0.1.0"
+dependencies = [
+ "arena",
+ "factory",
+ "oracle",
+ "rwa-adapter",
+ "soroban-sdk",
+ "staking",
+]
 
 [[package]]
 name = "cpufeatures"
@@ -863,6 +877,14 @@ name = "indexmap-nostd"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e04e2fd2b8188ea827b32ef11de88377086d690286ab35747ef7f9bf3ccb590"
+
+[[package]]
+name = "inverse-fee-router"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+ "staking",
+]
 
 [[package]]
 name = "itertools"

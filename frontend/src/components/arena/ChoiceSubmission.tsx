@@ -1,13 +1,17 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { buildSubmitCommitmentTransaction, submitSignedTransaction } from "@/shared-d/utils/stellar-transactions";
+import { buildSubmitCommitmentTransaction, submitSignedTransaction } from "@/shared/lib/stellar/stellar-transactions";
+import { useAutoReveal } from "@/features/arena/hooks/useAutoReveal";
 import {
   evaluateSigningRequest,
+  // Imported as a value, not a type: these call sites narrow policy
+  // rejections with `instanceof SigningPolicyError`, which a type-only import
+  // erases to `any` and silently turns into a dead branch.
+  SigningPolicyError,
   type DecodedEnvelope,
-  type SigningPolicyError,
-} from "@/shared-d/security/policy";
-import type { WalletHook } from "@/features/wallet/useStellarWallet";
+} from "@/shared/lib/security/policy";
+import type { WalletHook } from "@/features/wallet/hooks/useStellarWallet";
 
 type Choice = "Heads" | "Tails";
 
@@ -15,6 +19,8 @@ interface ChoiceSubmissionProps {
   arenaId: string;
   roundNumber: number;
   deadline: string;
+  revealDeadline?: string;
+  phase?: "commit" | "reveal" | "resolved";
   arenaStatus: string;
   wallet: Pick<
     WalletHook,
@@ -56,12 +62,14 @@ export function ChoiceSubmission({
   arenaId,
   roundNumber,
   deadline,
+  revealDeadline = "",
+  phase: arenaPhase = "commit",
   arenaStatus,
   wallet,
 }: ChoiceSubmissionProps) {
   const { publicKey, isConnected, connectWallet, signTransaction, status: walletStatus } = wallet;
   const [selectedChoice, setSelectedChoice] = useState<Choice | null>(null);
-  const [phase, setPhase] = useState<SubmissionPhase>("idle");
+  const [submissionPhase, setPhase] = useState<SubmissionPhase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [secondsRemaining, setSecondsRemaining] = useState(0);
 
@@ -69,7 +77,16 @@ export function ChoiceSubmission({
   const deadlineMs = useMemo(() => (deadline ? Date.parse(deadline) : null), [deadline]);
   const isDeadlineReached = deadlineMs !== null && secondsRemaining <= 0;
   const isArenaOpen = arenaStatus.toUpperCase() === "OPEN";
-  const isLocked = phase === "signing" || phase === "submitting" || phase === "submitted";
+  const isLocked = submissionPhase === "signing" || submissionPhase === "submitting" || submissionPhase === "submitted";
+  const autoReveal = useAutoReveal({
+    arenaId,
+    roundNumber,
+    phase: arenaPhase,
+    revealDeadline: revealDeadline ? Date.parse(revealDeadline) : null,
+    publicKey,
+    signTransaction,
+    enabled: Boolean(revealDeadline),
+  });
 
   useEffect(() => {
     const tick = () => {
@@ -147,7 +164,7 @@ export function ChoiceSubmission({
   const canInteract = isArenaOpen && !isDeadlineReached && !isLocked;
 
   return (
-    <section className="rounded-[28px] border border-white/10 bg-[#07111d] p-5 shadow-[0_24px_80px_rgba(0,0,0,0.35)] sm:p-6">
+    <section className="rounded-[28px] border border-white/10 bg-[#07111d] p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:p-5 shadow-[0_24px_80px_rgba(0,0,0,0.35)] sm:p-6">
       <div className="flex flex-col gap-3 border-b border-white/10 pb-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/45">
@@ -221,11 +238,21 @@ export function ChoiceSubmission({
         </div>
 
         <div className="text-right">
-          {phase === "submitted" ? (
+          {autoReveal.phase === "confirmed" ? (
+            <p className="text-sm font-semibold text-[#3CFF1A]">Reveal confirmed</p>
+          ) : autoReveal.phase === "signing" ? (
+            <p className="text-sm font-semibold text-white/80">Reveal awaiting wallet signature</p>
+          ) : autoReveal.phase === "submitted" ? (
+            <p className="text-sm font-semibold text-white/80">Reveal submitted, confirming...</p>
+          ) : autoReveal.phase === "failed" ? (
+            <p role="alert" className="text-sm font-semibold text-[#FF0A54]">{autoReveal.error}</p>
+          ) : arenaPhase === "reveal" ? (
+            <p className="text-sm font-semibold text-white/80">Reveal window open</p>
+          ) : submissionPhase === "submitted" ? (
             <p className="text-sm font-semibold text-[#3CFF1A]">
               Choice submitted: {selectedChoice}
             </p>
-          ) : phase === "error" ? (
+          ) : submissionPhase === "error" ? (
             <div className="space-y-1">
               <p className="text-sm font-semibold text-[#FF0A54]">{error}</p>
               <button

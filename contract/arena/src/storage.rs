@@ -1,6 +1,7 @@
 use crate::types::PendingUpgrade;
 use crate::types::{
-    ArenaConfig, ArenaError, Choice, GameState, PendingAdmin, PlayerState, RoundResult,
+    ArenaConfig, ArenaError, Choice, EliminationReason, GameState, LeaderboardEntry,
+    OracleFreshnessPolicy, PendingAdmin, PlayerState, ResolutionProgress, RoundResult,
     YieldSnapshot,
 };
 use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, Vec, contracttype, symbol_short};
@@ -18,6 +19,16 @@ pub trait TtlRepository<K> {
 
 const PERSISTENT_TTL_THRESHOLD: u32 = 100;
 const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
+
+/// Grace period (in ledgers) added on top of the round duration for the
+/// temporary-storage TTL of CommitmentForRound and ChoiceForRound (#1612).
+/// 17_280 ledgers ≈ 1 day at a 5-second cadence.
+const COMMIT_TTL_GRACE_LEDGERS: u32 = 17_280;
+
+/// Soroban temporary storage maximum TTL (ledgers). Current network value as
+/// of protocol 21.  Clamping prevents set_ttl rejections when a configured
+/// round duration would exceed this.
+const SOROBAN_TEMP_MAX_TTL: u32 = 3_110_400; // ~6 months
 pub(crate) const PAGED_ROSTER_VERSION: u32 = 2;
 const LEGACY_ROSTER_VERSION: u32 = 1;
 
@@ -48,6 +59,22 @@ pub(crate) enum DataKey {
     RosterCount,
     SurvivorCount,
     StorageVersion,
+    /// Per-instance oracle freshness policy (#1512). See
+    /// `ArenaRepository::load_oracle_freshness_policy`.
+    OracleFreshnessPolicy,
+    /// Lobby start deadline (#1579). `0` means no deadline is configured.
+    StartDeadline,
+    /// Why a player was eliminated (#1582). Written once by `resolve_round`.
+    EliminationReason(Address),
+    /// Paged-resolution progress + cursor (#1639).
+    Resolution,
+    /// Working list a paged resolution iterates over (#1639).
+    ResolutionPlayers,
+    /// Top-K leaderboard accumulator a paged resolution builds (#1639).
+    ResolutionLeaderboard,
+    /// Set when a settlement-time vault withdrawal failed and the arena's
+    /// principal is still held by the vault (#1631). Cleared by `retry_withdraw`.
+    FundsInVault,
 }
 
 pub struct ArenaRepository<'a> {
@@ -727,6 +754,51 @@ impl ArenaStorage {
         }
     }
 
+    /// Remove a player who joined but has not yet played, keeping the paged
+    /// roster, the survivor index, and both counters consistent (#1580, #1581).
+    ///
+    /// Returns `false` when the address was not on the roster, so callers can
+    /// distinguish "removed" from "never joined". Pages are rewritten in place
+    /// (roster order is preserved minus the removed address); the `PlayerState`
+    /// entry is deleted so a subsequent `join_arena` is treated as a fresh join.
+    pub fn remove_player(env: &Env, player: &Address) -> bool {
+        Self::ensure_paged_roster(env);
+        if Self::load_player(env, player).is_none() {
+            return false;
+        }
+
+        let roster = Self::load_all_players(env);
+        let mut kept = Vec::new(env);
+        for entry in roster.iter() {
+            if &entry != player {
+                kept.push_back(entry);
+            }
+        }
+        Self::write_roster_pages(env, &kept);
+        Self::save_roster_count(env, kept.len());
+
+        let survivors = Self::load_survivor_index(env);
+        let mut kept_survivors = Vec::new(env);
+        for entry in survivors.iter() {
+            if &entry != player {
+                kept_survivors.push_back(entry);
+            }
+        }
+        Self::write_survivor_pages(env, &kept_survivors);
+        Self::save_survivor_count(env, kept_survivors.len());
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Player(player.clone()));
+
+        if let Ok(mut config) = Self::load_config(env) {
+            config.player_count = config.player_count.saturating_sub(1);
+            config.active_player_count = config.active_player_count.saturating_sub(1);
+            Self::save_config(env, &config);
+        }
+        true
+    }
+
     pub fn load_active_roster(env: &Env) -> Vec<Address> {
         Self::ensure_paged_roster(env);
         let total = Self::load_roster_count_raw(env);
@@ -822,39 +894,78 @@ impl ArenaStorage {
         env.storage().persistent().get(&DataKey::MaxPlayers)
     }
 
-    pub fn save_commitment(env: &Env, player: &Address, round: u32, commitment: &BytesN<32>) {
-        Self::extend_persistent_ttl(env, &DataKey::CommitmentForRound(player.clone(), round));
-        env.storage().persistent().set(
-            &DataKey::CommitmentForRound(player.clone(), round),
-            commitment,
-        );
-    }
-
-    pub fn load_commitment(env: &Env, player: &Address, round: u32) -> Option<BytesN<32>> {
-        Self::extend_persistent_ttl(env, &DataKey::CommitmentForRound(player.clone(), round));
+    /// Lobby start deadline (#1579), or `0` when none is configured.
+    pub fn save_start_deadline(env: &Env, deadline: u64) {
+        Self::extend_persistent_ttl(env, &DataKey::StartDeadline);
         env.storage()
             .persistent()
+            .set(&DataKey::StartDeadline, &deadline);
+    }
+
+    pub fn load_start_deadline(env: &Env) -> u64 {
+        Self::extend_persistent_ttl(env, &DataKey::StartDeadline);
+        env.storage()
+            .persistent()
+            .get(&DataKey::StartDeadline)
+            .unwrap_or(0)
+    }
+
+    pub fn save_commitment(env: &Env, player: &Address, round: u32, commitment: &BytesN<32>) {
+        // Issue #1612: CommitmentForRound uses temporary storage. Commitments
+        // are only valid until the round resolves (~minutes). Using temporary
+        // storage avoids the higher persistent-entry rent and write fees.
+        //
+        // TTL = round_duration + COMMIT_TTL_GRACE_LEDGERS, clamped to
+        // SOROBAN_TEMP_MAX_TTL.  If it expires before resolution the missing
+        // entry is treated as "no commitment" — documented below in
+        // `load_commitment`.
+        let round_dur = Self::load_round_duration(env);
+        // Approximate ledgers for the round duration (5-second ledger cadence).
+        let dur_ledgers = (round_dur / 5) as u32;
+        let ttl = dur_ledgers
+            .saturating_add(COMMIT_TTL_GRACE_LEDGERS)
+            .min(SOROBAN_TEMP_MAX_TTL);
+        let key = DataKey::CommitmentForRound(player.clone(), round);
+        env.storage().temporary().set(&key, commitment);
+        env.storage().temporary().extend_ttl(&key, ttl, ttl);
+    }
+
+    /// Returns the commitment hash for `(player, round)`, or `None` when:
+    ///   - the player never committed, OR
+    ///   - the temporary entry expired (treated as no-commit per #1612 spec).
+    ///
+    /// Resolution callers should treat `None` as an absent / late commitment
+    /// and score the player as having not participated.
+    pub fn load_commitment(env: &Env, player: &Address, round: u32) -> Option<BytesN<32>> {
+        env.storage()
+            .temporary()
             .get(&DataKey::CommitmentForRound(player.clone(), round))
     }
 
     pub fn save_choice(env: &Env, player: &Address, round: u32, choice: &Choice) {
-        Self::extend_persistent_ttl(env, &DataKey::ChoiceForRound(player.clone(), round));
-        env.storage()
-            .persistent()
-            .set(&DataKey::ChoiceForRound(player.clone(), round), choice);
+        // Issue #1612: ChoiceForRound uses temporary storage for the same
+        // reasons as CommitmentForRound above.
+        let round_dur = Self::load_round_duration(env);
+        let dur_ledgers = (round_dur / 5) as u32;
+        let ttl = dur_ledgers
+            .saturating_add(COMMIT_TTL_GRACE_LEDGERS)
+            .min(SOROBAN_TEMP_MAX_TTL);
+        let key = DataKey::ChoiceForRound(player.clone(), round);
+        env.storage().temporary().set(&key, choice);
+        env.storage().temporary().extend_ttl(&key, ttl, ttl);
     }
 
     pub fn load_choice(env: &Env, player: &Address, round: u32) -> Option<Choice> {
-        Self::extend_persistent_ttl(env, &DataKey::ChoiceForRound(player.clone(), round));
         env.storage()
-            .persistent()
+            .temporary()
             .get(&DataKey::ChoiceForRound(player.clone(), round))
     }
 
     /// Remove a single player's choice for a round (#1075: clear stale choice on elimination).
+    /// No-op when the entry has already expired or was never written.
     pub fn remove_player_choice(env: &Env, player: &Address, round: u32) {
         env.storage()
-            .persistent()
+            .temporary()
             .remove(&DataKey::ChoiceForRound(player.clone(), round));
     }
 
@@ -952,6 +1063,24 @@ impl ArenaStorage {
         env.storage()
             .persistent()
             .set(&DataKey::PrizeClaimed, &true);
+    }
+
+    /// Whether a settlement-time vault withdrawal failed and the principal is
+    /// still parked in the vault (#1631). Refunds are blocked while this is set.
+    pub fn load_funds_in_vault(env: &Env) -> bool {
+        Self::extend_persistent_ttl(env, &DataKey::FundsInVault);
+        env.storage()
+            .persistent()
+            .get(&DataKey::FundsInVault)
+            .unwrap_or(false)
+    }
+
+    /// Persist the funds-in-vault flag (#1631).
+    pub fn save_funds_in_vault(env: &Env, in_vault: bool) {
+        Self::extend_persistent_ttl(env, &DataKey::FundsInVault);
+        env.storage()
+            .persistent()
+            .set(&DataKey::FundsInVault, &in_vault);
     }
 
     /// Return whether a state-changing entry point is already executing.
@@ -1077,6 +1206,25 @@ impl ArenaStorage {
             .set(&DataKey::PlatformFeeBps, &fee_bps);
     }
 
+    /// Per-instance oracle freshness policy (#1512). Defaults to
+    /// `OracleFreshnessPolicy::default_policy()` until the admin calls
+    /// `set_oracle_freshness_policy` — mirrors `load_platform_fee_bps`'s
+    /// read-with-default pattern above.
+    pub fn load_oracle_freshness_policy(env: &Env) -> OracleFreshnessPolicy {
+        Self::extend_persistent_ttl(env, &DataKey::OracleFreshnessPolicy);
+        env.storage()
+            .persistent()
+            .get(&DataKey::OracleFreshnessPolicy)
+            .unwrap_or_else(OracleFreshnessPolicy::default_policy)
+    }
+
+    pub fn save_oracle_freshness_policy(env: &Env, policy: &OracleFreshnessPolicy) {
+        Self::extend_persistent_ttl(env, &DataKey::OracleFreshnessPolicy);
+        env.storage()
+            .persistent()
+            .set(&DataKey::OracleFreshnessPolicy, policy);
+    }
+
     pub fn save_pending_upgrade(env: &Env, upgrade: &PendingUpgrade) {
         Self::extend_persistent_ttl(env, &symbol_short!("UPGRADE"));
         env.storage()
@@ -1093,27 +1241,140 @@ impl ArenaStorage {
         env.storage().persistent().remove(&symbol_short!("UPGRADE"));
     }
 
+    pub fn save_elimination_reason(env: &Env, player: &Address, reason: &EliminationReason) {
+        let key = DataKey::EliminationReason(player.clone());
+        Self::extend_persistent_ttl(env, &key);
+        env.storage().persistent().set(&key, reason);
+    }
+
+    // ── Read-only accessors (#1582) ─────────────────────────────────────────
+    //
+    // Unlike the `load_*` helpers, these never extend TTLs or migrate the
+    // roster, so a view composed only of them performs no ledger writes.
+
+    pub fn peek_config(env: &Env) -> Result<ArenaConfig, ArenaError> {
+        env.storage()
+            .persistent()
+            .get(&symbol_short!("CONFIG"))
+            .ok_or(ArenaError::NotInitialized)
+    }
+
+    pub fn peek_player(env: &Env, player: &Address) -> Option<PlayerState> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Player(player.clone()))
+    }
+
+    pub fn has_commitment(env: &Env, player: &Address, round: u32) -> bool {
+        // Temporary storage since #1612, matching `save_commitment`: an
+        // expired entry counts as no commitment.
+        env.storage()
+            .temporary()
+            .has(&DataKey::CommitmentForRound(player.clone(), round))
+    }
+
+    pub fn has_choice(env: &Env, player: &Address, round: u32) -> bool {
+        // Temporary storage since #1612, matching `save_choice`: an expired
+        // entry counts as no reveal.
+        env.storage()
+            .temporary()
+            .has(&DataKey::ChoiceForRound(player.clone(), round))
+    }
+
+    pub fn peek_elimination_reason(env: &Env, player: &Address) -> Option<EliminationReason> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::EliminationReason(player.clone()))
+    }
+
+    pub fn peek_refund_claimed(env: &Env, player: &Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RefundClaimed(player.clone()))
+            .unwrap_or(false)
+    }
+
+    pub fn peek_winner(env: &Env) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::Winner)
+    }
+
     /// Clear all players' choices and commitments for the specified round.
-    /// Since commitments and choices are now keyed by (Address, round),
-    /// this is primarily for cleanup. May be called at the start or end of a round.
+    /// Since commitments and choices now live in temporary storage (#1612),
+    /// explicit removal is optional — entries will expire on their own TTL.
+    /// This helper is retained for callers that want to release storage
+    /// immediately (e.g. after resolution) rather than waiting for expiry.
     pub fn clear_round_data(env: &Env, round: u32) {
         Self::ensure_paged_roster(env);
         let total = Self::load_roster_count_raw(env);
         for page_index in 0..Self::page_count(total) {
             let page = Self::load_roster_page_raw(env, page_index);
             for player in page.iter() {
+                // Temporary storage: use temporary().remove()
                 env.storage()
-                    .persistent()
+                    .temporary()
                     .remove(&DataKey::ChoiceForRound(player.clone(), round));
                 env.storage()
-                    .persistent()
+                    .temporary()
                     .remove(&DataKey::CommitmentForRound(player.clone(), round));
             }
         }
     }
+
+    // ── Paged resolution (#1639) ─────────────────────────────────────────────
+
+    pub fn save_resolution(env: &Env, progress: &ResolutionProgress) {
+        Self::extend_persistent_ttl(env, &DataKey::Resolution);
+        env.storage().persistent().set(&DataKey::Resolution, progress);
+    }
+
+    pub fn load_resolution(env: &Env) -> Option<ResolutionProgress> {
+        Self::extend_persistent_ttl(env, &DataKey::Resolution);
+        env.storage().persistent().get(&DataKey::Resolution)
+    }
+
+    pub fn save_resolution_players(env: &Env, players: &Vec<Address>) {
+        Self::extend_persistent_ttl(env, &DataKey::ResolutionPlayers);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ResolutionPlayers, players);
+    }
+
+    pub fn load_resolution_players(env: &Env) -> Vec<Address> {
+        Self::extend_persistent_ttl(env, &DataKey::ResolutionPlayers);
+        env.storage()
+            .persistent()
+            .get(&DataKey::ResolutionPlayers)
+            .unwrap_or(Vec::new(env))
+    }
+
+    pub fn save_resolution_leaderboard(env: &Env, entries: &Vec<LeaderboardEntry>) {
+        Self::extend_persistent_ttl(env, &DataKey::ResolutionLeaderboard);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ResolutionLeaderboard, entries);
+    }
+
+    pub fn load_resolution_leaderboard(env: &Env) -> Vec<LeaderboardEntry> {
+        Self::extend_persistent_ttl(env, &DataKey::ResolutionLeaderboard);
+        env.storage()
+            .persistent()
+            .get(&DataKey::ResolutionLeaderboard)
+            .unwrap_or(Vec::new(env))
+    }
+
+    /// Drop all paged-resolution state. Called by `finalize_resolution` once
+    /// the round is committed, and when a fresh resolution is created.
+    pub fn clear_resolution(env: &Env) {
+        env.storage().persistent().remove(&DataKey::Resolution);
+        env.storage().persistent().remove(&DataKey::ResolutionPlayers);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ResolutionLeaderboard);
+    }
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::ArenaContract;

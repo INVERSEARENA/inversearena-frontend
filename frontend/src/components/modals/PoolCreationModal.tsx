@@ -2,36 +2,40 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Modal } from "@/components/ui/Modal";
-import { useWallet } from "@/features/wallet/useWallet";
+import { useWallet } from "@/features/wallet/hooks/useWallet";
 import { TransactionModal } from "@/components/modals/TransactionModal";
 import {
   evaluateSigningRequest,
   type DecodedEnvelope,
   type SigningPolicyError,
-} from "@/shared-d/security/policy";
-import { buildCreatePoolTransaction, submitSignedTransaction } from "@/shared-d/utils/stellar-transactions";
+} from "@/shared/lib/security/policy";
+import { buildCreatePoolTransaction, submitSignedTransaction, NETWORK_PASSPHRASE } from "@/shared/lib/stellar/stellar-transactions";
+import { useTransactionIntent } from "@/shared/lib/hooks/useTransactionIntent";
 import {
   formatCurrencyInput,
   sanitizeNumericInput,
   type Currency,
-} from "@/shared-d/utils/form-validation";
+} from "@/shared/lib/form-validation";
 import {
   estimateCreatePoolFee,
   formatFeeDisplay,
   formatTotalCostDisplay,
-} from "@/shared-d/utils/stellar-fees";
+} from "@/shared/lib/stellar/stellar-fees";
 import {
   poolSchema,
   MIN_CAPACITY,
   MAX_CAPACITY,
   MIN_STAKE,
   type RoundSpeed,
-} from "@/shared-d/utils/pool-schema";
+} from "@/features/pools/model/pool-schema";
 import {
   loadPoolDraft,
   savePoolDraft,
   clearPoolDraft,
-} from "@/shared-d/utils/pool-draft";
+} from "@/features/pools/model/pool-draft";
+import { usePoolCompatibility } from "@/features/pools/model/usePoolCompatibility";
+
+const ALL_CURRENCIES: Currency[] = ["USDC", "XLM"];
 
 interface PoolCreationModalProps {
   isOpen: boolean;
@@ -64,6 +68,7 @@ export function PoolCreationModal({
   const [stakeError, setStakeError] = useState<string>("");
   const [capacityError, setCapacityError] = useState<string>("");
   const [errorMessage, setErrorMessage] = useState<string>("");
+  const [whitelistState, setWhitelistState] = useState<"unknown" | "checking" | "allowed" | "required">("unknown");
   const [isFormValid, setIsFormValid] = useState(false);
   const [isDeploying, setIsDeploying] = useState(false);
   const [draftRestored, setDraftRestored] = useState(false);
@@ -80,6 +85,14 @@ export function PoolCreationModal({
   const [estimatedFee] = useState(estimateCreatePoolFee());
 
   const { isConnected, address, connect, signTransaction, balance, isLoadingBalance } = useWallet();
+
+  // #1634: offer only currencies the configured yield vault holds. While the
+  // vault read is pending or unavailable every currency stays selectable;
+  // buildCreatePoolTransaction re-checks before anything is signed.
+  const compatibility = usePoolCompatibility(isOpen);
+  const offeredCurrencies = compatibility.currencies ?? ALL_CURRENCIES;
+  const noCompatibleCurrency = compatibility.status === "ready" && offeredCurrencies.length === 0;
+  const { runTrackedTransaction } = useTransactionIntent();
   const [showTxModal, setShowTxModal] = useState(false);
   const [txDetails, setTxDetails] = useState<{ label: string; value: string | number }[]>([]);
 
@@ -87,6 +100,19 @@ export function PoolCreationModal({
   const totalPotentialPool = stakeAmount * arenaCapacity;
   const dynamicYield = 8.42;
   const minorityWinCap = 14.5;
+
+  useEffect(() => {
+    if (!isOpen || !isConnected || !address) return;
+    let cancelled = false;
+    setWhitelistState("checking");
+    fetch("/api/whitelist/status", { credentials: "include" })
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error("status unavailable")))
+      .then((data: { isWhitelisted?: boolean }) => {
+        if (!cancelled) setWhitelistState(data.isWhitelisted ? "allowed" : "required");
+      })
+      .catch(() => { if (!cancelled) setWhitelistState("unknown"); });
+    return () => { cancelled = true; };
+  }, [isOpen, isConnected, address]);
 
   const getMaxStake = useCallback(() => {
     if (!isConnected) return Infinity;
@@ -223,6 +249,19 @@ export function PoolCreationModal({
     }
   };
 
+  // A restored draft or the default may name a currency the vault cannot
+  // back; move the selection to one it can (#1634).
+  useEffect(() => {
+    if (compatibility.status !== "ready") return;
+    const [firstCompatible] = compatibility.currencies;
+    if (firstCompatible && !compatibility.currencies.includes(currency)) {
+      handleCurrencyChange(firstCompatible);
+    }
+    // handleCurrencyChange is recreated every render; the selection only
+    // needs re-checking when the compatible set or the currency changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compatibility, currency]);
+
   const handleDecreaseCapacity = () => {
     setArenaCapacity((prev) => Math.max(MIN_CAPACITY, prev - 10));
   };
@@ -283,6 +322,13 @@ export function PoolCreationModal({
             </div>
           )}
 
+          {isConnected && whitelistState === "required" && (
+            <div className="mb-6 border-2 border-primary bg-primary/10 p-4 text-sm font-bold text-primary" role="status">
+              <p className="uppercase">Host access approval required before pool creation.</p>
+              <a className="mt-2 inline-block underline" href="/dashboard/host-whitelist">Submit a whitelist application</a>
+            </div>
+          )}
+
           <div className="grid grid-cols-12 gap-6">
             <div className="col-span-12 lg:col-span-5 flex flex-col gap-5">
               <section className="bg-[#1e293b] border-3 border-black p-5 shadow-[4px_4px_0px_0px_#000]">
@@ -310,8 +356,11 @@ export function PoolCreationModal({
                     className="bg-primary text-black border-l-3 border-black font-black text-lg px-4 appearance-none cursor-pointer focus:ring-0 focus:outline-none"
                     aria-label="Currency selection"
                   >
-                    <option value="USDC">USDC</option>
-                    <option value="XLM">XLM</option>
+                    {offeredCurrencies.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
@@ -328,6 +377,19 @@ export function PoolCreationModal({
                         Balance: {currency === "XLM" ? balance.xlm.toFixed(7) : balance.usdc.toFixed(2)} {currency}
                       </span>
                     )}
+                  </div>
+                )}
+
+                {noCompatibleCurrency && (
+                  <div
+                    className="mt-3 text-sm font-bold text-red-500 flex items-start gap-2"
+                    role="alert"
+                  >
+                    <span className="material-symbols-outlined text-base">error</span>
+                    <span>
+                      The yield vault does not support any available currency with the configured
+                      oracle. Pool creation is unavailable until the deployment is fixed.
+                    </span>
                   </div>
                 )}
 
@@ -504,7 +566,7 @@ export function PoolCreationModal({
                 onClick={async () => {
                   if (!isConnected) {
                     await connect();
-                  } else if (isFormValid) {
+                  } else if (isFormValid && !noCompatibleCurrency) {
                     setTxDetails([
                       { label: "Operation", value: "Create Pool" },
                       { label: "Stake Amount", value: `${stakeAmount} ${currency}` },
@@ -516,7 +578,7 @@ export function PoolCreationModal({
                     setShowTxModal(true);
                   }
                 }}
-                disabled={isConnected && !isFormValid}
+                disabled={isConnected && (!isFormValid || noCompatibleCurrency || whitelistState === "checking" || whitelistState === "required")}
                 className="w-full bg-primary text-black border-3 border-black py-6 text-2xl lg:text-3xl font-black uppercase italic tracking-tighter shadow-[4px_4px_0px_0px_#000] hover:translate-x-1 hover:translate-y-1 hover:shadow-none transition-all flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-x-0 disabled:hover:translate-y-0 disabled:hover:shadow-[4px_4px_0px_0px_#000]"
                 aria-label={isConnected ? "Initialize arena" : "Connect wallet"}
               >
@@ -557,15 +619,22 @@ export function PoolCreationModal({
         details={txDetails}
         onConfirm={async ({ onSigned }) => {
           if (!address) throw new Error("Wallet disconnected. Please reconnect and try again.");
-          const tx = await buildCreatePoolTransaction(address, {
-            stakeAmount,
-            currency,
-            roundSpeed,
-            arenaCapacity,
+          await runTrackedTransaction({
+            kind: "create_pool",
+            actionKey: `create_pool:${currency}:${stakeAmount}:${roundSpeed}:${arenaCapacity}`,
+            publicKey: address,
+            buildTransaction: () =>
+              buildCreatePoolTransaction(address, {
+                stakeAmount,
+                currency,
+                roundSpeed,
+                arenaCapacity,
+              }),
+            signTransaction,
+            submitSignedTransaction,
+            networkPassphrase: NETWORK_PASSPHRASE,
+            onSigned,
           });
-          const signedXdr = await signTransaction(tx.toXDR());
-          onSigned();
-          await submitSignedTransaction(signedXdr);
           // The pool was created successfully, so the draft no longer
           // represents unsaved work; clear it rather than letting a stale
           // draft resurface on the next Pool Creation open (#1405).

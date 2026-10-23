@@ -7,7 +7,7 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
-import { StellarRpcGateway } from "../../frontend/src/shared-d/services/stellarRpcGateway";
+import { StellarRpcGateway } from "../../../frontend/src/shared/lib/stellar/stellarRpcGateway";
 
 import type {
   ArenaCreationResult,
@@ -18,8 +18,10 @@ import { getStellarConfig } from "../config/stellarConfig";
 import { ArenaStatsService } from "./arenaStatsService";
 import { enforcePayloadLimits } from "../validation/payloadLimits";
 import { ArenaProjectionCheckpointStore } from "./projection/arenaProjectionCheckpointStore";
+import { OutboxStore } from "./outbox/outboxStore";
 import { initialArenaProjection, type ArenaProjectionState } from "./projection/arenaProjectionFold";
 import { replayArenaProjection, type ArenaReplayOptions } from "./projection/arenaProjectionReplay";
+import { env } from "../config/env";
 
 const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
 const TX_HASH_REGEX = /^[0-9a-f]{64}$/i;
@@ -132,6 +134,7 @@ export interface ArenaProjectionResponse {
 
 export class ArenaService {
   private readonly projectionCheckpoints: ArenaProjectionCheckpointStore;
+  private readonly outbox: OutboxStore;
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -139,6 +142,7 @@ export class ArenaService {
     private readonly stellarRpcGateway = new StellarRpcGateway(),
   ) {
     this.projectionCheckpoints = new ArenaProjectionCheckpointStore(prisma);
+    this.outbox = new OutboxStore(prisma);
   }
 
   /**
@@ -160,7 +164,7 @@ export class ArenaService {
       throw new Error("Invalid transaction hash");
     }
 
-    const factoryContractId = process.env.ARENA_FACTORY_CONTRACT_ID ?? null;
+    const factoryContractId = env.ARENA_FACTORY_CONTRACT_ID ?? null;
     if (!factoryContractId || !CONTRACT_ID_REGEX.test(factoryContractId)) {
       throw new Error(
         "ARENA_FACTORY_CONTRACT_ID is not configured with a valid Soroban contract ID",
@@ -208,11 +212,20 @@ export class ArenaService {
       }),
     ) as Prisma.InputJsonValue, "arena_metadata");
 
-    const arena = await this.prisma.arena.create({
-      data: {
-        id: arenaId,
-        metadata,
-      },
+    const arena = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.arena.create({
+        data: {
+          id: arenaId,
+          metadata,
+        },
+      });
+      await this.outbox.append(tx, {
+        eventType: "arena.created",
+        aggregateId: created.id,
+        dedupeKey: `arena.created:${created.id}`,
+        payload: { arenaId: created.id },
+      });
+      return created;
     });
 
     return {

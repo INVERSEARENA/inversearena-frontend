@@ -180,13 +180,42 @@ async function main(): Promise<void> {
     lines.push("");
   }
 
+  // Read deployment manifest if present (#1462)
+  let factoryContractId = "";
+  let arenaContractId = "";
+  let payoutContractId = "";
+  let stakingContractId = "";
+
+  const manifestPath = path.resolve(__dirname, "../contract/deployment-manifest.json");
+  if (fs.existsSync(manifestPath)) {
+    try {
+      const { validateManifest } = await import("./contract-manifest.js").catch(async () => {
+        return await import("./contract-manifest");
+      });
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+      const validation = validateManifest(manifest);
+      if (validation.valid) {
+        console.log("Found valid contract deployment manifest at contract/deployment-manifest.json");
+        factoryContractId = manifest.contracts?.factory?.id || "";
+        arenaContractId = manifest.contracts?.arena?.id || "";
+        payoutContractId = manifest.contracts?.payout?.id || "";
+        stakingContractId = manifest.contracts?.staking?.id || "";
+      } else {
+        console.warn("Deployment manifest found but failed validation:", validation.errors);
+      }
+    } catch (e) {
+      console.warn("Could not load or validate deployment manifest:", e);
+    }
+  }
+
   lines.push(
-    "# Contract IDs — fill in after running: make contracts-deploy NETWORK=testnet"
+    "# Contract IDs — auto-populated from contract/deployment-manifest.json or manual deploy"
   );
-  lines.push("FACTORY_CONTRACT_ID=");
-  lines.push("ARENA_CONTRACT_ID=");
-  lines.push("PAYOUT_CONTRACT_ID=");
-  lines.push("STAKING_CONTRACT_ID=");
+  lines.push(`FACTORY_CONTRACT_ID=${factoryContractId}`);
+  lines.push(`ARENA_CONTRACT_ID=${arenaContractId}`);
+  lines.push(`PAYOUT_CONTRACT_ID=${payoutContractId}`);
+  lines.push(`STAKING_CONTRACT_ID=${stakingContractId}`);
+  lines.push(`CONTRACT_MANIFEST_PATH=${path.relative(process.cwd(), manifestPath)}`);
   lines.push("");
   lines.push("# Backend");
   lines.push("DATABASE_URL=postgresql://localhost:5432/inversearena_test");

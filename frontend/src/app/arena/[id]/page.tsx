@@ -1,4 +1,4 @@
-import { ArenaLobbyClient } from "@/features/arena-lobby/ArenaLobbyClient";
+import { ArenaLobbyClient } from "@/features/arena-lobby/components/ArenaLobbyClient";
 
 interface PageProps {
   params: Promise<{ id: string }>;

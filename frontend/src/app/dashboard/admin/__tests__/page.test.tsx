@@ -8,12 +8,12 @@ jest.mock("next/navigation", () => ({
 }));
 
 const useWalletMock = jest.fn();
-jest.mock("@/features/wallet/useWallet", () => ({
+jest.mock("@/features/wallet/hooks/useWallet", () => ({
   useWallet: () => useWalletMock(),
 }));
 
 const useAdminRoleMock = jest.fn();
-jest.mock("@/features/wallet/useAdminRole", () => ({
+jest.mock("@/features/wallet/hooks/useAdminRole", () => ({
   useAdminRole: (publicKey: string | null) => useAdminRoleMock(publicKey),
 }));
 

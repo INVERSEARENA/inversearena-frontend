@@ -1,10 +1,24 @@
 import { PrismaClient } from "@prisma/client";
-import type { Arena } from "@prisma/client";
+import { randomUUID } from "crypto";
+import type { PlayerStatusReader } from "./playerStatus";
+import type { OnChainReadResult } from "../types/onChainRead";
+
+const ELIGIBILITY_SNAPSHOT_TTL_MS = 10_000;
+const MAX_ELIGIBILITY_SNAPSHOTS = 5_000;
+
+export type PlayerCountReader = (contractId: string) => Promise<OnChainReadResult<number>>;
 
 export interface EligibilityCheckResult {
   isEligible: boolean;
   errors: EligibilityError[];
   warnings: string[];
+  snapshot: {
+    id: string;
+    network: string;
+    ledgerSequence: number;
+    verifiedAt: string;
+    expiresAt: string;
+  } | null;
   metadata: {
     currentPlayers: number;
     maxPlayers: number;
@@ -21,17 +35,31 @@ export interface EligibilityError {
 }
 
 export class ParticipantEligibilityService {
-  constructor(private prisma: PrismaClient) {}
+  private readonly snapshots = new Map<string, {
+    ownerWallet: string;
+    arenaId: string;
+    expiresAtMs: number;
+    result: EligibilityCheckResult;
+  }>();
+
+  constructor(
+    private prisma: PrismaClient,
+    private readPlayerStatus: PlayerStatusReader,
+    private readPlayerCount?: PlayerCountReader,
+  ) {}
 
   /**
    * Perform a comprehensive eligibility check before join transaction construction.
    *
    * Checks:
    * - Capacity: Arena is not full
-   * - Phase: Arena is in joinable phase
+   * - Phase: Arena is in its lobby (on-chain `get_player_status`, #1582)
    * - Balance: Player has sufficient balance for stake
    * - Token: Correct token type for arena
-   * - Duplicate membership: Player not already in arena
+   * - Duplicate membership: Player not already joined (on-chain, #1582)
+   *
+   * The arena id is its contract address, so membership and phase come from
+   * the contract rather than from indexed rows that can lag the chain.
    */
   async checkEligibility(
     arenaId: string,
@@ -42,20 +70,12 @@ export class ParticipantEligibilityService {
     const errors: EligibilityError[] = [];
     const warnings: string[] = [];
 
-    // Fetch arena and latest round info
-    const arena = await this.prisma.arena.findUnique({
-      where: { id: arenaId },
-      include: {
-        rounds: {
-          orderBy: { roundNumber: "desc" },
-          take: 1,
-        },
-      },
-    });
+    const arena = await this.prisma.arena.findUnique({ where: { id: arenaId } });
 
     if (!arena) {
       return {
         isEligible: false,
+        snapshot: null,
         errors: [
           {
             code: "ARENA_NOT_FOUND",
@@ -74,9 +94,39 @@ export class ParticipantEligibilityService {
       };
     }
 
-    const latestRound = arena.rounds[0];
-    const currentPlayers = await this.getCurrentPlayerCount(arenaId);
-    const arenaPhase = this.determineArenaPhase(arena, latestRound);
+    let currentPlayers = this.readPlayerCount ? 0 : await this.getCurrentPlayerCount(arenaId);
+    const [statusRead, playerCountRead] = await Promise.all([
+      this.readPlayerStatus(arenaId, playerWallet),
+      this.readPlayerCount?.(arenaId) ?? Promise.resolve(null),
+    ]);
+    const statusHasVerifiedBoundary =
+      statusRead.outcome === "verified" &&
+      statusRead.provenance.ledgerSequence !== null &&
+      Number.isInteger(statusRead.provenance.ledgerSequence) &&
+      statusRead.provenance.ledgerSequence >= 0 &&
+      statusRead.provenance.network.length > 0;
+    const countHasVerifiedBoundary =
+      playerCountRead?.outcome === "verified" &&
+      playerCountRead.provenance.ledgerSequence !== null &&
+      Number.isInteger(playerCountRead.provenance.ledgerSequence) &&
+      playerCountRead.provenance.network.length > 0 &&
+      Number.isInteger(playerCountRead.value) &&
+      playerCountRead.value >= 0;
+    const boundariesMatch =
+      !this.readPlayerCount ||
+      (statusHasVerifiedBoundary &&
+        countHasVerifiedBoundary &&
+        statusRead.outcome === "verified" &&
+        playerCountRead?.outcome === "verified" &&
+        statusRead.provenance.network === playerCountRead.provenance.network &&
+        statusRead.provenance.ledgerSequence === playerCountRead.provenance.ledgerSequence);
+    const hasVerifiedBoundary = statusHasVerifiedBoundary && boundariesMatch;
+    if (playerCountRead?.outcome === "verified") currentPlayers = playerCountRead.value;
+    const boundaryUnavailable = statusRead.outcome === "verified" && !hasVerifiedBoundary;
+    const status = hasVerifiedBoundary && statusRead.outcome === "verified"
+      ? statusRead.value
+      : null;
+    const arenaPhase = status?.phase ?? "UNKNOWN";
     const requiredStake = arena.entryFee;
 
     // Check 1: Capacity
@@ -88,11 +138,33 @@ export class ParticipantEligibilityService {
       });
     }
 
-    // Check 2: Phase - joinable phases are WAITING or RECRUITING
-    if (arenaPhase !== "WAITING" && arenaPhase !== "RECRUITING") {
+    // Check 2: Phase - only the lobby accepts joins. An unreadable status is
+    // a failure, never an assumed-joinable arena.
+    if (!status) {
+      errors.push({
+        code: boundaryUnavailable ? "LEDGER_BOUNDARY_UNAVAILABLE" : "PLAYER_STATUS_UNAVAILABLE",
+        message: boundaryUnavailable
+          ? "Could not verify the ledger boundary for this eligibility snapshot; try again"
+          : "Could not read the player's on-chain arena status; try again",
+        severity: "error",
+      });
+    } else if (status.phase !== "Lobby") {
       errors.push({
         code: "ARENA_NOT_JOINABLE",
         message: `Arena is in ${arenaPhase} phase and cannot accept new players`,
+        severity: "error",
+      });
+    }
+    if (this.readPlayerCount && playerCountRead?.outcome !== "verified") {
+      errors.push({
+        code: "PLAYER_COUNT_UNAVAILABLE",
+        message: "Could not verify the arena player count; try again",
+        severity: "error",
+      });
+    } else if (this.readPlayerCount && !boundariesMatch) {
+      errors.push({
+        code: "LEDGER_BOUNDARY_MISMATCH",
+        message: "Arena eligibility reads came from different ledgers; try again",
         severity: "error",
       });
     }
@@ -125,24 +197,13 @@ export class ParticipantEligibilityService {
       });
     }
 
-    // Check 6: Duplicate membership - player already in current round
-    if (latestRound) {
-      const existingParticipant = await this.prisma.arenaParticipant.findUnique({
-        where: {
-          roundId_walletAddress: {
-            roundId: latestRound.id,
-            walletAddress: playerWallet,
-          },
-        },
+    // Check 6: Duplicate membership
+    if (status?.joined) {
+      errors.push({
+        code: "DUPLICATE_MEMBERSHIP",
+        message: "This wallet address is already participating in this arena",
+        severity: "error",
       });
-
-      if (existingParticipant) {
-        errors.push({
-          code: "DUPLICATE_MEMBERSHIP",
-          message: "This wallet address is already participating in this arena",
-          severity: "error",
-        });
-      }
     }
 
     // Check 7: Network mismatch warning
@@ -155,10 +216,11 @@ export class ParticipantEligibilityService {
       warnings.push("Arena is nearly full; other players may be joining simultaneously");
     }
 
-    return {
+    const result: EligibilityCheckResult = {
       isEligible: errors.length === 0,
       errors,
       warnings,
+      snapshot: null,
       metadata: {
         currentPlayers,
         maxPlayers: arena.maxPlayers,
@@ -167,6 +229,50 @@ export class ParticipantEligibilityService {
         requiredStake,
       },
     };
+    if (status && hasVerifiedBoundary && statusRead.outcome === "verified") {
+      const expiresAtMs = Date.now() + ELIGIBILITY_SNAPSHOT_TTL_MS;
+      const snapshot = {
+        id: randomUUID(),
+        network: statusRead.provenance.network,
+        ledgerSequence: statusRead.provenance.ledgerSequence!,
+        verifiedAt: statusRead.provenance.observedAt,
+        expiresAt: new Date(expiresAtMs).toISOString(),
+      };
+      result.snapshot = snapshot;
+      this.snapshots.set(snapshot.id, {
+        ownerWallet: playerWallet,
+        arenaId,
+        expiresAtMs,
+        result: this.cloneResult(result),
+      });
+      this.pruneSnapshots();
+    }
+    return result;
+  }
+
+  /** Retrieve a previously verified, short-lived snapshot without another RPC read. */
+  getSnapshot(snapshotId: string, arenaId: string, playerWallet: string): EligibilityCheckResult | null {
+    const snapshot = this.snapshots.get(snapshotId);
+    if (
+      !snapshot ||
+      snapshot.arenaId !== arenaId ||
+      snapshot.ownerWallet !== playerWallet ||
+      snapshot.expiresAtMs <= Date.now()
+    ) {
+      this.snapshots.delete(snapshotId);
+      return null;
+    }
+    return this.cloneResult(snapshot.result);
+  }
+
+  /** Mutation callers must use a live verified read, never the reusable snapshot cache. */
+  checkFreshEligibility(
+    arenaId: string,
+    playerWallet: string,
+    playerBalance: number,
+    balanceAsset: "USDC" | "XLM" | "EURC",
+  ): Promise<EligibilityCheckResult> {
+    return this.checkEligibility(arenaId, playerWallet, playerBalance, balanceAsset);
   }
 
   /**
@@ -194,32 +300,25 @@ export class ParticipantEligibilityService {
     return count;
   }
 
-  /**
-   * Determine the phase of an arena based on current time and latest round state.
-   */
-  private determineArenaPhase(
-    arena: Arena,
-    latestRound: { state: string } | undefined,
-  ): string {
-    const now = new Date();
-
-    if (arena.resolvedAt && new Date(arena.resolvedAt) < now) {
-      return "SETTLED";
+  private pruneSnapshots(): void {
+    const now = Date.now();
+    for (const [id, snapshot] of this.snapshots) {
+      if (snapshot.expiresAtMs <= now) this.snapshots.delete(id);
     }
-
-    if (latestRound) {
-      if (latestRound.state === "ACTIVE") {
-        return "ACTIVE";
-      }
-      if (latestRound.state === "RESOLVED") {
-        return "ROUND_RESOLVED";
-      }
+    while (this.snapshots.size > MAX_ELIGIBILITY_SNAPSHOTS) {
+      const oldest = this.snapshots.keys().next().value;
+      if (oldest === undefined) break;
+      this.snapshots.delete(oldest);
     }
+  }
 
-    if (arena.joinDeadline && new Date(arena.joinDeadline) < now) {
-      return "CLOSED";
-    }
-
-    return "WAITING";
+  private cloneResult(result: EligibilityCheckResult): EligibilityCheckResult {
+    return {
+      ...result,
+      snapshot: result.snapshot ? { ...result.snapshot } : null,
+      errors: result.errors.map((error) => ({ ...error })),
+      warnings: [...result.warnings],
+      metadata: { ...result.metadata },
+    };
   }
 }

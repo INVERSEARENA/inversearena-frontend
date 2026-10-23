@@ -1,3 +1,4 @@
+import { processEnv } from "./env";
 export const DEFAULT_TX_WORKER_CONCURRENCY = 1;
 
 export interface TxWorkerConfig {
@@ -14,7 +15,7 @@ function positiveInteger(value: string | undefined, name: string): number {
 }
 
 export function getTxWorkerConfig(
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv = processEnv,
 ): TxWorkerConfig {
   const value =
     env.TX_WORKER_CONCURRENCY ??

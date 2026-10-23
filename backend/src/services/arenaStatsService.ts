@@ -41,6 +41,8 @@ export class ArenaStatsService {
       throw new Error(`Arena with ID ${arenaId} not found`);
     }
 
+    const precomputed = await this.prisma.arenaStats.findUnique({ where: { arenaId } });
+
     const metadata = (arena.metadata as Record<string, unknown>) ?? {};
     const entryFee =
       (metadata.entryFee as number | undefined) ??
@@ -115,9 +117,11 @@ export class ArenaStatsService {
 
     const playerCount = onChainOverlay
       ? onChainOverlay.playerCount
-      : await this.prisma.pool.count({ where: { arenaId } });
+      : (precomputed?.players ?? await this.prisma.pool.count({ where: { arenaId } }));
 
-    const eliminatedCount = await this.prisma.eliminationLog
+    const eliminatedCount = precomputed
+      ? precomputed.eliminations
+      : await this.prisma.eliminationLog
       .findMany({
         where: { round: { arenaId } },
         distinct: ["userId"],
@@ -135,7 +139,12 @@ export class ArenaStatsService {
     if (onChainOverlay) {
       yieldAccrued = onChainOverlay.yieldAccrued;
     } else {
-      yieldAccrued = 0;
+      yieldAccrued = precomputed?.yieldAccrued ?? 0;
+      if (precomputed) {
+        // Incremental stats are authoritative for DB-backed reads.
+        yieldAccrued = precomputed.yieldAccrued;
+      } else {
+        yieldAccrued = 0;
       rounds.forEach((round) => {
         if (round.state === "RESOLVED") {
           const roundMetadata = (round.metadata as Record<string, unknown>) ?? {};
@@ -143,6 +152,7 @@ export class ArenaStatsService {
           yieldAccrued += roundYield;
         }
       });
+      }
     }
 
     // Check if prize has been claimed by looking for a SETTLED round — this

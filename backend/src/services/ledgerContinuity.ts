@@ -35,6 +35,7 @@ import {
   ledgerRollbackRecoveryDuration,
 } from "../utils/metrics";
 import { setLedgerObserver } from "./ledgerClock";
+import { env } from "../config/env";
 
 export interface LedgerIdentity {
   sequence: number;
@@ -386,7 +387,7 @@ export function setLedgerContinuityForTest(next: LedgerContinuity | null): void 
  * recovery, and installation as the ledger observer.
  */
 export async function initLedgerContinuity(
-  network: string = process.env.STELLAR_NETWORK_PASSPHRASE ?? "default",
+  network: string = env.STELLAR_NETWORK_PASSPHRASE ?? "default",
 ): Promise<LedgerContinuity> {
   const key = cacheKeys.ledgerContinuity(network);
   const continuity = new LedgerContinuity({

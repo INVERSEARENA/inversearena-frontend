@@ -33,23 +33,27 @@ import {
   feeEligibilityConsumedTotal,
   feeEligibilityExpiredTotal,
 } from "../utils/metrics";
+import { env } from "../config/env";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
 export const FEE_SPONSORSHIP_ENABLED =
-  process.env.PAYOUTS_FEE_SPONSORSHIP_ENABLED === "true";
+  env.PAYOUTS_FEE_SPONSORSHIP_ENABLED === "true";
 
 /** Hours after which an unclaimed eligibility token expires. */
-const TTL_HOURS = Number(process.env.PAYOUTS_FEE_SPONSORSHIP_TTL_HOURS ?? "72");
+const TTL_HOURS = Number(env.PAYOUTS_FEE_SPONSORSHIP_TTL_HOURS ?? "72");
 
 // ── Token types ───────────────────────────────────────────────────────────────
 
 export type EligibilityStatus = "PENDING" | "CONSUMED" | "EXPIRED";
+export type TransactionType = "payout" | "join" | "commit" | "reveal";
 
 export interface FeeEligibilityToken {
   tokenId: string;
-  payoutId: string;
+  payoutId?: string;
+  arenaId?: string;
   winnerId: string;
+  transactionType: TransactionType;
   issuedAt: string;  // ISO string
   expiresAt: string; // ISO string
   status: EligibilityStatus;
@@ -98,17 +102,33 @@ const tokenStore = new Map<string, FeeEligibilityToken>();
 
 export class FeeSponsorshipService {
   /**
-   * Issue a new, one-time fee eligibility token for a winner.
+   * Issue a new, one-time fee eligibility token for a transaction (#1518).
+   * Supports payout claims and arena gameplay transactions (join, commit, reveal).
    *
-   * Idempotent per (payoutId, winnerId): issuing twice for the same pair
+   * Idempotent per (transactionType, transactionId, winnerId): issuing twice for the same pair
    * returns the existing token.
    */
-  issueEligibility(payoutId: string, winnerId: string): FeeEligibilityToken {
-    // Idempotency: return existing pending token for this payout.
+  issueEligibility(
+    winnerId: string,
+    transactionType: TransactionType = "payout",
+    transactionId: string | null = null,
+  ): FeeEligibilityToken {
+    const payoutId = transactionType === "payout" ? transactionId : null;
+    const arenaId = ["join", "commit", "reveal"].includes(transactionType) ? transactionId : null;
+
+    // Idempotency: return existing pending token for this transaction.
     for (const token of tokenStore.values()) {
-      if (token.payoutId === payoutId && token.winnerId === winnerId) {
-        logger.debug({ payoutId, winnerId }, "fee_eligibility_idempotent_return");
-        return token;
+      if (token.winnerId === winnerId && token.transactionType === transactionType) {
+        if (
+          (transactionType === "payout" && token.payoutId === payoutId) ||
+          (transactionType !== "payout" && token.arenaId === arenaId)
+        ) {
+          logger.debug(
+            { winnerId, transactionType, transactionId },
+            "fee_eligibility_idempotent_return"
+          );
+          return token;
+        }
       }
     }
 
@@ -118,8 +138,10 @@ export class FeeSponsorshipService {
 
     const token: FeeEligibilityToken = {
       tokenId,
-      payoutId,
+      ...(payoutId && { payoutId }),
+      ...(arenaId && { arenaId }),
       winnerId,
+      transactionType,
       issuedAt: now.toISOString(),
       expiresAt: expiresAt.toISOString(),
       status: "PENDING",
@@ -128,7 +150,7 @@ export class FeeSponsorshipService {
 
     tokenStore.set(tokenId, token);
     feeEligibilityIssuedTotal.inc();
-    logger.info({ tokenId, payoutId, winnerId }, "fee_eligibility_issued");
+    logger.info({ tokenId, transactionType, winnerId }, "fee_eligibility_issued");
 
     return token;
   }

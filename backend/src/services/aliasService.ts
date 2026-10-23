@@ -28,9 +28,12 @@ import { logger } from "../utils/logger";
 import { aliasUpdateTotal } from "../utils/metrics";
 import { UserModel } from "../db/models/user.model";
 import { apiError } from "../utils/apiError";
+import { env } from "../config/env";
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
+// TODO(#1498): normalize Mongo/Prisma/wallet identity joins through one resolver.
+export const IDENTITY_NAMESPACE = "alias:identity:normalized";
 const ALIAS_GRACE_PERIOD_DAYS = 30;
 const ALIAS_HISTORY_MAX = 50; // cap stored history per user
 
@@ -58,7 +61,7 @@ const BUILT_IN_BLOCK_LIST = [
 ];
 
 function buildBlockList(): Set<string> {
-  const extra = (process.env.ALIAS_BLOCK_LIST ?? "")
+  const extra = (env.ALIAS_BLOCK_LIST ?? "")
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);

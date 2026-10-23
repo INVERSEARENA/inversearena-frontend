@@ -16,6 +16,7 @@ import {
   workerTerminalFailuresTotal,
   ledgerRollbackAffectedConsumersTotal,
 } from "../utils/metrics";
+import { env } from "../config/env";
 
 const QUEUE_LABELS = { queue: TX_CONFIRM_QUEUE } as const;
 const WORKER_LABELS = { worker: "tx-reconciler" } as const;
@@ -151,7 +152,7 @@ export function startTxReconcilerWorker(
     async (job: Job<ConfirmJobData>, token?: string) =>
       reconcileSubmittedTransaction(job, paymentService, transactionStateMachine, token),
     {
-      connection: { url: process.env.REDIS_URL ?? "redis://localhost:6379" },
+      connection: { url: env.REDIS_URL ?? "redis://localhost:6379" },
       concurrency,
     },
   );

@@ -1,0 +1,165 @@
+import { describe, it, expect } from "@jest/globals";
+import { Account, Contract, type Operation, type xdr } from "@stellar/stellar-sdk";
+import {
+  buildArenaOperationFromPlan,
+  buildClaimCallOperation,
+  buildJoinCallOperation,
+  buildRevealChoiceOperation,
+  buildSubmitCommitmentOperation,
+  composeUnsignedTransaction,
+  roundSpeedToSeconds,
+  buildCreatePoolCallOperation,
+} from "../soroban-transaction-composer";
+import { createArenaCommandPlan } from "../arena-command-plan";
+
+const VALID_CONTRACT =
+  "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
+
+const VALID_PUBLIC_KEY =
+  "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
+
+function invokedFunction(op: Operation) {
+  return (op as unknown as { body: () => xdr.OperationBody })
+    .body()
+    .invokeHostFunctionOp()
+    .hostFunction()
+    .invokeContract();
+}
+
+describe("soroban-transaction-composer", () => {
+  it("roundSpeedToSeconds maps enum values", () => {
+    expect(roundSpeedToSeconds("30S")).toBe(30);
+    expect(roundSpeedToSeconds("1M")).toBe(60);
+    expect(roundSpeedToSeconds("5M")).toBe(300);
+  });
+
+  it("composeUnsignedTransaction produces an XDR-backed transaction", () => {
+    const account = new Account(
+      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+      "1",
+    );
+    const pool = new Contract(VALID_CONTRACT);
+    const op = buildJoinCallOperation(pool, VALID_PUBLIC_KEY);
+
+    const tx = composeUnsignedTransaction(account, {
+      fee: "100",
+      networkPassphrase: "Test SDF Network ; September 2015",
+      timeout: 30,
+      operation: op,
+    });
+
+    expect(tx.operations.length).toBe(1);
+  });
+
+  it("buildJoinCallOperation invokes join_arena with the player address", () => {
+    const pool = new Contract(VALID_CONTRACT);
+    const op = buildJoinCallOperation(pool, VALID_PUBLIC_KEY);
+
+    const invoked = invokedFunction(op);
+    expect(invoked.functionName().toString()).toBe("join_arena");
+    expect(invoked.args()).toHaveLength(1);
+  });
+
+  it("buildClaimCallOperation invokes claim with the winner address", () => {
+    const pool = new Contract(VALID_CONTRACT);
+    const op = buildClaimCallOperation(pool, VALID_PUBLIC_KEY);
+
+    const invoked = invokedFunction(op);
+    expect(invoked.functionName().toString()).toBe("claim");
+    expect(invoked.args()).toHaveLength(1);
+  });
+
+  it("adapts a domain command plan into an SDK operation", () => {
+    const createdAt = new Date();
+    const plan = createArenaCommandPlan({
+      actor: VALID_PUBLIC_KEY,
+      contractId: VALID_CONTRACT,
+      call: { name: "join_arena" },
+      preconditions: [
+        { name: "player_joined", expected: false },
+        { name: "arena_phase", expected: "Lobby" },
+      ],
+      capabilityRevision: 7,
+      createdAt,
+      expiresInSeconds: 30,
+    });
+    const operation = buildArenaOperationFromPlan(new Contract(VALID_CONTRACT), plan);
+
+    expect(invokedFunction(operation).functionName().toString()).toBe("join_arena");
+    expect(plan.revisions.capabilityStore).toBe(7);
+    expect(plan.expiresAt).toBe(new Date(createdAt.getTime() + 30_000).toISOString());
+  });
+
+  it("refuses to construct SDK operations from an expired plan", () => {
+    const plan = createArenaCommandPlan({
+      actor: VALID_PUBLIC_KEY,
+      contractId: VALID_CONTRACT,
+      call: { name: "join_arena" },
+      preconditions: [],
+      capabilityRevision: 1,
+      createdAt: new Date(Date.now() - 60_000),
+      expiresInSeconds: 1,
+    });
+    expect(() => buildArenaOperationFromPlan(new Contract(VALID_CONTRACT), plan)).toThrow(
+      "Arena command plan has expired",
+    );
+  });
+
+  it("buildCreatePoolCallOperation returns an invoke operation", () => {
+    const factory = new Contract(VALID_CONTRACT);
+    const op = buildCreatePoolCallOperation(
+      factory,
+      {
+        stakeAmount: 1,
+        currency: "XLM",
+        roundSpeed: "30S",
+        arenaCapacity: 8,
+      },
+      {
+        xlmContractId: VALID_CONTRACT,
+        usdcContractId: VALID_CONTRACT,
+      },
+      VALID_PUBLIC_KEY,
+    );
+
+    expect(op).toBeDefined();
+    expect(typeof (op as { body?: unknown }).body).toBe("function");
+  });
+
+  describe("commit-reveal operations (#1137)", () => {
+    const pool = new Contract(VALID_CONTRACT);
+
+    it("buildSubmitCommitmentOperation invokes submit_commitment with (player, commitment)", () => {
+      const commitment = new Uint8Array(32).fill(9);
+      const op = buildSubmitCommitmentOperation(pool, VALID_PUBLIC_KEY, commitment);
+
+      const invoked = invokedFunction(op);
+      expect(invoked.functionName().toString()).toBe("submit_commitment");
+      expect(invoked.args()).toHaveLength(2);
+      expect(invoked.args()[1]!.bytes().equals(Buffer.from(commitment))).toBe(true);
+    });
+
+    it("buildSubmitCommitmentOperation rejects a commitment that isn't 32 bytes", () => {
+      expect(() =>
+        buildSubmitCommitmentOperation(pool, VALID_PUBLIC_KEY, new Uint8Array(16)),
+      ).toThrow(/32 bytes/);
+    });
+
+    it("buildRevealChoiceOperation invokes reveal_choice with (player, choice, salt)", () => {
+      const salt = new Uint8Array(32).fill(3);
+      const op = buildRevealChoiceOperation(pool, VALID_PUBLIC_KEY, "Tails", salt);
+
+      const invoked = invokedFunction(op);
+      expect(invoked.functionName().toString()).toBe("reveal_choice");
+      expect(invoked.args()).toHaveLength(3);
+      expect(invoked.args()[1]!.sym().toString()).toBe("Tails");
+      expect(invoked.args()[2]!.bytes().equals(Buffer.from(salt))).toBe(true);
+    });
+
+    it("buildRevealChoiceOperation rejects a salt that isn't 32 bytes", () => {
+      expect(() =>
+        buildRevealChoiceOperation(pool, VALID_PUBLIC_KEY, "Heads", new Uint8Array(31)),
+      ).toThrow(/32 bytes/);
+    });
+  });
+});

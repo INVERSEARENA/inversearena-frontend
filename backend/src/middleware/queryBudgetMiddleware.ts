@@ -26,6 +26,15 @@ const ROUTE_BUDGETS: Record<string, QueryBudgetConfig> = {
     maxSingleQueryTimeMs: 200,
     mode: "warn",
   },
+  // Claim inbox (#1489). One payout page plus a bounded walk of the arenas a
+  // wallet participated in, so the cost scales with participation and needs its
+  // own ceiling rather than the shared default.
+  "/api/users/me/claim-inbox": {
+    maxQueries: 40,
+    maxCumulativeTimeMs: 700,
+    maxSingleQueryTimeMs: 250,
+    mode: "warn",
+  },
   "/api/arena-replay": {
     maxQueries: 30,
     maxCumulativeTimeMs: 600,

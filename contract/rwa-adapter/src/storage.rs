@@ -1,4 +1,4 @@
-use crate::types::{PendingAdmin, RwaConfig, RwaError, YieldAccrual};
+use crate::types::{PendingAdmin, RwaConfig, RwaError, YieldAccrual, YieldIndex};
 use soroban_sdk::{Address, Env, symbol_short};
 
 // Extend TTL whenever a persistent key is read or written (#1076, #1077).
@@ -8,6 +8,11 @@ const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
 #[soroban_sdk::contracttype]
 enum DataKey {
     Position(Address),
+    YieldIndex,
+    /// Principal a position has deposited and not yet withdrawn (#1633).
+    /// Kept beside `Position` rather than inside `YieldAccrual` so existing
+    /// position entries still decode; a position without one has basis 0.
+    Basis(Address),
 }
 
 pub struct RwaStorage;
@@ -67,7 +72,18 @@ impl RwaStorage {
                 principal: 0,
                 withdrawn: false,
                 deposited_at: 0,
+                index_entry: 0,
             })
+    }
+
+    pub fn load_yield_index(env: &Env) -> Option<YieldIndex> {
+        Self::extend_ttl(env, &DataKey::YieldIndex);
+        env.storage().persistent().get(&DataKey::YieldIndex)
+    }
+
+    pub fn save_yield_index(env: &Env, index: &YieldIndex) {
+        Self::extend_ttl(env, &DataKey::YieldIndex);
+        env.storage().persistent().set(&DataKey::YieldIndex, index);
     }
 
     pub fn save_position(env: &Env, user: &Address, pos: &YieldAccrual) {
@@ -75,6 +91,22 @@ impl RwaStorage {
         env.storage()
             .persistent()
             .set(&DataKey::Position(user.clone()), pos);
+    }
+
+    pub fn load_basis(env: &Env, user: &Address) -> i128 {
+        let key = DataKey::Basis(user.clone());
+        Self::extend_ttl(env, &key);
+        env.storage().persistent().get(&key).unwrap_or(0)
+    }
+
+    pub fn save_basis(env: &Env, user: &Address, basis: i128) {
+        let key = DataKey::Basis(user.clone());
+        if basis == 0 {
+            env.storage().persistent().remove(&key);
+            return;
+        }
+        env.storage().persistent().set(&key, &basis);
+        Self::extend_ttl(env, &key);
     }
 
     // ── Pending Admin ─────────────────────────────────────────────────────

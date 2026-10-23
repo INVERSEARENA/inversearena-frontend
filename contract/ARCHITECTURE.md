@@ -145,6 +145,16 @@ Trust notes:
   - propose, execute, and cancel upgrades
 - Gameplay entrypoints like `start_round` and `timeout_round` are intentionally callable by non-admin actors, but still guarded by contract state.
 
+### Host inactivity liveness
+
+An active round remains host-controlled until its configured deadline plus
+`HOST_GRACE_SECONDS` (one hour). After that point, `resolve_round` is
+permissionless. Between rounds, `start_next_round(caller)` is permissionless
+after the same grace period and reuses the stored round duration. Both keeper
+paths remain blocked while the arena is paused, and transition events identify
+host versus keeper initiation. This lets a live arena reach its normal winner
+state even if its host disappears.
+
 ### Payout
 
 - Has its own admin key.
@@ -178,6 +188,32 @@ Trust notes:
 - Because some flows are still stubbed or partially implemented, reviewers should distinguish between:
   - current on-chain guarantees already present in code
   - intended future interactions described here for system understanding
+
+### Settlement security (#1627, #1630, #1631)
+
+- **Expiry griefing (#1627).** `expire_arena` opens only after
+  `commit_deadline + EXPIRY_GRACE_SECONDS` (86,400 s). The commit deadline is
+  also when reveals open and `resolve_round` becomes callable, so an earlier
+  gate would let any account cancel the game before reveals or resolution. The
+  grace period sits well above `HOST_GRACE_SECONDS`, so a keeper-initiated
+  resolution cannot race a stranger's expiry.
+- **Commitment binding (#1630).** The commitment is
+  `SHA-256("IA_COMMIT_V1" || arena || round || player || choice || salt)`, where
+  `arena` and `player` are the ScVal XDR of each address and `round` is `u32`
+  big-endian. A hash copied from another player, arena, or round fails
+  `reveal_choice` with `InvalidReveal`. The layout is shared with the frontend
+  through `contract/test-vectors/commitment.json`.
+  - *Migration:* the preimage changed, so a commitment made under the old
+    layout cannot be revealed after upgrade. Upgrade only while no arena has an
+    open commit phase, or accept that those players are eliminated as
+    non-revealers for that round.
+- **Fail-closed vault withdrawals (#1631).** Every settlement path (cancel,
+  force-cancel, expiry, zero-survivor resolution, claim) pulls principal through
+  one helper. `claim` pays exactly the balance delta the withdrawal delivered,
+  and reverts with `VaultWithdrawFailed` if the vault refuses. A cancellation
+  that cannot withdraw still completes, but sets `funds_in_vault`, which blocks
+  `claim_refund` with `FundsInVault`. `retry_withdraw` is permissionless and
+  idempotent, and clears the flag once the vault releases the principal.
 
 ## Implementation Status Note
 

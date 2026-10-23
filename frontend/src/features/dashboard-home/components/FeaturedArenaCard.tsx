@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import type { ArenaCard } from "../types";
+import type { ArenaCard } from "../model/types";
 
 interface FeaturedArenaCardProps {
     arena: ArenaCard;

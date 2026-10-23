@@ -10,6 +10,7 @@ import {
 } from "../validation/authSchemas";
 import { SignPayoutBodySchema, TransactionIdParamSchema, YieldUpdateSchema } from "../validation/requestValidation";
 import { RoundInputSchema } from "../types/round";
+import { ClaimInboxPageSchema } from "../types/claimInbox";
 import { z } from "./zodOpenApi";
 
 const ApiErrorSchema = z.object({
@@ -33,16 +34,23 @@ export const LeaderboardQuerySchema = z.object({
   cursor: z.string().optional(),
 });
 
+export const KeysetPaginationQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(25).optional(),
+  cursor: z.string().max(512).optional(),
+});
+
 export const LeaderboardEntrySchema = z.object({
-  walletAddress: z.string(),
-  totalWinnings: z.number(),
+  id: z.string(),
   rank: z.number().int(),
+  walletAddress: z.string(),
+  survivalStreak: z.number(),
+  totalYield: z.number(),
+  arenasWon: z.number().int(),
 });
 
 export const LeaderboardResponseSchema = z.object({
-  items: z.array(LeaderboardEntrySchema),
-  cursor: z.string().nullable(),
-  hasMore: z.boolean(),
+  players: z.array(LeaderboardEntrySchema),
+  nextCursor: z.string().nullable(),
 });
 
 export const ArenaStatsSchema = z.object({
@@ -62,6 +70,29 @@ export const ArenaParticipantsResponseSchema = z.object({
   items: z.array(ArenaParticipantSchema),
   cursor: z.number().int(),
   hasMore: z.boolean(),
+});
+
+export const ArenaYieldPointSchema = z.object({
+  round: z.number().int(),
+  timestamp: z.string().datetime(),
+  rateBps: z.string().nullable(),
+  accrued: z.string(),
+  cumulative: z.string(),
+});
+
+export const ArenaYieldResponseSchema = z.object({
+  arenaId: z.string().uuid(),
+  asset: z.string(),
+  assetDecimals: z.number().int(),
+  points: z.array(ArenaYieldPointSchema),
+  nextCursor: z.string().nullable(),
+  hasMore: z.boolean(),
+  finished: z.boolean(),
+});
+
+export const ArenaYieldQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(500).default(100).optional(),
+  cursor: z.string().optional(),
 });
 
 export const ArenaIdParamSchema = z.object({
@@ -90,4 +121,5 @@ export {
   RoundInputSchema,
   ApiErrorSchema,
   YieldUpdateSchema,
+  ClaimInboxPageSchema,
 };

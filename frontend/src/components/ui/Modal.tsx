@@ -8,7 +8,7 @@ import {
   useCallback,
 } from "react";
 import { createPortal } from "react-dom";
-import { AnimatePresence, motion, type Variants, type Transition } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion, type Variants, type Transition } from "motion/react";
 
 export type ModalSize = "sm" | "md" | "lg" | "full";
 export type ModalPosition = "center" | "bottom-sheet";
@@ -168,6 +168,20 @@ function useBodyScrollLock(isOpen: boolean) {
   }, [isOpen]);
 }
 
+const reducedOverlayVariants: Variants = {
+  hidden: { opacity: 0 },
+  visible: { opacity: 1 },
+  exit: { opacity: 0 },
+};
+
+const reducedModalVariants: Variants = {
+  hidden: { opacity: 0 },
+  visible: { opacity: 1 },
+  exit: { opacity: 0 },
+};
+
+const instantTransition: Transition = { duration: 0 };
+
 export function Modal({
   isOpen,
   onClose,
@@ -182,6 +196,7 @@ export function Modal({
   className = "",
   overlayClassName = "",
 }: ModalProps) {
+  const shouldReduceMotion = useReducedMotion();
   const { containerRef, handleKeyDown } = useFocusTrap(isOpen);
 
   useBodyScrollLock(isOpen);
@@ -208,11 +223,11 @@ export function Modal({
       {isOpen && (
         <motion.div
           className={`fixed inset-0 z-50 flex p-4 ${positionStyles[position]} ${overlayClassName}`}
-          variants={overlayVariants}
+          variants={shouldReduceMotion ? reducedOverlayVariants : overlayVariants}
           initial="hidden"
           animate="visible"
           exit="exit"
-          transition={{ duration: 0.2 }}
+          transition={shouldReduceMotion ? instantTransition : { duration: 0.2 }}
           onClick={handleOverlayClick}
           aria-hidden="true"
         >
@@ -237,11 +252,11 @@ export function Modal({
               outline-none
               ${className}
             `}
-            variants={modalVariants[position]}
+            variants={shouldReduceMotion ? reducedModalVariants : modalVariants[position]}
             initial="hidden"
             animate="visible"
             exit="exit"
-            transition={transitionConfig}
+            transition={shouldReduceMotion ? instantTransition : transitionConfig}
             onClick={handleContentClick}
             onKeyDown={handleKeyDown}
           >
