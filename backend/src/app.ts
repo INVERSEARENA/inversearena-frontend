@@ -30,6 +30,7 @@ import { TransactionIntentsController } from "./controllers/transactionIntents.c
 import { RoundController } from "./controllers/round.controller";
 import { refreshArenaMetrics, refreshQueueMetrics, register } from "./utils/metrics";
 import { redis } from "./cache/redisClient";
+import { createLoadTestBypassMiddleware } from "./middleware/loadTestBypass";
 import type { QueueSnapshotSource } from "./queues/txQueue";
 import type { PaymentService } from "./services/paymentService";
 import type { PaymentWorker } from "./workers/paymentWorker";
@@ -117,6 +118,8 @@ export function createApp(deps: AppDependencies): express.Application {
   app.use(requestContextMiddleware);
   app.use(metricsMiddleware);
   app.use(queryBudgetMiddleware);
+  // Load-test rate-limit bypass: no-op unless LOAD_TEST_BYPASS_KEY is set.
+  app.use(createLoadTestBypassMiddleware());
 
   const maintenanceService = new MaintenanceService();
   app.use(maintenanceGuard(maintenanceService));
