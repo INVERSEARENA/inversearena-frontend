@@ -26,18 +26,19 @@
  */
 
 import { logger, reportErrorToSentry } from "../utils/logger";
+import { env } from "../config/env";
 
-// ── Configuration ──────────────────────────────────────────────────────────────
+// �"?�"? Configuration �"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?
 
-const FUNDING_HOPS = parseInt(process.env.SYBIL_FUNDING_HOPS ?? "2", 10);
-const COOCCURRENCE_MIN = parseInt(process.env.SYBIL_COOCCURRENCE_MIN ?? "3", 10);
-const TIMING_WINDOW_MS = parseInt(process.env.SYBIL_TIMING_WINDOW_MS ?? "2000", 10);
-const RISK_THRESHOLD = parseFloat(process.env.SYBIL_RISK_THRESHOLD ?? "0.6");
+const FUNDING_HOPS = parseInt(env.SYBIL_FUNDING_HOPS ?? "2", 10);
+const COOCCURRENCE_MIN = parseInt(env.SYBIL_COOCCURRENCE_MIN ?? "3", 10);
+const TIMING_WINDOW_MS = parseInt(env.SYBIL_TIMING_WINDOW_MS ?? "2000", 10);
+const RISK_THRESHOLD = parseFloat(env.SYBIL_RISK_THRESHOLD ?? "0.6");
 
 // Known exchange / funder addresses that should not trigger funding-graph flags.
 // Expand this list as exchanges onboard to Stellar.
 const FUNDING_ALLOWLIST = new Set<string>(
-  (process.env.SYBIL_FUNDING_ALLOWLIST ?? "").split(",").filter(Boolean)
+  (env.SYBIL_FUNDING_ALLOWLIST ?? "").split(",").filter(Boolean)
 );
 
 // ── Types ──────────────────────────────────────────────────────────────────────

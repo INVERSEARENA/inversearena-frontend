@@ -16,6 +16,11 @@ export function createWorkerRouter(
     adminAuthMiddleware,
     asyncHandler(controller.runArenaBackfill),
   );
+  router.post(
+    "/retention/run",
+    adminAuthMiddleware,
+    asyncHandler(controller.runRetention),
+  );
 
   return router;
 }

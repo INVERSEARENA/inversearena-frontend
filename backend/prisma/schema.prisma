@@ -96,17 +96,25 @@ model Round {
   @@map("rounds")
 }
 
+// High-volume append-heavy ledger of Postgres-side transaction records,
+// RANGE-partitioned by month on `createdAt` (#1622). Partitioned tables in
+// PostgreSQL require the partition key in the primary key and in every unique
+// constraint, so the PK is (id, createdAt) and the tx-hash uniqueness is
+// (txHash, createdAt). Aged partitions are moved to the cold `archive` schema
+// by the retention worker (docs/PARTITION_RETENTION_RUNBOOK.md).
 model Transaction {
-  id          String   @id @default(uuid())
-  txHash      String   @unique @map("tx_hash") // The on-chain transaction hash
+  id          String   @default(uuid())
+  txHash      String   @map("tx_hash") // The on-chain transaction hash (unique per createdAt month)
   userId      String   @map("user_id")
   amount      Float  // Amount involved
-  type        String   // Type of transaction e.g., "DEPOSIT", "WITHDRAW"
-  status      String   // Status of transaction e.g., "PENDING", "SUCCESS", "FAILED"
+  type        String  // Type of transaction e.g., "DEPOSIT", "WITHDRAW"
+  status      String  // Status of transaction e.g., "PENDING", "SUCCESS", "FAILED"
   createdAt   DateTime @default(now()) @map("created_at")
 
   user        User     @relation(fields: [userId], references: [id])
 
+  @@id([id, createdAt])
+  @@unique([txHash, createdAt])
   @@index([userId])
   @@index([status]) // Useful for querying unconfirmed transactions
   @@map("transactions")
@@ -124,8 +132,13 @@ model BackfillCursor {
   @@map("backfill_cursors")
 }
 
+// One row per player elimination, RANGE-partitioned by month on
+// `eliminatedAt` (#1622). The primary key includes the partition key as
+// required by PostgreSQL partitioned tables. Old partitions are archived
+// (never deleted) by the retention worker —
+// docs/PARTITION_RETENTION_RUNBOOK.md documents restore procedures.
 model EliminationLog {
-  id          String   @id @default(uuid())
+  id          String   @default(uuid())
   roundId     String   @map("round_id")
   userId      String   @map("user_id")
   reason      String?  // Reason for elimination if applicable
@@ -134,6 +147,7 @@ model EliminationLog {
   round       Round    @relation(fields: [roundId], references: [id])
   user        User     @relation(fields: [userId], references: [id])
 
+  @@id([id, eliminatedAt])
   @@index([roundId])
   @@index([roundId, eliminatedAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
   @@index([userId])

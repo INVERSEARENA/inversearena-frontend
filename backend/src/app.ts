@@ -34,6 +34,7 @@ import type { QueueSnapshotSource } from "./queues/txQueue";
 import type { PaymentService } from "./services/paymentService";
 import type { PaymentWorker } from "./workers/paymentWorker";
 import type { ArenaBackfillWorker } from "./workers/arenaBackfillWorker";
+import type { RetentionWorker } from "./workers/retentionWorker";
 import type { TransactionRepository } from "./repositories/transactionRepository";
 import type { TransactionIntentService } from "./services/transactionIntentService";
 import type { AdminService } from "./services/adminService";
@@ -47,6 +48,7 @@ export interface AppDependencies {
   paymentService: PaymentService;
   paymentWorker: PaymentWorker;
   arenaBackfillWorker: ArenaBackfillWorker;
+  retentionWorker: RetentionWorker;
   transactions: TransactionRepository;
   adminService: AdminService;
   authService: AuthService;
@@ -168,7 +170,7 @@ export function createApp(deps: AppDependencies): express.Application {
     deps.paymentService,
     deps.transactions,
   );
-  const workerController = new WorkerController(deps.paymentWorker, deps.arenaBackfillWorker);
+  const workerController = new WorkerController(deps.paymentWorker, deps.arenaBackfillWorker, deps.retentionWorker);
   const adminController = new AdminController(
     deps.adminService,
     deps.paymentService,
