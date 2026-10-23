@@ -3,6 +3,8 @@
 
 #![cfg(test)]
 
+extern crate std;
+
 use super::*;
 use ::oracle::{OracleContract, OracleContractClient};
 use soroban_sdk::{

@@ -1,6 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
 import type { ArenaState } from "@/shared/lib/stellar/contract-state";
 import { Timer } from "@/components/arena/core/Timer";
+import { renderWithIntl } from "@/test-utils/renderWithIntl";
 import { ArenaStateSummary } from "@/components/arena/ArenaStateSummary";
 import {
   arenaStore,
@@ -202,7 +203,7 @@ describe("arena selector integration", () => {
   });
 
   it("keeps timer ticks out of the store and unrelated selectors", () => {
-    render(
+    renderWithIntl(
       <>
         <Timer initialSeconds={2} />
         <ArenaStateSummary />

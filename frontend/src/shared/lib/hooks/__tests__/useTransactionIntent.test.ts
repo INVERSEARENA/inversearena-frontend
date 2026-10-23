@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, jest } from "@jest/globals
 import { renderHook, act } from "@testing-library/react";
 import { Account, Contract, TransactionBuilder } from "@stellar/stellar-sdk";
 import { useTransactionIntent } from "../useTransactionIntent";
+import { balanceCache, resetBalanceCache } from "@/shared/lib/stellar/balance-cache";
 
 const PASSPHRASE = "Test SDF Network ; September 2015";
 const PUBLIC_KEY = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
@@ -272,5 +273,80 @@ describe("useTransactionIntent", () => {
     expect(outcome?.hash).toEqual(expect.any(String));
     expect(signTransaction).toHaveBeenCalledTimes(1);
     expect(submitSignedTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * #1625 — a confirmed transaction changes the wallet's balance on-chain, so
+   * the shared balance cache must be invalidated at that exact moment.
+   * Otherwise the header, the join modal and the stake modal keep rendering
+   * the pre-transaction amount.
+   */
+  it("invalidates the wallet's cached balances once the transaction confirms", async () => {
+    resetBalanceCache();
+    balanceCache.set(PUBLIC_KEY, "XLM", 42);
+    balanceCache.set(PUBLIC_KEY, "USDC", 7);
+
+    fetchMock.mockImplementation((url: string) => {
+      if (url.endsWith("/api/transaction-intents")) {
+        return jsonResponse({ mode: "created", intent: { id: "intent-6", status: "built" } });
+      }
+      return jsonResponse({ id: "intent-6" });
+    });
+
+    const { result } = renderHook(() => useTransactionIntent());
+    const signTransaction = jest.fn<(xdr: string) => Promise<string>>().mockResolvedValue(REAL_SIGNED_XDR);
+    const submitSignedTransaction = jest
+      .fn<(signedXdr: string) => Promise<unknown>>()
+      .mockResolvedValue({ status: "SUCCESS" });
+
+    await act(async () => {
+      await result.current.runTrackedTransaction({
+        kind: "stake",
+        actionKey: "stake:100",
+        publicKey: PUBLIC_KEY,
+        buildTransaction: async () => buildTestTransaction(),
+        signTransaction,
+        submitSignedTransaction,
+        networkPassphrase: PASSPHRASE,
+      });
+    });
+
+    expect(balanceCache.get(PUBLIC_KEY, "XLM")).toBeUndefined();
+    expect(balanceCache.get(PUBLIC_KEY, "USDC")).toBeUndefined();
+  });
+
+  it("leaves the cached balances alone when the transaction fails", async () => {
+    resetBalanceCache();
+    balanceCache.set(PUBLIC_KEY, "XLM", 42);
+
+    fetchMock.mockImplementation((url: string) => {
+      if (url.endsWith("/api/transaction-intents")) {
+        return jsonResponse({ mode: "created", intent: { id: "intent-7", status: "built" } });
+      }
+      return jsonResponse({ id: "intent-7" });
+    });
+
+    const { result } = renderHook(() => useTransactionIntent());
+    const signTransaction = jest.fn<(xdr: string) => Promise<string>>().mockResolvedValue(REAL_SIGNED_XDR);
+    const submitSignedTransaction = jest
+      .fn<(signedXdr: string) => Promise<unknown>>()
+      .mockRejectedValue(new Error("Soroban rejected transaction"));
+
+    await act(async () => {
+      await expect(
+        result.current.runTrackedTransaction({
+          kind: "stake",
+          actionKey: "stake:200",
+          publicKey: PUBLIC_KEY,
+          buildTransaction: async () => buildTestTransaction(),
+          signTransaction,
+          submitSignedTransaction,
+          networkPassphrase: PASSPHRASE,
+        })
+      ).rejects.toThrow("Soroban rejected transaction");
+    });
+
+    // The balance did not change on-chain, so the cached value is still true.
+    expect(balanceCache.get(PUBLIC_KEY, "XLM")?.value).toBe(42);
   });
 });

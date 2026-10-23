@@ -22,7 +22,7 @@ export interface NotificationPreferences {
 export interface DeliveryRecord {
   id: string;
   userId: string;
-  type: "round" | "payout" | "elimination";
+  type: "round" | "payout" | "elimination" | "rematch";
   channel: "email" | "push" | "in_app";
   status: "pending" | "sent" | "delivered" | "failed";
   dedupeKey: string;
@@ -118,7 +118,7 @@ export class NotificationPreferencesService {
    */
   async shouldNotify(
     userId: string,
-    type: "round" | "payout" | "elimination",
+    type: "round" | "payout" | "elimination" | "rematch",
     channel: "email" | "push" | "in_app",
   ): Promise<boolean> {
     const prefs = await this.getPreferences(userId);
@@ -132,6 +132,9 @@ export class NotificationPreferencesService {
     if (type === "round" && !prefs.roundNotifications) return false;
     if (type === "payout" && !prefs.payoutNotifications) return false;
     if (type === "elimination" && !prefs.eliminationNotifications) return false;
+    // A rematch is a fresh round invitation (#1572); it honours the same
+    // round-notification opt-in rather than introducing a new preference.
+    if (type === "rematch" && !prefs.roundNotifications) return false;
 
     return true;
   }
@@ -164,7 +167,7 @@ export class NotificationPreferencesService {
    */
   async recordDelivery(
     userId: string,
-    type: "round" | "payout" | "elimination",
+    type: "round" | "payout" | "elimination" | "rematch",
     channel: "email" | "push" | "in_app",
     dedupeKey: string,
   ): Promise<string> {
@@ -242,7 +245,7 @@ export class NotificationPreferencesService {
     return deliveries.map((d) => ({
       id: d.id,
       userId: d.userId,
-      type: d.type as "round" | "payout" | "elimination",
+      type: d.type as "round" | "payout" | "elimination" | "rematch",
       channel: d.channel as "email" | "push" | "in_app",
       status: d.status as "pending" | "sent" | "delivered" | "failed",
       dedupeKey: d.dedupeKey,

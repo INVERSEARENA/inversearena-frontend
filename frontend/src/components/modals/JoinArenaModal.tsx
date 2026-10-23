@@ -13,10 +13,11 @@
  * TransactionProgress.
  */
 
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useContext } from "react";
 import { Modal } from "../ui/Modal";
 import { TransactionProgress } from "../ui/TransactionProgress";
 import { useTransactionFlow } from "@/shared-d/hooks/useTransactionFlow";
+import { WalletContext } from "@/features/wallet/components/WalletProvider";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -77,6 +78,13 @@ const JoinArenaModal: React.FC<JoinArenaModalProps> = ({
   const [eligibilityWarnings, setEligibilityWarnings] = useState<string[]>([]);
   const isMountedRef = useRef(true);
 
+  // The connected wallet's address, used to invalidate the cached balances
+  // once the join confirms (#1625). Read straight from the context rather
+  // than through `useWallet()` so the modal still renders outside a
+  // WalletProvider (the dev modal gallery does exactly that).
+  const walletContext = useContext(WalletContext);
+  const publicKey = walletContext?.publicKey ?? undefined;
+
   // ── Transaction flow ───────────────────────────────────────────────────────
   //
   // builder: wraps `onConfirm` — the caller is responsible for build+sign+submit
@@ -103,6 +111,7 @@ const JoinArenaModal: React.FC<JoinArenaModalProps> = ({
     sign,
     submit,
     network,
+    publicKey,
   });
 
   // ── Reset when modal opens / closes ───────────────────────────────────────

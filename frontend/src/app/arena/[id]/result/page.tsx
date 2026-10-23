@@ -2,8 +2,14 @@
 
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import { useWallet } from "@/features/wallet/hooks/useWallet";
 import { SocialCard } from "@/components/arena-v2/modals/SocialCard";
+import { formatCount } from "@/shared-d/utils/formatters";
+import {
+  fetchRematchConfig,
+  type RematchConfig,
+} from "@/features/pools/model/rematch-config";
 
 interface RoundSummary {
   round: number;
@@ -68,25 +74,50 @@ function TrophyIcon() {
 export default function ArenaResultPage() {
   const params = useParams();
   const router = useRouter();
+  const t = useTranslations("result");
+  const tCommon = useTranslations("common");
   const { publicKey } = useWallet();
   const arenaId = Array.isArray(params.id) ? params.id[0] : params.id;
 
   const [result, setResult] = useState<ResultData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // #1572: whether the host can immediately spin up a rematch of this arena.
+  const [rematch, setRematch] = useState<RematchConfig | null>(null);
 
   useEffect(() => {
     if (!arenaId) return;
     setLoading(true);
     fetchResultData(arenaId, publicKey)
       .then(setResult)
-      .catch(() => setError("Failed to load game results. Please try again."))
+      .catch(() => setError(t("loadFailed")))
       .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [arenaId, publicKey]);
+
+  useEffect(() => {
+    if (!arenaId) return;
+    let cancelled = false;
+    // A blocked or unreadable rematch is simply not offered — it must never
+    // take the result page down with it.
+    fetchRematchConfig(arenaId)
+      .then((config) => {
+        if (!cancelled) setRematch(config);
+      })
+      .catch(() => {
+        if (!cancelled) setRematch(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [arenaId]);
 
   const handleShare = (platform: "twitter" | "copy") => {
     if (!result) return;
-    const text = `I just witnessed Arena #${arenaId} end! Winner took home ${result.totalPrize.toLocaleString()} XLM on @InverseArena 🏆`;
+    const text = t("shareText", {
+      arenaId: arenaId ?? "",
+      prize: formatCount(result.totalPrize),
+    });
     if (platform === "twitter") {
       window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}`, "_blank");
     } else {
@@ -98,7 +129,7 @@ export default function ArenaResultPage() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-black">
         <div className="font-pixel text-neon-green text-sm animate-pulse tracking-widest">
-          LOADING RESULTS...
+          {t("loading")}
         </div>
       </div>
     );
@@ -107,12 +138,12 @@ export default function ArenaResultPage() {
   if (error || !result) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-black gap-4">
-        <p className="font-pixel text-neon-pink text-sm">{error ?? "Results unavailable."}</p>
+        <p className="font-pixel text-neon-pink text-sm">{error ?? t("unavailable")}</p>
         <button
           onClick={() => router.push("/dashboard/games")}
           className="bg-neon-green text-black font-pixel text-xs px-6 py-2 hover:opacity-90"
         >
-          BACK TO GAMES
+          {t("backToGames")}
         </button>
       </div>
     );
@@ -130,41 +161,44 @@ export default function ArenaResultPage() {
             <TrophyIcon />
           </div>
           <p className="font-pixel text-[10px] text-neon-green tracking-widest uppercase">
-            ARENA #{arenaId} — GAME OVER
+            {t("gameOver", { arenaId: arenaId ?? "" })}
           </p>
           <h1 className="font-pixel text-xl md:text-3xl text-white">
-            {isWinner ? "YOU WON!" : "WINNER DECLARED"}
+            {isWinner ? t("youWon") : t("winnerDeclared")}
           </h1>
           <p className="font-mono text-sm text-neon-green break-all">
             {result.winnerAddress}
           </p>
           <p className="font-pixel text-[9px] text-white/50 tracking-wider">
-            {shortAddress(result.winnerAddress)} SURVIVED ALL {result.rounds.length} ROUNDS
+            {t("survivedAllRounds", {
+              address: shortAddress(result.winnerAddress),
+              rounds: result.rounds.length,
+            })}
           </p>
         </section>
 
         {/* Prize breakdown */}
         <section className="border border-white/20 p-6 space-y-4">
           <h2 className="font-pixel text-[10px] text-white/60 tracking-widest uppercase">
-            PRIZE BREAKDOWN
+            {t("prizeBreakdown")}
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="border border-white/10 p-4 space-y-1">
-              <p className="font-pixel text-[8px] text-white/50 tracking-wider">ENTRY FEES</p>
+              <p className="font-pixel text-[8px] text-white/50 tracking-wider">{t("entryFees")}</p>
               <p className="font-pixel text-lg text-white">
-                {result.entryFeesTotal.toLocaleString()} XLM
+                {formatCount(result.entryFeesTotal)} {tCommon("xlm")}
               </p>
             </div>
             <div className="border border-white/10 p-4 space-y-1">
-              <p className="font-pixel text-[8px] text-white/50 tracking-wider">YIELD EARNED</p>
+              <p className="font-pixel text-[8px] text-white/50 tracking-wider">{t("yieldEarned")}</p>
               <p className="font-pixel text-lg text-neon-green">
-                +{result.yieldEarned.toLocaleString()} XLM
+                +{formatCount(result.yieldEarned)} {tCommon("xlm")}
               </p>
             </div>
             <div className="border border-neon-green p-4 space-y-1">
-              <p className="font-pixel text-[8px] text-neon-green tracking-wider">TOTAL PRIZE</p>
+              <p className="font-pixel text-[8px] text-neon-green tracking-wider">{t("totalPrize")}</p>
               <p className="font-pixel text-lg text-neon-green">
-                {result.totalPrize.toLocaleString()} XLM
+                {formatCount(result.totalPrize)} {tCommon("xlm")}
               </p>
             </div>
           </div>
@@ -174,20 +208,22 @@ export default function ArenaResultPage() {
         {publicKey && (
           <section className="border border-white/20 p-6 space-y-2">
             <h2 className="font-pixel text-[10px] text-white/60 tracking-widest uppercase mb-4">
-              YOUR RESULT
+              {t("yourResult")}
             </h2>
             {isWinner ? (
               <p className="font-pixel text-sm text-neon-green">
-                YOU ARE THE WINNER — POSITION 1 OF {result.totalPlayers.toLocaleString()}
+                {t("youAreWinner", { totalPlayers: formatCount(result.totalPlayers) })}
               </p>
             ) : result.userFinishPosition ? (
               <p className="font-pixel text-sm text-white">
-                YOU FINISHED IN POSITION {result.userFinishPosition.toLocaleString()} OF{" "}
-                {result.totalPlayers.toLocaleString()} PLAYERS
+                {t("finishedPosition", {
+                  position: formatCount(result.userFinishPosition),
+                  totalPlayers: formatCount(result.totalPlayers),
+                })}
               </p>
             ) : (
               <p className="font-pixel text-sm text-white/50">
-                YOU WERE NOT IN THIS ARENA
+                {t("notInArena")}
               </p>
             )}
           </section>
@@ -196,7 +232,7 @@ export default function ArenaResultPage() {
         {/* Round timeline */}
         <section className="border border-white/20 p-6 space-y-4">
           <h2 className="font-pixel text-[10px] text-white/60 tracking-widest uppercase">
-            ROUND TIMELINE
+            {t("roundTimeline")}
           </h2>
           <div className="space-y-2">
             {result.rounds.map((r) => (
@@ -205,14 +241,14 @@ export default function ArenaResultPage() {
                 className="flex items-center justify-between border border-white/10 p-3"
               >
                 <span className="font-pixel text-[9px] text-white/60 tracking-wider">
-                  ROUND {r.round}
+                  {t("round", { round: r.round })}
                 </span>
                 <div className="flex gap-6">
                   <span className="font-pixel text-[9px] text-neon-pink">
-                    -{r.eliminated} ELIMINATED
+                    {t("eliminated", { count: r.eliminated })}
                   </span>
                   <span className="font-pixel text-[9px] text-neon-green">
-                    {r.survivors} SURVIVED
+                    {t("survived", { count: r.survivors })}
                   </span>
                 </div>
               </div>
@@ -223,11 +259,11 @@ export default function ArenaResultPage() {
         {/* Share card + CTAs */}
         <section className="space-y-4">
           <h2 className="font-pixel text-[10px] text-white/60 tracking-widest uppercase">
-            SHARE YOUR RESULT
+            {t("shareTitle")}
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <SocialCard
-              label="SHARE ON X (TWITTER)"
+              label={t("shareOnX")}
               icon={
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
                   <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.745l7.73-8.835L1.254 2.25H8.08l4.259 5.622 5.905-5.622Zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
@@ -237,7 +273,7 @@ export default function ArenaResultPage() {
               variant="outline"
             />
             <SocialCard
-              label="COPY SHARE TEXT"
+              label={t("copyShareText")}
               icon={
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                   <rect x="9" y="9" width="13" height="13" rx="2" />
@@ -250,19 +286,42 @@ export default function ArenaResultPage() {
           </div>
         </section>
 
+        {/* Rematch CTA (#1572) */}
+        {rematch?.available && rematch.config && (
+          <section className="border border-neon-green p-6 space-y-3">
+            <h2 className="font-pixel text-[10px] text-neon-green tracking-widest uppercase">
+              {t("rematchTitle")}
+            </h2>
+            <p className="font-mono text-xs text-white/70">{t("rematchDescription")}</p>
+            {rematch.isPriorParticipant && (
+              <p className="font-pixel text-[8px] text-white/50 tracking-wider">
+                {t("rematchYourPrevious")}
+              </p>
+            )}
+            <button
+              onClick={() =>
+                router.push(`/dashboard?rematch=${encodeURIComponent(rematch.arenaId)}`)
+              }
+              className="w-full bg-neon-green text-black font-pixel text-xs py-4 hover:opacity-90 uppercase tracking-widest"
+            >
+              {t("startRematch")}
+            </button>
+          </section>
+        )}
+
         {/* Play again CTA */}
         <div className="flex flex-col md:flex-row gap-3 pt-4">
           <button
             onClick={() => router.push("/dashboard/games")}
             className="flex-1 bg-neon-green text-black font-pixel text-xs py-4 hover:opacity-90 uppercase tracking-widest"
           >
-            FIND A NEW ARENA
+            {t("findNewArena")}
           </button>
           <button
             onClick={() => router.push("/dashboard")}
             className="flex-1 border border-white/20 text-white font-pixel text-xs py-4 hover:bg-white/5 uppercase tracking-widest"
           >
-            BACK TO DASHBOARD
+            {t("backToDashboard")}
           </button>
         </div>
 

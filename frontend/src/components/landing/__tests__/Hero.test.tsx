@@ -1,6 +1,7 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { screen } from '@testing-library/react';
 import Hero from '../Hero';
+import { renderWithIntl } from '@/test-utils/renderWithIntl';
 
 jest.mock('next/navigation', () => ({
   useRouter: () => ({ push: jest.fn() }),
@@ -8,25 +9,25 @@ jest.mock('next/navigation', () => ({
 
 describe('Hero', () => {
   it('renders the headline', () => {
-    render(<Hero />);
+    renderWithIntl(<Hero />);
     expect(screen.getByText(/INVERSE/i)).toBeInTheDocument();
     expect(screen.getByText(/ARENA/i)).toBeInTheDocument();
   });
 
   it('renders the tagline', () => {
-    render(<Hero />);
+    renderWithIntl(<Hero />);
     expect(
       screen.getByText(/THE SOCIAL ELIMINATION GAME WHERE THE MINORITY/i),
     ).toBeInTheDocument();
   });
 
   it('renders the PLAY NOW CTA button', () => {
-    render(<Hero />);
+    renderWithIntl(<Hero />);
     expect(screen.getByRole('button', { name: /play now/i })).toBeInTheDocument();
   });
 
   it('matches snapshot', () => {
-    const { container } = render(<Hero />);
+    const { container } = renderWithIntl(<Hero />);
     expect(container.firstChild).toMatchSnapshot();
   });
 });

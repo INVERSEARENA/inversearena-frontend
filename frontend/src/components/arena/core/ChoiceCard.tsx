@@ -1,5 +1,7 @@
 "use client";
 
+import { useTranslations } from "next-intl";
+
 interface ChoiceCardProps {
   type: "heads" | "tails";
   estimatedYield: number;
@@ -48,6 +50,7 @@ export function ChoiceCard({
   onSelect,
   disabled = false,
 }: ChoiceCardProps) {
+  const t = useTranslations("arena");
   const isHeads = type === "heads";
   const accentColor = isHeads ? "bg-neon-green" : "bg-neon-pink";
   const selectedBorder = isSelected
@@ -84,13 +87,13 @@ export function ChoiceCard({
 
       {/* Choice name */}
       <h3 className="text-4xl md:text-5xl font-bold text-black tracking-wide mb-6">
-        {type.toUpperCase()}
+        {t(type)}
       </h3>
 
       {/* Estimated yield badge */}
       <div className={`${accentColor} px-4 py-2`}>
         <span className="font-pixel text-[10px] tracking-wider text-black">
-          EST. YIELD +{estimatedYield}%
+          {t("estimatedYield", { value: estimatedYield })}
         </span>
       </div>
     </button>

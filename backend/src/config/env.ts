@@ -47,6 +47,14 @@ const int = (min: number, max = Number.MAX_SAFE_INTEGER) =>
       `must be between ${min} and ${max}`,
     );
 const flag = z.enum(["true", "false", "1", "0"], { message: 'must be "true" or "false"' });
+const decimal = (min: number, max = Number.MAX_VALUE) =>
+  z
+    .string()
+    .regex(/^-?\d+(\.\d+)?$/, "must be a number")
+    .refine(
+      (value) => !/^-?\d+(\.\d+)?$/.test(value) || (Number(value) >= min && Number(value) <= max),
+      `must be between ${min} and ${max}`,
+    );
 const contractId = z.string().regex(/^C[A-Z2-7]{55}$/, "must be a Stellar contract id (C + 55 base32 chars)");
 const accountId = z.string().regex(/^G[A-Z2-7]{55}$/, "must be a Stellar account id (G + 55 base32 chars)");
 const secretSeed = z.string().regex(/^S[A-Z2-7]{55}$/, "must be a Stellar secret seed (S + 55 base32 chars)");
@@ -356,6 +364,35 @@ export const ENV_VARS = {
     schema: int(1),
   },
 
+  // ── Edge cache / revalidation (#1626) ─────────────────────────────────────
+  FRONTEND_ORIGIN: {
+    section: "Edge cache / revalidation",
+    description:
+      "Frontend origin the backend notifies when on-chain configuration changes, so its ISR caches revalidate (#1626). Falls back to PUBLIC_WEB_ORIGIN when unset.",
+    schema: url,
+  },
+  REVALIDATION_WEBHOOK_SECRET: {
+    section: "Edge cache / revalidation",
+    description:
+      "Shared HMAC secret for the frontend /api/revalidate webhook, at least 16 characters. When unset, on-chain changes still purge backend caches but the frontend is not notified.",
+    secret: true,
+    schema: text,
+  },
+  LANDING_STATS_CACHE_MAX_AGE_SECONDS: {
+    section: "Edge cache / revalidation",
+    description:
+      "Edge Cache-Control max-age for GET /api/stats/landing (#1626). Keep below the frontend ISR revalidate window (60s).",
+    default: "30",
+    schema: int(1, 3600),
+  },
+  LANDING_STATS_STALE_WHILE_REVALIDATE_SECONDS: {
+    section: "Edge cache / revalidation",
+    description:
+      "How long an edge cache may serve stale landing stats while revalidating in the background (#1626).",
+    default: "300",
+    schema: int(1, 86_400),
+  },
+
   // ── Payouts ───────────────────────────────────────────────────────────────
   PAYOUTS_LIVE_EXECUTION: {
     section: "Payouts",
@@ -453,6 +490,80 @@ export const ENV_VARS = {
   TTL_KEEPER_RENEW_BELOW_LEDGERS: { section: "Workers", description: "Renew entries whose TTL is below this many ledgers.", schema: int(1) },
   TTL_KEEPER_MAX_RENEWALS_PER_RUN: { section: "Workers", description: "Renewal cap per `ttl:plan` run.", schema: int(1) },
   TTL_KEEPER_MAX_RENEWALS_PER_CONTRACT: { section: "Workers", description: "Renewal cap per contract per run.", schema: int(1) },
+  PARTITION_AHEAD_MONTHS: {
+    section: "Workers",
+    description:
+      "Monthly partitions to keep created ahead of the current month for the partitioned high-volume tables (#1622).",
+    default: "3",
+    schema: int(0, 120),
+  },
+  RETENTION_TRANSACTIONS_ARCHIVE_AFTER_MONTHS: {
+    section: "Workers",
+    description:
+      "Age after which a `transactions` monthly partition is moved to the cold archive schema by the retention worker (#1622).",
+    default: "13",
+    schema: int(1, 1200),
+  },
+  RETENTION_ELIMINATION_LOGS_ARCHIVE_AFTER_MONTHS: {
+    section: "Workers",
+    description:
+      "Age after which an `elimination_logs` monthly partition is moved to the cold archive schema by the retention worker (#1622).",
+    default: "13",
+    schema: int(1, 1200),
+  },
+  SYBIL_FUNDING_HOPS: {
+    section: "Workers",
+    description: "Funding-graph BFS depth scanned by the sybil detection worker.",
+    default: "2",
+    schema: int(1, 20),
+  },
+  SYBIL_COOCCURRENCE_MIN: {
+    section: "Workers",
+    description: "Minimum shared arenas before a common-funder co-occurrence signal is recorded.",
+    default: "3",
+    schema: int(1),
+  },
+  SYBIL_TIMING_WINDOW_MS: {
+    section: "Workers",
+    description: "Commit-timing burst window in milliseconds for sybil detection.",
+    default: "2000",
+    schema: int(1),
+  },
+  SYBIL_RISK_THRESHOLD: {
+    section: "Workers",
+    description: "Minimum composite sybil score required to write a flag.",
+    default: "0.6",
+    schema: decimal(0, 1),
+  },
+  SYBIL_FUNDING_ALLOWLIST: {
+    section: "Workers",
+    description: "Comma-separated exchange/funder addresses exempt from sybil funding-graph flags.",
+    schema: csv(text, "address"),
+  },
+  VAULT_WARN_COVERAGE_RATIO: {
+    section: "Workers",
+    description: "Vault coverage ratio at which a warning is emitted by the shortfall monitor.",
+    default: "1.05",
+    schema: decimal(0, 1_000),
+  },
+  VAULT_CRIT_COVERAGE_RATIO: {
+    section: "Workers",
+    description: "Vault coverage ratio at which a critical alert is emitted by the shortfall monitor.",
+    default: "1.00",
+    schema: decimal(0, 1_000),
+  },
+  VAULT_ALERT_DEDUP_MS: {
+    section: "Workers",
+    description: "Deduplication window for vault shortfall alerts in milliseconds.",
+    default: "300000",
+    schema: int(1),
+  },
+  VAULT_CHECK_INTERVAL_MS: {
+    section: "Workers",
+    description: "Vault coverage check interval in milliseconds.",
+    default: "60000",
+    schema: int(1),
+  },
 
   // ── Rate limiting ─────────────────────────────────────────────────────────
   RATE_LIMIT_APP_NAMESPACE: {

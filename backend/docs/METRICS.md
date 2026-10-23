@@ -50,6 +50,32 @@ The backend exposes Prometheus-compatible metrics at `/metrics` for monitoring:
 **`inversearena_queue_refresh_*` / `inversearena_worker_job_processing_duration_seconds`** (Counter/Histogram)
 - Snapshot success/failure and refresh/job latency
 
+### Retention & Partition Metrics (#1622)
+
+Emitted by the retention worker that maintains the monthly partitions of
+`elimination_logs` and `transactions` — see
+[PARTITION_RETENTION_RUNBOOK.md](./PARTITION_RETENTION_RUNBOOK.md).
+Action counters carry a `mode` label: `applied` for real actions, `planned`
+for dry-run previews.
+
+**`inversearena_retention_runs_total`** (Counter)
+- Retention worker runs by outcome (`status`: success, failed)
+
+**`inversearena_retention_run_duration_seconds`** (Histogram)
+- Wall-clock time of a retention pass
+
+**`inversearena_retention_partitions_created_total`** (Counter)
+- Monthly partitions created ahead of time; labels: `table`, `mode`
+
+**`inversearena_retention_partitions_archived_total`** (Counter)
+- Monthly partitions moved to the cold `archive` schema; labels: `table`, `mode`
+
+**`inversearena_retention_ephemeral_deleted_total`** (Counter)
+- Expired nonces, refresh tokens and transaction intents removed; labels: `collection`, `mode`
+
+**`inversearena_retention_hot_partitions`** (Gauge)
+- Monthly partitions currently attached per managed table; label: `table`
+
 ### Transaction Metrics
 
 **`txs_confirmed_total`** (Counter)

@@ -87,7 +87,9 @@ const MAX_START_DELAY_SECONDS: u64 = 2_592_000;
 /// negotiation across mixed deployment versions (see arena::CONTRACT_VERSION
 /// for the sibling contract's own counter — these are independent).
 /// Bumped to 2 for #1583: adds `set_global_pause` and `is_globally_paused`.
-const CONTRACT_VERSION: u32 = 2;
+/// Bumped to 3 for #1572: adds `get_active_pool_count`, a read-only view of
+/// a host's current Active-pool count for rematch headroom checks.
+const CONTRACT_VERSION: u32 = 3;
 
 /// The decimal precision `min_stake` is denominated in, matching Stellar's
 /// native asset (and the staking contract's own `MIN_INITIAL_STAKE`
@@ -548,6 +550,15 @@ impl FactoryContract {
         FactoryStorage::load_max_active_pools(&env)
     }
 
+    /// Return how many Active pools `host` currently has (#1572).
+    ///
+    /// Read-only. Lets off-chain rematch tooling check the host's
+    /// `max_active_pools` headroom before prompting them to create a
+    /// rematch pool.
+    pub fn get_active_pool_count(env: Env, host: Address) -> u32 {
+        FactoryStorage::load_active_pool_count(&env, &host)
+    }
+
     /// Pause the factory, blocking new pool creation.
     pub fn pause(env: Env) -> Result<(), FactoryError> {
         Self::require_admin(&env)?;
@@ -587,6 +598,22 @@ impl FactoryContract {
     /// arena's fund-moving entry points.
     pub fn is_globally_paused(env: Env) -> bool {
         FactoryStorage::is_globally_paused(&env)
+    }
+
+    /// The factory's current protocol admin (#1629).
+    ///
+    /// Every arena this factory deploys reads this address to resolve its
+    /// protocol-admin role — the powers over an arena that its host must not
+    /// hold: upgrading the arena's WASM, changing the platform fee, pausing
+    /// it, and force-cancelling it. Reading the admin here rather than
+    /// caching it per arena means a factory-level admin rotation
+    /// (`propose_admin` / `accept_admin`) withdraws the old admin's powers
+    /// over every arena at once.
+    ///
+    /// Panics when the factory has not been initialised, because there is no
+    /// admin to name in that case.
+    pub fn admin(env: Env) -> Address {
+        FactoryStorage::load_admin(&env).unwrap_or_else(|_| panic!("factory not initialized"))
     }
 
     /// Release an arena from a creator's active pool count.
@@ -1760,6 +1787,42 @@ mod test {
             .expect("error must be a contract error");
 
         assert_eq!(err, FactoryError::ArenaNotFound);
+    }
+
+    // ── #1572: get_active_pool_count view ────────────────────────────────────
+
+    #[test]
+    fn get_active_pool_count_is_zero_for_a_host_with_no_pools() {
+        let (env, client, _admin, host) = setup();
+        assert_eq!(client.get_active_pool_count(&host), 0);
+    }
+
+    #[test]
+    fn get_active_pool_count_tracks_registered_and_released_pools() {
+        let (env, client, _admin, creator) = setup();
+        let arena = register_arena_for(&env, &client.address, &creator);
+        assert_eq!(client.get_active_pool_count(&creator), 1);
+
+        client.release_arena(&arena);
+        assert_eq!(
+            client.get_active_pool_count(&creator),
+            0,
+            "released arena must free the host's slot in the view too"
+        );
+    }
+
+    #[test]
+    fn get_active_pool_count_is_scoped_per_host() {
+        let (env, client, _admin, creator) = setup();
+        let other = Address::generate(&env);
+        register_arena_for(&env, &client.address, &creator);
+
+        assert_eq!(client.get_active_pool_count(&creator), 1);
+        assert_eq!(
+            client.get_active_pool_count(&other),
+            0,
+            "one host's pools must not show up under another"
+        );
     }
 
     // ── #1361: min_stake decimal-precision normalization ─────────────────────

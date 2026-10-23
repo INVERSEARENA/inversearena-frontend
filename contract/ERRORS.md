@@ -90,6 +90,7 @@ A transaction invokes one contract, which may call others (the arena calls the f
 | 47 | `ResolutionIncomplete` | Returned by `finalize_resolution` before every resolution page has been applied (#1639), or when no paged resolution has been started. |
 | 48 | `ResolutionInProgress` | Returned by the one-shot `resolve_round` while a paged resolution (#1639) is in progress. Mixing the two would double-apply the round: drive the existing resolution to completion first. |
 | 49 | `FundsInVault` | Returned by `claim_refund` while the arena's principal is still held by the yield vault because a cancellation-time withdrawal failed (#1631). The arena cannot pay refunds from its own balance until `retry_withdraw` succeeds. Appended; existing ordinals unchanged. |
+| 50 | `NoProtocolAdmin` | Returned by a protocol-only entry point when the arena cannot resolve a protocol admin (#1629). The arena reads its protocol admin from the factory that deployed it, so this means the factory is not a contract, or predates the `admin` view that #1629 added. |
 
 ### `factory` — `FactoryError`
 
@@ -147,6 +148,10 @@ A transaction invokes one contract, which may call others (the arena calls the f
 | 4 | `NoPendingAdmin` | — |
 | 5 | `DeltaTooLarge` | `\|new_rate - current_rate\| > max_delta_bps`. |
 | 6 | `DelayTooLong` | `activation_delay` (or a scheduled value) exceeds the hard bound. |
+| 7 | `NotReporter` | `submit_rate` called by an address that is not in the reporter set (#1578). |
+| 8 | `ReporterExists` | `add_reporter` called with an address already in the set (#1578). |
+| 9 | `ReporterLimitReached` | `add_reporter` would grow the set beyond `MAX_REPORTERS` (#1578). |
+| 10 | `InvalidQuorum` | `set_quorum` with `quorum == 0` or above `MAX_REPORTERS` (#1578). |
 
 ### `payout` — `PayoutError`
 
