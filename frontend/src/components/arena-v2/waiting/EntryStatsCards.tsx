@@ -1,6 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
+import { useTranslations } from "next-intl";
 
 interface EntryStatsCardsProps {
     entryStake?: string;
@@ -13,6 +14,7 @@ export function EntryStatsCards({
     prizePool = "50,000 XLM",
     rwaLiveYield = "+2.453 XLM",
 }: EntryStatsCardsProps) {
+    const t = useTranslations("lobby");
     return (
         <motion.div
             initial={{ opacity: 0, y: -10 }}
@@ -23,7 +25,7 @@ export function EntryStatsCards({
             {/* Entry Stake */}
             <div className="space-y-1">
                 <p className="text-[10px] font-black uppercase tracking-widest leading-none font-display">
-                    ENTRY STAKE
+                    {t("entryStake")}
                 </p>
                 <p className="text-2xl lg:text-3xl font-black italic uppercase font-display">
                     {entryStake}
@@ -33,7 +35,7 @@ export function EntryStatsCards({
             {/* Prize Pool */}
             <div className="space-y-1">
                 <p className="text-[10px] font-black uppercase tracking-widest leading-none font-display">
-                    PRIZE POOL
+                    {t("prizePool")}
                 </p>
                 <p className="text-2xl lg:text-3xl font-black italic uppercase font-display">
                     {prizePool}
@@ -43,13 +45,13 @@ export function EntryStatsCards({
             {/* RWA Live Yield */}
             <div className="space-y-1 flex flex-col items-start md:items-end">
                 <p className="text-[10px] font-black uppercase tracking-widest leading-none font-display md:text-right">
-                    RWA LIVE YIELD
+                    {t("rwaLiveYield")}
                 </p>
                 <p className="text-2xl lg:text-3xl font-black italic uppercase tabular-nums font-display">
                     {rwaLiveYield}
                 </p>
                 <span className="text-[10px] font-bold bg-black text-primary px-1 animate-pulse">
-                    STAKING ACTIVE
+                    {t("stakingActive")}
                 </span>
             </div>
         </motion.div>

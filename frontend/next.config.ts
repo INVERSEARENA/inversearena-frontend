@@ -3,11 +3,16 @@ import { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD } from "next/constants
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withSentryConfig } from "@sentry/nextjs";
+import createNextIntlPlugin from "next-intl/plugin";
 
 import { STATIC_SECURITY_HEADERS } from "./src/shared/config/csp";
 import { validateBuildEnv } from "./src/shared/config/env/build";
 
 const projectRoot = dirname(fileURLToPath(import.meta.url));
+
+// #1575: next-intl resolves messages via src/i18n/request.ts (locale from
+// the NEXT_LOCALE cookie, no locale routing).
+const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
 // The Content-Security-Policy is NOT set here: it carries a per-request nonce
 // (`script-src` has no 'unsafe-inline') and is emitted by src/proxy.ts.
@@ -56,5 +61,5 @@ export default function config(phase: string) {
     strict: phase === PHASE_PRODUCTION_BUILD,
     warn: phase === PHASE_DEVELOPMENT_SERVER,
   });
-  return withSentryConfig(nextConfig, sentryConfig);
+  return withNextIntl(withSentryConfig(nextConfig, sentryConfig));
 }

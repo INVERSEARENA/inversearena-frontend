@@ -138,11 +138,37 @@ Trust notes:
 
 ### Arena
 
-- Has a separate `ADMIN` instance key from the factory.
-- The admin can:
-  - change admin
-  - pause and unpause the contract
+- Has a separate `ADMIN` instance key from the factory. It is the arena's
+  **host** role, and it is stored in `ArenaConfig.admin` — the field keeps its
+  original name so the stored layout of every already-deployed arena stays
+  readable.
+- The **host** can:
+  - hand the role on (`propose_admin` / `accept_admin`, with the alias
+    `change_admin`)
+  - configure the lobby (`configure_player_limits`, `configure_leaderboard_limit`)
+  - moderate the lobby (`ban_player`, `unban_player`)
+  - cancel an arena that has not started (`cancel_arena`)
+  - run the game (`start_round`, `start_next_round`, `resolve_round`)
+- The **protocol admin** can:
   - propose, execute, and cancel upgrades
+  - set the platform fee
+  - set the oracle freshness policy
+  - pause and unpause the contract
+  - force-cancel a started arena (`force_cancel_arena`)
+- The protocol admin is **not** a separate key on the arena: the arena reads
+  the deploying factory's current admin (`factory.admin()`) at the moment the
+  authority is exercised. A factory-level admin rotation
+  (`factory.propose_admin` / `factory.accept_admin`) therefore withdraws the
+  old admin's powers over every arena at once, with no per-arena bookkeeping.
+  An arena whose factory cannot answer has no protocol admin, and its
+  protocol-only entry points fail with `ArenaError::NoProtocolAdmin` rather
+  than falling back to the host.
+- A pause is **time-boxed**: it stops blocking after
+  `MAX_PAUSE_DURATION_SECONDS` (24 h). A protocol pause can therefore never
+  hold an arena — or the entry fees in it — shut indefinitely, and
+  `pause_expired` reports when the bound has been reached. A pause recorded
+  before the role split carries no timestamp and is treated as already
+  expired, so an unbounded legacy pause cannot lock player funds.
 - Gameplay entrypoints like `start_round` and `timeout_round` are intentionally callable by non-admin actors, but still guarded by contract state.
 
 ### Host inactivity liveness
@@ -167,15 +193,65 @@ state even if its host disappears.
 
 ## Authority Model Summary
 
-| Capability | Factory admin | Arena admin | Payout admin | Player | Whitelisted host |
+### Arena role matrix (#1629)
+
+| Capability | Factory admin (= arena protocol admin) | Arena host | Player | Anyone |
+| --- | --- | --- | --- | --- |
+| Set or rotate the host role | No | Yes | No | No |
+| Configure the lobby (player limits, leaderboard limit) | No | Yes | No | No |
+| Moderate the lobby (ban / unban) | No | Yes | No | No |
+| Cancel an unstarted arena | No | Yes | No | No |
+| Start a round | No | Yes | No | No |
+| Start the next round after the host missed the grace period | No | No | No | Yes (self-authorised caller) |
+| Resolve a round | No | Yes (or a keeper after the grace period) | No | Yes, after the grace period |
+| Upgrade the arena WASM | Yes | No | No | No |
+| Set the platform fee | Yes | No | No | No |
+| Set the oracle freshness policy | Yes | No | No | No |
+| Pause / unpause the arena | Yes | No | No | No |
+| Force-cancel a started arena | Yes | No | No | No |
+| Join, commit, reveal | No | No | Yes | No |
+| Claim a prize or refund | No | No | Yes | No |
+
+### Other contracts
+
+| Capability | Factory admin | Arena host | Payout admin | Player | Whitelisted host |
 | --- | --- | --- | --- | --- | --- |
 | Set or rotate admin | Yes | Yes | Yes | No | No |
-| Upgrade contract | Yes | Yes | Not implemented yet | No | No |
+| Upgrade contract | Yes | No | Not implemented yet | No | No |
 | Create pool | Yes | No | No | No | Yes |
 | Start or timeout round | No | No special admin requirement | No | Yes, if rules allow | Yes, if rules allow |
 | Submit round choice | No | No | No | Yes | No |
 | Distribute winnings | No | No | Yes | No | No |
 | Stake XLM | No | No | No | Yes | No |
+
+## Registry Deprecation Lifecycle (#1688)
+
+The factory's registry of stake tokens, yield vaults and oracles is no longer
+binary. Each approved integration carries a lifecycle record:
+
+| State | New arenas | Existing arenas |
+| --- | --- | --- |
+| `Active` | accepted | fully supported |
+| `Deprecated` | refused (`DeprecatedIntegration`, 24) | fully supported — the settlement path never consults the lifecycle |
+| `Disabled` | refused | supported while liabilities are open; refused with `OutstandingLiabilities` (25) once the last live pool settles |
+
+An integration the factory has no record of reads as `Active` (ledger `0`,
+reason `legacy`), so approvals that predate the lifecycle keep working and a
+read failure never looks like a deprecation.
+
+- The record lives at `DataKey::{Vault,Oracle,Token}Lifecycle(Address)`; the
+  registry revision at `DataKey::RegistryRevision` is bumped on every
+  transition and is the cache-invalidation key for the backend and the
+  clients.
+- `DataKey::PoolIntegration(u32)` records the integration of each pool and
+  `DataKey::LiveUse(kind, address)` counts the pools that are still live.
+  `update_arena_status` releases the liability when an arena reaches
+  `Finished` or `Cancelled`.
+- The emergency removal path (`remove_approved_vault` and friends) disables
+  an integration unconditionally; it bypasses the liability guard on purpose
+  and must be followed by a manual audit of the pools that were still live.
+
+See `docs/registry-lifecycle.md` for the operator runbook.
 
 ## Security Review Notes
 

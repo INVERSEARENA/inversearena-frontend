@@ -22,6 +22,9 @@ import {
   type DecodedEnvelope,
 } from "@/shared/lib/security/policy";
 import { useAssetReadinessGate } from "@/features/asset-readiness";
+import { useRegistryLifecycle } from "@/features/pools/model/useRegistryLifecycle";
+import { playerLifecycleNotice } from "@/shared/lib/stellar/registry-lifecycle";
+import { stellarConfig } from "@/shared/config/stellarConfig";
 import { displayAmountToStroops } from "@/shared/lib/stellar/stellar-asset-reader";
 import { AssetTrustlinePrompt } from "@/components/modals/AssetTrustlinePrompt";
 import { useTransactionIntent } from "@/shared/lib/hooks/useTransactionIntent";
@@ -519,6 +522,20 @@ export function ArenaLobbyClient({
     setShowLeaveModal(false);
   };
 
+  // #1688: a deprecated integration never blocks an existing arena. The
+  // notice explains that the arena still settles and that the deprecation
+  // only applies to new arenas — it is deliberately not an "unsupported"
+  // label, which would read as "your claims are gone".
+  const registryLifecycle = useRegistryLifecycle({
+    enabled: true,
+    vault: stellarConfig.rwaVaultContractId,
+    oracle: stellarConfig.oracleContractId,
+  });
+  const lifecycleNotice = playerLifecycleNotice(registryLifecycle, {
+    vault: stellarConfig.rwaVaultContractId,
+    oracle: stellarConfig.oracleContractId,
+  });
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(60,255,26,0.14),_transparent_36%),linear-gradient(180deg,_#050816_0%,_#07111d_42%,_#050816_100%)] px-4 py-6 text-white sm:px-6 lg:px-8">
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-6">
@@ -531,6 +548,17 @@ export function ArenaLobbyClient({
                   {stats.status.toUpperCase()} / Round {stats.currentRound}
                 </span>
               </div>
+              {lifecycleNotice && (
+                <div
+                  role="status"
+                  className="inline-flex items-center gap-2 rounded-full border border-amber-400/40 bg-amber-950/60 px-3 py-1"
+                >
+                  <span className="h-2 w-2 rounded-full bg-amber-400" />
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-amber-200">
+                    Deprecated integration
+                  </span>
+                </div>
+              )}
               {stats.degraded && (
                 <div
                   role="status"
@@ -552,6 +580,11 @@ export function ArenaLobbyClient({
                 <p className="mt-3 max-w-3xl text-sm leading-7 text-white/70 sm:text-base">
                   Live lobby for <span className="font-mono text-white">{arenaId}</span>. Track the player count, accumulated yield, and the countdown to the join deadline before you lock in your choice.
                 </p>
+                {lifecycleNotice && (
+                  <p className="mt-3 max-w-3xl rounded-2xl border border-amber-400/30 bg-amber-950/30 px-4 py-3 text-sm leading-6 text-amber-100">
+                    {lifecycleNotice}
+                  </p>
+                )}
               </div>
             </div>
 

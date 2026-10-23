@@ -21,13 +21,14 @@
 import { Gauge, Counter } from "prom-client";
 import { register } from "../utils/metrics";
 import { logger, reportErrorToSentry } from "../utils/logger";
+import { env } from "../config/env";
 
-// ── Configurable thresholds ────────────────────────────────────────────────────
+// �"?�"? Configurable thresholds �"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?
 
-const WARN_THRESHOLD = parseFloat(process.env.VAULT_WARN_COVERAGE_RATIO ?? "1.05");
-const CRIT_THRESHOLD = parseFloat(process.env.VAULT_CRIT_COVERAGE_RATIO ?? "1.00");
-const DEDUP_WINDOW_MS = parseInt(process.env.VAULT_ALERT_DEDUP_MS ?? "300000", 10); // 5 min
-const CHECK_INTERVAL_MS = parseInt(process.env.VAULT_CHECK_INTERVAL_MS ?? "60000", 10); // 1 min
+const WARN_THRESHOLD = parseFloat(env.VAULT_WARN_COVERAGE_RATIO ?? "1.05");
+const CRIT_THRESHOLD = parseFloat(env.VAULT_CRIT_COVERAGE_RATIO ?? "1.00");
+const DEDUP_WINDOW_MS = parseInt(env.VAULT_ALERT_DEDUP_MS ?? "300000", 10); // 5 min
+const CHECK_INTERVAL_MS = parseInt(env.VAULT_CHECK_INTERVAL_MS ?? "60000", 10); // 1 min
 
 // ── Prometheus metrics ─────────────────────────────────────────────────────────
 

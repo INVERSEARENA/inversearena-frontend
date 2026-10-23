@@ -47,6 +47,7 @@ const NODE_RUNNER_FILES = [
   "transactionIntent.unit.test.ts",
   "faultInjection.unit.test.ts",
   "participantEligibility.unit.test.ts",
+  "rematchConfig.unit.test.ts",
 ];
 
 /** Legacy script-style runners (no Jest describe/it). */

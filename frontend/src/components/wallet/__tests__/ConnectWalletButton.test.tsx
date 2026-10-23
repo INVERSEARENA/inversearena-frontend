@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { ConnectWalletButton } from "../ConnectWalletButton";
+import { renderWithIntl } from "@/test-utils/renderWithIntl";
 import { useWallet } from "@/features/wallet/hooks/useWallet";
 import { usePasskeyWallet } from "@/features/wallet/hooks/usePasskeyWallet";
 
@@ -59,7 +60,7 @@ describe("ConnectWalletButton network-mismatch state (#1404)", () => {
       walletNetworkName: "Public Global Stellar Network ; September 2015",
     });
 
-    render(<ConnectWalletButton />);
+    renderWithIntl(<ConnectWalletButton />);
 
     expect(screen.getByRole("alert")).toHaveTextContent(
       /wrong network/i,
@@ -82,7 +83,7 @@ describe("ConnectWalletButton network-mismatch state (#1404)", () => {
       recheckNetwork,
     });
 
-    render(<ConnectWalletButton />);
+    renderWithIntl(<ConnectWalletButton />);
 
     fireEvent.click(screen.getByRole("button", { name: /check again/i }));
 
@@ -99,7 +100,7 @@ describe("ConnectWalletButton network-mismatch state (#1404)", () => {
       disconnect,
     });
 
-    render(<ConnectWalletButton />);
+    renderWithIntl(<ConnectWalletButton />);
 
     fireEvent.click(screen.getByRole("button", { name: /disconnect/i }));
 
@@ -115,7 +116,7 @@ describe("ConnectWalletButton network-mismatch state (#1404)", () => {
       walletNetworkName: null,
     });
 
-    render(<ConnectWalletButton />);
+    renderWithIntl(<ConnectWalletButton />);
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(

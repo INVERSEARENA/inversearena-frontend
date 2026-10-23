@@ -44,6 +44,7 @@
     "src/shared/lib/__tests__/form-validation.test.ts",
     "src/shared/lib/__tests__/identity-value-objects.test.ts",
     "src/shared/lib/__tests__/mutation-coordinator.test.ts",
+    "src/shared/lib/stellar/__tests__/balance-cache.test.ts",
     "src/shared/lib/stellar/__tests__/change-trust-transaction.test.ts",
     "src/shared/lib/stellar/__tests__/commit-reveal.test.ts",
     "src/shared/lib/stellar/__tests__/compatibility.test.tsx",
