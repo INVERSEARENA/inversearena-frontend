@@ -89,7 +89,8 @@ A transaction invokes one contract, which may call others (the arena calls the f
 | 46 | `ResolutionCursorMismatch` | Returned by `resolve_round_page` when `start` is ahead of the persisted cursor (#1639). Tallying or applying out of order would silently skip players, so the gap is refused; replaying a page at or behind the cursor is a no-op instead. |
 | 47 | `ResolutionIncomplete` | Returned by `finalize_resolution` before every resolution page has been applied (#1639), or when no paged resolution has been started. |
 | 48 | `ResolutionInProgress` | Returned by the one-shot `resolve_round` while a paged resolution (#1639) is in progress. Mixing the two would double-apply the round: drive the existing resolution to completion first. |
-| 49 | `FundsInVault` | Returned by `claim_refund` while the arena's principal is still held by the yield vault because a cancellation-time withdrawal failed (#1631). Refunds are paid from the arena's own balance, so they stay blocked until `retry_withdraw` succeeds. |
+| 49 | `FundsInVault` | Returned by `claim_refund` while the arena's principal is still held by the yield vault because a cancellation-time withdrawal failed (#1631). The arena cannot pay refunds from its own balance until `retry_withdraw` succeeds. Appended; existing ordinals unchanged. |
+| 50 | `NoProtocolAdmin` | Returned by a protocol-only entry point when the arena cannot resolve a protocol admin (#1629). The arena reads its protocol admin from the factory that deployed it, so this means the factory is not a contract, or predates the `admin` view that #1629 added. |
 
 ### `factory` — `FactoryError`
 

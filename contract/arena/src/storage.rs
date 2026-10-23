@@ -75,6 +75,12 @@ pub(crate) enum DataKey {
     /// Set when a settlement-time vault withdrawal failed and the arena's
     /// principal is still held by the vault (#1631). Cleared by `retry_withdraw`.
     FundsInVault,
+    /// Ledger timestamp (seconds) at which the protocol admin paused this
+    /// arena (#1629). Absent means "not paused by the protocol"; a pause
+    /// recorded before the role split has no timestamp and is therefore
+    /// treated as already expired, so an unbounded legacy pause can never
+    /// lock player funds.
+    PausedAt,
 }
 
 pub struct ArenaRepository<'a> {
@@ -908,6 +914,29 @@ impl ArenaStorage {
             .persistent()
             .get(&DataKey::StartDeadline)
             .unwrap_or(0)
+    }
+
+    /// Ledger timestamp at which the protocol admin paused this arena (#1629).
+    ///
+    /// `None` means the arena was never paused by the protocol — including
+    /// the case of a pause recorded before the role split, which carries no
+    /// timestamp and is therefore treated as already expired.
+    pub fn save_paused_at(env: &Env, paused_at: u64) {
+        Self::extend_persistent_ttl(env, &DataKey::PausedAt);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PausedAt, &paused_at);
+    }
+
+    pub fn load_paused_at(env: &Env) -> Option<u64> {
+        Self::extend_persistent_ttl(env, &DataKey::PausedAt);
+        env.storage().persistent().get(&DataKey::PausedAt)
+    }
+
+    pub fn clear_paused_at(env: &Env) {
+        if env.storage().persistent().has(&DataKey::PausedAt) {
+            env.storage().persistent().remove(&DataKey::PausedAt);
+        }
     }
 
     pub fn save_commitment(env: &Env, player: &Address, round: u32, commitment: &BytesN<32>) {
