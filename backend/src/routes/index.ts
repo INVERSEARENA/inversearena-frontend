@@ -24,6 +24,7 @@ import { createRoundProofBundleRouter } from "./roundProofBundle";
 import { createLobbyReservationRouter } from "./lobbyReservation";
 import { createDashboardRouter } from "./dashboard";
 import { createCreatorRouter } from "./creator";
+import { createCreatorTemplatesRouter } from "./creatorTemplates";
 import { createHostWhitelistRouter } from "./hostWhitelist";
 import type { PrismaClient } from "@prisma/client";
 import type { PayoutsController } from "../controllers/payouts.controller";
@@ -99,6 +100,7 @@ export function createApiRouter(
     createLeaderboardRouter(leaderboardController, requireAuth),
   );
   router.use("/dashboard", createDashboardRouter(requireAuth));
+  router.use("/creator/templates", createCreatorTemplatesRouter(requireAuth));
   router.use("/creator", createCreatorRouter(requireAuth));
   if (prisma) {
     router.use(createHostWhitelistRouter(prisma, requireAuth, adminAuthMiddleware));

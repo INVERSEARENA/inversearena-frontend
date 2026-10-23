@@ -274,6 +274,21 @@ export const ENV_VARS = {
     example: "distribute_winnings",
     schema: text,
   },
+  STAKE_TOKEN_CONTRACT_ID: {
+    section: "Soroban / Stellar",
+    description: "Stake token contract the deployment is configured with. Creator templates are checked against it (#1689).",
+    schema: contractId,
+  },
+  RWA_VAULT_CONTRACT_ID: {
+    section: "Soroban / Stellar",
+    description: "Yield vault contract the deployment is configured with. Creator templates are checked against it (#1689).",
+    schema: contractId,
+  },
+  ORACLE_CONTRACT_ID: {
+    section: "Soroban / Stellar",
+    description: "Oracle contract the deployment is configured with. Creator templates are checked against it (#1688, #1689).",
+    schema: contractId,
+  },
   STAKING_CONTRACT_ID: {
     section: "Soroban / Stellar",
     description: "Staking contract. Staking endpoints report not-configured when unset.",

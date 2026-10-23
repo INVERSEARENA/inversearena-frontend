@@ -34,6 +34,8 @@ import {
   clearPoolDraft,
 } from "@/features/pools/model/pool-draft";
 import { usePoolCompatibility } from "@/features/pools/model/usePoolCompatibility";
+import { TemplatePanel } from "@/features/pools/components/TemplatePanel";
+import type { TemplateFormValues } from "@/features/pools/model/arena-templates";
 import { useRegistryLifecycle } from "@/features/pools/model/useRegistryLifecycle";
 import { creatorLifecycleWarning } from "@/shared/lib/stellar/registry-lifecycle";
 import { POOL_TOKEN_IDS } from "@/shared/lib/stellar/stellar-transactions";
@@ -84,6 +86,10 @@ export function PoolCreationModal({
   const [isFormValid, setIsFormValid] = useState(false);
   const [isDeploying, setIsDeploying] = useState(false);
   const [draftRestored, setDraftRestored] = useState(false);
+  // #1689: the template list is a panel over the form. Applying a template
+  // only prefills the fields — the validation, the transaction preview and
+  // the balance/trustline checks all still run afterwards.
+  const [showTemplates, setShowTemplates] = useState(false);
   const rematchPrefill = rematch ? toRematchFormPrefill(rematch) : null;
   // Suppresses exactly the next run of the draft-save effect below, so a
   // programmatic field reset (restoring a saved draft, or discarding one)
@@ -612,6 +618,33 @@ export function PoolCreationModal({
               <div className="col-span-12 mt-4 rounded-2xl border border-amber-400/40 bg-amber-950/40 p-4 text-sm text-amber-200">
                 <p className="font-semibold uppercase tracking-[0.2em]">Integration deprecated</p>
                 <p className="mt-1">{lifecycleWarning}</p>
+              </div>
+            )}
+
+            <div className="col-span-12 mt-4">
+              <button
+                type="button"
+                onClick={() => setShowTemplates((open) => !open)}
+                className="rounded-xl border-2 border-black bg-[#1e293b] px-4 py-2 text-[11px] font-black uppercase tracking-[0.2em] text-white"
+              >
+                {showTemplates ? "Hide templates" : "Templates"}
+              </button>
+            </div>
+
+            {showTemplates && (
+              <div className="col-span-12">
+                <TemplatePanel
+                  isOpen={showTemplates}
+                  onClose={() => setShowTemplates(false)}
+                  currentValues={{ stakeAmountInput, currency, roundSpeed, arenaCapacity }}
+                  onApply={(values: TemplateFormValues) => {
+                    setStakeAmountInput(values.stakeAmountInput);
+                    setCurrency(values.currency);
+                    setRoundSpeed(values.roundSpeed);
+                    setArenaCapacity(values.arenaCapacity);
+                    setShowTemplates(false);
+                  }}
+                />
               </div>
             )}
 
