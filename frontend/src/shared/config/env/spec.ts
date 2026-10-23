@@ -198,6 +198,13 @@ export const SERVER_ENV_VARS = {
     secret: true,
     schema: z.string().min(1),
   },
+  REVALIDATION_WEBHOOK_SECRET: {
+    section: "Server (never exposed to the browser)",
+    description:
+      "Shared HMAC secret the backend uses to sign on-chain configuration-change notifications (#1626). When unset, the /api/revalidate route rejects every request.",
+    secret: true,
+    schema: z.string().min(1),
+  },
   SKIP_ENV_VALIDATION: {
     section: "Server (never exposed to the browser)",
     description:

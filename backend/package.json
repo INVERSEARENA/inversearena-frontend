@@ -19,6 +19,7 @@
     "ttl:plan": "tsx src/scripts/ttlKeeperPlan.ts",
     "simulate": "tsx scripts/simulate-game.ts",
     "bench:arena-polling": "tsx scripts/benchmark-arena-publish.ts",
+    "bench:edge-cache": "tsx scripts/load-test-edge-cache.ts",
     "verify:evidence": "tsx scripts/verify-evidence-package.ts",
     "test:unit": "jest --selectProjects unit",
     "test:integration": "jest --selectProjects integration --runInBand",

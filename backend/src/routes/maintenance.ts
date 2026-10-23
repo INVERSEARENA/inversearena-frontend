@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { asyncHandler } from "../middleware/validate";
+import { publicCache } from "../middleware/cachePolicy";
 import type { MaintenanceService } from "../services/maintenanceService";
 
 /**
@@ -13,6 +14,10 @@ export function createMaintenanceStatusRouter(service: MaintenanceService): Rout
 
   router.get(
     "/maintenance/status",
+    // #1626: public and identical for every caller — a client asks this before
+    // any mutation. Edge-cacheable so a scheduled window's broadcast does not
+    // stampede the origin; short max-age keeps transitions timely.
+    publicCache({ maxAge: 10, staleWhileRevalidate: 60 }),
     asyncHandler(async (_req, res) => {
       const status = await service.getStatus();
       res.json(status);

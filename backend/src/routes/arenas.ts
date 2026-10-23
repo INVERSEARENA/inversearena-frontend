@@ -3,6 +3,7 @@ import { Router, type RequestHandler } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../middleware/validate";
 import { cacheMiddleware } from "../middleware/cache";
+import { publicCache } from "../middleware/cachePolicy";
 import { CacheKeys, cacheKeys, cacheTTL } from "../cache/cacheService";
 import { subscribeArena } from "../cache/arenaPoller";
 import { prisma } from "../db/prisma";
@@ -242,6 +243,7 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
    */
   router.get(
     "/",
+    publicCache({ maxAge: 30, staleWhileRevalidate: 120 }),
     cacheMiddleware((req) => {
       const filter = (req.query.filter as string) || "all";
       const search = (req.query.q as string) || "";
@@ -355,6 +357,7 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
    */
   router.get(
     "/:id/stats",
+    publicCache({ maxAge: 15, staleWhileRevalidate: 60 }),
     cacheMiddleware((req) => CacheKeys.arena.stats(req.params.id ?? ""), cacheTTL.ARENA_STATS),
     asyncHandler(async (req, res) => {
       const id = req.params.id;
@@ -385,6 +388,7 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
    */
   router.get(
     "/:id/yield",
+    publicCache({ maxAge: 60, staleWhileRevalidate: 300 }),
     cacheMiddleware(
       (req) =>
         CacheKeys.arena.yield(

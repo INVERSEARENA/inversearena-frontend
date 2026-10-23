@@ -1,5 +1,6 @@
 import { Router, type RequestHandler } from "express";
 import { asyncHandler } from "../middleware/validate";
+import { publicCache } from "../middleware/cachePolicy";
 import { getStellarConfig } from "../config/stellarConfig";
 import { apiError } from "../utils/apiError";
 import { z } from "zod";
@@ -63,8 +64,25 @@ const CompatibilityQuerySchema = z.object({
  * A manifest may be cached briefly, but a client can never act on an old one
  * unknowingly: every response carries `configRevision` (the ledger it was
  * derived at) and clients refuse to replace a manifest with a lower revision.
+ *
+ * #1626 — kept as the documented reference value; the route now emits the
+ * equivalent through `publicCache` so the personalized-request guard applies
+ * uniformly.
  */
-const COMPATIBILITY_CACHE_CONTROL = "public, max-age=15, must-revalidate";
+export const COMPATIBILITY_CACHE_CONTROL = "public, max-age=15, must-revalidate";
+
+/**
+ * #1626 — the protocol config is identical for every anonymous caller and only
+ * changes when the deployment's Soroban config does, so it is safe to serve
+ * from a shared cache with background revalidation. `max-age` is short (the
+ * endpoint already reports a fresh ledger each call) while the stale window
+ * lets the edge absorb bursts without touching the origin.
+ */
+const PROTOCOL_CONFIG_CACHE = {
+  maxAge: 15,
+  staleWhileRevalidate: 120,
+  staleIfError: 600,
+} as const;
 
 export function createConfigRouter(
   deps: { buildManifest?: typeof buildCompatibilityManifest } = {},
@@ -85,6 +103,7 @@ export function createConfigRouter(
    */
   router.get(
     "/protocol",
+    publicCache(PROTOCOL_CONFIG_CACHE),
     asyncHandler(async (req: Request, res: Response) => {
       try {
         const stellarConfig = getStellarConfig();
@@ -122,6 +141,7 @@ export function createConfigRouter(
    */
   router.get(
     "/compatibility",
+    publicCache(PROTOCOL_CONFIG_CACHE),
     asyncHandler(async (req: Request, res: Response) => {
       const parsed = CompatibilityQuerySchema.safeParse({ arenaId: req.query.arenaId });
       if (!parsed.success) {
@@ -130,7 +150,6 @@ export function createConfigRouter(
 
       try {
         const manifest = await buildManifest(parsed.data);
-        res.setHeader("Cache-Control", COMPATIBILITY_CACHE_CONTROL);
         res.json(manifest);
       } catch {
         // The manifest carries no partial answer: without a ledger there is no revision to stamp.
