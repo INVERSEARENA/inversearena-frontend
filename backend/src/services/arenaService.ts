@@ -22,6 +22,7 @@ import { OutboxStore } from "./outbox/outboxStore";
 import { initialArenaProjection, type ArenaProjectionState } from "./projection/arenaProjectionFold";
 import { replayArenaProjection, type ArenaReplayOptions } from "./projection/arenaProjectionReplay";
 import { env } from "../config/env";
+import { RematchService } from "./rematchService";
 
 const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
 const TX_HASH_REGEX = /^[0-9a-f]{64}$/i;
@@ -194,6 +195,41 @@ export class ArenaService {
       throw new Error("Deployed arena address is not a valid Soroban contract ID");
     }
 
+    // Rematch linkage (#1572): a rematch must point at an arena we know about,
+    // so the result page and participant notifications have a source.
+    const rematchOf = input.rematchOf ?? null;
+    if (rematchOf !== null) {
+      if (!CONTRACT_ID_REGEX.test(rematchOf)) {
+        throw new Error("rematchOf is not a valid Soroban contract ID");
+      }
+      const source = await this.prisma.arena.findUnique({
+        where: { id: rematchOf },
+        select: { id: true },
+      });
+      if (!source) {
+        throw new Error(`Rematch source arena ${rematchOf} not found`);
+      }
+    }
+
+    // Idempotency (#1572): a caller retrying a confirmed deployment (e.g. after
+    // a dropped response) must not hit a duplicate-key error. The same arena
+    // with the same linkage returns the existing row; a different linkage is a
+    // genuine conflict and must not be silently rewritten.
+    const existing = await this.prisma.arena.findUnique({ where: { id: arenaId } });
+    if (existing) {
+      if ((existing.rematchOf ?? null) !== rematchOf) {
+        throw new Error(
+          `Arena ${arenaId} already exists with a different rematch linkage`,
+        );
+      }
+      return {
+        id: existing.id,
+        metadata: (existing.metadata as Record<string, unknown> | null) ?? null,
+        createdAt: existing.createdAt.toISOString(),
+        updatedAt: existing.updatedAt.toISOString(),
+      };
+    }
+
     // #1455: bound the persisted JSON before the write, never after.
     const metadata: Prisma.InputJsonValue = enforcePayloadLimits(JSON.parse(
       JSON.stringify({
@@ -204,6 +240,7 @@ export class ArenaService {
         stakeToken: input.stakeToken,
         createdBy,
         contractAddress: arenaId,
+        ...(rematchOf !== null ? { rematchOf } : {}),
         deployment: {
           status: "confirmed",
           txHash,
@@ -212,21 +249,53 @@ export class ArenaService {
       }),
     ) as Prisma.InputJsonValue, "arena_metadata");
 
-    const arena = await this.prisma.$transaction(async (tx) => {
-      const created = await tx.arena.create({
-        data: {
-          id: arenaId,
-          metadata,
-        },
+    // Creating the arena and emitting its outbox event must be atomic, so a
+    // crash between them cannot leave a persisted arena with no event (#1701).
+    // The rematch linkage rides along in the same transaction.
+    let arena;
+    let createdArena = true;
+    try {
+      arena = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.arena.create({
+          data: {
+            id: arenaId,
+            rematchOf,
+            metadata,
+          },
+        });
+        await this.outbox.append(tx, {
+          eventType: "arena.created",
+          aggregateId: created.id,
+          dedupeKey: `arena.created:${created.id}`,
+          payload: { arenaId: created.id },
+        });
+        return created;
       });
-      await this.outbox.append(tx, {
-        eventType: "arena.created",
-        aggregateId: created.id,
-        dedupeKey: `arena.created:${created.id}`,
-        payload: { arenaId: created.id },
-      });
-      return created;
-    });
+    } catch (error) {
+      // Lost a race with a concurrent retry of the same deployment (#1572).
+      const isUniqueViolation =
+        error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+      if (!isUniqueViolation) throw error;
+      const raced = await this.prisma.arena.findUnique({ where: { id: arenaId } });
+      if (!raced || (raced.rematchOf ?? null) !== rematchOf) {
+        throw new Error(
+          `Arena ${arenaId} already exists with a different rematch linkage`,
+        );
+      }
+      arena = raced;
+      createdArena = false;
+    }
+
+    // Notify the source arena's prior participants once, only on real
+    // creation (#1572). Best-effort, after the write commits: a notification
+    // failure must never undo the persisted linkage.
+    if (createdArena && rematchOf !== null) {
+      try {
+        await new RematchService(this.prisma).notifyPriorParticipants(rematchOf, arena.id);
+      } catch {
+        // Intentionally swallowed — the linkage is the durable outcome.
+      }
+    }
 
     return {
       id: arena.id,

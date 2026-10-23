@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useTranslations } from "next-intl";
 
 interface TimerProps {
   initialSeconds?: number;
@@ -8,7 +9,9 @@ interface TimerProps {
   label?: string;
 }
 
-export function Timer({ initialSeconds = 300, onTimeUp, label = "Round Ends In" }: TimerProps) {
+export function Timer({ initialSeconds = 300, onTimeUp, label }: TimerProps) {
+  const t = useTranslations("arena");
+  const resolvedLabel = label ?? t("roundEndsIn");
   const [secondsLeft, setSecondsLeft] = useState(initialSeconds);
   const totalSeconds = initialSeconds;
 
@@ -34,7 +37,7 @@ export function Timer({ initialSeconds = 300, onTimeUp, label = "Round Ends In" 
   return (
     <div className="bg-white border border-border-gray p-6">
       <p className="text-[10px] font-pixel tracking-[0.2em] text-zinc-500 uppercase mb-4">
-        {label}
+        {resolvedLabel}
       </p>
 
       <div className="font-pixel text-4xl md:text-5xl tracking-wider text-black mb-6">

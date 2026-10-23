@@ -60,6 +60,38 @@ exports[`Navbar matches snapshot 1`] = `
       <div
         class="flex items-center gap-3"
       >
+        <label
+          class="flex items-center gap-2 text-[10px] font-medium uppercase tracking-widest text-zinc-400 "
+        >
+          <span
+            class="sr-only"
+          >
+            Language
+          </span>
+          <span
+            aria-hidden="true"
+          >
+            🌐
+          </span>
+          <select
+            aria-label="Language"
+            class="bg-transparent border border-white/10 text-zinc-300 px-1 py-0.5 text-[10px] uppercase focus:border-neon-green focus:outline-none disabled:opacity-50"
+            data-testid="locale-switcher"
+          >
+            <option
+              class="bg-black text-white"
+              value="en"
+            >
+              English
+            </option>
+            <option
+              class="bg-black text-white"
+              value="es"
+            >
+              Español
+            </option>
+          </select>
+        </label>
         <button
           aria-label="Switch to dark theme"
           class="flex size-9 items-center justify-center rounded-md border border-white/10 bg-white/5 text-zinc-400 transition-colors hover:bg-white/10 hover:text-white"

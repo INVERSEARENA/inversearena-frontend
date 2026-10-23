@@ -122,4 +122,64 @@ fn upgrade_requires_exactly_the_admin() {
     });
 }
 
+// ── Multi-reporter median (#1578) ──────────────────────────────────────
+
+#[test]
+fn add_reporter_requires_exactly_the_admin() {
+    let fx = fixture();
+    let reporter = Address::generate(&fx.env);
+    fx.assert_admin_only(fx.tree("add_reporter", (reporter.clone(),)), || {
+        fx.client.try_add_reporter(&reporter).is_ok()
+    });
+}
+
+#[test]
+fn remove_reporter_requires_exactly_the_admin() {
+    let fx = fixture();
+    let reporter = Address::generate(&fx.env);
+    sign(&fx.env, &fx.admin, &fx.tree("add_reporter", (reporter.clone(),)));
+    fx.client.add_reporter(&reporter);
+    fx.assert_admin_only(fx.tree("remove_reporter", (reporter.clone(),)), || {
+        fx.client.try_remove_reporter(&reporter).is_ok()
+    });
+}
+
+#[test]
+fn set_quorum_requires_exactly_the_admin() {
+    let fx = fixture();
+    fx.assert_admin_only(fx.tree("set_quorum", (2u32,)), || {
+        fx.client.try_set_quorum(&2).is_ok()
+    });
+}
+
+#[test]
+fn set_max_age_secs_requires_exactly_the_admin() {
+    let fx = fixture();
+    fx.assert_admin_only(fx.tree("set_max_age_secs", (600u64,)), || {
+        fx.client.try_set_max_age_secs(&600).is_ok()
+    });
+}
+
+#[test]
+fn set_max_deviation_bps_requires_exactly_the_admin() {
+    let fx = fixture();
+    fx.assert_admin_only(fx.tree("set_max_deviation_bps", (250u32,)), || {
+        fx.client.try_set_max_deviation_bps(&250).is_ok()
+    });
+}
+
+#[test]
+fn submit_rate_requires_exactly_the_reporter() {
+    let fx = fixture();
+    let reporter = Address::generate(&fx.env);
+    sign(&fx.env, &fx.admin, &fx.tree("add_reporter", (reporter.clone(),)));
+    fx.client.add_reporter(&reporter);
+    let tree = fx.tree("submit_rate", (reporter.clone(), 150u32));
+    let invoke = || fx.client.try_submit_rate(&reporter, &150).is_ok();
+    // The admin's signature does not substitute for the reporter's.
+    assert_rejects_signer(&fx.env, &fx.admin, &tree, invoke);
+    assert_rejects_signer(&fx.env, &fx.intruder, &tree, invoke);
+    assert_exact_auth(&fx.env, &reporter, &tree, invoke);
+}
+
 const ORACLE_WASM: &[u8] = include_bytes!("../../target/wasm32v1-none/release/oracle.wasm");

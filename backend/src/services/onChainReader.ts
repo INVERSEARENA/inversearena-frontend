@@ -474,11 +474,145 @@ export async function getArenaOracleContract(arenaContractId: string): Promise<s
 }
 
 /**
+ * The arena's full on-chain pool configuration, as returned by the arena
+ * contract's `get_pool_config` view (#1572). Field names mirror the factory's
+ * `PoolConfig` (`contract/factory/src/types.rs`).
+ *
+ * `roundDuration`/`startDeadline` are `0` until the first round starts —
+ * the duration is recorded at `start_round`, not `initialize`.
+ */
+export interface OnChainArenaPoolConfig {
+  stakeToken: string;
+  yieldVault: string;
+  entryFee: bigint;
+  oracleContract: string;
+  minPlayers: number;
+  maxPlayers: number;
+  roundDuration: number;
+  startDeadline: number;
+  /** Factory contract that deployed the arena. */
+  factory: string;
+  /** Factory pool id the arena was created under. */
+  poolId: number;
+}
+
+/**
+ * Read an arena's canonical pool configuration from its own contract (#1572).
+ *
+ * Rematch prefills read this instead of trusting cached UI state. Throws on
+ * any failure (mirrors `getArenaOracleContract`): an unreadable arena is a
+ * real error for a caller about to prompt a host with prefill values — a
+ * silently defaulted config would create a rematch pool with wrong terms.
+ */
+export async function getArenaPoolConfig(
+  arenaContractId: string,
+): Promise<OnChainArenaPoolConfig> {
+  const stellarRpcGateway = new StellarRpcGateway();
+  let raw: unknown;
+  try {
+    raw = await simulateViewCall(arenaContractId, "get_pool_config", stellarRpcGateway);
+  } catch (error) {
+    throw new OnChainReadError("get_pool_config", arenaContractId, error);
+  }
+  if (!raw || typeof raw !== "object") {
+    throw new OnChainReadError("get_pool_config", arenaContractId, "malformed PoolConfigView");
+  }
+  const cfg = raw as Record<string, unknown>;
+  return {
+    stakeToken: String(cfg.stake_token),
+    yieldVault: String(cfg.yield_vault),
+    entryFee: BigInt(cfg.entry_fee as bigint | number | string),
+    oracleContract: String(cfg.oracle_contract),
+    minPlayers: Number(cfg.min_players as bigint | number),
+    maxPlayers: Number(cfg.max_players as bigint | number),
+    roundDuration: Number(cfg.round_duration as bigint | number),
+    startDeadline: Number(cfg.start_deadline as bigint | number),
+    factory: String(cfg.factory),
+    poolId: Number(cfg.pool_id as bigint | number),
+  };
+}
+
+/**
+ * Read one boolean factory policy view (`is_token_supported`,
+ * `is_approved_vault`, `is_approved_oracle`, `is_whitelisted`) (#1572).
+ *
+ * A failed read throws: rematch eligibility must not silently pass because
+ * a policy view was unreachable — the default `false` would block, but a
+ * default `true` would let a delisted token through, and the caller cannot
+ * tell which direction it failed in without the error.
+ */
+async function readFactoryFlag(
+  factoryContractId: string,
+  functionName: string,
+  addressArg: string,
+): Promise<boolean> {
+  const stellarRpcGateway = new StellarRpcGateway();
+  try {
+    const result = await simulateViewCall(factoryContractId, functionName, stellarRpcGateway, [
+      new Address(addressArg).toScVal(),
+    ]);
+    return Boolean(result);
+  } catch (error) {
+    throw new OnChainReadError(functionName, factoryContractId, error);
+  }
+}
+
+/** Is `token` still on the factory's supported-token whitelist? (#1572) */
+export function isFactoryTokenSupported(
+  factoryContractId: string,
+  token: string,
+): Promise<boolean> {
+  return readFactoryFlag(factoryContractId, "is_token_supported", token);
+}
+
+/** Is `vault` still an approved vault? (#1572) */
+export function isFactoryVaultApproved(
+  factoryContractId: string,
+  vault: string,
+): Promise<boolean> {
+  return readFactoryFlag(factoryContractId, "is_approved_vault", vault);
+}
+
+/** Is `oracle` still an approved oracle? (#1572) */
+export function isFactoryOracleApproved(
+  factoryContractId: string,
+  oracle: string,
+): Promise<boolean> {
+  return readFactoryFlag(factoryContractId, "is_approved_oracle", oracle);
+}
+
+/** How many Active pools `host` currently has (#1572). */
+export async function getFactoryActivePoolCount(
+  factoryContractId: string,
+  host: string,
+): Promise<number> {
+  const stellarRpcGateway = new StellarRpcGateway();
+  try {
+    const result = await simulateViewCall(factoryContractId, "get_active_pool_count", stellarRpcGateway, [
+      new Address(host).toScVal(),
+    ]);
+    return Number(result as bigint | number);
+  } catch (error) {
+    throw new OnChainReadError("get_active_pool_count", factoryContractId, error);
+  }
+}
+
+/** The factory's global `max_active_pools` cap (#1572). */
+export async function getFactoryMaxActivePools(factoryContractId: string): Promise<number> {
+  const stellarRpcGateway = new StellarRpcGateway();
+  try {
+    const result = await simulateViewCall(factoryContractId, "get_max_active_pools", stellarRpcGateway);
+    return Number(result as bigint | number);
+  } catch (error) {
+    throw new OnChainReadError("get_max_active_pools", factoryContractId, error);
+  }
+}
+
+/**
  * Read a player's complete per-arena status in one simulation (#1582). The
  * source of truth for backend eligibility checks. A non-player is a
  * `verified` status with `joined: false`; a failed read is `unavailable`.
- */
-export async function readOnChainPlayerStatus(
+ */export async function readOnChainPlayerStatus(
   contractId: string,
   player: string,
 ): Promise<OnChainReadResult<OnChainPlayerStatus>> {

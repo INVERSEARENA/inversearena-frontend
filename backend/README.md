@@ -32,6 +32,18 @@ Prometheus-compatible metrics at `/metrics`:
 
 See [docs/METRICS.md](./docs/METRICS.md) for details.
 
+### Edge Caching & Revalidation
+
+Public read endpoints (landing stats, protocol config, arena list/stats) carry a
+shared-cache `Cache-Control` with `stale-while-revalidate` so a CDN can serve
+anonymous traffic without reaching the origin. Personalized/authenticated
+responses are `no-store` by default, and an on-chain configuration change fires
+a signed webhook that revalidates the frontend's ISR caches.
+
+See [docs/EDGE_CACHE_POLICY.md](./docs/EDGE_CACHE_POLICY.md) for the per-endpoint
+policy table, the revalidation flow, and load-test evidence
+(`npm run bench:edge-cache`).
+
 ---
 
 ## Quick Start
@@ -172,3 +184,4 @@ Returns a paginated list of participants in a specific arena with their status (
 - **[Admin Maintenance Windows](./docs/MAINTENANCE_WINDOWS.md)** - #1399 design note
 - **[Authenticated Device Sessions](./docs/DEVICE_SESSIONS.md)** - #1410 design note
 - **[Settlement Manifest & Receipts](./docs/SETTLEMENT_RECEIPTS.md)** - #1407 design note
+- **[Partitioning & Retention Runbook](./docs/PARTITION_RETENTION_RUNBOOK.md)** - #1622 monthly partitioning of `elimination_logs`/`transactions`, retention worker, archive restore

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { parseAllowedOrigins } from "@/shared/lib/security-validation";
 import { HSTS_HEADER_VALUE, generateNonce } from "@/shared/config/csp";
 import { isDevGalleryEnabled, isDevGalleryPath } from "@/shared/lib/dev-gallery";
+import { LOCALE_COOKIE, negotiateLocale } from "@/i18n/config";
 
 const DEFAULT_TESTNET_HORIZON_URL = "https://horizon-testnet.stellar.org";
 const DEFAULT_TESTNET_SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
@@ -210,6 +211,19 @@ export function proxy(request: NextRequest) {
       : NextResponse.next({ request: { headers: requestHeaders } });
 
   applySecurityHeaders(response, allowedOrigins, nonce);
+
+  // #1575: seed the locale cookie from Accept-Language on first visit so the
+  // server-rendered <html lang> and message catalog match the browser's
+  // preference. An explicit choice made by the switcher always wins — this
+  // only writes when the cookie is absent.
+  if (!isApiRoute && !request.cookies.has(LOCALE_COOKIE)) {
+    const detected = negotiateLocale(request.headers.get("accept-language"));
+    response.cookies.set(LOCALE_COOKIE, detected, {
+      path: "/",
+      maxAge: 60 * 60 * 24 * 365,
+      sameSite: "lax",
+    });
+  }
 
   if (isApiRoute) {
     applyCorsHeaders(response, requestOrigin, allowedOrigins);

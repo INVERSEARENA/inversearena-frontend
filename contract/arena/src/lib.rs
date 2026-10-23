@@ -30,9 +30,8 @@ use rwa_client::RwaAdapterClient;
 use storage::ArenaStorage;
 use types::{
     ArenaConfig, ArenaError, ArenaStatus, Choice, EliminationReason, GameState, LeaderboardEntry,
-    OracleFreshnessPolicy, PendingAdmin, PendingUpgrade, PlayerState, PlayerStatus, RoundResult,
-    Settlement, YieldSnapshot,
-    TransitionInitiator,
+    OracleFreshnessPolicy, PendingAdmin, PendingUpgrade, PlayerState, PlayerStatus, PoolConfigView,
+    RoundResult, Settlement, TransitionInitiator, YieldSnapshot,
 };
 
 #[soroban_sdk::contractclient(name = "FactoryClient")]
@@ -61,11 +60,9 @@ pub const MAX_PLAYERS_ALLOWED: u32 = 100;
 /// points now honour the factory-wide pause and may return `GloballyPaused`).
 /// Bumped to 5 for #1632: adds `get_settlement`, which the payout contract
 /// requires before it will pay out for an arena.
-/// Bumped to 6 for #1629: splits the arena's powers into a host role and a
-/// protocol-admin role, and adds `host`, `protocol_admin` and `pause_expired`.
-/// The protocol powers (upgrade, platform fee, pause, force-cancel) now need
-/// the factory's admin, and a pause is time-boxed by
-/// `MAX_PAUSE_DURATION_SECONDS`.
+/// Bumped to 6 for #1572: adds `get_pool_config`, a read-only view of the
+/// arena's full pool configuration, so off-chain rematch prefills read the
+/// arena's own on-chain config instead of cached UI state.
 const CONTRACT_VERSION: u32 = 6;
 const UPGRADE_TIMELOCK_SECONDS: u64 = 86_400; // 1 day
 /// Maximum allowed platform fee: 1000 bps (10%). Enforced by `update_platform_fee`.
@@ -926,6 +923,34 @@ impl ArenaContract {
             winner: if finished { ArenaStorage::peek_winner(&env) } else { None },
             prize: principal.saturating_add(config.cumulative_yield),
             stake_token: config.stake_token,
+            pool_id: config.pool_id,
+        })
+    }
+
+    /// Return this arena's full pool configuration (#1572).
+    ///
+    /// Read-only. Off-chain rematch prefills read this so a rematch pool is
+    /// derived from the arena's own on-chain config rather than cached UI
+    /// state. Field names mirror the factory's `PoolConfig`.
+    ///
+    /// `round_duration` is `0` until the first round has started — the
+    /// duration is recorded at `start_round`, not `initialize`.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    pub fn get_pool_config(env: Env) -> Result<PoolConfigView, ArenaError> {
+        let config = ArenaStorage::peek_config(&env)?;
+        Ok(PoolConfigView {
+            stake_token: config.stake_token,
+            yield_vault: config.yield_vault,
+            entry_fee: config.entry_fee,
+            oracle_contract: config.oracle_contract,
+            min_players: ArenaStorage::load_min_players(&env),
+            max_players: ArenaStorage::load_max_players(&env)
+                .unwrap_or(crate::MAX_PLAYERS_ALLOWED),
+            round_duration: ArenaStorage::load_round_duration(&env),
+            start_deadline: ArenaStorage::load_start_deadline(&env),
+            factory: config.factory,
             pool_id: config.pool_id,
         })
     }
@@ -4632,6 +4657,57 @@ mod test {
             ArenaStorage::load_config(&env).unwrap().oracle_contract
         });
         assert_eq!(client.get_oracle_contract(), expected);
+    }
+
+    #[test]
+    fn get_pool_config_returns_the_stored_configuration() {
+        let (env, client) = setup(0);
+        let (stake_token, yield_vault, entry_fee, oracle, factory) = env
+            .as_contract(&client.address, || {
+                let config = ArenaStorage::load_config(&env).unwrap();
+                ArenaStorage::save_player_limits(&env, 3, 12);
+                (
+                    config.stake_token,
+                    config.yield_vault,
+                    config.entry_fee,
+                    config.oracle_contract,
+                    config.factory,
+                )
+            });
+
+        let view = client.get_pool_config();
+        assert_eq!(view.stake_token, stake_token);
+        assert_eq!(view.yield_vault, yield_vault);
+        assert_eq!(view.entry_fee, entry_fee);
+        assert_eq!(view.oracle_contract, oracle);
+        assert_eq!(view.min_players, 3);
+        assert_eq!(view.max_players, 12);
+        // The duration is only recorded at `start_round`, not `initialize`.
+        assert_eq!(view.round_duration, 0);
+        assert_eq!(view.start_deadline, 0);
+        assert_eq!(view.factory, factory);
+    }
+
+    #[test]
+    fn get_pool_config_reports_recorded_round_duration_after_start() {
+        let (env, client) = setup(0);
+        env.as_contract(&client.address, || {
+            ArenaStorage::save_player_limits(&env, 2, 2);
+            ArenaStorage::save_round_duration(&env, 900);
+            ArenaStorage::save_start_deadline(&env, 1_700_000_000);
+        });
+        let view = client.get_pool_config();
+        assert_eq!(view.round_duration, 900);
+        assert_eq!(view.start_deadline, 1_700_000_000);
+    }
+
+    #[test]
+    fn get_pool_config_errors_before_initialize() {
+        let env = Env::default();
+        let contract_id = env.register(ArenaContract, ());
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let result = client.try_get_pool_config();
+        assert_eq!(result, Err(Ok(ArenaError::NotInitialized)));
     }
 
     #[test]

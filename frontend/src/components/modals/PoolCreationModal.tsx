@@ -34,6 +34,11 @@ import {
   clearPoolDraft,
 } from "@/features/pools/model/pool-draft";
 import { usePoolCompatibility } from "@/features/pools/model/usePoolCompatibility";
+import {
+  recordRematchArena,
+  toRematchFormPrefill,
+  type RematchConfig,
+} from "@/features/pools/model/rematch-config";
 
 const ALL_CURRENCIES: Currency[] = ["USDC", "XLM"];
 
@@ -45,6 +50,8 @@ interface PoolCreationModalProps {
     agentId: string;
     rank: number;
   };
+  /** Canonical prefill for a rematch, fetched from the source arena (#1572). */
+  rematch?: RematchConfig | null;
 }
 
 interface PoolCreationData {
@@ -59,6 +66,7 @@ export function PoolCreationModal({
   onClose,
   onInitialize,
   challengedSurvivor,
+  rematch,
 }: PoolCreationModalProps) {
   const [stakeAmountInput, setStakeAmountInput] = useState("100");
   const [currency, setCurrency] = useState<Currency>("USDC");
@@ -72,6 +80,7 @@ export function PoolCreationModal({
   const [isFormValid, setIsFormValid] = useState(false);
   const [isDeploying, setIsDeploying] = useState(false);
   const [draftRestored, setDraftRestored] = useState(false);
+  const rematchPrefill = rematch ? toRematchFormPrefill(rematch) : null;
   // Suppresses exactly the next run of the draft-save effect below, so a
   // programmatic field reset (restoring a saved draft, or discarding one)
   // doesn't get immediately echoed straight back out to localStorage as if
@@ -197,6 +206,17 @@ export function PoolCreationModal({
   useEffect(() => {
     if (!isOpen) return;
     suppressNextDraftSaveRef.current = true;
+    if (rematchPrefill) {
+      // A rematch prefill is authoritative: it comes from the source arena's
+      // on-chain config, so it must not be shadowed by a stale local draft.
+      clearPoolDraft();
+      setStakeAmountInput(rematchPrefill.stakeAmountInput);
+      if (rematchPrefill.currency) setCurrency(rematchPrefill.currency);
+      setRoundSpeed(rematchPrefill.roundSpeed);
+      setArenaCapacity(rematchPrefill.arenaCapacity);
+      setDraftRestored(false);
+      return;
+    }
     const draft = loadPoolDraft();
     if (draft) {
       setStakeAmountInput(draft.stakeAmountInput);
@@ -205,7 +225,10 @@ export function PoolCreationModal({
       setArenaCapacity(draft.arenaCapacity);
       setDraftRestored(true);
     }
-  }, [isOpen]);
+    // rematchPrefill is derived from `rematch`; re-running on its identity is
+    // enough and avoids depending on the whole object in the effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, rematch?.arenaId]);
 
   // Persist the in-progress draft on every field change while the modal is
   // open, skipping the run that immediately follows a restore or discard
@@ -305,6 +328,22 @@ export function PoolCreationModal({
                 : "Deploy new arena instance to Soroban network"}
             </p>
           </div>
+
+          {rematch && (
+            <div
+              role="status"
+              className="mb-6 border-2 border-primary bg-primary/10 p-3 text-sm font-bold text-primary"
+            >
+              <p className="uppercase tracking-wide">
+                Rematch of {rematch.arenaId.slice(0, 6)}…{rematch.arenaId.slice(-4)}
+              </p>
+              <p className="mt-1 text-xs font-medium normal-case text-slate-300">
+                {rematch.isPriorParticipant
+                  ? "You played the previous arena. Its stake, round speed and capacity are prefilled from chain."
+                  : "Prefilled from the previous arena's on-chain configuration."}
+              </p>
+            </div>
+          )}
 
           {draftRestored && (
             <div
@@ -574,6 +613,9 @@ export function PoolCreationModal({
                       { label: "Capacity", value: arenaCapacity },
                       { label: "Network Fee", value: formatFeeDisplay(estimatedFee) },
                       { label: "Network", value: "Soroban Testnet" },
+                      ...(rematch
+                        ? [{ label: "Rematch Of", value: rematch.arenaId }]
+                        : []),
                     ]);
                     setShowTxModal(true);
                   }
@@ -634,6 +676,21 @@ export function PoolCreationModal({
             submitSignedTransaction,
             networkPassphrase: NETWORK_PASSPHRASE,
             onSigned,
+          }).then(({ hash }) => {
+            // Persist the rematch linkage only after the factory transaction
+            // confirmed; the backend re-verifies the hash on-chain (#1572).
+            // Fire-and-forget: the arena exists on-chain either way, and a
+            // backend hiccup must not surface as a failed creation.
+            if (rematch) {
+              void recordRematchArena({
+                txHash: hash,
+                rematchOf: rematch.arenaId,
+                sourceArenaId: rematch.arenaId,
+                entryFee: stakeAmount,
+                maxPlayers: arenaCapacity,
+                stakeToken: currency,
+              }).catch(() => {});
+            }
           });
           // The pool was created successfully, so the draft no longer
           // represents unsaved work; clear it rather than letting a stale
