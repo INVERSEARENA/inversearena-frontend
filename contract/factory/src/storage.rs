@@ -1,5 +1,8 @@
 #![allow(dead_code)]
-use crate::types::{ArenaMetadata, ArenaStatus, FactoryError, MAX_ARENAS_PAGE_SIZE};
+use crate::types::{
+    ArenaMetadata, ArenaStatus, FactoryError, PoolIntegration, RegistryEntry, RegistryKind,
+    MAX_ARENAS_PAGE_SIZE,
+};
 use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, Vec, contracttype};
 
 const PERSISTENT_TTL_THRESHOLD: u32 = 100;
@@ -34,6 +37,22 @@ pub enum DataKey {
     /// #1634: Stake token an approved vault was registered with. Kept apart
     /// from the `ApprovedVault` flag so existing flag entries still decode.
     ApprovedVaultToken(Address),
+    /// #1688: Lifecycle state of a registry entry. Kept apart from the
+    /// approval flags so entries that predate the lifecycle (an unknown
+    /// legacy entry) still decode as `Active`.
+    VaultLifecycle(Address),
+    /// #1688: Lifecycle state of an approved oracle.
+    OracleLifecycle(Address),
+    /// #1688: Lifecycle state of a supported stake token.
+    TokenLifecycle(Address),
+    /// #1688: Registry revision, bumped on every lifecycle change. Off-chain
+    /// caches use it to tell a stale snapshot from a current one.
+    RegistryRevision,
+    /// #1688: The integrations a pool was created with.
+    PoolIntegration(u32),
+    /// #1688: Number of pools that still carry a liability against an
+    /// integration — created, but not yet finished or cancelled.
+    LiveUse(RegistryKind, Address),
 }
 
 #[contracttype]
@@ -521,5 +540,82 @@ impl FactoryStorage {
             ArenaStatus::Finished => 2,
             ArenaStatus::Cancelled => 3,
         }
+    }
+
+    // ── #1688: registry lifecycle ────────────────────────────────────────
+
+    /// Record the lifecycle state of a registry entry.
+    pub fn save_lifecycle(env: &Env, kind: &RegistryKind, address: &Address, entry: &RegistryEntry) {
+        let key = Self::lifecycle_key(kind, address);
+        env.storage().persistent().set(&key, entry);
+        Self::extend_persistent_ttl(env, &key);
+    }
+
+    /// The lifecycle record of a registry entry, or `None` for an entry that
+    /// predates the lifecycle (#1688).
+    pub fn load_lifecycle(env: &Env, kind: &RegistryKind, address: &Address) -> Option<RegistryEntry> {
+        let key = Self::lifecycle_key(kind, address);
+        env.storage().persistent().get(&key)
+    }
+
+    fn lifecycle_key(kind: &RegistryKind, address: &Address) -> DataKey {
+        match kind {
+            RegistryKind::Token => DataKey::TokenLifecycle(address.clone()),
+            RegistryKind::Vault => DataKey::VaultLifecycle(address.clone()),
+            RegistryKind::Oracle => DataKey::OracleLifecycle(address.clone()),
+        }
+    }
+
+    /// The current registry revision (#1688). Bumped on every lifecycle
+    /// change so caches can be invalidated without replaying events.
+    pub fn registry_revision(env: &Env) -> u64 {
+        env.storage().persistent().get(&DataKey::RegistryRevision).unwrap_or(0)
+    }
+
+    /// Bump the registry revision and return the new value (#1688).
+    pub fn bump_registry_revision(env: &Env) -> u64 {
+        let next = Self::registry_revision(env).saturating_add(1);
+        env.storage().persistent().set(&DataKey::RegistryRevision, &next);
+        Self::extend_persistent_ttl(env, &DataKey::RegistryRevision);
+        next
+    }
+
+    /// Record the integrations a pool was created with (#1688).
+    pub fn save_pool_integration(env: &Env, pool_id: u32, integration: &PoolIntegration) {
+        let key = DataKey::PoolIntegration(pool_id);
+        env.storage().persistent().set(&key, integration);
+        Self::extend_persistent_ttl(env, &key);
+    }
+
+    /// The integrations a pool was created with, or `None` for a pool that
+    /// predates the registry tracking (#1688).
+    pub fn load_pool_integration(env: &Env, pool_id: u32) -> Option<PoolIntegration> {
+        let key = DataKey::PoolIntegration(pool_id);
+        env.storage().persistent().get(&key)
+    }
+
+    /// Record one more live pool against an integration (#1688).
+    pub fn increment_live_use(env: &Env, kind: &RegistryKind, address: &Address) {
+        let key = DataKey::LiveUse(kind.clone(), address.clone());
+        let next = env.storage().persistent().get::<_, u32>(&key).unwrap_or(0).saturating_add(1);
+        env.storage().persistent().set(&key, &next);
+        Self::extend_persistent_ttl(env, &key);
+    }
+
+    /// Drop one live pool from an integration (#1688).
+    pub fn decrement_live_use(env: &Env, kind: &RegistryKind, address: &Address) {
+        let key = DataKey::LiveUse(kind.clone(), address.clone());
+        let current = env.storage().persistent().get::<_, u32>(&key).unwrap_or(0);
+        let next = if current <= 1 { 0 } else { current - 1 };
+        env.storage().persistent().set(&key, &next);
+        Self::extend_persistent_ttl(env, &key);
+    }
+
+    /// How many live pools still carry a liability against an integration
+    /// (#1688). Counts pools created since the registry started tracking
+    /// integrations.
+    pub fn live_use(env: &Env, kind: &RegistryKind, address: &Address) -> u32 {
+        let key = DataKey::LiveUse(kind.clone(), address.clone());
+        env.storage().persistent().get(&key).unwrap_or(0)
     }
 }

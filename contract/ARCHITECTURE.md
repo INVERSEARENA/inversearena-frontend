@@ -224,6 +224,35 @@ state even if its host disappears.
 | Distribute winnings | No | No | Yes | No | No |
 | Stake XLM | No | No | No | Yes | No |
 
+## Registry Deprecation Lifecycle (#1688)
+
+The factory's registry of stake tokens, yield vaults and oracles is no longer
+binary. Each approved integration carries a lifecycle record:
+
+| State | New arenas | Existing arenas |
+| --- | --- | --- |
+| `Active` | accepted | fully supported |
+| `Deprecated` | refused (`DeprecatedIntegration`, 24) | fully supported — the settlement path never consults the lifecycle |
+| `Disabled` | refused | supported while liabilities are open; refused with `OutstandingLiabilities` (25) once the last live pool settles |
+
+An integration the factory has no record of reads as `Active` (ledger `0`,
+reason `legacy`), so approvals that predate the lifecycle keep working and a
+read failure never looks like a deprecation.
+
+- The record lives at `DataKey::{Vault,Oracle,Token}Lifecycle(Address)`; the
+  registry revision at `DataKey::RegistryRevision` is bumped on every
+  transition and is the cache-invalidation key for the backend and the
+  clients.
+- `DataKey::PoolIntegration(u32)` records the integration of each pool and
+  `DataKey::LiveUse(kind, address)` counts the pools that are still live.
+  `update_arena_status` releases the liability when an arena reaches
+  `Finished` or `Cancelled`.
+- The emergency removal path (`remove_approved_vault` and friends) disables
+  an integration unconditionally; it bypasses the liability guard on purpose
+  and must be followed by a manual audit of the pools that were still live.
+
+See `docs/registry-lifecycle.md` for the operator runbook.
+
 ## Security Review Notes
 
 - The contracts do not currently form a single centralized permission layer; each contract carries its own admin state and must be reviewed independently.

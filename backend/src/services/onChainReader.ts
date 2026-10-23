@@ -327,6 +327,28 @@ export async function readOnChainGameState(
 }
 
 /**
+ * Read an arbitrary read-only contract view (#1688).
+ *
+ * Exposed so services that need a factory view call (the registry
+ * lifecycle, for example) do not have to re-implement the simulation
+ * plumbing. Returns the decoded native value; throws `OnChainReadError` on
+ * failure, so a caller can distinguish "the contract answered" from "the
+ * read failed" — a failed read must never be reported as a value.
+ */
+export async function readContractView(
+  contractId: string,
+  functionName: string,
+  args: xdr.ScVal[] = [],
+): Promise<unknown> {
+  const stellarRpcGateway = new StellarRpcGateway();
+  try {
+    return await simulateViewCall(contractId, functionName, stellarRpcGateway, args);
+  } catch (error) {
+    throw new OnChainReadError(functionName, contractId, error);
+  }
+}
+
+/**
  * Read a deployed contract's `version()` return value.
  *
  * Unlike the lenient legacy readers it replaced, this propagates

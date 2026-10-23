@@ -44,6 +44,13 @@ Current payload version: **1**
 | `UP_EXEC`     | `execute_upgrade()`    | `(v, new_wasm_hash: BytesN<32>)`         |
 | `UP_CANC`     | `cancel_upgrade()`     | `(v)`                                    |
 | `GPAUSE`      | `set_global_pause()` (#1583) | `(paused: bool, reason: Symbol)` — protocol-wide emergency pause set or cleared |
+| `VLT_DEP` / `VLT_DIS` / `VLT_REA` | `deprecate_approved_vault()` / `disable_approved_vault()` / `reactivate_approved_vault()` (#1688) | `(vault: Address, effective_ledger: u32, reason: Symbol, revision: u32)` — the yield vault's lifecycle transition |
+| `ORC_DEP` / `ORC_DIS` / `ORC_REA` | `deprecate_approved_oracle()` / `disable_approved_oracle()` / `reactivate_approved_oracle()` (#1688) | `(oracle: Address, effective_ledger: u32, reason: Symbol, revision: u32)` — the oracle's lifecycle transition |
+| `TOK_DEP` / `TOK_DIS` / `TOK_REA` | `deprecate_supported_token()` / `disable_supported_token()` / `reactivate_supported_token()` (#1688) | `(token: Address, effective_ledger: u32, reason: Symbol, revision: u32)` — the stake token's lifecycle transition |
+
+> Note (#1688): the lifecycle events carry the registry revision, which is
+> bumped on every transition. A consumer that caches the lifecycle can
+> invalidate its cache on the revision alone, without replaying events.
 
 ## Staking Contract
 
