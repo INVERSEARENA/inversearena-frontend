@@ -7,7 +7,9 @@ import { WalletContextType } from '../model/types';
 import { useStellarWallet } from '../hooks/useStellarWallet';
 import { usePasskeyWallet } from '../hooks/usePasskeyWallet';
 import { isStellarConfigured, stellarConfig } from '@/shared/config/stellarConfig';
-import { Balance, fetchWalletBalance } from '@/shared/lib/stellar/stellar-balance';
+import { Balance } from '@/shared/lib/stellar/stellar-balance';
+import { balanceCache, getWalletBalance } from '@/shared/lib/stellar/balance-cache';
+import { usePageVisibility } from '@/shared/lib/hooks/usePageVisibility';
 // Side-effect import: installs the single asset-readiness telemetry sink for
 // the whole app. Every gate the provider renders — join, stake, claim — reports
 // through it, so there is one place to change or disable the destination.
@@ -66,36 +68,82 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
   // empty and blocks legitimate stakes behind a misleading "Insufficient
   // balance" error. Surface the failure so the UI can offer a retry instead.
   const [balanceError, setBalanceError] = useState<string | null>(null);
+  const isVisible = usePageVisibility();
+
+  // Apply a balance without re-rendering when nothing actually changed: the
+  // shared cache notifies on every write, including background
+  // revalidations that usually land on exactly the same numbers.
+  const applyBalance = useCallback((next: Balance) => {
+    setBalance((prev) => (prev.xlm === next.xlm && prev.usdc === next.usdc ? prev : next));
+  }, []);
+
+  /**
+   * Read the wallet's balances through the shared cache (#1625).
+   *
+   * `force` re-reads from Horizon — an explicit user-triggered refresh must
+   * always hit the network. Otherwise a still-fresh cached value is served
+   * immediately and a stale one is served while it is revalidated in the
+   * background, so the UI never blocks on Horizon for a number it already
+   * knows.
+   */
+  const loadBalance = useCallback(
+    async (force: boolean): Promise<void> => {
+      if (!publicKey) return;
+      setIsLoadingBalance(true);
+      setBalanceError(null);
+      try {
+        applyBalance(await getWalletBalance(publicKey, { force }));
+      } catch (err) {
+        console.error('Failed to fetch balances:', err);
+        setBalanceError(
+          err instanceof Error
+            ? err.message
+            : 'Unable to load wallet balance. Please retry.',
+        );
+        // Deliberately leave `balance` at its last-known value rather than
+        // zeroing it — a transient fetch failure shouldn't look like a drained
+        // wallet.
+      } finally {
+        setIsLoadingBalance(false);
+      }
+    },
+    [publicKey, applyBalance],
+  );
 
   const refreshBalance = useCallback(async () => {
-    if (!publicKey) return;
-    setIsLoadingBalance(true);
-    setBalanceError(null);
-    try {
-      setBalance(await fetchWalletBalance(publicKey));
-    } catch (err) {
-      console.error('Failed to fetch balances:', err);
-      setBalanceError(
-        err instanceof Error
-          ? err.message
-          : 'Unable to load wallet balance. Please retry.',
-      );
-      // Deliberately leave `balance` at its last-known value rather than
-      // zeroing it — a transient fetch failure shouldn't look like a drained
-      // wallet.
-    } finally {
-      setIsLoadingBalance(false);
-    }
-  }, [publicKey]);
+    await loadBalance(true);
+  }, [loadBalance]);
 
   useEffect(() => {
     if (publicKey && status === 'connected') {
-      void refreshBalance();
+      void loadBalance(false);
     } else {
       setBalance({ xlm: 0, usdc: 0 });
       setBalanceError(null);
     }
-  }, [publicKey, status, refreshBalance]);
+  }, [publicKey, status, loadBalance]);
+
+  // Visibility-aware refresh (#1625): a wallet's balance can move while the
+  // tab is in the background — a payment sent from another device, an
+  // auto-compounding vault. Re-read when the tab comes back so the amount on
+  // screen is not a snapshot of a hidden tab.
+  useEffect(() => {
+    if (!publicKey || status !== 'connected' || !isVisible) return;
+    void loadBalance(false);
+  }, [publicKey, status, isVisible, loadBalance]);
+
+  // React to the shared cache's writes and invalidations for this wallet
+  // (#1625). A confirmed transaction invalidates the cached balances, and the
+  // revalidation that follows writes the new value — both arrive here, so
+  // every consumer of the balance refreshes from one place instead of each
+  // component polling Horizon on its own.
+  useEffect(() => {
+    if (!publicKey) return;
+    return balanceCache.subscribe((event) => {
+      if (event.publicKey !== publicKey) return;
+      void loadBalance(false);
+    });
+  }, [publicKey, loadBalance]);
 
   const disconnect = useCallback(() => {
     if (passkeyActive) {

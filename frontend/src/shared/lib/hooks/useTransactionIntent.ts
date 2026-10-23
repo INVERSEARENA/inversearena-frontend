@@ -15,6 +15,8 @@
 import { useCallback } from "react";
 import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 
+import { invalidateWalletBalances } from "@/shared/lib/stellar/balance-cache";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
 const SESSION_STORAGE_PREFIX = "inversearena:intent-key";
 
@@ -171,6 +173,16 @@ export function useTransactionIntent() {
 
       try {
         await submitSignedTransaction(signedXdr);
+        // The transaction confirmed, so every balance this wallet holds has
+        // provably changed on-chain. Drop the cached copies: the header, the
+        // join modal and the stake modal all read balances through the shared
+        // cache, and without this invalidation they would keep showing the
+        // pre-transaction amount until something else re-rendered (#1625).
+        //
+        // This must never fail the confirmed transaction, so it runs after
+        // the submission succeeded and the cache invalidation itself cannot
+        // throw.
+        invalidateWalletBalances(publicKey);
         // Decoding the signed XDR to recover its hash is purely for the
         // backend's bookkeeping record — it must never gate the actual
         // submission result above. A hash-decode failure here still means
