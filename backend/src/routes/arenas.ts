@@ -40,6 +40,11 @@ import {
   EvidenceNotParticipantError,
 } from "../services/disputeEvidenceService";
 import { CancellationRecoveryService } from "../services/cancellationRecoveryService";
+import {
+  RematchService,
+  RematchArenaNotFoundError,
+  RematchConfigUnavailableError,
+} from "../services/rematchService";
 import { decodeCursorInput, encodeKeysetCursor } from "../utils/keysetPagination";
 
 const PaginationSchema = z.object({
@@ -72,6 +77,8 @@ const CreateArenaSchema = z.object({
   // The backend verifies this on-chain and reads the real arena address from
   // it — it never generates a contract address itself.
   txHash: z.string().trim().regex(/^[0-9a-f]{64}$/i, "Invalid transaction hash"),
+  // Optional source arena for a rematch pool (#1572).
+  rematchOf: z.string().trim().regex(/^C[A-Z2-7]{55}$/, "Invalid rematch source arena id").optional(),
 });
 
 function formatRound(round: {
@@ -148,6 +155,7 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   const arenaService = new ArenaService(prisma);
   const arenaStatsService = new ArenaStatsService(prisma);
   const arenaYieldService = new ArenaYieldService(prisma);
+  const rematchService = new RematchService(prisma);
   const roundRepository = new RoundRepository(prisma);
   const eligibilityService = new ParticipantEligibilityService(
     prisma,
@@ -371,6 +379,43 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
       } catch (error) {
         if (error instanceof Error && error.message.includes("not found")) {
           throw apiError(404, "ARENA_NOT_FOUND", error.message);
+        }
+        throw error;
+      }
+    }),
+  );
+
+  /**
+   * GET /api/arenas/:id/rematch-config
+   *
+   * Canonical rematch prefill for a finished arena (#1572). The config is
+   * derived from the arena's own `get_pool_config` chain read and the
+   * factory's current policy views — never from cached UI state. Returns
+   * `available: false` with a `blockedReason` when a rematch is not possible
+   * (arena still running, delisted token/vault/oracle, host at the active-pool
+   * limit) rather than failing the request.
+   */
+  router.get(
+    "/:id/rematch-config",
+    authMiddleware,
+    asyncHandler(async (req, res) => {
+      const id = req.params.id;
+      if (!id) {
+        throw apiError(400, "INVALID_ARENA_ID", "Arena id is required");
+      }
+
+      try {
+        const rematchConfig = await rematchService.getRematchConfig(
+          id,
+          req.user?.walletAddress ?? null,
+        );
+        res.json(rematchConfig);
+      } catch (error) {
+        if (error instanceof RematchArenaNotFoundError) {
+          throw apiError(404, "ARENA_NOT_FOUND", error.message);
+        }
+        if (error instanceof RematchConfigUnavailableError) {
+          throw apiError(503, "REMATCH_CONFIG_UNAVAILABLE", error.message);
         }
         throw error;
       }

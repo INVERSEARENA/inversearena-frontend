@@ -58,7 +58,8 @@ export type PushAlertType =
   | "commit-closing"
   | "reveal-open"
   | "you-won"
-  | "refund-available";
+  | "refund-available"
+  | "rematch";
 
 export interface SchedulePushesInput {
   arenaId: string;
@@ -413,10 +414,13 @@ export class PushService {
     void vapid;
 
     const dedupeKey = this.dedupeKey(input.arenaId, input.roundNumber, input.type);
+    // A rematch invite (#1572) is recorded under its own preference type;
+    // every other alert is a round alert.
+    const prefType = input.type === "rematch" ? "rematch" : "round";
 
     for (const userId of new Set(input.userIds)) {
       try {
-        const allowed = await this.prefs.shouldNotify(userId, "round", "push");
+        const allowed = await this.prefs.shouldNotify(userId, prefType, "push");
         if (!allowed) {
           result.skipped += 1;
           continue;
@@ -425,7 +429,7 @@ export class PushService {
           result.skipped += 1;
           continue;
         }
-        const deliveryId = await this.prefs.recordDelivery(userId, "round", "push", dedupeKey);
+        const deliveryId = await this.prefs.recordDelivery(userId, prefType, "push", dedupeKey);
 
         const subscriptions = await this.prisma.pushSubscription.findMany({
           where: { userId },

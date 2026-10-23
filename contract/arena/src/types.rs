@@ -286,6 +286,30 @@ pub struct Settlement {
     pub pool_id: u32,
 }
 
+/// The full pool configuration of an arena, returned by `get_pool_config`
+/// (#1572). Field names and types mirror the factory's `PoolConfig` so an
+/// off-chain rematch prefill decodes one shape from either contract.
+///
+/// `round_duration` is `0` until the first round has started — the duration
+/// is recorded at `start_round`, not `initialize`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PoolConfigView {
+    pub stake_token: Address,
+    pub yield_vault: Address,
+    pub entry_fee: i128,
+    pub oracle_contract: Address,
+    pub min_players: u32,
+    pub max_players: u32,
+    pub round_duration: u64,
+    pub start_deadline: u64,
+    /// The factory contract that deployed this arena, so rematch tooling can
+    /// run its token/vault/oracle/host-limit checks without a reverse lookup.
+    pub factory: Address,
+    /// The factory pool id this arena was created under.
+    pub pool_id: u32,
+}
+
 /// Every per-player fact a client needs to gate arena actions, returned by
 /// `get_player_status` in a single read (#1582).
 ///

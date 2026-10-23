@@ -144,6 +144,10 @@ A transaction invokes one contract, which may call others (the arena calls the f
 | 4 | `NoPendingAdmin` | — |
 | 5 | `DeltaTooLarge` | `\|new_rate - current_rate\| > max_delta_bps`. |
 | 6 | `DelayTooLong` | `activation_delay` (or a scheduled value) exceeds the hard bound. |
+| 7 | `NotReporter` | `submit_rate` called by an address that is not in the reporter set (#1578). |
+| 8 | `ReporterExists` | `add_reporter` called with an address already in the set (#1578). |
+| 9 | `ReporterLimitReached` | `add_reporter` would grow the set beyond `MAX_REPORTERS` (#1578). |
+| 10 | `InvalidQuorum` | `set_quorum` with `quorum == 0` or above `MAX_REPORTERS` (#1578). |
 
 ### `payout` — `PayoutError`
 

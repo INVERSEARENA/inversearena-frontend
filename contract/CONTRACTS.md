@@ -40,6 +40,8 @@
 - `pub fn get_players(env: Env, page: u32) -> Vec<(Address, PlayerState)>`
 - `pub fn player_count(env: Env) -> u32`
 - `pub fn get_player_status(env: Env, player: Address) -> Result<PlayerStatus, ArenaError>` — every per-player fact for the current round in one read; `joined: false` for non-players (#1582)
+- `pub fn get_settlement(env: Env) -> Result<Settlement, ArenaError>` — what the arena owes and to whom, for the payout contract (#1632)
+- `pub fn get_pool_config(env: Env) -> Result<PoolConfigView, ArenaError>` — full canonical pool config (`stake_token`, `yield_vault`, `entry_fee`, `oracle_contract`, `min_players`, `max_players`, `round_duration`, `start_deadline`) so off-chain rematch prefills read on-chain state instead of cached UI state; `round_duration`/`start_deadline` are `0` until the first round starts (#1572)
 - `pub fn start_round(env: Env, duration_seconds: u64) -> Result<(), ArenaError>`
 - `pub fn start_next_round(env: Env, caller: Address) -> Result<(), ArenaError>`
 - `pub fn resolve_round(env: Env) -> Result<(), ArenaError>`
@@ -101,6 +103,7 @@
 - `pub fn get_creator_stake(env: Env, arena: Address) -> Option<CreatorStakeRecord>`
 - `pub fn set_global_pause(env: Env, paused: bool, reason: Symbol) -> Result<(), FactoryError>` — protocol-admin emergency pause honoured by every arena's fund-moving entry points (#1583)
 - `pub fn is_globally_paused(env: Env) -> bool` (#1583)
+- `pub fn get_active_pool_count(env: Env, host: Address) -> u32` — how many Active pools `host` currently has, for rematch `max_active_pools` headroom checks (#1572)
 
 ## Payout
 
@@ -152,6 +155,30 @@ consumers read the effective rate via `get_current_yield_bps` (arena
 - `pub fn get_oracle_reading(env: Env) -> OracleReading` — `{rate_bps, observed_at, source_version}` (#1512): the effective rate plus when it was applied; `observed_at == 0` means no observation has ever been recorded
 - `pub fn get_rate_schedule(env: Env) -> RateSchedule` — `{current, pending, effective_at, max_delta_bps, activation_delay, pending_*, params_effective_at}`
 - `pub fn get_max_yield_bps / get_max_delta_bps / get_activation_delay` — effective bound views
+
+### Multi-reporter median (#1578)
+
+The admin maintains a reporter set (up to `MAX_REPORTERS = 8`). Each
+reporter submits a rate; once `quorum` fresh submissions (no older than
+`max_age_secs`) are present the outlier-filtered median is finalized
+on-chain as the effective rate. `get_current_yield_bps` returns the live
+median when quorum is met and the last finalized value otherwise — its
+signature is unchanged. `get_oracle_status` exposes the staleness flag and
+report counts for consumers that need the distinction. A finalized median
+supersedes any pending scheduled admin rate and bypasses the
+`max_delta_bps` bound (reporters are independent sources); the ceiling
+(`max_rate`) still applies to submissions. Consumer policy when quorum is
+lost: treat the frozen rate like a stale reading (`stale == true`).
+
+### Functions
+- `pub fn add_reporter(env: Env, reporter: Address)` — admin-managed set, rejects duplicates and overflow past `MAX_REPORTERS`
+- `pub fn remove_reporter(env: Env, reporter: Address)` — also drops the reporter's outstanding submission (rotation-safe)
+- `pub fn set_quorum(env: Env, quorum: u32)` — `1..=MAX_REPORTERS`; may exceed the current reporter count (oracle stays stale until filled)
+- `pub fn set_max_age_secs(env: Env, max_age_secs: u64)` — freshness window for submissions
+- `pub fn set_max_deviation_bps(env: Env, max_deviation_bps: u32)` — outlier band around the pre-filter median; `0` disables rejection
+- `pub fn submit_rate(env: Env, reporter: Address, rate_bps: u32)` — reporter-signed; stores the submission (replacing any prior vote), finalizes the median when quorum is reached
+- `pub fn get_reporters(env: Env) -> Vec<Address>` — registered reporters in insertion order
+- `pub fn get_oracle_status(env: Env) -> OracleStatus` — `{rate_bps, stale, fresh_reports, quorum, reporter_count, finalized_at}`
 
 ## Staking
 

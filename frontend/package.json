@@ -9,10 +9,12 @@
     "lint": "eslint",
     "test:pagination": "echo \"No dedicated pagination tests currently defined\"",
     "test:rate-limit": "node --test src/server/rate-limit/limiter.test.ts",
-    "test:frontend": "jest"
+    "test:frontend": "jest",
+    "i18n:check": "node scripts/check-i18n-messages.mjs"
   },
   "dependencies": {
     "@creit-tech/stellar-wallets-kit": "npm:@jsr/creit-tech__stellar-wallets-kit@^2.0.0-beta.9",
+    "@inversearena/rate-limit": "file:../packages/rate-limit",
     "@sentry/nextjs": "^10.40.0",
     "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^14.5.0",
@@ -21,14 +23,14 @@
     "lucide-react": "^0.468.0",
     "motion": "^12.29.0",
     "next": "16.1.6",
+    "next-intl": "^4.14.9",
     "next-themes": "^0.4.6",
     "qrcode.react": "^4.2.0",
     "rate-limiter-flexible": "^8.2.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "recharts": "^3.7.0",
-    "zod": "^3.24.2",
-    "@inversearena/rate-limit": "file:../packages/rate-limit"
+    "zod": "^3.24.2"
   },
   "overrides": {
     "axios": "^1.13.5",

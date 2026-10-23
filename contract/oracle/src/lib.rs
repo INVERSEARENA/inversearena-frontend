@@ -1,7 +1,7 @@
 #![no_std]
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 use soroban_sdk::{
-    Address, BytesN, Env, contract, contracterror, contractimpl, contracttype,
+    Address, BytesN, Env, Map, Vec, contract, contracterror, contractimpl, contracttype,
     symbol_short,
 };
 
@@ -22,6 +22,16 @@ use soroban_sdk::{
 /// read `get_oracle_reading` for the effective rate plus provenance, and can
 /// classify how stale that rate actually is instead of trusting a bare
 /// number. `observed_at == 0` means no rate has ever been applied here.
+///
+/// Multi-reporter median aggregation (#1578): the admin maintains a reporter
+/// set (up to `MAX_REPORTERS`). Each reporter submits a rate via
+/// `submit_rate`; once `quorum` fresh submissions are present the median is
+/// finalized on-chain (persisted as the effective rate, evented, and outlier-
+/// filtered within `max_deviation_bps`). `get_current_yield_bps` keeps its
+/// bare `u32` signature: it returns the live median of fresh reports when
+/// quorum is met, and otherwise the last finalized value; `get_oracle_status`
+/// exposes the accompanying staleness flag and report counts for consumers
+/// that need the distinction.
 ///
 /// The admin updates the rate before each round closes, sourcing the value
 /// from Ondo's off-chain API or an on-chain Band Protocol feed.
@@ -51,6 +61,17 @@ const KEY_P_PARAMS_AT: soroban_sdk::Symbol = symbol_short!("P_P_AT");
 /// `0`) until the first application; callers must treat `observed_at == 0`
 /// as "no observation has ever been recorded," i.e. maximally stale.
 const KEY_OBSERVED_AT: soroban_sdk::Symbol = symbol_short!("OBS_AT");
+// #1578 — multi-reporter median aggregation.
+/// Registered reporters, kept as a `Vec<Address>` for ordered iteration.
+const KEY_REPORTERS: soroban_sdk::Symbol = symbol_short!("REPS");
+/// Latest submission per reporter (`Map<Address, RateSubmission>`).
+const KEY_SUBMISSIONS: soroban_sdk::Symbol = symbol_short!("SUBS");
+/// Fresh reports required before a median is finalized.
+const KEY_QUORUM: soroban_sdk::Symbol = symbol_short!("QUORUM");
+/// Maximum age (seconds) of a submission to count as fresh.
+const KEY_MAX_AGE: soroban_sdk::Symbol = symbol_short!("M_AGE");
+/// Outlier band (bps) around the median; `0` disables outlier rejection.
+const KEY_MAX_DEV: soroban_sdk::Symbol = symbol_short!("M_DEV");
 
 pub const DEFAULT_MAX_YIELD_BPS: u32 = 5_000;
 pub const MAX_MAX_RATE_BPS: u32 = 10_000;
@@ -67,6 +88,19 @@ pub const MAX_ACTIVATION_DELAY_SECS: u64 = 7 * 24 * 3_600;
 /// method never changes shape, so it carries no version of its own.
 pub const ORACLE_CONTRACT_VERSION: u32 = 1;
 
+// ── multi-reporter median (#1578) ─────────────────────────────────────
+/// Hard cap on the reporter set. Small enough that reading every submission
+/// in a single `submit_rate`/getter call stays cheap.
+pub const MAX_REPORTERS: u32 = 8;
+/// A single reporter is a valid quorum, so existing single-admin flows can
+/// opt into reporting without changing their operations.
+pub const DEFAULT_QUORUM: u32 = 1;
+/// Submissions older than one hour stop counting as fresh.
+pub const DEFAULT_MAX_AGE_SECS: u64 = 3_600;
+/// Default outlier band: reports further than 5% from the median are
+/// excluded from the finalized value.
+pub const DEFAULT_MAX_DEVIATION_BPS: u32 = 500;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -79,6 +113,14 @@ pub enum OracleError {
     DeltaTooLarge = 5,
     /// `activation_delay` (or a scheduled value) exceeds the hard bound.
     DelayTooLong = 6,
+    /// `submit_rate` called by an address that is not in the reporter set.
+    NotReporter = 7,
+    /// `add_reporter` called with an address already in the set.
+    ReporterExists = 8,
+    /// `add_reporter` would grow the set beyond `MAX_REPORTERS`.
+    ReporterLimitReached = 9,
+    /// `set_quorum` with `quorum == 0` or above `MAX_REPORTERS`.
+    InvalidQuorum = 10,
 }
 
 /// Effective rate schedule, readable by frontends and keepers (#1570).
@@ -113,6 +155,40 @@ pub struct OracleReading {
     /// more than one oracle instance (e.g. across an upgrade) can tell them
     /// apart instead of assuming every instance shares the same shape.
     pub source_version: u32,
+}
+
+/// One reporter's latest rate submission (#1578).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RateSubmission {
+    pub rate_bps: u32,
+    pub submitted_at: u64,
+}
+
+/// Live status of the reporter set alongside the effective rate (#1578).
+///
+/// `get_current_yield_bps` keeps its bare `u32` shape; this view is the
+/// companion for consumers that need to know *why* the rate is what it is.
+/// Consumer policy: `stale == true` means the returned `rate_bps` is the
+/// last finalized value (admin-set or a previous median), not a live median
+/// of fresh reports — treat it like a stale reading.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleStatus {
+    /// Same value `get_current_yield_bps` returns.
+    pub rate_bps: u32,
+    /// True when fewer than `quorum` fresh reports are available, so
+    /// `rate_bps` falls back to the last finalized value.
+    pub stale: bool,
+    /// Number of submissions within `max_age_secs` right now.
+    pub fresh_reports: u32,
+    /// Fresh reports required for a live median.
+    pub quorum: u32,
+    /// Current size of the reporter set.
+    pub reporter_count: u32,
+    /// When the stored rate was last applied (median finalize, admin set,
+    /// scheduled activation, or emergency zero). `0` = never.
+    pub finalized_at: u64,
 }
 
 fn load_u32(env: &Env, key: &soroban_sdk::Symbol, fallback: u32) -> u32 {
@@ -401,6 +477,204 @@ impl OracleContract {
         Ok(())
     }
 
+    // ── multi-reporter median (#1578) ─────────────────────────────────
+
+    /// Register a rate reporter. Admin-managed, bounded by `MAX_REPORTERS`;
+    /// duplicate registration is rejected. Removing a reporter also drops
+    /// their outstanding submission, so rotation during an active round can
+    /// never leave a ghost vote in the median.
+    pub fn add_reporter(env: Env, reporter: Address) -> Result<(), OracleError> {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&KEY_ADMIN)
+            .ok_or(OracleError::NotInitialized)?;
+        admin.require_auth();
+        let mut reporters: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&KEY_REPORTERS)
+            .unwrap_or_else(|| Vec::new(&env));
+        if reporters.iter().any(|r| r == reporter) {
+            return Err(OracleError::ReporterExists);
+        }
+        if reporters.len() as u32 >= MAX_REPORTERS {
+            return Err(OracleError::ReporterLimitReached);
+        }
+        reporters.push_back(reporter.clone());
+        env.storage().persistent().set(&KEY_REPORTERS, &reporters);
+        env.events()
+            .publish((symbol_short!("rep_add"),), (reporter, reporters.len() as u32));
+        Ok(())
+    }
+
+    /// Remove a rate reporter and their outstanding submission. If the
+    /// removal drops the fresh count below quorum the effective rate stays
+    /// at the last finalized value and `get_oracle_status` reports
+    /// `stale == true` until quorum recovers.
+    pub fn remove_reporter(env: Env, reporter: Address) -> Result<(), OracleError> {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&KEY_ADMIN)
+            .ok_or(OracleError::NotInitialized)?;
+        admin.require_auth();
+        let mut reporters: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&KEY_REPORTERS)
+            .ok_or(OracleError::NotInitialized)?;
+        let Some(idx) = reporters.iter().position(|r| r == reporter) else {
+            return Err(OracleError::NotReporter);
+        };
+        reporters.remove(idx as u32);
+        if reporters.is_empty() {
+            env.storage().persistent().remove(&KEY_REPORTERS);
+        } else {
+            env.storage().persistent().set(&KEY_REPORTERS, &reporters);
+        }
+        let mut subs: Map<Address, RateSubmission> = env
+            .storage()
+            .persistent()
+            .get(&KEY_SUBMISSIONS)
+            .unwrap_or_else(|| Map::new(&env));
+        if subs.contains_key(reporter.clone()) {
+            subs.remove(reporter.clone());
+            if subs.is_empty() {
+                env.storage().persistent().remove(&KEY_SUBMISSIONS);
+            } else {
+                env.storage().persistent().set(&KEY_SUBMISSIONS, &subs);
+            }
+        }
+        env.events()
+            .publish((symbol_short!("rep_rem"),), (reporter, reporters.len() as u32));
+        Ok(())
+    }
+
+    /// Fresh reports required before a median is finalized. Valid range is
+    /// `1..=MAX_REPORTERS`; setting it above the current reporter count is
+    /// allowed (the oracle simply stays stale until enough reporters are
+    /// added back), which keeps rotation ordering flexible.
+    pub fn set_quorum(env: Env, quorum: u32) -> Result<(), OracleError> {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&KEY_ADMIN)
+            .ok_or(OracleError::NotInitialized)?;
+        admin.require_auth();
+        if quorum == 0 || quorum > MAX_REPORTERS {
+            return Err(OracleError::InvalidQuorum);
+        }
+        env.storage().persistent().set(&KEY_QUORUM, &quorum);
+        env.events().publish((symbol_short!("quorum"),), quorum);
+        Ok(())
+    }
+
+    /// Maximum age (seconds) of a submission to count as fresh.
+    pub fn set_max_age_secs(env: Env, max_age_secs: u64) -> Result<(), OracleError> {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&KEY_ADMIN)
+            .ok_or(OracleError::NotInitialized)?;
+        admin.require_auth();
+        env.storage().persistent().set(&KEY_MAX_AGE, &max_age_secs);
+        env.events()
+            .publish((symbol_short!("mage_set"),), max_age_secs);
+        Ok(())
+    }
+
+    /// Outlier band around the median, in bps. Reports whose rate deviates
+    /// from the pre-filter median by more than this are excluded from the
+    /// finalized value and evented (`out_rej`). `0` disables rejection.
+    pub fn set_max_deviation_bps(env: Env, max_deviation_bps: u32) -> Result<(), OracleError> {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&KEY_ADMIN)
+            .ok_or(OracleError::NotInitialized)?;
+        admin.require_auth();
+        env.storage().persistent().set(&KEY_MAX_DEV, &max_deviation_bps);
+        env.events()
+            .publish((symbol_short!("mdev_set"),), max_deviation_bps);
+        Ok(())
+    }
+
+    /// Submit a rate as a registered reporter (#1578). The reporter's
+    /// signature is required. Submissions are not subject to the admin
+    /// `max_delta_bps` bound (reporters are independent sources), but must
+    /// still respect the `max_rate` ceiling. When this submission brings the
+    /// fresh count to quorum the median is finalized immediately: outliers
+    /// are dropped (`out_rej`), the median is persisted as the effective
+    /// rate, any pending scheduled admin rate is superseded, and
+    /// `median_set` + `rate_obs` are emitted.
+    pub fn submit_rate(env: Env, reporter: Address, rate_bps: u32) -> Result<(), OracleError> {
+        reporter.require_auth();
+        let reporters: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&KEY_REPORTERS)
+            .ok_or(OracleError::NotInitialized)?;
+        if !reporters.iter().any(|r| r == reporter) {
+            return Err(OracleError::NotReporter);
+        }
+        if rate_bps > Self::effective_max_rate(&env) {
+            return Err(OracleError::RateTooHigh);
+        }
+        let now = env.ledger().timestamp();
+        let mut subs: Map<Address, RateSubmission> = env
+            .storage()
+            .persistent()
+            .get(&KEY_SUBMISSIONS)
+            .unwrap_or_else(|| Map::new(&env));
+        subs.set(
+            reporter.clone(),
+            RateSubmission {
+                rate_bps,
+                submitted_at: now,
+            },
+        );
+        env.storage().persistent().set(&KEY_SUBMISSIONS, &subs);
+        env.events()
+            .publish((symbol_short!("sub_ok"),), (reporter, rate_bps, now));
+        // Finalize when this submission reaches quorum. Recomputed from
+        // storage so a burst of submissions in the same ledger converges on
+        // one median instead of each one racing.
+        let fresh = Self::fresh_submissions(&env, now);
+        let quorum = Self::effective_quorum(&env);
+        if quorum >= 1 && (fresh.len() as u32) >= quorum {
+            Self::finalize_median(&env, &fresh, now);
+        }
+        Ok(())
+    }
+
+    /// Registered reporters, in insertion order.
+    pub fn get_reporters(env: Env) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&KEY_REPORTERS)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Reporter-set companion to `get_current_yield_bps` (#1578): the same
+    /// effective rate plus quorum/staleness provenance. `stale == true`
+    /// means fewer than `quorum` fresh reports exist, so `rate_bps` is the
+    /// last finalized value rather than a live median.
+    pub fn get_oracle_status(env: Env) -> OracleStatus {
+        let now = env.ledger().timestamp();
+        let fresh = Self::fresh_submissions(&env, now);
+        let quorum = Self::effective_quorum(&env);
+        let quorum_met = quorum >= 1 && (fresh.len() as u32) >= quorum;
+        OracleStatus {
+            rate_bps: Self::effective_rate(&env),
+            stale: !quorum_met,
+            fresh_reports: fresh.len() as u32,
+            quorum,
+            reporter_count: Self::reporter_count(&env),
+            finalized_at: load_u64(&env, &KEY_OBSERVED_AT, 0),
+        }
+    }
+
     /// Effective rate at the current ledger time: the pending rate once its
     /// `effective_at` has passed, otherwise the stored rate. Read-only; due
     /// updates are persisted lazily by the next admin write.
@@ -432,13 +706,155 @@ impl OracleContract {
     // ── internals ────────────────────────────────────────────────────
 
     fn effective_rate(env: &Env) -> u32 {
+        // #1578: a live median of fresh reports takes precedence over the
+        // stored rate whenever quorum is met, so a stale finalized fallback
+        // never shadows fresher independent reports. With no reporter set
+        // (or below quorum) this degenerates to the pre-#1578 behaviour.
+        let now = env.ledger().timestamp();
+        let quorum = Self::effective_quorum(env);
+        if quorum >= 1 {
+            let fresh = Self::fresh_submissions(env, now);
+            if (fresh.len() as u32) >= quorum {
+                return Self::median_with_outliers(env, &fresh);
+            }
+        }
         let current: u32 = env.storage().persistent().get(&KEY_RATE).unwrap_or(0);
         let pending: Option<u32> = env.storage().persistent().get(&KEY_PENDING_RATE);
         let at: Option<u64> = env.storage().persistent().get(&KEY_RATE_AT);
         match (pending, at) {
-            (Some(p), Some(t)) if env.ledger().timestamp() >= t => p,
+            (Some(p), Some(t)) if now >= t => p,
             _ => current,
         }
+    }
+
+    fn reporter_count(env: &Env) -> u32 {
+        let reporters: Vec<Address> = env.storage().persistent().get(&KEY_REPORTERS).unwrap_or_else(|| Vec::new(env));
+        reporters.len() as u32
+    }
+
+    fn effective_quorum(env: &Env) -> u32 {
+        load_u32(env, &KEY_QUORUM, 0)
+    }
+
+    /// Submissions from registered reporters that are no older than
+    /// `max_age_secs`. Keyed by reporter address, so a reporter resubmitting
+    /// replaces their previous vote rather than adding a second one.
+    fn fresh_submissions(env: &Env, now: u64) -> Map<Address, RateSubmission> {
+        let max_age = load_u64(env, &KEY_MAX_AGE, DEFAULT_MAX_AGE_SECS);
+        let subs: Map<Address, RateSubmission> = env
+            .storage()
+            .persistent()
+            .get(&KEY_SUBMISSIONS)
+            .unwrap_or_else(|| Map::new(env));
+        let mut fresh = Map::new(env);
+        for (reporter, sub) in subs.iter() {
+            if now.saturating_sub(sub.submitted_at) <= max_age {
+                fresh.set(reporter, sub);
+            }
+        }
+        fresh
+    }
+
+    /// Median of the submission rates. Odd counts take the middle value;
+    /// even counts average the two middle values (floor), which keeps the
+    /// result inside the reported band for integer bps.
+    fn median_of(sorted: &Vec<u32>) -> u32 {
+        let n = sorted.len();
+        if n == 0 {
+            return 0;
+        }
+        let mid = n / 2;
+        if n % 2 == 1 {
+            sorted.get(mid).unwrap_or(0)
+        } else {
+            let lo = sorted.get(mid - 1).unwrap_or(0);
+            let hi = sorted.get(mid).unwrap_or(0);
+            lo + (hi - lo) / 2
+        }
+    }
+
+    /// Ascending-order copy of a small rate vector. Insertion sort: the
+    /// vector holds at most `MAX_REPORTERS` entries, so O(n²) is cheaper
+    /// than the allocation a real sort would need in `no_std`.
+    fn sorted_rates(rates: &Vec<u32>) -> Vec<u32> {
+        let mut out: Vec<u32> = Vec::new(rates.env());
+        for v in rates.iter() {
+            let mut pos = out.len();
+            while pos > 0 && out.get(pos - 1).unwrap_or(0) > v {
+                pos -= 1;
+            }
+            out.insert(pos, v);
+        }
+        out
+    }
+
+    /// Outlier-filtered median of a fresh report set (#1578): compute the
+    /// median of every fresh rate, drop reports further than
+    /// `max_deviation_bps` from it, then take the median of the survivors.
+    /// When everything is rejected the pre-filter median is returned so a
+    /// pathological band cannot zero the rate. `max_deviation_bps == 0`
+    /// disables rejection entirely.
+    fn median_with_outliers(env: &Env, fresh: &Map<Address, RateSubmission>) -> u32 {
+        let mut rates: Vec<u32> = Vec::new(env);
+        for (_, sub) in fresh.iter() {
+            rates.push_back(sub.rate_bps);
+        }
+        if rates.is_empty() {
+            return 0;
+        }
+        let sorted = Self::sorted_rates(&rates);
+        let pre = Self::median_of(&sorted);
+        let max_dev = load_u32(env, &KEY_MAX_DEV, DEFAULT_MAX_DEVIATION_BPS);
+        if max_dev == 0 {
+            return pre;
+        }
+        let mut kept: Vec<u32> = Vec::new(env);
+        for (_, sub) in fresh.iter() {
+            if abs_diff(sub.rate_bps, pre) <= max_dev {
+                kept.push_back(sub.rate_bps);
+            }
+        }
+        if kept.is_empty() {
+            return pre;
+        }
+        Self::median_of(&Self::sorted_rates(&kept))
+    }
+
+    /// Persist a quorum-reached median as the effective rate (#1578). The
+    /// median supersedes any pending scheduled admin rate — the two paths
+    /// would otherwise fight over `KEY_RATE` on the next `settle_due` — so
+    /// the pending keys are cleared here. Outlier submissions (beyond
+    /// `max_deviation_bps` from the pre-filter median) are evented
+    /// (`out_rej`) for operator visibility.
+    fn finalize_median(env: &Env, fresh: &Map<Address, RateSubmission>, now: u64) {
+        let mut rates: Vec<u32> = Vec::new(env);
+        for (_, sub) in fresh.iter() {
+            rates.push_back(sub.rate_bps);
+        }
+        let sorted = Self::sorted_rates(&rates);
+        let pre = Self::median_of(&sorted);
+        let max_dev = load_u32(env, &KEY_MAX_DEV, DEFAULT_MAX_DEVIATION_BPS);
+        if max_dev > 0 {
+            for (reporter, sub) in fresh.iter() {
+                if abs_diff(sub.rate_bps, pre) > max_dev {
+                    env.events().publish(
+                        (symbol_short!("out_rej"),),
+                        (reporter, sub.rate_bps, pre),
+                    );
+                }
+            }
+        }
+        let median = Self::median_with_outliers(env, fresh);
+        env.storage().persistent().set(&KEY_RATE, &median);
+        env.storage().persistent().remove(&KEY_PENDING_RATE);
+        env.storage().persistent().remove(&KEY_RATE_AT);
+        env.storage().persistent().set(&KEY_OBSERVED_AT, &now);
+        env.events().publish(
+            (symbol_short!("med_set"),),
+            (median, fresh.len() as u32, Self::effective_quorum(env)),
+        );
+        env.events()
+            .publish((symbol_short!("rate_obs"),), (median, now));
     }
 
     fn effective_max_rate(env: &Env) -> u32 {
@@ -920,5 +1336,326 @@ mod tests {
         let reading = client.get_oracle_reading();
         assert_eq!(reading.rate_bps, 0);
         assert_eq!(reading.observed_at, 5_000);
+    }
+
+    // ── Multi-reporter median aggregation (#1578) ────────────────────────
+
+    /// Fixture with `n` reporters added and quorum set to `quorum`.
+    fn reporter_setup(
+        initial_rate: u32,
+        n: u32,
+        quorum: u32,
+    ) -> (Env, OracleContractClient<'static>, Address, Vec<Address>) {
+        let (env, client) = setup(initial_rate);
+        client.set_quorum(&quorum);
+        let mut reporters = Vec::new(&env);
+        for _ in 0..n {
+            let r = Address::generate(&env);
+            client.add_reporter(&r);
+            reporters.push_back(r);
+        }
+        let first = client.get_reporters().get(0).unwrap();
+        (env, client, first, reporters)
+    }
+
+    #[test]
+    fn add_and_remove_reporter_updates_set() {
+        let (env, client) = setup(500);
+        let r1 = Address::generate(&env);
+        let r2 = Address::generate(&env);
+        client.add_reporter(&r1);
+        client.add_reporter(&r2);
+        assert_eq!(client.get_reporters().len(), 2);
+        client.remove_reporter(&r1);
+        let remaining = client.get_reporters();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining.get(0).unwrap(), r2);
+    }
+
+    #[test]
+    fn add_duplicate_reporter_is_rejected() {
+        let (env, client) = setup(500);
+        let r = Address::generate(&env);
+        client.add_reporter(&r);
+        assert_eq!(
+            client.try_add_reporter(&r),
+            Err(Ok(OracleError::ReporterExists))
+        );
+    }
+
+    #[test]
+    fn reporter_set_is_bounded() {
+        let (env, client) = setup(500);
+        for _ in 0..MAX_REPORTERS {
+            client.add_reporter(&Address::generate(&env));
+        }
+        assert_eq!(
+            client.try_add_reporter(&Address::generate(&env)),
+            Err(Ok(OracleError::ReporterLimitReached))
+        );
+    }
+
+    #[test]
+    fn remove_unknown_reporter_is_rejected() {
+        let (env, client) = setup(500);
+        assert_eq!(
+            client.try_remove_reporter(&Address::generate(&env)),
+            Err(Ok(OracleError::NotInitialized))
+        );
+    }
+
+    #[test]
+    fn quorum_bounds_are_enforced() {
+        let (_env, client) = setup(500);
+        assert_eq!(client.try_set_quorum(&0), Err(Ok(OracleError::InvalidQuorum)));
+        assert_eq!(
+            client.try_set_quorum(&(MAX_REPORTERS + 1)),
+            Err(Ok(OracleError::InvalidQuorum))
+        );
+        client.set_quorum(&MAX_REPORTERS);
+    }
+
+    #[test]
+    fn submit_by_non_reporter_is_rejected() {
+        let (env, client) = setup(500);
+        client.set_quorum(&1);
+        let registered = Address::generate(&env);
+        client.add_reporter(&registered);
+        let outsider = Address::generate(&env);
+        assert_eq!(
+            client.try_submit_rate(&outsider, &400),
+            Err(Ok(OracleError::NotReporter))
+        );
+        // Also with no reporter set configured at all.
+        let (env2, client2) = setup(500);
+        assert_eq!(
+            client2.try_submit_rate(&Address::generate(&env2), &400),
+            Err(Ok(OracleError::NotInitialized))
+        );
+    }
+
+    #[test]
+    fn submit_above_ceiling_is_rejected() {
+        let (env, client) = setup(500);
+        client.set_quorum(&1);
+        let r = Address::generate(&env);
+        client.add_reporter(&r);
+        assert_eq!(
+            client.try_submit_rate(&r, &(DEFAULT_MAX_YIELD_BPS + 1)),
+            Err(Ok(OracleError::RateTooHigh))
+        );
+    }
+
+    #[test]
+    fn odd_quorum_finalizes_median() {
+        let (env, client, _, reporters) = reporter_setup(500, 3, 3);
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+        client.submit_rate(&reporters.get(0).unwrap(), &300);
+        // Below quorum: still the admin-initialized rate, flagged stale.
+        assert_eq!(client.get_current_yield_bps(), 500);
+        let status = client.get_oracle_status();
+        assert!(status.stale);
+        assert_eq!(status.fresh_reports, 1);
+
+        client.submit_rate(&reporters.get(1).unwrap(), &500);
+        client.submit_rate(&reporters.get(2).unwrap(), &700);
+        // Median of {300, 500, 700} is 500 — and quorum is met.
+        assert_eq!(client.get_current_yield_bps(), 500);
+        let status = client.get_oracle_status();
+        assert!(!status.stale);
+        assert_eq!(status.fresh_reports, 3);
+        assert_eq!(status.finalized_at, 1_000);
+        // The finalized median was persisted.
+        let schedule = client.get_rate_schedule();
+        assert_eq!(schedule.current, 500);
+    }
+
+    #[test]
+    fn even_quorum_averages_two_middle_values() {
+        let (env, client, _, reporters) = reporter_setup(500, 4, 4);
+        client.submit_rate(&reporters.get(0).unwrap(), &100);
+        client.submit_rate(&reporters.get(1).unwrap(), &200);
+        client.submit_rate(&reporters.get(2).unwrap(), &800);
+        client.submit_rate(&reporters.get(3).unwrap(), &900);
+        // Median of {100, 200, 800, 900} = (200 + 800) / 2 = 500.
+        assert_eq!(client.get_current_yield_bps(), 500);
+    }
+
+    #[test]
+    fn outlier_is_excluded_from_finalized_median() {
+        let (env, client, _, reporters) = reporter_setup(500, 3, 3);
+        client.set_max_deviation_bps(&100);
+        // Pre-filter median of {480, 500, 900} is 500; 900 is 400 away.
+        client.submit_rate(&reporters.get(0).unwrap(), &480);
+        client.submit_rate(&reporters.get(1).unwrap(), &500);
+        client.submit_rate(&reporters.get(2).unwrap(), &900);
+        // Median of the survivors {480, 500} is 490, not dragged by 900.
+        assert_eq!(client.get_current_yield_bps(), 490);
+    }
+
+    #[test]
+    fn zero_max_deviation_disables_outlier_rejection() {
+        let (env, client, _, reporters) = reporter_setup(500, 3, 3);
+        client.set_max_deviation_bps(&0);
+        client.set_max_rate(&10_000);
+        client.submit_rate(&reporters.get(0).unwrap(), &100);
+        client.submit_rate(&reporters.get(1).unwrap(), &500);
+        client.submit_rate(&reporters.get(2).unwrap(), &9_000);
+        // Nothing is rejected: median of {100, 500, 9000} is 500, and the
+        // far-flung 9000 participated in the computation (with rejection
+        // enabled at a tight band it would have been dropped instead).
+        assert_eq!(client.get_current_yield_bps(), 500);
+        // Control: with a 400 bps band the far-flung 9000 is excluded and
+        // the median of the survivors {100, 500} is 300.
+        client.set_max_deviation_bps(&400);
+        client.submit_rate(&reporters.get(0).unwrap(), &100);
+        client.submit_rate(&reporters.get(1).unwrap(), &500);
+        client.submit_rate(&reporters.get(2).unwrap(), &9_000);
+        assert_eq!(client.get_current_yield_bps(), 300);
+    }
+
+    #[test]
+    fn stale_submissions_fall_back_to_last_finalized() {
+        let (env, client, _, reporters) = reporter_setup(500, 2, 2);
+        client.set_max_age_secs(&100);
+        client.submit_rate(&reporters.get(0).unwrap(), &600);
+        client.submit_rate(&reporters.get(1).unwrap(), &700);
+        // Median of {600, 700} = 650, finalized.
+        assert_eq!(client.get_current_yield_bps(), 650);
+
+        // Past max_age everything is stale: fall back to the finalized 650.
+        env.ledger().with_mut(|li| li.timestamp = 500);
+        assert_eq!(client.get_current_yield_bps(), 650);
+        let status = client.get_oracle_status();
+        assert!(status.stale);
+        assert_eq!(status.fresh_reports, 0);
+        assert_eq!(status.rate_bps, 650);
+    }
+
+    #[test]
+    fn all_reporters_stale_is_flagged_stale() {
+        let (env, client, _, reporters) = reporter_setup(500, 3, 2);
+        client.set_max_age_secs(&60);
+        client.submit_rate(&reporters.get(0).unwrap(), &510);
+        client.submit_rate(&reporters.get(1).unwrap(), &520);
+        assert!(!client.get_oracle_status().stale);
+        env.ledger().with_mut(|li| li.timestamp = 1_000_000);
+        let status = client.get_oracle_status();
+        assert!(status.stale);
+        assert_eq!(status.fresh_reports, 0);
+    }
+
+    #[test]
+    fn reporter_removal_drops_their_submission() {
+        let (env, client, _, reporters) = reporter_setup(500, 3, 3);
+        client.submit_rate(&reporters.get(0).unwrap(), &400);
+        client.submit_rate(&reporters.get(1).unwrap(), &500);
+        client.submit_rate(&reporters.get(2).unwrap(), &600);
+        assert_eq!(client.get_current_yield_bps(), 500);
+
+        // Removing the middle reporter drops their vote; the fresh count
+        // falls below quorum so the rate freezes at the last finalized 500.
+        client.remove_reporter(&reporters.get(1).unwrap());
+        let status = client.get_oracle_status();
+        assert!(status.stale);
+        assert_eq!(status.fresh_reports, 2);
+        assert_eq!(client.get_current_yield_bps(), 500);
+
+        // The removed reporter can no longer submit.
+        assert_eq!(
+            client.try_submit_rate(&reporters.get(1).unwrap(), &500),
+            Err(Ok(OracleError::NotReporter))
+        );
+    }
+
+    #[test]
+    fn reporter_rotation_mid_round_leaves_no_ghost_vote() {
+        let (env, client, _, reporters) = reporter_setup(500, 2, 2);
+        client.set_max_deviation_bps(&0);
+        client.submit_rate(&reporters.get(0).unwrap(), &400);
+        // Rotate: remove reporter 0 (dropping their 400), add reporter 2.
+        client.remove_reporter(&reporters.get(0).unwrap());
+        let fresh_reporter = Address::generate(&env);
+        client.add_reporter(&fresh_reporter);
+        // Only reporter 1's 600 is live: below quorum, stale, rate unchanged.
+        client.submit_rate(&reporters.get(1).unwrap(), &600);
+        assert!(client.get_oracle_status().stale);
+        // New reporter completes quorum; median is {600, 700}, not {400,...}.
+        client.submit_rate(&fresh_reporter, &700);
+        assert_eq!(client.get_current_yield_bps(), 650);
+    }
+
+    #[test]
+    fn resubmission_replaces_previous_vote() {
+        let (env, client, _, reporters) = reporter_setup(500, 2, 2);
+        client.set_max_deviation_bps(&0);
+        client.submit_rate(&reporters.get(0).unwrap(), &100);
+        client.submit_rate(&reporters.get(0).unwrap(), &700);
+        client.submit_rate(&reporters.get(1).unwrap(), &500);
+        // The 100 was replaced by 700: median of {500, 700} is 600.
+        assert_eq!(client.get_current_yield_bps(), 600);
+        let status = client.get_oracle_status();
+        assert_eq!(status.fresh_reports, 2);
+    }
+
+    #[test]
+    fn median_supersedes_pending_scheduled_admin_rate() {
+        let (env, client, _, reporters) = reporter_setup(500, 2, 2);
+        client.set_max_deviation_bps(&0);
+        client.set_activation_delay(&100);
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+        client.set_yield_bps(&900); // scheduled, not yet effective
+        client.submit_rate(&reporters.get(0).unwrap(), &400);
+        client.submit_rate(&reporters.get(1).unwrap(), &400);
+        // Median 400 finalized and persisted; the pending 900 is cleared so
+        // a later settle_due cannot resurrect it over the median.
+        assert_eq!(client.get_current_yield_bps(), 400);
+        let schedule = client.get_rate_schedule();
+        assert_eq!(schedule.pending, None);
+        env.ledger().with_mut(|li| li.timestamp = 2_000);
+        assert_eq!(client.get_current_yield_bps(), 400);
+    }
+
+    #[test]
+    fn reporter_mode_inactive_keeps_legacy_behaviour() {
+        // No reporters, no quorum: everything behaves exactly as before
+        // #1578, including the admin schedule and delta bound.
+        let (env, client) = setup(500);
+        assert_eq!(client.get_oracle_status().stale, true);
+        assert_eq!(client.get_oracle_status().reporter_count, 0);
+        client.set_max_delta_bps(&100);
+        assert_eq!(
+            client.try_set_yield_bps(&700),
+            Err(Ok(OracleError::DeltaTooLarge))
+        );
+        client.set_yield_bps(&600);
+        assert_eq!(client.get_current_yield_bps(), 600);
+    }
+
+    #[test]
+    fn single_reporter_quorum_works() {
+        let (env, client, _, reporters) = reporter_setup(500, 1, 1);
+        client.submit_rate(&reporters.get(0).unwrap(), &420);
+        assert_eq!(client.get_current_yield_bps(), 420);
+        assert!(!client.get_oracle_status().stale);
+    }
+
+    #[test]
+    fn quorum_above_reporter_count_stays_stale() {
+        let (env, client, _, reporters) = reporter_setup(500, 2, 3);
+        client.submit_rate(&reporters.get(0).unwrap(), &400);
+        client.submit_rate(&reporters.get(1).unwrap(), &400);
+        assert!(client.get_oracle_status().stale);
+        assert_eq!(client.get_current_yield_bps(), 500);
+    }
+
+    #[test]
+    fn submit_rate_requires_reporter_auth() {
+        let (env, client) = setup(500);
+        client.set_quorum(&1);
+        let r = Address::generate(&env);
+        client.add_reporter(&r);
+        env.set_auths(&[]);
+        assert!(client.try_submit_rate(&r, &400).is_err());
     }
 }

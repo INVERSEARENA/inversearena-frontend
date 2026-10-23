@@ -87,6 +87,26 @@ schedule is persisted by the next admin write.
 | `zeroed`    | `set_rate_to_zero()`   | `(0u32)` — emergency zero                        |
 | `adm_chg`   | `accept_admin()`       | `(old_admin: Address, new_admin: Address)`       |
 
+### Reporter set (#1578)
+
+Median aggregation over an admin-managed reporter set. `sub_ok` fires on
+every accepted submission; when a submission brings the fresh count to
+quorum the median is finalized: `out_rej` fires once per outlier dropped
+(beyond `max_deviation_bps` from the pre-filter median), then `med_set`
+and the usual `rate_obs` record the applied value. A finalized median
+supersedes any pending scheduled admin rate.
+
+| Topic       | Emitting Function      | Data Fields                                      |
+|-------------|------------------------|--------------------------------------------------|
+| `rep_add`   | `add_reporter()`       | `(reporter: Address, reporter_count: u32)`       |
+| `rep_rem`   | `remove_reporter()`    | `(reporter: Address, reporter_count: u32)`       |
+| `quorum`    | `set_quorum()`         | `(quorum: u32)`                                  |
+| `mage_set`  | `set_max_age_secs()`   | `(max_age_secs: u64)`                            |
+| `mdev_set`  | `set_max_deviation_bps()` | `(max_deviation_bps: u32)`                     |
+| `sub_ok`    | `submit_rate()`        | `(reporter: Address, rate_bps: u32, submitted_at: u64)` |
+| `out_rej`   | median finalization    | `(reporter: Address, rate_bps: u32, median_bps: u32)` — outlier dropped |
+| `med_set`   | median finalization    | `(median_bps: u32, report_count: u32, quorum: u32)` |
+
 ---
 
 ## Versioning Policy

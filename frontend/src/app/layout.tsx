@@ -1,10 +1,13 @@
 import type { Metadata, Viewport } from "next";
-import { headers } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { ThemeProvider } from "next-themes";
+import { NextIntlClientProvider } from "next-intl";
+import { getMessages } from "next-intl/server";
 import { ClientProviders } from "./ClientProviders";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { ServiceWorkerRegister } from "@/components/pwa/ServiceWorkerRegister";
 import { StellarSetupBanner } from "@/components/dev/StellarSetupBanner";
+import { LOCALE_COOKIE, resolveLocale } from "@/i18n/config";
 
 import { Geist, Geist_Mono, Press_Start_2P, Space_Grotesk } from "next/font/google";
 import "./globals.css";
@@ -55,8 +58,19 @@ export default async function RootLayout({
   // 'unsafe-inline' is gone from script-src.
   const nonce = (await headers()).get("x-nonce") || undefined;
 
+  // #1575: locale is resolved entirely on the server (cookie → Accept-Language
+  // → default), so <html lang>, the message catalog and
+  // NextIntlClientProvider all agree before hydration — no mismatch possible.
+  const cookieStore = await cookies();
+  const requestHeaders = await headers();
+  const locale = resolveLocale(
+    cookieStore.get(LOCALE_COOKIE)?.value,
+    requestHeaders.get("accept-language"),
+  );
+  const messages = await getMessages();
+
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang={locale} suppressHydrationWarning>
       <head>
       </head>
       <body
@@ -68,13 +82,15 @@ export default async function RootLayout({
           enableSystem
           {...(nonce ? { nonce } : {})}
         >
-          <ServiceWorkerRegister />
-          <StellarSetupBanner />
-          <ErrorBoundary>
-            <ClientProviders>
-              {children}
-            </ClientProviders>
-          </ErrorBoundary>
+          <NextIntlClientProvider locale={locale} messages={messages}>
+            <ServiceWorkerRegister />
+            <StellarSetupBanner />
+            <ErrorBoundary>
+              <ClientProviders>
+                {children}
+              </ClientProviders>
+            </ErrorBoundary>
+          </NextIntlClientProvider>
         </ThemeProvider>
       </body>
     </html>

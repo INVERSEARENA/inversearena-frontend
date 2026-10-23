@@ -45,6 +45,11 @@ jobs:
       - name: TypeScript typecheck
         run: pnpm exec tsc --noEmit
 
+      # Locale catalogs must stay key-for-key in sync and every referenced
+      # namespace/key must resolve — issue #1575.
+      - name: i18n message check — issue #1575
+        run: pnpm run i18n:check
+
       - name: ESLint (zero warnings) — issue #1642
         run: pnpm exec eslint . --max-warnings 0
 
