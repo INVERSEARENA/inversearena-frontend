@@ -8,9 +8,14 @@ const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
 
 async function loadArenaLobbyData(arenaId: string) {
-  const statsResponse = await fetch(`${API_BASE}/api/arenas/${arenaId}/stats`, {
-    cache: "no-store",
-  });
+  const [statsResponse, participantsResponse] = await Promise.all([
+    fetch(`${API_BASE}/api/arenas/${arenaId}/stats`, {
+      next: { revalidate: 15, tags: [`arena:${arenaId}:stats`] },
+    }),
+    fetch(`${API_BASE}/api/arenas/${arenaId}/participants?limit=12&cursor=0`, {
+      next: { revalidate: 5, tags: [`arena:${arenaId}:participants`] },
+    }),
+  ]);
 
   if (statsResponse.status === 404) {
     return {
@@ -27,20 +32,9 @@ async function loadArenaLobbyData(arenaId: string) {
 
   const stats = await statsResponse.json();
 
-  let participantsData = { items: [], nextCursor: null as number | null };
-
-  try {
-    const participantsResponse = await fetch(
-      `${API_BASE}/api/arenas/${arenaId}/participants?limit=12&cursor=0`,
-      { cache: "no-store" },
-    );
-
-    if (participantsResponse.ok) {
-      participantsData = await participantsResponse.json();
-    }
-  } catch {
-    participantsData = { items: [], nextCursor: null };
-  }
+  const participantsData = participantsResponse.ok
+    ? await participantsResponse.json()
+    : { items: [], nextCursor: null as number | null };
 
   return {
     notFound: false,
