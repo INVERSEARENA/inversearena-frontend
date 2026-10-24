@@ -2000,39 +2000,31 @@ fn build_leaderboard(env: &Env) {
     };
     let limit = ArenaStorage::load_leaderboard_limit(env);
 
-    // Collect all player entries into an unsorted working Vec.
-    let mut entries: Vec<LeaderboardEntry> = Vec::new(env);
+    // Keep only the bounded top-K while scanning the paged roster. This avoids
+    // materializing and sorting the full roster at game finish.
+    let mut leaderboard: Vec<LeaderboardEntry> = Vec::new(env);
     for page_index in 0..page_count {
         let players = ArenaStorage::load_roster_page(env, page_index);
         for player in players.iter() {
             let state = ArenaStorage::load_player(env, &player).unwrap_or_default();
-            entries.push_back(LeaderboardEntry {
+            let entry = LeaderboardEntry {
                 player,
                 rounds_survived: state.rounds_survived,
-            });
-        }
-    }
-    let n = entries.len();
-
-    // Partial selection sort: K = min(limit, n) passes, each a single linear scan.
-    // Total work O(K·n) — O(n) for a bounded limit — versus O(n²) for insertion sort.
-    let k = limit.min(n);
-    let mut leaderboard: Vec<LeaderboardEntry> = Vec::new(env);
-    for _ in 0..k {
-        if entries.is_empty() {
-            break;
-        }
-        let mut best_i = 0u32;
-        let mut best_rs = entries.get(0).unwrap().rounds_survived;
-        for j in 1..entries.len() {
-            let rs = entries.get(j).unwrap().rounds_survived;
-            if rs > best_rs {
-                best_rs = rs;
-                best_i = j;
+            };
+            let mut position = leaderboard.len();
+            for index in 0..leaderboard.len() {
+                if entry.rounds_survived > leaderboard.get(index).unwrap().rounds_survived {
+                    position = index;
+                    break;
+                }
+            }
+            if position < limit {
+                leaderboard.insert(position, entry);
+                if leaderboard.len() > limit {
+                    leaderboard.remove(limit);
+                }
             }
         }
-        leaderboard.push_back(entries.get(best_i).unwrap());
-        entries.remove(best_i);
     }
 
     ArenaStorage::save_leaderboard(env, &leaderboard);
