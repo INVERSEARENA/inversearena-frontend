@@ -746,6 +746,55 @@ export const backfillCursorPosition = new Gauge({
   registers: [register],
 });
 
+// ─── #1622: Partitioning & retention worker metrics ──────────────────────────
+//
+// Every action counter carries a `mode` label: "applied" when the worker
+// actually changed state, "planned" when it ran in dry-run mode. That keeps
+// `sum(rate(...{mode="applied"}...))` meaningful for alerting while still
+// making a dry-run's proposed actions visible on the same dashboards.
+
+export const retentionRunsTotal = new Counter({
+  name: 'inversearena_retention_runs_total',
+  help: 'Total retention worker runs, by outcome',
+  labelNames: ['status'],
+  registers: [register],
+});
+
+export const retentionRunDurationSeconds = new Histogram({
+  name: 'inversearena_retention_run_duration_seconds',
+  help: 'Retention worker run duration in seconds',
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
+  registers: [register],
+});
+
+export const retentionPartitionsCreatedTotal = new Counter({
+  name: 'inversearena_retention_partitions_created_total',
+  help: 'Monthly partitions created ahead of time, by table and mode (applied|planned)',
+  labelNames: ['table', 'mode'],
+  registers: [register],
+});
+
+export const retentionPartitionsArchivedTotal = new Counter({
+  name: 'inversearena_retention_partitions_archived_total',
+  help: 'Monthly partitions moved to the cold archive schema, by table and mode (applied|planned)',
+  labelNames: ['table', 'mode'],
+  registers: [register],
+});
+
+export const retentionEphemeralDeletedTotal = new Counter({
+  name: 'inversearena_retention_ephemeral_deleted_total',
+  help: 'Expired ephemeral documents (nonces, refresh tokens, intents) removed, by collection and mode (applied|planned)',
+  labelNames: ['collection', 'mode'],
+  registers: [register],
+});
+
+export const retentionHotPartitions = new Gauge({
+  name: 'inversearena_retention_hot_partitions',
+  help: 'Monthly partitions currently attached to each hot partitioned table',
+  labelNames: ['table'],
+  registers: [register],
+});
+
 export async function refreshArenaMetrics(prisma: PrismaClient): Promise<void> {
   const activeRounds = await prisma.round.findMany({
     where: {

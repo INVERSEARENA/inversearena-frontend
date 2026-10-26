@@ -143,3 +143,93 @@ test("POST /api/worker/arena-backfill/run allows admin callers and returns the b
     durationMs: 42,
   });
 });
+
+test("POST /api/worker/retention/run rejects unauthenticated callers (#1622)", async () => {
+  process.env.ADMIN_API_KEY = ADMIN_API_KEY;
+
+  const app = express();
+  app.use(express.json());
+  app.use(
+    "/api/worker",
+    createWorkerRouter(
+      {
+        runBatch: async (_req: Request, res: Response) => {
+          res.json({ ok: true });
+        },
+        runRetention: async (_req: Request, res: Response) => {
+          res.json({ status: "success" });
+        },
+      } as any,
+      requireAdmin(new ApiKeyAuthProvider()),
+    ),
+  );
+  app.use(errorHandler);
+
+  const response = await request(app).post("/api/worker/retention/run").send({ dryRun: true });
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(response.body, {
+    error: {
+      code: "UNAUTHORIZED",
+      message: "Unauthorized",
+    },
+  });
+});
+
+test("POST /api/worker/retention/run allows admin callers and forwards dryRun (#1622)", async () => {
+  process.env.ADMIN_API_KEY = ADMIN_API_KEY;
+
+  let captured: { dryRun?: boolean } | undefined;
+  const app = express();
+  app.use(express.json());
+  app.use(
+    "/api/worker",
+    createWorkerRouter(
+      {
+        runBatch: async (_req: Request, res: Response) => {
+          res.json({ ok: true });
+        },
+        runRetention: async (req: Request, res: Response) => {
+          captured = req.body;
+          res.json({ status: "success", dryRun: req.body.dryRun === true });
+        },
+      } as any,
+      requireAdmin(new ApiKeyAuthProvider()),
+    ),
+  );
+  app.use(errorHandler);
+
+  const response = await request(app)
+    .post("/api/worker/retention/run")
+    .set("Authorization", `Bearer ${ADMIN_API_KEY}`)
+    .send({ dryRun: true });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(captured, { dryRun: true });
+  assert.deepEqual(response.body, { status: "success", dryRun: true });
+});
+
+test("POST /api/worker/retention/run defaults dryRun to false at the controller schema (#1622)", async () => {
+  const { WorkerController } = await import("../../src/controllers/worker.controller");
+  const seen: Array<{ dryRun?: boolean }> = [];
+  const controller = new WorkerController(
+    {} as any,
+    {} as any,
+    {
+      run: async (options: { dryRun?: boolean }) => {
+        seen.push(options);
+        return { status: "success", dryRun: options.dryRun ?? false };
+      },
+    } as any,
+  );
+
+  const res = {
+    locals: {} as Record<string, unknown>,
+    json: (body: unknown) => body,
+  };
+  await controller.runRetention({ body: {} } as any, res as any);
+  await controller.runRetention({ body: { dryRun: true } } as any, res as any);
+
+  assert.deepEqual(seen, [{ dryRun: false }, { dryRun: true }]);
+  assert.deepEqual(res.locals.auditMetadata, { dryRun: true });
+});

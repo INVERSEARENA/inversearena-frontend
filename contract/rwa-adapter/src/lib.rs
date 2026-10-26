@@ -1,4 +1,5 @@
 #![no_std]
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 use soroban_sdk::{Address, Env, contract, contractimpl, token};
 
 const SECONDS_PER_YEAR: u64 = 31_536_000;
@@ -37,6 +38,8 @@ impl RwaAdapter {
             stake_token,
             oracle,
             total_deposited: 0,
+            principal_total: 0,
+            yield_reserve: 0,
         };
         RwaStorage::save_config(&env, &config);
         RwaStorage::save_yield_index(&env, &YieldIndex {
@@ -84,12 +87,16 @@ impl RwaAdapter {
             .ok_or(RwaError::ArithmeticOverflow)?;
         RwaStorage::save_basis(&env, &from, basis);
 
-        let mut cfg = config;
-        cfg.total_deposited = cfg
-            .total_deposited
-            .checked_add(amount)
-            .ok_or(RwaError::ArithmeticOverflow)?;
-        RwaStorage::save_config(&env, &cfg);
+          let mut cfg = config;
+          cfg.total_deposited = cfg
+              .total_deposited
+              .checked_add(amount)
+              .ok_or(RwaError::ArithmeticOverflow)?;
+          cfg.principal_total = cfg
+              .principal_total
+              .checked_add(amount)
+              .ok_or(RwaError::ArithmeticOverflow)?;
+          RwaStorage::save_config(&env, &cfg);
 
         // Transfer tokens from the depositor into this vault contract.
         // This was previously missing, leaving the vault empty and making
@@ -128,9 +135,11 @@ impl RwaAdapter {
         RwaStorage::save_position(&env, &from, &updated);
         RwaStorage::save_basis(&env, &from, 0);
 
-        // Decrement the global counter so get_total_deposited() reflects net deposits.
+        // Decrement the global counters so get_total_deposited() reflects net deposits.
         let mut cfg = config;
         cfg.total_deposited = cfg.total_deposited.saturating_sub(total);
+        // principal is paid from principal accounting; yield comes from reserve.
+        cfg.principal_total = cfg.principal_total.saturating_sub(pos.principal);
         RwaStorage::save_config(&env, &cfg);
 
         let token_client = token::TokenClient::new(&env, &cfg.stake_token);
@@ -239,6 +248,10 @@ impl RwaAdapter {
 
         let mut cfg = config;
         cfg.total_deposited = cfg.total_deposited.saturating_sub(payable);
+        // For partial withdrawals from principal, reduce principal accounting by the
+        // principal portion withdrawn (capped to what was tracked).
+        let principal_withdrawn = core::cmp::min(payable, pos.principal);
+        cfg.principal_total = cfg.principal_total.saturating_sub(principal_withdrawn);
         RwaStorage::save_config(&env, &cfg);
 
         token_client.transfer(&contract_addr, &from, &payable);
@@ -296,9 +309,38 @@ impl RwaAdapter {
         })
     }
 
-    pub fn get_total_deposited(env: Env) -> i128 {
+    pub fn fund_yield_reserve(env: Env, from: Address, amount: i128) -> Result<(), RwaError> {
+        from.require_auth();
+        let config = RwaStorage::load_config(&env)?;
+        if config.admin != from {
+            return Err(RwaError::NotAuthorized);
+        }
+        if amount <= 0 {
+            return Err(RwaError::InvalidAmount);
+        }
+        let token_client = token::TokenClient::new(&env, &config.stake_token);
+        let contract_addr = env.current_contract_address();
+        token_client.transfer(&from, &contract_addr, &amount);
+        let mut cfg = config;
+        cfg.yield_reserve = cfg
+            .yield_reserve
+            .checked_add(amount)
+            .ok_or(RwaError::ArithmeticOverflow)?;
+        RwaStorage::save_config(&env, &cfg);
+        env.events()
+            .publish((soroban_sdk::symbol_short!("yres_f"), from.clone(), amount), cfg.yield_reserve);
+        Ok(())
+    }
+
+    pub fn get_principal_total(env: Env) -> i128 {
         RwaStorage::load_config(&env)
-            .map(|c| c.total_deposited)
+            .map(|c| c.principal_total)
+            .unwrap_or(0)
+    }
+
+    pub fn get_yield_reserve(env: Env) -> i128 {
+        RwaStorage::load_config(&env)
+            .map(|c| c.yield_reserve)
             .unwrap_or(0)
     }
 
@@ -398,6 +440,7 @@ impl RwaAdapter {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod test {
     extern crate std;
 
@@ -431,12 +474,14 @@ mod test {
 
         env.as_contract(&contract_id, || {
             let config = RwaConfig {
-                admin: admin.clone(),
-                stake_token: token_id.clone(),
-                oracle: oracle_id,
-                total_deposited: 0,
-            };
-            RwaStorage::save_config(env, &config);
+            admin: admin.clone(),
+            stake_token: token_id.clone(),
+            oracle: oracle_id,
+            total_deposited: 0,
+            principal_total: 0,
+            yield_reserve: 0,
+        };
+        RwaStorage::save_config(env, &config);
             RwaStorage::set_initialized(env);
         });
 

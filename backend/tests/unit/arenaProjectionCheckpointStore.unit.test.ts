@@ -4,7 +4,11 @@ import {
   CorruptCheckpointError,
   LeaseHeldError,
 } from "../../src/services/projection/arenaProjectionCheckpointStore";
-import { foldArenaProjectionEvent, initialArenaProjection } from "../../src/services/projection/arenaProjectionFold";
+import {
+  compactArenaProjectionState,
+  foldArenaProjectionEvent,
+  initialArenaProjection,
+} from "../../src/services/projection/arenaProjectionFold";
 
 const prisma = new PrismaClient();
 const store = new ArenaProjectionCheckpointStore(prisma);
@@ -17,6 +21,7 @@ function arenaId(suffix: string) {
 }
 
 async function cleanup(id: string) {
+  await prisma.outboxEvent.deleteMany({ where: { aggregateId: id } });
   await prisma.arenaProjectionCheckpoint.deleteMany({ where: { arenaId: id } });
 }
 
@@ -52,7 +57,7 @@ describe("ArenaProjectionCheckpointStore", () => {
       expect(loaded).not.toBeNull();
       expect(loaded?.lastLedgerSequence).toBe(42);
       expect(loaded?.status).toBe("replaying");
-      expect(loaded?.projectionState).toEqual(state);
+      expect(loaded?.projectionState).toEqual(compactArenaProjectionState(state));
     } finally {
       await cleanup(id);
     }

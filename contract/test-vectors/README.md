@@ -24,9 +24,12 @@ encoding fails CI on the side that drifts.
 - **Amount encoding**: integer decimal strings map 1:1 onto `i128`; fractional
   and negative values are rejected by both sides.
 
-Each commitment vector also carries a `context` object (`arena`, `round`,
-`player`). The hash itself does **not** currently mix in that context — it is
-recorded so future domain-separation work can extend the same vectors.
+Each commitment vector carries a `context` object (`arena` strkey, `round`,
+`player` strkey) plus `arenaXdr` and `playerXdr`, the ScVal XDR bytes of each
+address. The preimage is `"IA_COMMIT_V1" || arenaXdr || round_u32_be ||
+playerXdr || choice_byte || salt` (#1630), so the hash is bound to one arena,
+round, and player. Rust checks the hash from the XDR fields; TypeScript derives
+the XDR from the strkeys and must agree.
 
 ## Consuming the vectors
 

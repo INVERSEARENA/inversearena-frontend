@@ -1,6 +1,7 @@
 import { Router, type RequestHandler } from "express";
 import { z } from "zod";
 import { asyncHandler, validateBody } from "../middleware/validate";
+import { publicCache } from "../middleware/cachePolicy";
 import { cache, cacheKeys } from "../cache/cacheService";
 import { verifyWebhookSignature } from "../middleware/verifyWebhook";
 import { getKeyring } from "../config/secretKeyring";
@@ -52,6 +53,11 @@ export function createOracleRouter(adminAuthMiddleware: RequestHandler): Router 
 
   router.get(
     "/yield",
+    // #1626: public, identical for every caller — edge-cacheable. The handler
+    // still reads the underlying feed from Redis; this header lets a shared
+    // cache in front of the API serve it without the origin. Kept short
+    // because the endpoint reports freshness/ageSeconds, which age out.
+    publicCache({ maxAge: 15, staleWhileRevalidate: 60 }),
     // Not wrapped in cacheMiddleware (#1512): it would key on the same
     // "oracle:yield" entry the handler itself reads/writes and cache the
     // *response* (including freshness/ageSeconds) for cacheTTL.ORACLE_YIELD

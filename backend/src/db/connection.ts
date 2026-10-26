@@ -1,8 +1,9 @@
 import * as mongoose from "mongoose";
 import { logger } from "../utils/logger";
 import { recordQueryExecution } from "./queryBudget";
+import { env } from "../config/env";
 
-const MONGODB_URI = process.env.MONGODB_URI;
+const MONGODB_URI = env.MONGODB_URI;
 
 if (!MONGODB_URI) {
   throw new Error("MONGODB_URI environment variable is required");

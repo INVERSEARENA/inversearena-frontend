@@ -34,6 +34,17 @@ import {
   clearPoolDraft,
 } from "@/features/pools/model/pool-draft";
 import { usePoolCompatibility } from "@/features/pools/model/usePoolCompatibility";
+import { TemplatePanel } from "@/features/pools/components/TemplatePanel";
+import type { TemplateFormValues } from "@/features/pools/model/arena-templates";
+import { useRegistryLifecycle } from "@/features/pools/model/useRegistryLifecycle";
+import { creatorLifecycleWarning } from "@/shared/lib/stellar/registry-lifecycle";
+import { POOL_TOKEN_IDS } from "@/shared/lib/stellar/stellar-transactions";
+import { stellarConfig } from "@/shared/config/stellarConfig";
+import {
+  recordRematchArena,
+  toRematchFormPrefill,
+  type RematchConfig,
+} from "@/features/pools/model/rematch-config";
 
 const ALL_CURRENCIES: Currency[] = ["USDC", "XLM"];
 
@@ -45,6 +56,8 @@ interface PoolCreationModalProps {
     agentId: string;
     rank: number;
   };
+  /** Canonical prefill for a rematch, fetched from the source arena (#1572). */
+  rematch?: RematchConfig | null;
 }
 
 interface PoolCreationData {
@@ -59,6 +72,7 @@ export function PoolCreationModal({
   onClose,
   onInitialize,
   challengedSurvivor,
+  rematch,
 }: PoolCreationModalProps) {
   const [stakeAmountInput, setStakeAmountInput] = useState("100");
   const [currency, setCurrency] = useState<Currency>("USDC");
@@ -72,6 +86,11 @@ export function PoolCreationModal({
   const [isFormValid, setIsFormValid] = useState(false);
   const [isDeploying, setIsDeploying] = useState(false);
   const [draftRestored, setDraftRestored] = useState(false);
+  // #1689: the template list is a panel over the form. Applying a template
+  // only prefills the fields — the validation, the transaction preview and
+  // the balance/trustline checks all still run afterwards.
+  const [showTemplates, setShowTemplates] = useState(false);
+  const rematchPrefill = rematch ? toRematchFormPrefill(rematch) : null;
   // Suppresses exactly the next run of the draft-save effect below, so a
   // programmatic field reset (restoring a saved draft, or discarding one)
   // doesn't get immediately echoed straight back out to localStorage as if
@@ -92,6 +111,25 @@ export function PoolCreationModal({
   const compatibility = usePoolCompatibility(isOpen);
   const offeredCurrencies = compatibility.currencies ?? ALL_CURRENCIES;
   const noCompatibleCurrency = compatibility.status === "ready" && offeredCurrencies.length === 0;
+
+  // #1688: the factory refuses new arenas on a deprecated or withdrawn
+  // integration. The lifecycle is read while the form is open and the
+  // creator is told before they sign, not after the transaction is rejected.
+  const registryLifecycle = useRegistryLifecycle({
+    enabled: isOpen,
+    token: POOL_TOKEN_IDS[currency],
+    vault: stellarConfig.rwaVaultContractId,
+    oracle: stellarConfig.oracleContractId,
+  });
+  const lifecycleWarning = creatorLifecycleWarning(
+    registryLifecycle,
+    {
+      token: POOL_TOKEN_IDS[currency],
+      vault: stellarConfig.rwaVaultContractId,
+      oracle: stellarConfig.oracleContractId,
+    },
+    { token: currency },
+  );
   const { runTrackedTransaction } = useTransactionIntent();
   const [showTxModal, setShowTxModal] = useState(false);
   const [txDetails, setTxDetails] = useState<{ label: string; value: string | number }[]>([]);
@@ -197,6 +235,17 @@ export function PoolCreationModal({
   useEffect(() => {
     if (!isOpen) return;
     suppressNextDraftSaveRef.current = true;
+    if (rematchPrefill) {
+      // A rematch prefill is authoritative: it comes from the source arena's
+      // on-chain config, so it must not be shadowed by a stale local draft.
+      clearPoolDraft();
+      setStakeAmountInput(rematchPrefill.stakeAmountInput);
+      if (rematchPrefill.currency) setCurrency(rematchPrefill.currency);
+      setRoundSpeed(rematchPrefill.roundSpeed);
+      setArenaCapacity(rematchPrefill.arenaCapacity);
+      setDraftRestored(false);
+      return;
+    }
     const draft = loadPoolDraft();
     if (draft) {
       setStakeAmountInput(draft.stakeAmountInput);
@@ -205,7 +254,10 @@ export function PoolCreationModal({
       setArenaCapacity(draft.arenaCapacity);
       setDraftRestored(true);
     }
-  }, [isOpen]);
+    // rematchPrefill is derived from `rematch`; re-running on its identity is
+    // enough and avoids depending on the whole object in the effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, rematch?.arenaId]);
 
   // Persist the in-progress draft on every field change while the modal is
   // open, skipping the run that immediately follows a restore or discard
@@ -305,6 +357,22 @@ export function PoolCreationModal({
                 : "Deploy new arena instance to Soroban network"}
             </p>
           </div>
+
+          {rematch && (
+            <div
+              role="status"
+              className="mb-6 border-2 border-primary bg-primary/10 p-3 text-sm font-bold text-primary"
+            >
+              <p className="uppercase tracking-wide">
+                Rematch of {rematch.arenaId.slice(0, 6)}…{rematch.arenaId.slice(-4)}
+              </p>
+              <p className="mt-1 text-xs font-medium normal-case text-slate-300">
+                {rematch.isPriorParticipant
+                  ? "You played the previous arena. Its stake, round speed and capacity are prefilled from chain."
+                  : "Prefilled from the previous arena's on-chain configuration."}
+              </p>
+            </div>
+          )}
 
           {draftRestored && (
             <div
@@ -546,6 +614,40 @@ export function PoolCreationModal({
               </div>
             </div>
 
+            {lifecycleWarning && (
+              <div className="col-span-12 mt-4 rounded-2xl border border-amber-400/40 bg-amber-950/40 p-4 text-sm text-amber-200">
+                <p className="font-semibold uppercase tracking-[0.2em]">Integration deprecated</p>
+                <p className="mt-1">{lifecycleWarning}</p>
+              </div>
+            )}
+
+            <div className="col-span-12 mt-4">
+              <button
+                type="button"
+                onClick={() => setShowTemplates((open) => !open)}
+                className="rounded-xl border-2 border-black bg-[#1e293b] px-4 py-2 text-[11px] font-black uppercase tracking-[0.2em] text-white"
+              >
+                {showTemplates ? "Hide templates" : "Templates"}
+              </button>
+            </div>
+
+            {showTemplates && (
+              <div className="col-span-12">
+                <TemplatePanel
+                  isOpen={showTemplates}
+                  onClose={() => setShowTemplates(false)}
+                  currentValues={{ stakeAmountInput, currency, roundSpeed, arenaCapacity }}
+                  onApply={(values: TemplateFormValues) => {
+                    setStakeAmountInput(values.stakeAmountInput);
+                    setCurrency(values.currency);
+                    setRoundSpeed(values.roundSpeed);
+                    setArenaCapacity(values.arenaCapacity);
+                    setShowTemplates(false);
+                  }}
+                />
+              </div>
+            )}
+
             <div className="col-span-12 mt-4">
               {/* Fee and Total Cost Display */}
               {isConnected && isFormValid && (
@@ -566,7 +668,7 @@ export function PoolCreationModal({
                 onClick={async () => {
                   if (!isConnected) {
                     await connect();
-                  } else if (isFormValid && !noCompatibleCurrency) {
+                  } else if (isFormValid && !noCompatibleCurrency && !lifecycleWarning) {
                     setTxDetails([
                       { label: "Operation", value: "Create Pool" },
                       { label: "Stake Amount", value: `${stakeAmount} ${currency}` },
@@ -574,11 +676,14 @@ export function PoolCreationModal({
                       { label: "Capacity", value: arenaCapacity },
                       { label: "Network Fee", value: formatFeeDisplay(estimatedFee) },
                       { label: "Network", value: "Soroban Testnet" },
+                      ...(rematch
+                        ? [{ label: "Rematch Of", value: rematch.arenaId }]
+                        : []),
                     ]);
                     setShowTxModal(true);
                   }
                 }}
-                disabled={isConnected && (!isFormValid || noCompatibleCurrency || whitelistState === "checking" || whitelistState === "required")}
+                disabled={isConnected && (!isFormValid || noCompatibleCurrency || Boolean(lifecycleWarning) || whitelistState === "checking" || whitelistState === "required")}
                 className="w-full bg-primary text-black border-3 border-black py-6 text-2xl lg:text-3xl font-black uppercase italic tracking-tighter shadow-[4px_4px_0px_0px_#000] hover:translate-x-1 hover:translate-y-1 hover:shadow-none transition-all flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-x-0 disabled:hover:translate-y-0 disabled:hover:shadow-[4px_4px_0px_0px_#000]"
                 aria-label={isConnected ? "Initialize arena" : "Connect wallet"}
               >
@@ -588,7 +693,13 @@ export function PoolCreationModal({
                 </span>
               </button>
 
-              {/* Validation hint when form is invalid */}
+              {/* Validation hint when the form is invalid or an integration is deprecated */}
+              {isConnected && lifecycleWarning && (
+                <div className="mt-3 text-sm font-bold text-amber-300 text-center">
+                  {lifecycleWarning}
+                </div>
+              )}
+
               {isConnected && !isFormValid && (
                 <div className="mt-3 text-sm font-bold text-slate-500 text-center">
                   Please correct the errors above to continue
@@ -634,6 +745,21 @@ export function PoolCreationModal({
             submitSignedTransaction,
             networkPassphrase: NETWORK_PASSPHRASE,
             onSigned,
+          }).then(({ hash }) => {
+            // Persist the rematch linkage only after the factory transaction
+            // confirmed; the backend re-verifies the hash on-chain (#1572).
+            // Fire-and-forget: the arena exists on-chain either way, and a
+            // backend hiccup must not surface as a failed creation.
+            if (rematch) {
+              void recordRematchArena({
+                txHash: hash,
+                rematchOf: rematch.arenaId,
+                sourceArenaId: rematch.arenaId,
+                entryFee: stakeAmount,
+                maxPlayers: arenaCapacity,
+                stakeToken: currency,
+              }).catch(() => {});
+            }
           });
           // The pool was created successfully, so the draft no longer
           // represents unsaved work; clear it rather than letting a stale

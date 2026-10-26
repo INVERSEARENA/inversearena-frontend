@@ -33,14 +33,15 @@ import {
   feeEligibilityConsumedTotal,
   feeEligibilityExpiredTotal,
 } from "../utils/metrics";
+import { env } from "../config/env";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
 export const FEE_SPONSORSHIP_ENABLED =
-  process.env.PAYOUTS_FEE_SPONSORSHIP_ENABLED === "true";
+  env.PAYOUTS_FEE_SPONSORSHIP_ENABLED === "true";
 
 /** Hours after which an unclaimed eligibility token expires. */
-const TTL_HOURS = Number(process.env.PAYOUTS_FEE_SPONSORSHIP_TTL_HOURS ?? "72");
+const TTL_HOURS = Number(env.PAYOUTS_FEE_SPONSORSHIP_TTL_HOURS ?? "72");
 
 // ── Token types ───────────────────────────────────────────────────────────────
 

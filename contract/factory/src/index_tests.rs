@@ -17,6 +17,7 @@ use soroban_sdk::{Address, Env};
 #[cfg(test)]
 mod factory_indexes {
     use super::*;
+    use crate::FactoryContract;
     use crate::storage::FactoryStorage;
     use crate::types::{ArenaMetadata, ArenaStatus};
     use soroban_sdk::BytesN;
@@ -159,6 +160,27 @@ mod factory_indexes {
             FactoryStorage::index_pool_status(&env, 1, &ArenaStatus::Active);
             let active = FactoryStorage::get_pools_by_status(&env, &ArenaStatus::Active, 0, 50);
             assert_eq!(active.len(), 1);
+        });
+    }
+
+    /// `pool_id` round-trips through the metadata helper the index readers
+    /// (`get_arenas_by_host` / `get_arenas_by_status`) rely on, so an index
+    /// entry can always be resolved back to its pool record.
+    #[test]
+    fn indexed_pool_id_resolves_through_load_pool() {
+        let env = Env::default();
+        let factory = env.register(crate::FactoryContract, ());
+        let host = Address::generate(&env);
+
+        env.as_contract(&factory, || {
+            FactoryStorage::save_pool(&env, 7, &make_pool_meta(&env, 7, &host));
+            FactoryStorage::index_host_pool(&env, &host, 7);
+
+            let page0 = FactoryStorage::get_host_pools_page(&env, &host, 0);
+            let pool_id = page0.get(0).expect("indexed pool id");
+            let meta = FactoryStorage::load_pool(&env, pool_id).expect("pool record");
+            assert_eq!(meta.pool_id, 7);
+            assert_eq!(meta.host, host);
         });
     }
 }

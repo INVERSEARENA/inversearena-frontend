@@ -1,4 +1,5 @@
 #![no_std]
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 mod types;
 
 use soroban_sdk::{
@@ -523,7 +524,7 @@ impl StakingContract {
     /// Extend the TTL of every present critical global key (#1516).
     ///
     /// Admin-gated and idempotent: `extend_ttl` only extends entries whose
-    /// remaining TTL is at or below [`PERSISTENT_TTL_THRESHOLD`], so repeated
+    /// remaining TTL is at or below `PERSISTENT_TTL_THRESHOLD`, so repeated
     /// calls inside the threshold are no-ops. A contract cannot read its own
     /// entry TTL, so this method intentionally reports nothing beyond success —
     /// the keeper determines what actually moved by re-reading
@@ -626,6 +627,7 @@ impl StakingContract {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod test {
     use super::*;
     use soroban_sdk::Vec;

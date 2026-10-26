@@ -1,4 +1,5 @@
 import { Queue, type JobType } from "bullmq";
+import { env } from "../config/env";
 
 export const TX_CONFIRM_QUEUE = "tx-confirm";
 
@@ -123,7 +124,7 @@ export class BullMqQueueSnapshotSource implements QueueSnapshotSource {
 }
 
 function redisConnectionOpts() {
-  const url = process.env.REDIS_URL ?? "redis://localhost:6379";
+  const url = env.REDIS_URL ?? "redis://localhost:6379";
   return { url };
 }
 

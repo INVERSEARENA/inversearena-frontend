@@ -3,11 +3,16 @@
 //! Manages the full game lifecycle: player registration, commit-reveal rounds,
 //! yield accounting via an RWA vault adapter, winner payout, and admin controls.
 #![no_std]
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 use soroban_sdk::{
     Address, Bytes, BytesN, Env, IntoVal, Symbol, Vec,
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contractimpl, token,
+    xdr::ToXdr,
 };
+
+/// Domain separator prepended to every commitment preimage (#1630).
+const COMMIT_DOMAIN: &[u8] = b"IA_COMMIT_V1";
 
 mod eliminations;
 mod events;
@@ -25,9 +30,8 @@ use rwa_client::RwaAdapterClient;
 use storage::ArenaStorage;
 use types::{
     ArenaConfig, ArenaError, ArenaStatus, Choice, EliminationReason, GameState, LeaderboardEntry,
-    OracleFreshnessPolicy, PendingAdmin, PendingUpgrade, PlayerState, PlayerStatus, RoundResult,
-    Settlement, YieldSnapshot,
-    TransitionInitiator, YieldSnapshot,
+    OracleFreshnessPolicy, PendingAdmin, PendingUpgrade, PlayerState, PlayerStatus, PoolConfigView,
+    RoundResult, Settlement, TransitionInitiator, YieldSnapshot,
 };
 
 #[soroban_sdk::contractclient(name = "FactoryClient")]
@@ -36,6 +40,10 @@ pub trait FactoryInterface {
     fn reclaim_creator_stake(env: Env, arena: Address);
     fn update_arena_status(env: Env, pool_id: u32, status: ArenaStatus);
     fn is_globally_paused(env: Env) -> bool;
+    /// The factory's current protocol admin (#1629). The arena reads this to
+    /// resolve who holds the protocol powers — upgrade, platform fee, pause —
+    /// so a factory-level admin rotation takes effect on every arena at once.
+    fn admin(env: Env) -> Address;
 }
 
 pub(crate) const PAGE_SIZE: u32 = 50;
@@ -52,10 +60,20 @@ pub const MAX_PLAYERS_ALLOWED: u32 = 100;
 /// points now honour the factory-wide pause and may return `GloballyPaused`).
 /// Bumped to 5 for #1632: adds `get_settlement`, which the payout contract
 /// requires before it will pay out for an arena.
-const CONTRACT_VERSION: u32 = 5;
+/// Bumped to 6 for #1572: adds `get_pool_config`, a read-only view of the
+/// arena's full pool configuration, so off-chain rematch prefills read the
+/// arena's own on-chain config instead of cached UI state.
+const CONTRACT_VERSION: u32 = 6;
 const UPGRADE_TIMELOCK_SECONDS: u64 = 86_400; // 1 day
 /// Maximum allowed platform fee: 1000 bps (10%). Enforced by `update_platform_fee`.
 const MAX_PLATFORM_FEE_BPS: u32 = 1000;
+/// Maximum time a protocol-admin pause may hold an arena shut (#1629).
+///
+/// A pause is protocol-governed, so it must not be able to lock players out
+/// of their funds indefinitely: once this many seconds have passed since the
+/// pause was set, the pause no longer blocks anything — claims and refunds
+/// included. The protocol admin may pause again, which restarts the clock.
+pub const MAX_PAUSE_DURATION_SECONDS: u64 = 86_400; // 1 day
 
 /// This crate's own compiled WASM, used by `integration_tests.rs` so the
 /// in-process factory contract can dynamically deploy a real arena instance
@@ -88,6 +106,14 @@ pub const MIN_ROUND_DURATION_SECONDS: u64 = 30;
 pub const MAX_ROUND_DURATION_SECONDS: u64 = 3_600;
 /// Delay after a round deadline before keepers may act without the host.
 pub const HOST_GRACE_SECONDS: u64 = 3_600;
+/// Delay after `commit_deadline` before `expire_arena` becomes callable (#1627).
+///
+/// `commit_deadline` is also when reveals open and `resolve_round` becomes
+/// callable. Expiry is a liveness backstop for an arena nobody resolves, so it
+/// must wait long enough for the host and then keepers to resolve. Set well
+/// above `HOST_GRACE_SECONDS`, so a keeper-initiated resolution can never race
+/// a stranger-initiated cancellation.
+pub const EXPIRY_GRACE_SECONDS: u64 = 86_400;
 
 #[contract]
 /// On-chain arena contract. Manages the full lifecycle of a single elimination
@@ -195,19 +221,67 @@ impl ArenaContract {
         CONTRACT_VERSION
     }
 
+    /// Return the host of this arena — the address that runs the game and
+    /// moderates the lobby (#1629).
+    ///
+    /// The host is stored in `ArenaConfig.admin`; the field keeps its old
+    /// name so the on-chain layout of every deployed arena stays readable.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    pub fn host(env: Env) -> Result<Address, ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        Ok(config.admin)
+    }
+
+    /// Return the protocol admin of this arena (#1629) — the deploying
+    /// factory's current admin, which holds the arena's protocol powers:
+    /// upgrade, platform fee, pause and force-cancel.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    /// - `ArenaError::NoProtocolAdmin` if the deploying factory cannot name a
+    ///   protocol admin.
+    pub fn protocol_admin(env: Env) -> Result<Address, ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        Self::resolve_protocol_admin(&env, &config)
+    }
+
+    /// Whether this arena's own pause has outlived
+    /// `MAX_PAUSE_DURATION_SECONDS` and therefore no longer blocks anything
+    /// (#1629).
+    ///
+    /// `false` for an arena that is not paused.
+    pub fn pause_expired(env: Env) -> bool {
+        match ArenaStorage::load_config(&env) {
+            Ok(config) => Self::pause_has_expired(&env, &config),
+            Err(_) => false,
+        }
+    }
+
     /// Propose an upgrade to `new_wasm_hash`.
     ///
     /// Stores the proposal and records the current ledger timestamp. The upgrade
-    /// is NOT applied immediately — the admin must call `execute_upgrade` after
-    /// `UPGRADE_TIMELOCK_SECONDS` have elapsed, giving users time to review the
-    /// new code.
+    /// is NOT applied immediately — the protocol admin must call `execute_upgrade`
+    /// after `UPGRADE_TIMELOCK_SECONDS` have elapsed, giving users time to review
+    /// the new code.
+    ///
+    /// Protocol-only (#1629): the host of the arena cannot upgrade it. The
+    /// protocol admin — the deploying factory's admin — must authorise this.
     ///
     /// Callable while paused so an emergency pause can be followed by a
     /// timelocked recovery upgrade. If a prior proposal exists it is silently
     /// overwritten.
+    ///
+    /// # Errors
+    /// - `ArenaError::NoProtocolAdmin` if the deploying factory cannot name a
+    ///   protocol admin.
+    ///
+    /// # Events
+    /// Emits `upgrade_proposed`.
     pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), ArenaError> {
         let config = ArenaStorage::load_config(&env)?;
-        config.admin.require_auth();
+        Self::require_protocol_admin(&env, &config)?;
         let proposed_at = env.ledger().timestamp();
         ArenaStorage::save_pending_upgrade(
             &env,
@@ -222,17 +296,19 @@ impl ArenaContract {
 
     /// Execute a previously proposed upgrade after the timelock has elapsed.
     ///
-    /// Only the admin may execute. The timelock gives users a window to review
-    /// the proposed WASM hash before it takes effect.
+    /// Only the protocol admin may execute (#1629). The timelock gives users a
+    /// window to review the proposed WASM hash before it takes effect.
     ///
     /// # Errors
     /// - `ArenaError::NoPendingUpgrade` if no proposal exists.
     /// - `ArenaError::UpgradeTimelockPending` if the timelock has not elapsed.
+    /// - `ArenaError::NoProtocolAdmin` if the deploying factory cannot name a
+    ///   protocol admin.
     pub fn execute_upgrade(env: Env) -> Result<(), ArenaError> {
         let pending =
             ArenaStorage::load_pending_upgrade(&env).ok_or(ArenaError::NoPendingUpgrade)?;
         let config = ArenaStorage::load_config(&env)?;
-        config.admin.require_auth();
+        Self::require_protocol_admin(&env, &config)?;
         let now = env.ledger().timestamp();
         if now < pending.proposed_at.saturating_add(UPGRADE_TIMELOCK_SECONDS) {
             return Err(ArenaError::UpgradeTimelockPending);
@@ -591,7 +667,8 @@ impl ArenaContract {
 
         let commitment = ArenaStorage::load_commitment(&env, &player, round)
             .ok_or(ArenaError::MissingCommitment)?;
-        if commitment != Self::compute_commitment(&env, choice, &salt) {
+        let arena = env.current_contract_address();
+        if commitment != Self::compute_commitment(&env, &arena, round, &player, choice, &salt) {
             return Err(ArenaError::InvalidReveal);
         }
         ArenaStorage::save_choice(&env, &player, round, &choice);
@@ -693,7 +770,15 @@ impl ArenaContract {
     /// - `ArenaError::NotInitialized` if `initialize` has not been called.
     /// - `ArenaError::ContractPaused` if the contract is paused.
     /// - `ArenaError::InvalidGameState` if the arena is not in the `Active` state.
-    /// - `ArenaError::DeadlineTooSoon` if the commit deadline has not yet passed.
+    /// - `ArenaError::DeadlineTooSoon` unless `now > commit_deadline +
+    ///   EXPIRY_GRACE_SECONDS` (#1627).
+    ///
+    /// # Security (#1627)
+    /// Expiry is gated by `EXPIRY_GRACE_SECONDS` after the commit deadline, not
+    /// by the deadline itself. The deadline is also when reveals open and
+    /// `resolve_round` becomes callable, so an earlier gate would let any
+    /// account cancel the game before reveals or resolution, forcing refunds
+    /// and letting a losing player escape elimination.
     pub fn expire_arena(env: Env) -> Result<(), ArenaError> {
         ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
@@ -701,7 +786,8 @@ impl ArenaContract {
         if config.state != GameState::Active {
             return Err(ArenaError::InvalidGameState);
         }
-        if env.ledger().timestamp() <= config.commit_deadline {
+        let expiry_at = config.commit_deadline.saturating_add(EXPIRY_GRACE_SECONDS);
+        if env.ledger().timestamp() <= expiry_at {
             return Err(ArenaError::DeadlineTooSoon);
         }
 
@@ -713,9 +799,8 @@ impl ArenaContract {
         ArenaStorage::save_config(&env, &config);
 
         let arena_addr = env.current_contract_address();
-        if config.player_count > 0 {
-            let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
-            let _ = rwa_client.withdraw_all(&arena_addr);
+        if !Self::release_vault_principal(&env, &config) {
+            ArenaStorage::save_funds_in_vault(&env, true);
         }
 
         ArenaEvents::arena_expired(&env);
@@ -838,6 +923,34 @@ impl ArenaContract {
             winner: if finished { ArenaStorage::peek_winner(&env) } else { None },
             prize: principal.saturating_add(config.cumulative_yield),
             stake_token: config.stake_token,
+            pool_id: config.pool_id,
+        })
+    }
+
+    /// Return this arena's full pool configuration (#1572).
+    ///
+    /// Read-only. Off-chain rematch prefills read this so a rematch pool is
+    /// derived from the arena's own on-chain config rather than cached UI
+    /// state. Field names mirror the factory's `PoolConfig`.
+    ///
+    /// `round_duration` is `0` until the first round has started — the
+    /// duration is recorded at `start_round`, not `initialize`.
+    ///
+    /// # Errors
+    /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    pub fn get_pool_config(env: Env) -> Result<PoolConfigView, ArenaError> {
+        let config = ArenaStorage::peek_config(&env)?;
+        Ok(PoolConfigView {
+            stake_token: config.stake_token,
+            yield_vault: config.yield_vault,
+            entry_fee: config.entry_fee,
+            oracle_contract: config.oracle_contract,
+            min_players: ArenaStorage::load_min_players(&env),
+            max_players: ArenaStorage::load_max_players(&env)
+                .unwrap_or(crate::MAX_PLAYERS_ALLOWED),
+            round_duration: ArenaStorage::load_round_duration(&env),
+            start_deadline: ArenaStorage::load_start_deadline(&env),
+            factory: config.factory,
             pool_id: config.pool_id,
         })
     }
@@ -1115,7 +1228,9 @@ impl ArenaContract {
             let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
             let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Finished);
         } else if config.state == GameState::Cancelled {
-            let _ = rwa_client.try_withdraw_all(&arena_addr);
+            if !Self::release_vault_principal(&env, &config) {
+                ArenaStorage::save_funds_in_vault(&env, true);
+            }
             let _ = factory_client.try_release_arena(&arena_addr);
             let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
             let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Cancelled);
@@ -1173,19 +1288,22 @@ impl ArenaContract {
         ArenaStorage::save_config(&env, &config);
 
         // INTERACTIONS — external calls happen only after state is committed.
+        //
+        // The prize is exactly the tokens the vault withdrawal delivered to the
+        // arena (#1631). There is no fallback to a computed figure: if the vault
+        // refuses, the whole call reverts and the prize stays claimable.
         let arena_addr = env.current_contract_address();
-        let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
+        let token_client = token::TokenClient::new(&env, &config.stake_token);
+        let balance_before = token_client.balance(&arena_addr);
+        if !Self::release_vault_principal(&env, &config) {
+            return Err(ArenaError::VaultWithdrawFailed);
+        }
+        let total = token_client
+            .balance(&arena_addr)
+            .saturating_sub(balance_before);
         let principal = config
             .entry_fee
             .saturating_mul(i128::from(config.player_count));
-        let payout = principal.saturating_add(Self::total_yield(&env));
-        let withdrawn = rwa_client
-            .try_withdraw_all(&arena_addr)
-            .unwrap_or(Ok(payout))
-            .unwrap_or(payout);
-        let total = withdrawn;
-
-        let token_client = token::TokenClient::new(&env, &config.stake_token);
         token_client.transfer(&arena_addr, &winner, &total);
 
         ArenaEvents::prize_claimed(&env, &winner, total, total.saturating_sub(principal));
@@ -1264,7 +1382,15 @@ impl ArenaContract {
     ///
     /// While paused, calls to `join_arena`, `submit_commitment`, `reveal_choice`,
     /// `resolve_round`, and `claim` all fail with `ArenaError::ContractPaused`.
-    /// Read-only queries are unaffected. Only the admin can pause.
+    /// Read-only queries are unaffected.
+    ///
+    /// Protocol-only (#1629): the host of the arena cannot pause it. The
+    /// protocol admin — the deploying factory's admin — must authorise this.
+    ///
+    /// The pause is time-boxed: it stops blocking after
+    /// `MAX_PAUSE_DURATION_SECONDS` (24 hours), so a protocol pause can never
+    /// hold an arena — or the funds in it — shut indefinitely. `pause_expired`
+    /// reports whether that has happened.
     ///
     /// Independent of the factory-wide pause (#1583): unpausing here does not
     /// lift a protocol-wide pause, which surfaces as `ArenaError::GloballyPaused`.
@@ -1276,38 +1402,44 @@ impl ArenaContract {
     ///
     /// # Errors
     /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    /// - `ArenaError::NoProtocolAdmin` if the deploying factory cannot name a
+    ///   protocol admin.
     ///
     /// # Events
-    /// Emits `paused` with the admin address and reason symbol.
+    /// Emits `paused` with the protocol admin address and reason symbol.
     pub fn pause(env: Env, reason: Symbol) -> Result<(), ArenaError> {
         let mut config = ArenaStorage::load_config(&env)?;
-        config.admin.require_auth();
+        let protocol_admin = Self::require_protocol_admin(&env, &config)?;
         config.paused = true;
         ArenaStorage::save_config(&env, &config);
-        ArenaEvents::paused(&env, &config.admin, &reason);
+        ArenaStorage::save_paused_at(&env, env.ledger().timestamp());
+        ArenaEvents::paused(&env, &protocol_admin, &reason);
         Ok(())
     }
 
     /// Resume normal operation after a `pause`.
     ///
     /// Clears the paused flag so all gameplay entry points become callable
-    /// again. Only the admin can unpause.
+    /// again. Only the protocol admin can unpause (#1629).
     ///
     /// # Errors
     /// - `ArenaError::NotInitialized` if `initialize` has not been called.
+    /// - `ArenaError::NoProtocolAdmin` if the deploying factory cannot name a
+    ///   protocol admin.
     ///
     /// # Events
-    /// Emits `unpaused` with the admin address.
+    /// Emits `unpaused` with the protocol admin address.
     pub fn unpause(env: Env) -> Result<(), ArenaError> {
         let mut config = ArenaStorage::load_config(&env)?;
-        config.admin.require_auth();
+        let protocol_admin = Self::require_protocol_admin(&env, &config)?;
         config.paused = false;
         ArenaStorage::save_config(&env, &config);
-        ArenaEvents::unpaused(&env, &config.admin);
+        ArenaStorage::clear_paused_at(&env);
+        ArenaEvents::unpaused(&env, &protocol_admin);
         Ok(())
     }
 
-    /// Force-cancel the arena (admin only).
+    /// Force-cancel the arena (protocol admin only, #1629).
     /// Can be called at any state except Finished or Settled.
     ///
     /// Allowed while this arena is locally paused, but not while the
@@ -1316,7 +1448,7 @@ impl ArenaContract {
     pub fn force_cancel_arena(env: Env) -> Result<(), ArenaError> {
         ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
-        config.admin.require_auth();
+        Self::require_protocol_admin(&env, &config)?;
         Self::require_not_globally_paused(&env, &config)?;
 
         if config.state == GameState::Finished || config.state == GameState::Settled {
@@ -1332,13 +1464,16 @@ impl ArenaContract {
         config.state = GameState::Cancelled;
         ArenaStorage::save_config(&env, &config);
 
-        // Attempt to withdraw all funds from the yield vault
+        // Withdraw all principal from the yield vault. A refusal is recorded
+        // rather than ignored, so refunds stay blocked until `retry_withdraw`
+        // succeeds (#1631).
+        if !Self::release_vault_principal(&env, &config) {
+            ArenaStorage::save_funds_in_vault(&env, true);
+        }
         let arena_addr = env.current_contract_address();
-        let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
-        let _ = rwa_client.try_withdraw_all(&arena_addr);
 
         ArenaEvents::arena_cancelled(&env, &config.admin);
-        
+
         // Notify factory of force cancellation: release active pool slot, refund creator stake, and sync status
         let factory_client = FactoryClient::new(&env, &config.factory);
         let _ = factory_client.try_release_arena(&arena_addr);
@@ -1365,6 +1500,13 @@ impl ArenaContract {
             return Err(ArenaError::ArenaNotCancelled);
         }
 
+        // Refunds are paid from the arena's own balance. While the principal is
+        // still in the vault (#1631) that balance is short, so refuse with a
+        // specific error instead of failing on an opaque token transfer.
+        if ArenaStorage::load_funds_in_vault(&env) {
+            return Err(ArenaError::FundsInVault);
+        }
+
         if ArenaStorage::is_refund_claimed(&env, &player) {
             return Err(ArenaError::RefundAlreadyClaimed);
         }
@@ -1381,6 +1523,43 @@ impl ArenaContract {
         ArenaEvents::refund_claimed(&env, &player);
         ArenaStorage::exit_reentrancy_guard(&env);
         Ok(())
+    }
+
+    /// Retry the vault withdrawal that failed during a cancellation, expiry, or
+    /// settlement (#1631). Permissionless, because recovering the principal
+    /// benefits every player and cannot move funds to a new destination.
+    ///
+    /// Idempotent: when no withdrawal is pending it succeeds without touching
+    /// the vault. Refunds stay blocked (`FundsInVault`) until a retry succeeds.
+    ///
+    /// # Errors
+    /// - `ArenaError::ContractPaused` / `ArenaError::GloballyPaused` while paused.
+    /// - `ArenaError::InvalidGameState` if the arena is not `Cancelled`.
+    /// - `ArenaError::VaultWithdrawFailed` if the vault still refuses to release.
+    pub fn retry_withdraw(env: Env) -> Result<(), ArenaError> {
+        ArenaStorage::enter_reentrancy_guard(&env)?;
+        let config = ArenaStorage::load_config(&env)?;
+        Self::require_not_paused(&env, &config)?;
+        if config.state != GameState::Cancelled {
+            return Err(ArenaError::InvalidGameState);
+        }
+        if !ArenaStorage::load_funds_in_vault(&env) {
+            ArenaStorage::exit_reentrancy_guard(&env);
+            return Ok(());
+        }
+        if !Self::release_vault_principal(&env, &config) {
+            return Err(ArenaError::VaultWithdrawFailed);
+        }
+        ArenaStorage::save_funds_in_vault(&env, false);
+        ArenaStorage::exit_reentrancy_guard(&env);
+        Ok(())
+    }
+
+    /// Whether the principal is still held by the yield vault because a
+    /// settlement-time withdrawal failed (#1631). `true` blocks refunds until
+    /// `retry_withdraw` succeeds.
+    pub fn funds_in_vault(env: Env) -> bool {
+        ArenaStorage::load_funds_in_vault(&env)
     }
 
     /// Get the sorted top-N leaderboard of players.
@@ -1402,7 +1581,11 @@ impl ArenaContract {
         Ok(())
     }
 
-    /// Update this arena instance's stored platform fee (0-1000 bps, max 10%). Admin only.
+    /// Update this arena instance's stored platform fee (0-1000 bps, max 10%).
+    ///
+    /// Protocol-only (#1629): the host of the arena cannot change the fee.
+    /// The protocol admin — the deploying factory's admin — must authorise
+    /// this.
     ///
     /// Each arena is deployed as its own contract instance (one per pool, via
     /// the factory), so this only affects `get_platform_fee_bps` reads on
@@ -1414,16 +1597,22 @@ impl ArenaContract {
     /// contract's deploy call instead. This value is also not currently
     /// deducted anywhere in `claim`'s payout calculation; it is stored and
     /// exposed for a future payout integration.
+    ///
+    /// # Errors
+    /// - `ArenaError::InvalidPlatformFee` if `new_fee_bps` exceeds
+    ///   `MAX_PLATFORM_FEE_BPS`.
+    /// - `ArenaError::NoProtocolAdmin` if the deploying factory cannot name a
+    ///   protocol admin.
     pub fn update_platform_fee(env: Env, new_fee_bps: u32) -> Result<(), ArenaError> {
         let config = ArenaStorage::load_config(&env)?;
-        config.admin.require_auth();
+        let protocol_admin = Self::require_protocol_admin(&env, &config)?;
 
         if new_fee_bps > MAX_PLATFORM_FEE_BPS {
             return Err(ArenaError::InvalidPlatformFee);
         }
 
         ArenaStorage::save_platform_fee_bps(&env, new_fee_bps);
-        ArenaEvents::platform_fee_updated(&env, &config.admin, new_fee_bps);
+        ArenaEvents::platform_fee_updated(&env, &protocol_admin, new_fee_bps);
         Ok(())
     }
 
@@ -1432,7 +1621,11 @@ impl ArenaContract {
         ArenaStorage::load_platform_fee_bps(&env)
     }
 
-    /// Configure this arena instance's oracle freshness policy (#1512). Admin only.
+    /// Configure this arena instance's oracle freshness policy (#1512).
+    ///
+    /// Protocol-only (#1629): the host of the arena cannot change the oracle
+    /// policy. The protocol admin — the deploying factory's admin — must
+    /// authorise this.
     ///
     /// `max_age_secs`: an oracle observation older than this makes
     /// `resolve_round` refuse with `ArenaError::StaleOracleData`.
@@ -1442,13 +1635,18 @@ impl ArenaContract {
     ///
     /// Like `update_platform_fee`, this only affects *this* arena instance
     /// going forward — each arena has independent storage.
+    ///
+    /// # Errors
+    /// - `ArenaError::InvalidFreshnessPolicy` if the policy is out of range.
+    /// - `ArenaError::NoProtocolAdmin` if the deploying factory cannot name a
+    ///   protocol admin.
     pub fn set_oracle_freshness_policy(
         env: Env,
         max_age_secs: u64,
         warn_age_secs: u64,
     ) -> Result<(), ArenaError> {
         let config = ArenaStorage::load_config(&env)?;
-        config.admin.require_auth();
+        let protocol_admin = Self::require_protocol_admin(&env, &config)?;
 
         let policy = OracleFreshnessPolicy {
             max_age_secs,
@@ -1460,7 +1658,7 @@ impl ArenaContract {
         ArenaStorage::save_oracle_freshness_policy(&env, &policy);
         ArenaEvents::oracle_freshness_policy_updated(
             &env,
-            &config.admin,
+            &protocol_admin,
             max_age_secs,
             warn_age_secs,
         );
@@ -1519,24 +1717,98 @@ impl ArenaContract {
         ArenaStorage::load_round_result(&env, round)
     }
 
-    fn compute_commitment(env: &Env, choice: Choice, salt: &BytesN<32>) -> BytesN<32> {
-        let mut preimage = Bytes::new(env);
+    /// Commitment preimage, bound to one arena, round, and player (#1630):
+    ///
+    /// `SHA-256("IA_COMMIT_V1" || arena || round || player || choice || salt)`
+    ///
+    /// - `arena` / `player`: the ScVal XDR of the address (`Address::to_xdr`),
+    ///   i.e. the 4-byte `SCV_ADDRESS` discriminant followed by the ScAddress.
+    /// - `round`: `u32`, big-endian (the XDR `u32` encoding).
+    /// - `choice`: one byte, `Heads = 0`, `Tails = 1`.
+    /// - `salt`: 32 raw bytes.
+    ///
+    /// A hash copied from another player, arena, or round therefore fails
+    /// `reveal_choice`: the reveal recomputes the hash for the revealing
+    /// caller's own context.
+    fn compute_commitment(
+        env: &Env,
+        arena: &Address,
+        round: u32,
+        player: &Address,
+        choice: Choice,
+        salt: &BytesN<32>,
+    ) -> BytesN<32> {
+        let mut preimage = Bytes::from_slice(env, COMMIT_DOMAIN);
+        preimage.append(&arena.clone().to_xdr(env));
+        preimage.append(&Bytes::from_slice(env, &round.to_be_bytes()));
+        preimage.append(&player.clone().to_xdr(env));
         preimage.push_back(choice.to_byte());
-        let salt_bytes = salt.to_array();
-        for b in salt_bytes.iter() {
-            preimage.push_back(*b);
-        }
+        preimage.append(&Bytes::from_slice(env, &salt.to_array()));
         env.crypto().sha256(&preimage).into()
     }
 
     /// Gameplay runs only while neither this arena's own pause nor the
     /// factory-wide emergency pause (#1583) is set. The two flags are
     /// independent: clearing one never clears the other.
+    ///
+    /// The arena's own pause is protocol-governed and time-boxed (#1629): once
+    /// it has been held for `MAX_PAUSE_DURATION_SECONDS` it no longer blocks
+    /// anything, so a protocol pause can never lock players out of their
+    /// entry fees, prizes or refunds.
     fn require_not_paused(env: &Env, config: &ArenaConfig) -> Result<(), ArenaError> {
-        if config.paused {
+        if config.paused && !Self::pause_has_expired(env, config) {
             return Err(ArenaError::ContractPaused);
         }
         Self::require_not_globally_paused(env, config)
+    }
+
+    /// Whether the arena's own pause has outlived `MAX_PAUSE_DURATION_SECONDS`.
+    ///
+    /// A pause recorded by the protocol admin carries the timestamp of the
+    /// pause, so it expires on schedule. A pause inherited from before the
+    /// role split (#1629) carries no timestamp and therefore no bound: it is
+    /// treated as already expired, because an unbounded pause must never be
+    /// able to hold a player's funds.
+    fn pause_has_expired(env: &Env, config: &ArenaConfig) -> bool {
+        if !config.paused {
+            return false;
+        }
+        match ArenaStorage::load_paused_at(env) {
+            Some(paused_at) if paused_at > 0 => {
+                env.ledger().timestamp() >= paused_at.saturating_add(MAX_PAUSE_DURATION_SECONDS)
+            }
+            _ => true,
+        }
+    }
+
+    /// Resolve the protocol admin of this arena (#1629).
+    ///
+    /// The protocol admin is the deploying factory's current admin. Reading it
+    /// from the factory — rather than caching it in the arena — means a
+    /// factory-level admin rotation (`propose_admin` / `accept_admin` on the
+    /// factory) immediately withdraws the old admin's protocol powers over
+    /// every arena, with no per-arena bookkeeping to keep in sync.
+    ///
+    /// Fails closed: an arena whose factory cannot answer has no protocol
+    /// admin, so the protocol-only entry points stay unavailable rather than
+    /// falling back to the host — that fallback is exactly the conflated
+    /// authority #1629 removes.
+    fn resolve_protocol_admin(env: &Env, config: &ArenaConfig) -> Result<Address, ArenaError> {
+        match FactoryClient::new(env, &config.factory).try_admin() {
+            Ok(Ok(admin)) => Ok(admin),
+            _ => Err(ArenaError::NoProtocolAdmin),
+        }
+    }
+
+    /// Require the protocol admin's authorisation for a protocol-only entry
+    /// point (#1629).
+    fn require_protocol_admin(
+        env: &Env,
+        config: &ArenaConfig,
+    ) -> Result<Address, ArenaError> {
+        let protocol_admin = Self::resolve_protocol_admin(env, config)?;
+        protocol_admin.require_auth();
+        Ok(protocol_admin)
     }
 
     /// Reject while the deploying factory reports the protocol-wide pause.
@@ -1561,16 +1833,35 @@ impl ArenaContract {
         config.state = GameState::Cancelled;
         ArenaStorage::save_config(env, config);
 
-        let arena_addr = env.current_contract_address();
-        if config.player_count > 0 {
-            let rwa_client = RwaAdapterClient::new(env, &config.yield_vault);
-            let _ = rwa_client.withdraw_all(&arena_addr);
+        if !Self::release_vault_principal(env, config) {
+            ArenaStorage::save_funds_in_vault(env, true);
         }
 
+        let arena_addr = env.current_contract_address();
         let factory_client = FactoryClient::new(env, &config.factory);
         let _ = factory_client.try_release_arena(&arena_addr);
         let _ = factory_client.try_reclaim_creator_stake(&arena_addr);
         let _ = factory_client.try_update_arena_status(&config.pool_id, &ArenaStatus::Cancelled);
+    }
+
+    /// Pull the arena's principal back from the yield vault during settlement
+    /// (#1631). Returns `false` when the vault did not release it, so the caller
+    /// can record that funds are still parked there. A failed balance read counts
+    /// as a failure, never as "nothing to release".
+    fn release_vault_principal(env: &Env, config: &ArenaConfig) -> bool {
+        if config.player_count == 0 {
+            return true;
+        }
+        let arena_addr = env.current_contract_address();
+        let rwa_client = RwaAdapterClient::new(env, &config.yield_vault);
+        let held = match rwa_client.try_balance_of(&arena_addr) {
+            Ok(Ok(balance)) => balance,
+            _ => return false,
+        };
+        if held <= 0 {
+            return true;
+        }
+        matches!(rwa_client.try_withdraw_all(&arena_addr), Ok(Ok(_)))
     }
 
     /// Release one lobby player's entry fee from the vault and transfer it back
@@ -1709,39 +2000,31 @@ fn build_leaderboard(env: &Env) {
     };
     let limit = ArenaStorage::load_leaderboard_limit(env);
 
-    // Collect all player entries into an unsorted working Vec.
-    let mut entries: Vec<LeaderboardEntry> = Vec::new(env);
+    // Keep only the bounded top-K while scanning the paged roster. This avoids
+    // materializing and sorting the full roster at game finish.
+    let mut leaderboard: Vec<LeaderboardEntry> = Vec::new(env);
     for page_index in 0..page_count {
         let players = ArenaStorage::load_roster_page(env, page_index);
         for player in players.iter() {
             let state = ArenaStorage::load_player(env, &player).unwrap_or_default();
-            entries.push_back(LeaderboardEntry {
+            let entry = LeaderboardEntry {
                 player,
                 rounds_survived: state.rounds_survived,
-            });
-        }
-    }
-    let n = entries.len();
-
-    // Partial selection sort: K = min(limit, n) passes, each a single linear scan.
-    // Total work O(K·n) — O(n) for a bounded limit — versus O(n²) for insertion sort.
-    let k = limit.min(n);
-    let mut leaderboard: Vec<LeaderboardEntry> = Vec::new(env);
-    for _ in 0..k {
-        if entries.is_empty() {
-            break;
-        }
-        let mut best_i = 0u32;
-        let mut best_rs = entries.get(0).unwrap().rounds_survived;
-        for j in 1..entries.len() {
-            let rs = entries.get(j).unwrap().rounds_survived;
-            if rs > best_rs {
-                best_rs = rs;
-                best_i = j;
+            };
+            let mut position = leaderboard.len();
+            for index in 0..leaderboard.len() {
+                if entry.rounds_survived > leaderboard.get(index).unwrap().rounds_survived {
+                    position = index;
+                    break;
+                }
+            }
+            if position < limit {
+                leaderboard.insert(position, entry);
+                if leaderboard.len() > limit {
+                    leaderboard.remove(limit);
+                }
             }
         }
-        leaderboard.push_back(entries.get(best_i).unwrap());
-        entries.remove(best_i);
     }
 
     ArenaStorage::save_leaderboard(env, &leaderboard);
@@ -1749,6 +2032,7 @@ fn build_leaderboard(env: &Env) {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod test {
     use super::*;
     use soroban_sdk::{
@@ -2016,8 +2300,15 @@ mod test {
         assert!(hundred_second.instructions < 50_000_000);
     }
 
-    fn compute_commitment(env: &Env, choice: Choice, salt: &BytesN<32>) -> BytesN<32> {
-        ArenaContract::compute_commitment(env, choice, salt)
+    fn compute_commitment(
+        env: &Env,
+        arena: &Address,
+        round: u32,
+        player: &Address,
+        choice: Choice,
+        salt: &BytesN<32>,
+    ) -> BytesN<32> {
+        ArenaContract::compute_commitment(env, arena, round, player, choice, salt)
     }
 
     #[test]
@@ -2028,7 +2319,7 @@ mod test {
         let player = Address::generate(&env);
         let salt = BytesN::from_array(&env, &[42u8; 32]);
         let choice = Choice::Tails;
-        let commitment = compute_commitment(&env, choice, &salt);
+        let commitment = compute_commitment(&env, &contract_id, 1, &player, choice, &salt);
 
         env.as_contract(&contract_id, || {
             let config = ArenaConfig {
@@ -2070,7 +2361,7 @@ mod test {
         let player = Address::generate(&env);
         let salt = BytesN::from_array(&env, &[42u8; 32]);
         let choice = Choice::Heads;
-        let commitment = compute_commitment(&env, choice, &salt);
+        let commitment = compute_commitment(&env, &contract_id, 1, &player, choice, &salt);
 
         env.as_contract(&contract_id, || {
             let config = ArenaConfig {
@@ -2107,7 +2398,7 @@ mod test {
         let player = Address::generate(&env);
         let salt = BytesN::from_array(&env, &[42u8; 32]);
         let choice = Choice::Heads;
-        let commitment = compute_commitment(&env, choice, &salt);
+        let commitment = compute_commitment(&env, &contract_id, 1, &player, choice, &salt);
 
         env.as_contract(&contract_id, || {
             let config = ArenaConfig {
@@ -2152,7 +2443,7 @@ mod test {
         let contract_id = env.register(ArenaContract, ());
         let player = Address::generate(&env);
         let salt = BytesN::from_array(&env, &[7u8; 32]);
-        let commitment = compute_commitment(&env, Choice::Heads, &salt);
+        let commitment = compute_commitment(&env, &contract_id, 1, &player, Choice::Heads, &salt);
 
         env.as_contract(&contract_id, || {
             let config = ArenaConfig {
@@ -2189,7 +2480,7 @@ mod test {
         let contract_id = env.register(ArenaContract, ());
         let player = Address::generate(&env);
         let salt = BytesN::from_array(&env, &[3u8; 32]);
-        let commitment = compute_commitment(&env, Choice::Heads, &salt);
+        let commitment = compute_commitment(&env, &contract_id, 1, &player, Choice::Heads, &salt);
 
         env.as_contract(&contract_id, || {
             let config = ArenaConfig {
@@ -2227,7 +2518,7 @@ mod test {
         let player = Address::generate(&env);
         let salt = BytesN::from_array(&env, &[9u8; 32]);
         let choice = Choice::Heads;
-        let commitment = compute_commitment(&env, choice, &salt);
+        let commitment = compute_commitment(&env, &contract_id, 1, &player, choice, &salt);
 
         env.as_contract(&contract_id, || {
             let config = ArenaConfig {
@@ -2374,7 +2665,7 @@ mod test {
         let admin = Address::generate(&env);
         let player = Address::generate(&env);
         let salt = BytesN::from_array(&env, &[1u8; 32]);
-        let commitment = compute_commitment(&env, Choice::Heads, &salt);
+        let commitment = compute_commitment(&env, &contract_id, 1, &player, Choice::Heads, &salt);
 
         env.as_contract(&contract_id, || {
             ArenaStorage::save_config(
@@ -2641,6 +2932,7 @@ mod test {
         let (env, client, _resolve_ts) = setup_started_with_oracle_age(0);
         client.resolve_round();
         let events = env.events().all();
+        // #1607: topic = ("arena", "orc_fresh"); data = (v, round, class, age).
         let has_freshness_event = events
             .iter()
             .any(|(contract, topics, _data)| {
@@ -2924,9 +3216,9 @@ mod test {
         let salt1 = BytesN::from_array(&env, &[1u8; 32]);
         let salt2 = BytesN::from_array(&env, &[2u8; 32]);
         let salt3 = BytesN::from_array(&env, &[3u8; 32]);
-        let comm1 = compute_commitment(&env, Choice::Heads, &salt1);
-        let comm2 = compute_commitment(&env, Choice::Heads, &salt2);
-        let comm3 = compute_commitment(&env, Choice::Heads, &salt3);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
         client.submit_commitment(&p1, &comm1);
         client.submit_commitment(&p2, &comm2);
         client.submit_commitment(&p3, &comm3);
@@ -3375,9 +3667,11 @@ mod test {
         env.ledger().with_mut(|li| li.timestamp = 1000);
         client.start_round(&60);
         let salt = BytesN::from_array(&env, &[1u8; 32]);
-        let comm = compute_commitment(&env, Choice::Heads, &salt);
+        let comm = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt);
+        // Each hash is bound to its own player, so p2 cannot reuse p1's (#1630).
+        let comm_p2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt);
         client.submit_commitment(&p1, &comm);
-        client.submit_commitment(&p2, &comm);
+        client.submit_commitment(&p2, &comm_p2);
         env.ledger().with_mut(|li| li.timestamp = 1061);
         // Both reveal Heads — all same choice, both survive
         client.reveal_choice(&p1, &Choice::Heads, &salt);
@@ -3390,9 +3684,10 @@ mod test {
 
         // Verify choices are cleared: players can commit and reveal again
         let salt2 = BytesN::from_array(&env, &[2u8; 32]);
-        let comm2 = compute_commitment(&env, Choice::Heads, &salt2);
+        let comm2 = compute_commitment(&env, &contract_id, 2, &p1, Choice::Heads, &salt2);
+        let comm2_p2 = compute_commitment(&env, &contract_id, 2, &p2, Choice::Heads, &salt2);
         client.submit_commitment(&p1, &comm2);
-        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p2, &comm2_p2);
         env.ledger().with_mut(|li| li.timestamp = 2061);
         // If choices were not cleared, reveal would fail with ChoiceAlreadyRevealed
         // If stale commitment was present, reveal would succeed but use wrong commitment
@@ -3447,11 +3742,12 @@ mod test {
 
         // Only p1 and p2 commit and reveal (p3 goes AFK)
         let salt = BytesN::from_array(&env, &[1u8; 32]);
-        let comm = compute_commitment(&env, Choice::Heads, &salt);
+        let comm = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt);
+        let comm_p2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt);
         client.submit_commitment(&p1, &comm);
-        client.submit_commitment(&p2, &comm);
+        client.submit_commitment(&p2, &comm_p2);
         let salt3 = BytesN::from_array(&env, &[3u8; 32]);
-        let comm3 = compute_commitment(&env, Choice::Heads, &salt3);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
         client.submit_commitment(&p3, &comm3);
 
         env.ledger().with_mut(|li| li.timestamp = 1061);
@@ -3514,8 +3810,8 @@ mod test {
         // Both players commit but neither reveals.
         let salt1 = BytesN::from_array(&env, &[1u8; 32]);
         let salt2 = BytesN::from_array(&env, &[2u8; 32]);
-        let comm1 = compute_commitment(&env, Choice::Heads, &salt1);
-        let comm2 = compute_commitment(&env, Choice::Heads, &salt2);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
         client.submit_commitment(&p1, &comm1);
         client.submit_commitment(&p2, &comm2);
 
@@ -3594,9 +3890,9 @@ mod test {
         let salt1 = BytesN::from_array(&env, &[1u8; 32]);
         let salt2 = BytesN::from_array(&env, &[2u8; 32]);
         let salt3 = BytesN::from_array(&env, &[3u8; 32]);
-        let comm1 = compute_commitment(&env, Choice::Tails, &salt1);
-        let comm2 = compute_commitment(&env, Choice::Heads, &salt2);
-        let comm3 = compute_commitment(&env, Choice::Heads, &salt3);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
         client.submit_commitment(&p1, &comm1);
         client.submit_commitment(&p2, &comm2);
         client.submit_commitment(&p3, &comm3);
@@ -3681,9 +3977,9 @@ mod test {
         let salt1 = BytesN::from_array(&env, &[1u8; 32]);
         let salt2 = BytesN::from_array(&env, &[2u8; 32]);
         let salt3 = BytesN::from_array(&env, &[3u8; 32]);
-        let comm1 = compute_commitment(&env, Choice::Heads, &salt1);
-        let comm2 = compute_commitment(&env, Choice::Heads, &salt2);
-        let comm3 = compute_commitment(&env, Choice::Heads, &salt3);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
         client.submit_commitment(&p1, &comm1);
         client.submit_commitment(&p2, &comm2);
         client.submit_commitment(&p3, &comm3);
@@ -3775,7 +4071,7 @@ mod test {
         env.ledger().with_mut(|li| li.timestamp = 1000);
         client.start_round(&60);
         let salt = BytesN::from_array(&env, &[1u8; 32]);
-        let comm = compute_commitment(&env, Choice::Heads, &salt);
+        let comm = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt);
         client.submit_commitment(&p1, &comm);
         client.submit_commitment(&p2, &comm);
         env.ledger().with_mut(|li| li.timestamp = 1061);
@@ -4356,6 +4652,57 @@ mod test {
     }
 
     #[test]
+    fn get_pool_config_returns_the_stored_configuration() {
+        let (env, client) = setup(0);
+        let (stake_token, yield_vault, entry_fee, oracle, factory) = env
+            .as_contract(&client.address, || {
+                let config = ArenaStorage::load_config(&env).unwrap();
+                ArenaStorage::save_player_limits(&env, 3, 12);
+                (
+                    config.stake_token,
+                    config.yield_vault,
+                    config.entry_fee,
+                    config.oracle_contract,
+                    config.factory,
+                )
+            });
+
+        let view = client.get_pool_config();
+        assert_eq!(view.stake_token, stake_token);
+        assert_eq!(view.yield_vault, yield_vault);
+        assert_eq!(view.entry_fee, entry_fee);
+        assert_eq!(view.oracle_contract, oracle);
+        assert_eq!(view.min_players, 3);
+        assert_eq!(view.max_players, 12);
+        // The duration is only recorded at `start_round`, not `initialize`.
+        assert_eq!(view.round_duration, 0);
+        assert_eq!(view.start_deadline, 0);
+        assert_eq!(view.factory, factory);
+    }
+
+    #[test]
+    fn get_pool_config_reports_recorded_round_duration_after_start() {
+        let (env, client) = setup(0);
+        env.as_contract(&client.address, || {
+            ArenaStorage::save_player_limits(&env, 2, 2);
+            ArenaStorage::save_round_duration(&env, 900);
+            ArenaStorage::save_start_deadline(&env, 1_700_000_000);
+        });
+        let view = client.get_pool_config();
+        assert_eq!(view.round_duration, 900);
+        assert_eq!(view.start_deadline, 1_700_000_000);
+    }
+
+    #[test]
+    fn get_pool_config_errors_before_initialize() {
+        let env = Env::default();
+        let contract_id = env.register(ArenaContract, ());
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let result = client.try_get_pool_config();
+        assert_eq!(result, Err(Ok(ArenaError::NotInitialized)));
+    }
+
+    #[test]
     fn get_oracle_freshness_policy_defaults_before_configuration() {
         let (_env, client) = setup(0);
         let policy = client.get_oracle_freshness_policy();
@@ -4806,7 +5153,7 @@ mod test {
         client.start_round(&60);
 
         let salt = BytesN::from_array(&env, &[1u8; 32]);
-        let commitment = compute_commitment(&env, Choice::Heads, &salt);
+        let commitment = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt);
         client.submit_commitment(&p1, &commitment);
         client.submit_commitment(&p2, &commitment);
 
@@ -4914,7 +5261,7 @@ mod test {
         env.ledger().with_mut(|li| li.timestamp = 1000);
         client.start_round(&60);
         let salt = BytesN::from_array(&env, &[1u8; 32]);
-        let comm = compute_commitment(&env, Choice::Heads, &salt);
+        let comm = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt);
         client.submit_commitment(&p1, &comm);
         client.submit_commitment(&p2, &comm);
         env.ledger().with_mut(|li| li.timestamp = 1061);
@@ -5159,6 +5506,7 @@ mod player_status_tests;
 #[cfg(test)]
 mod global_pause_tests;
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod commitment_vectors;
 #[cfg(test)]
 mod temp_storage_tests;
@@ -5166,3 +5514,5 @@ mod temp_storage_tests;
 mod auth_tests;
 #[cfg(test)]
 mod conservation_tests;
+#[cfg(test)]
+mod settlement_security_tests;

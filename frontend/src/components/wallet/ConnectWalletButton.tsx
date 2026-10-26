@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { useWallet } from '@/features/wallet/hooks/useWallet';
 import { usePasskeyWallet } from '@/features/wallet/hooks/usePasskeyWallet';
 import { Button } from '@/components/ui/Button';
@@ -9,6 +10,8 @@ const shortAddress = (address: string) =>
   `${address.slice(0, 6)}...${address.slice(-4)}`;
 
 export const ConnectWalletButton = ({ className }: { className?: string }) => {
+  const t = useTranslations('wallet');
+  const tCommon = useTranslations('common');
   const { status, publicKey, error, connect, disconnect, walletNetworkName, recheckNetwork } =
     useWallet();
   const passkey = usePasskeyWallet();
@@ -28,11 +31,11 @@ export const ConnectWalletButton = ({ className }: { className?: string }) => {
   if (passkey.isRegistered && passkey.address) {
     return (
       <div className="flex items-center gap-4">
-        <span className="text-white" title="Passkey wallet">
+        <span className="text-white" title={t('passkeyTitle')}>
           🔑 {shortAddress(passkey.address)}
         </span>
         <Button onClick={() => disconnect()} variant={buttonVariant} className={className}>
-          Disconnect
+          {tCommon('disconnect')}
         </Button>
       </div>
     );
@@ -42,9 +45,9 @@ export const ConnectWalletButton = ({ className }: { className?: string }) => {
   if (status === 'connected') {
     return (
       <div className="flex items-center gap-4">
-        <span className="text-white">{publicKey ? shortAddress(publicKey) : 'Connected'}</span>
+        <span className="text-white">{publicKey ? shortAddress(publicKey) : tCommon('connected')}</span>
         <Button onClick={() => disconnect()} variant={buttonVariant} className={className}>
-          Disconnect
+          {tCommon('disconnect')}
         </Button>
       </div>
     );
@@ -61,9 +64,8 @@ export const ConnectWalletButton = ({ className }: { className?: string }) => {
           role="alert"
           className="text-amber-400 text-xs max-w-[220px] text-right"
         >
-          Wallet is on the wrong network
-          {walletNetworkName ? ` (${walletNetworkName})` : ''}. Switch it in your
-          wallet extension, then check again.
+          {t('networkMismatch')}
+          {walletNetworkName ? ` (${walletNetworkName})` : ''}. {t('networkMismatchHint')}
         </span>
         <div className="flex items-center gap-3">
           <Button
@@ -79,10 +81,10 @@ export const ConnectWalletButton = ({ className }: { className?: string }) => {
             variant={buttonVariant}
             className={className}
           >
-            {isCheckingNetwork ? 'Checking...' : 'Check again'}
+            {isCheckingNetwork ? tCommon('checking') : t('checkAgain')}
           </Button>
           <Button onClick={() => disconnect()} variant="none">
-            Disconnect
+            {tCommon('disconnect')}
           </Button>
         </div>
       </div>
@@ -98,7 +100,7 @@ export const ConnectWalletButton = ({ className }: { className?: string }) => {
           </span>
         )}
         <Button onClick={() => connect()} variant={buttonVariant} className={className}>
-          Retry
+          {tCommon('retry')}
         </Button>
       </div>
     );
@@ -110,11 +112,11 @@ export const ConnectWalletButton = ({ className }: { className?: string }) => {
       <div className="flex flex-col gap-2">
         <input
           type="text"
-          placeholder="Username for passkey"
+          placeholder={t('passkeyPlaceholder')}
           value={passkeyUsername}
           onChange={(e) => setPasskeyUsername(e.target.value)}
           className="border border-gray-600 bg-black text-white px-3 py-1 text-sm rounded"
-          aria-label="Username for passkey registration"
+          aria-label={t('passkeyAriaLabel')}
         />
         {passkeyError && <p className="text-red-500 text-xs">{passkeyError}</p>}
         <div className="flex gap-2">
@@ -125,16 +127,16 @@ export const ConnectWalletButton = ({ className }: { className?: string }) => {
                 await passkey.register(passkeyUsername || 'player');
                 setShowPasskeyPrompt(false);
               } catch (e) {
-                setPasskeyError(e instanceof Error ? e.message : 'Passkey registration failed');
+                setPasskeyError(e instanceof Error ? e.message : t('passkeyRegistrationFailed'));
               }
             }}
             variant={buttonVariant}
             className={className}
           >
-            Register Passkey
+            {t('registerPasskey')}
           </Button>
           <Button onClick={() => setShowPasskeyPrompt(false)} variant="none">
-            Cancel
+            {tCommon('cancel')}
           </Button>
         </div>
       </div>
@@ -150,7 +152,7 @@ export const ConnectWalletButton = ({ className }: { className?: string }) => {
         variant={buttonVariant}
         className={className}
       >
-        {status === 'connecting' ? 'Connecting...' : 'Connect Extension Wallet'}
+        {status === 'connecting' ? t('connecting') : t('connectExtension')}
       </Button>
       {passkey.isAvailable && (
         <Button
@@ -158,7 +160,7 @@ export const ConnectWalletButton = ({ className }: { className?: string }) => {
           variant="none"
           className="text-xs text-gray-400 hover:text-white"
         >
-          🔑 Use Passkey (FaceID / TouchID)
+          {t('usePasskey')}
         </Button>
       )}
     </div>

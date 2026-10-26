@@ -27,7 +27,8 @@ exports[`Hero matches snapshot 1`] = `
       <p
         class="text-[10px] md:text-xs font-mono tracking-[0.4em] uppercase text-zinc-300 leading-relaxed font-medium"
       >
-        THE SOCIAL ELIMINATION GAME WHERE THE MINORITY 
+        THE SOCIAL ELIMINATION GAME WHERE THE MINORITY
+         
         <br
           class="hidden md:block"
         />

@@ -30,6 +30,7 @@ import {
   readOnChainStorageInventory,
 } from "../services/onChainReader";
 import { hasReadValue } from "../types/onChainRead";
+import { env, processEnv } from "../config/env";
 
 function policyFromEnv(env: NodeJS.ProcessEnv): TtlKeeperPolicy {
   const num = (value: string | undefined, fallback: number): number => {
@@ -51,8 +52,8 @@ function policyFromEnv(env: NodeJS.ProcessEnv): TtlKeeperPolicy {
 }
 
 export async function buildDryRunPlan() {
-  const manifests = manifestsFromEnv(process.env.TTL_KEEPER_MANIFESTS);
-  const policy = policyFromEnv(process.env);
+  const manifests = manifestsFromEnv(env.TTL_KEEPER_MANIFESTS);
+  const policy = policyFromEnv(processEnv);
 
   return runTtlKeeper({
     reader: createRpcTtlReader(),

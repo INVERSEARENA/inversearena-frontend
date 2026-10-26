@@ -18,6 +18,7 @@ const { Server } = rpc;
 import { getSorobanBreaker, type CircuitBreaker } from "../utils/circuitBreaker";
 import { logger } from "../utils/logger";
 import type { LedgerIdentity } from "./ledgerContinuity";
+import { env } from "../config/env";
 
 let rpcServer: rpc.Server | null = null;
 let breakerOverride: CircuitBreaker | null = null;
@@ -37,7 +38,7 @@ export function setLedgerObserver(observer: ((identity: LedgerIdentity) => Promi
 
 function getRpcServer(): rpc.Server {
   if (!rpcServer) {
-    const url = process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
+    const url = env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
     rpcServer = new Server(url, { allowHttp: false });
   }
   return rpcServer;

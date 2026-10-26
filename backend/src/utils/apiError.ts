@@ -5,6 +5,11 @@ export interface ApiError {
     code: string;
     message: string;
     issues?: ZodIssue[];
+    /**
+     * Field-level details for errors that carry remediation (#1689) — the
+     * list of template fields that are stale, with what to do about each.
+     */
+    details?: unknown;
   };
 }
 
@@ -13,14 +18,21 @@ export class HttpError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
+    /** Optional field-level details (#1689). */
+    public readonly details?: unknown,
   ) {
     super(message);
     this.name = "HttpError";
   }
 }
 
-export function apiError(status: number, code: string, message: string): HttpError {
-  return new HttpError(status, code, message);
+export function apiError(
+  status: number,
+  code: string,
+  message: string,
+  details?: unknown,
+): HttpError {
+  return new HttpError(status, code, message, details);
 }
 
 export function defaultErrorCode(status: number): string {

@@ -17,11 +17,14 @@ import { createPortfolioExposureRouter } from "./portfolioExposure";
 import { createStakingPositionsRouter } from "./stakingPositions";
 import { createCancellationRecoveryRouter } from "./cancellationRecovery";
 import { createConfigRouter } from "./config";
+import { createStatsRouter } from "./stats";
+import { createWebhooksRouter } from "./webhooks";
 import { createInvitationsRouter } from "./invitations";
 import { createRoundProofBundleRouter } from "./roundProofBundle";
 import { createLobbyReservationRouter } from "./lobbyReservation";
 import { createDashboardRouter } from "./dashboard";
 import { createCreatorRouter } from "./creator";
+import { createCreatorTemplatesRouter } from "./creatorTemplates";
 import { createHostWhitelistRouter } from "./hostWhitelist";
 import type { PrismaClient } from "@prisma/client";
 import type { PayoutsController } from "../controllers/payouts.controller";
@@ -34,6 +37,8 @@ import type { TransactionIntentsController } from "../controllers/transactionInt
 import type { AuthService } from "../services/authService";
 import type { RoundProofBundleService } from "../services/roundProofBundleService";
 import type { TransactionRepository } from "../repositories/transactionRepository";
+import type { LandingStatsService } from "../services/landingStatsService";
+import type { RevalidationService } from "../services/revalidationService";
 
 export function createApiRouter(
   payoutsController: PayoutsController,
@@ -48,12 +53,20 @@ export function createApiRouter(
   authService: AuthService,
   roundProofBundleService: RoundProofBundleService,
   transactions: TransactionRepository,
+  landingStatsService?: LandingStatsService,
+  revalidationService?: RevalidationService,
   prisma?: PrismaClient,
 ): Router {
   const router = Router();
 
   router.use(createDocsRouter());
   router.use("/config", createConfigRouter());
+  if (landingStatsService) {
+    router.use("/stats", createStatsRouter(landingStatsService));
+  }
+  if (revalidationService) {
+    router.use("/webhooks", createWebhooksRouter(revalidationService));
+  }
   router.use("/auth", createAuthRouter(authController, requireAuth));
   router.use("/users", createUsersRouter(usersController, requireAuth, transactions));
   router.use("/payouts", createPayoutsRouter(payoutsController, authService, adminAuthMiddleware));
@@ -87,6 +100,7 @@ export function createApiRouter(
     createLeaderboardRouter(leaderboardController, requireAuth),
   );
   router.use("/dashboard", createDashboardRouter(requireAuth));
+  router.use("/creator/templates", createCreatorTemplatesRouter(requireAuth));
   router.use("/creator", createCreatorRouter(requireAuth));
   if (prisma) {
     router.use(createHostWhitelistRouter(prisma, requireAuth, adminAuthMiddleware));

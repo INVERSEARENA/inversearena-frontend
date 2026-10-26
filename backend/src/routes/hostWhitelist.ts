@@ -5,6 +5,7 @@ import type { PrismaClient } from "@prisma/client";
 import { asyncHandler } from "../middleware/validate";
 import { createRateLimitMiddleware, getPoolsRateLimitConfig } from "../middleware/rateLimit";
 import { apiError } from "../utils/apiError";
+import { env } from "../config/env";
 
 const submitSchema = z.object({
   contact: z.string().trim().min(3).max(320),
@@ -72,9 +73,9 @@ export function createHostWhitelistRouter(
     if (!application) throw apiError(404, "APPLICATION_NOT_FOUND", "Whitelist application not found");
     if (application.status !== "PENDING") throw apiError(409, "INVALID_STATE", "Only pending applications can be approved");
 
-    const contractId = process.env.ARENA_FACTORY_CONTRACT_ID;
-    const rpcUrl = process.env.SOROBAN_RPC_URL;
-    const passphrase = process.env.STELLAR_NETWORK_PASSPHRASE ?? Networks.TESTNET;
+    const contractId = env.ARENA_FACTORY_CONTRACT_ID;
+    const rpcUrl = env.SOROBAN_RPC_URL;
+    const passphrase = env.STELLAR_NETWORK_PASSPHRASE ?? Networks.TESTNET;
     if (!contractId || !rpcUrl) throw apiError(503, "FACTORY_NOT_CONFIGURED", "Factory transaction preparation is unavailable");
     const server = new rpc.Server(rpcUrl);
     const account = await server.getAccount(input.adminWallet);

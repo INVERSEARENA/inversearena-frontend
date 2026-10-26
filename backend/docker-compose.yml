@@ -24,3 +24,44 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # ── Load-test target ────────────────────────────────────────────────────────
+  #
+  # Starts the backend API in production-like mode against the local test DB
+  # and Redis.  Used by the k6 suite (see backend/tests/load/README.md).
+  #
+  # The SSE_MAX_CONNECTIONS_PER_IP and SSE_MAX_CONNECTIONS_PER_ARENA values are
+  # deliberately high so that k6 VUs sharing the loopback address are not
+  # rejected by the per-IP SSE limiter before testing begins.
+  #
+  # Override LOAD_TEST_BYPASS_KEY to match the -e LOAD_TEST_SECRET_KEY value
+  # you pass to k6 when using BYPASS_RATE_LIMIT=1.
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql://testuser:testpassword@postgres:5432/inversearenatest
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: k6-load-test-jwt-secret-must-be-at-least-32-chars
+      ADMIN_API_KEY: k6-load-test-admin-key
+      PAYOUT_CONTRACT_ID: CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+      PAYOUT_SOURCE_ACCOUNT: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+      NODE_ENV: production
+      # Relax SSE limits for k6 loopback traffic (all VUs share 127.0.0.1).
+      SSE_MAX_CONNECTIONS_PER_IP: "1100"
+      SSE_MAX_CONNECTIONS_PER_ARENA: "1100"
+      # Set to the same value passed to k6 via -e LOAD_TEST_SECRET_KEY
+      # to enable rate-limit bypass for load-test VUs.
+      LOAD_TEST_BYPASS_KEY: "k6-load-test-local"
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    profiles:
+      # Only started when explicitly requested:
+      #   docker-compose --profile load-test up -d
+      - load-test

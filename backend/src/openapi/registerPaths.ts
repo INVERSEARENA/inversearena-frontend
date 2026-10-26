@@ -390,6 +390,241 @@ function registerClaimInboxPaths(registry: OpenAPIRegistry): void {
   });
 }
 
+function registerCreatorTemplatePaths(registry: OpenAPIRegistry): void {
+  const TemplateRemediationSchema = z.object({
+    field: z.string(),
+    code: z.string(),
+    message: z.string(),
+  });
+
+  const TemplatePayloadSchema = z.object({
+    stakeAmountMinor: z.string(),
+    assetDecimals: z.number().int(),
+    asset: z.string(),
+    capacity: z.number().int(),
+    roundSpeed: z.string(),
+    roundDurationSeconds: z.number().int(),
+    startDeadlineSeconds: z.number().int().optional(),
+    yieldVault: z.string().optional(),
+    oracle: z.string().optional(),
+    metadata: z.record(z.string(), z.string()).optional(),
+  });
+
+  const TemplateSchema = z.object({
+    id: z.string(),
+    name: z.string(),
+    schemaVersion: z.number().int(),
+    status: z.enum(["active", "archived"]),
+    payload: TemplatePayloadSchema,
+    revision: z.number().int(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+    remediation: z.array(TemplateRemediationSchema),
+    incompatible: z.boolean(),
+  });
+
+  const TemplateListSchema = z.object({
+    items: z.array(TemplateSchema),
+    totalCount: z.number().int(),
+  });
+
+  const commonResponses = {
+    401: {
+      description: "Missing or invalid session",
+      content: { "application/json": { schema: ApiErrorSchema } },
+    },
+    404: {
+      description: "Template not found (also returned for another wallet's template)",
+      content: { "application/json": { schema: ApiErrorSchema } },
+    },
+  };
+
+  registry.registerPath({
+    method: "get",
+    path: "/api/creator/templates",
+    summary: "List the authenticated creator's arena configuration templates",
+    description:
+      "Every template carries its field-level remediation: what is stale against the " +
+      "current protocol bounds, registry lifecycle and deployment capabilities.",
+    security: [{ bearerAuth: [] }],
+    request: {
+      query: z.object({ includeArchived: z.enum(["true", "false"]).optional() }),
+    },
+    responses: {
+      200: {
+        description: "The creator's templates",
+        content: { "application/json": { schema: TemplateListSchema } },
+      },
+      ...commonResponses,
+    },
+  });
+
+  registry.registerPath({
+    method: "post",
+    path: "/api/creator/templates",
+    summary: "Save an arena configuration template",
+    description:
+      "The payload is canonical: the stake amount is in the asset's minor units and the " +
+      "asset and integrations are contract ids. It is validated against the current " +
+      "protocol rules before it is stored; a payload that does not satisfy them is " +
+      "refused with field-level remediation.",
+    security: [{ bearerAuth: [] }],
+    request: {
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              name: z.string().min(1).max(80),
+              payload: TemplatePayloadSchema,
+              schemaVersion: z.number().int().optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      201: {
+        description: "The saved template",
+        content: { "application/json": { schema: TemplateSchema } },
+      },
+      409: {
+        description: "A template with this name already exists",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+      422: {
+        description: "The template does not satisfy the current protocol rules",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+      ...commonResponses,
+    },
+  });
+
+  registry.registerPath({
+    method: "get",
+    path: "/api/creator/templates/{id}",
+    summary: "Read one of the creator's templates",
+    security: [{ bearerAuth: [] }],
+    request: { params: z.object({ id: z.string() }) },
+    responses: {
+      200: {
+        description: "The template",
+        content: { "application/json": { schema: TemplateSchema } },
+      },
+      ...commonResponses,
+    },
+  });
+
+  registry.registerPath({
+    method: "patch",
+    path: "/api/creator/templates/{id}",
+    summary: "Update one of the creator's templates",
+    description:
+      "`expectedRevision` must match the stored revision, so a concurrent edit is " +
+      "refused instead of overwritten.",
+    security: [{ bearerAuth: [] }],
+    request: {
+      params: z.object({ id: z.string() }),
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              name: z.string().min(1).max(80).optional(),
+              payload: TemplatePayloadSchema.optional(),
+              expectedRevision: z.number().int().positive(),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "The updated template",
+        content: { "application/json": { schema: TemplateSchema } },
+      },
+      409: {
+        description: "Revision conflict, or the name is taken",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+      ...commonResponses,
+    },
+  });
+
+  registry.registerPath({
+    method: "post",
+    path: "/api/creator/templates/{id}/clone",
+    summary: "Clone one of the creator's templates",
+    security: [{ bearerAuth: [] }],
+    request: {
+      params: z.object({ id: z.string() }),
+      body: { content: { "application/json": { schema: z.object({ name: z.string().min(1).max(80) }) } } },
+    },
+    responses: {
+      201: {
+        description: "The clone",
+        content: { "application/json": { schema: TemplateSchema } },
+      },
+      409: {
+        description: "A template with this name already exists",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+      ...commonResponses,
+    },
+  });
+
+  registry.registerPath({
+    method: "post",
+    path: "/api/creator/templates/{id}/archive",
+    summary: "Archive or restore one of the creator's templates",
+    security: [{ bearerAuth: [] }],
+    request: {
+      params: z.object({ id: z.string() }),
+      body: { content: { "application/json": { schema: z.object({ archived: z.boolean() }) } } },
+    },
+    responses: {
+      200: {
+        description: "The template",
+        content: { "application/json": { schema: TemplateSchema } },
+      },
+      ...commonResponses,
+    },
+  });
+
+  registry.registerPath({
+    method: "delete",
+    path: "/api/creator/templates/{id}",
+    summary: "Delete one of the creator's templates",
+    security: [{ bearerAuth: [] }],
+    request: { params: z.object({ id: z.string() }) },
+    responses: {
+      204: { description: "Deleted" },
+      ...commonResponses,
+    },
+  });
+
+  registry.registerPath({
+    method: "post",
+    path: "/api/creator/templates/{id}/use",
+    summary: "Prepare a template for the creation form",
+    description:
+      "Returns the payload to prefill the creation form, revalidated against the " +
+      "current rules. Applying it never bypasses the transaction preview or the " +
+      "balance and trustline checks.",
+    security: [{ bearerAuth: [] }],
+    request: { params: z.object({ id: z.string() }) },
+    responses: {
+      200: {
+        description: "The template and its remediation",
+        content: { "application/json": { schema: TemplateSchema } },
+      },
+      422: {
+        description: "The template's schema version is not supported",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+      ...commonResponses,
+    },
+  });
+}
+
 export function generateOpenApiDocument() {
   const registry = new OpenAPIRegistry();
 
@@ -402,6 +637,7 @@ export function generateOpenApiDocument() {
   registerAdminPaths(registry);
   registerOraclePaths(registry);
   registerClaimInboxPaths(registry);
+  registerCreatorTemplatePaths(registry);
 
   const generator = new OpenApiGeneratorV31(registry.definitions);
   return generator.generateDocument({

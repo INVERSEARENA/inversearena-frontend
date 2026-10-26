@@ -72,6 +72,15 @@ pub(crate) enum DataKey {
     ResolutionPlayers,
     /// Top-K leaderboard accumulator a paged resolution builds (#1639).
     ResolutionLeaderboard,
+    /// Set when a settlement-time vault withdrawal failed and the arena's
+    /// principal is still held by the vault (#1631). Cleared by `retry_withdraw`.
+    FundsInVault,
+    /// Ledger timestamp (seconds) at which the protocol admin paused this
+    /// arena (#1629). Absent means "not paused by the protocol"; a pause
+    /// recorded before the role split has no timestamp and is therefore
+    /// treated as already expired, so an unbounded legacy pause can never
+    /// lock player funds.
+    PausedAt,
 }
 
 pub struct ArenaRepository<'a> {
@@ -907,6 +916,29 @@ impl ArenaStorage {
             .unwrap_or(0)
     }
 
+    /// Ledger timestamp at which the protocol admin paused this arena (#1629).
+    ///
+    /// `None` means the arena was never paused by the protocol — including
+    /// the case of a pause recorded before the role split, which carries no
+    /// timestamp and is therefore treated as already expired.
+    pub fn save_paused_at(env: &Env, paused_at: u64) {
+        Self::extend_persistent_ttl(env, &DataKey::PausedAt);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PausedAt, &paused_at);
+    }
+
+    pub fn load_paused_at(env: &Env) -> Option<u64> {
+        Self::extend_persistent_ttl(env, &DataKey::PausedAt);
+        env.storage().persistent().get(&DataKey::PausedAt)
+    }
+
+    pub fn clear_paused_at(env: &Env) {
+        if env.storage().persistent().has(&DataKey::PausedAt) {
+            env.storage().persistent().remove(&DataKey::PausedAt);
+        }
+    }
+
     pub fn save_commitment(env: &Env, player: &Address, round: u32, commitment: &BytesN<32>) {
         // Issue #1612: CommitmentForRound uses temporary storage. Commitments
         // are only valid until the round resolves (~minutes). Using temporary
@@ -1060,6 +1092,24 @@ impl ArenaStorage {
         env.storage()
             .persistent()
             .set(&DataKey::PrizeClaimed, &true);
+    }
+
+    /// Whether a settlement-time vault withdrawal failed and the principal is
+    /// still parked in the vault (#1631). Refunds are blocked while this is set.
+    pub fn load_funds_in_vault(env: &Env) -> bool {
+        Self::extend_persistent_ttl(env, &DataKey::FundsInVault);
+        env.storage()
+            .persistent()
+            .get(&DataKey::FundsInVault)
+            .unwrap_or(false)
+    }
+
+    /// Persist the funds-in-vault flag (#1631).
+    pub fn save_funds_in_vault(env: &Env, in_vault: bool) {
+        Self::extend_persistent_ttl(env, &DataKey::FundsInVault);
+        env.storage()
+            .persistent()
+            .set(&DataKey::FundsInVault, &in_vault);
     }
 
     /// Return whether a state-changing entry point is already executing.
@@ -1353,6 +1403,7 @@ impl ArenaStorage {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::ArenaContract;

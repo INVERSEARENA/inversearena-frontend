@@ -45,6 +45,12 @@ export interface CreateArenaInput {
   joinDeadline: string;
   stakeToken: string;
   name: string;
+  /**
+   * Arena id this deployment is a rematch of (#1572). Optional; only set by
+   * the rematch flow, which pre-fills the new pool from the source arena's
+   * canonical on-chain config.
+   */
+  rematchOf?: string;
 }
 
 export interface ArenaCreationResult {

@@ -111,6 +111,7 @@ async function invalidateTag(tag: string): Promise<void> {
   await redis.del(setKey);
 }
 
+
 export const cache = {
   async get<T>(keyOrDescriptor: string | TypedCacheKeyDescriptor): Promise<T | null> {
     const key = typeof keyOrDescriptor === "string" ? keyOrDescriptor : keyOrDescriptor.key;
@@ -331,7 +332,6 @@ export const cacheKeys = {
   arenaYield: (arenaId: string, limit: number, cursor: string) =>
     CacheKeys.arena.yield(arenaId, limit, cursor).key,
 };
-
 export const arenaDerivedCachePatterns = ["arena:*:stats:*", "arena:*:onchain-snapshot:*"] as const;
 
 export const cacheTTL = {

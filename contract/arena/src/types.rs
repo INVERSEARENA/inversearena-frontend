@@ -117,6 +117,17 @@ impl Choice {
 #[contracttype]
 #[derive(Clone)]
 pub struct ArenaConfig {
+    /// The **host** of this arena: the address that runs the game and
+    /// moderates the lobby.
+    ///
+    /// The field is still called `admin` on chain. Renaming it would change
+    /// the stored map's keys and break every deployed arena, so the role split
+    /// of #1629 keeps the name and redefines what it authorises: the host
+    /// drives the game (`start_round`, lobby moderation, `resolve_round`) and
+    /// hands the role on through `propose_admin` / `accept_admin`, while the
+    /// protocol powers — upgrade, platform fee, pause, force-cancel — belong
+    /// to the protocol admin the factory names. See `contract/ARCHITECTURE.md`
+    /// for the full role matrix.
     pub admin: Address,
     pub stake_token: Address,
     /// Address of the yield-bearing RWA vault adapter contract.
@@ -124,7 +135,8 @@ pub struct ArenaConfig {
     pub entry_fee: i128,
     pub state: GameState,
     /// Emergency circuit breaker. When true, state-mutating gameplay entry
-    /// points reject until the admin unpauses the arena.
+    /// points reject until the protocol admin unpauses the arena, or until
+    /// the pause outlives `MAX_PAUSE_DURATION_SECONDS` (#1629).
     pub paused: bool,
     /// Total number of players that have ever joined this arena. Kept in sync
     /// by `ArenaStorage::add_player` so it can be read without scanning storage.
@@ -283,6 +295,30 @@ pub struct Settlement {
     pub stake_token: Address,
     /// Factory pool id, so the payout contract can confirm with the factory
     /// that this arena is genuine.
+    pub pool_id: u32,
+}
+
+/// The full pool configuration of an arena, returned by `get_pool_config`
+/// (#1572). Field names and types mirror the factory's `PoolConfig` so an
+/// off-chain rematch prefill decodes one shape from either contract.
+///
+/// `round_duration` is `0` until the first round has started — the duration
+/// is recorded at `start_round`, not `initialize`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PoolConfigView {
+    pub stake_token: Address,
+    pub yield_vault: Address,
+    pub entry_fee: i128,
+    pub oracle_contract: Address,
+    pub min_players: u32,
+    pub max_players: u32,
+    pub round_duration: u64,
+    pub start_deadline: u64,
+    /// The factory contract that deployed this arena, so rematch tooling can
+    /// run its token/vault/oracle/host-limit checks without a reverse lookup.
+    pub factory: Address,
+    /// The factory pool id this arena was created under.
     pub pool_id: u32,
 }
 
@@ -519,6 +555,18 @@ pub enum ArenaError {
     /// (#1639) is in progress. Mixing the two would double-apply the round:
     /// drive the existing resolution to completion first.
     ResolutionInProgress = 48,
+
+    /// Returned by `claim_refund` while the arena's principal is still held by
+    /// the yield vault because a cancellation-time withdrawal failed (#1631).
+    /// The arena cannot pay refunds from its own balance until `retry_withdraw`
+    /// succeeds. Appended; existing ordinals unchanged.
+    FundsInVault = 49,
+
+    /// Returned by a protocol-only entry point when the arena cannot resolve a
+    /// protocol admin (#1629). The arena reads its protocol admin from the
+    /// factory that deployed it, so this means the factory is not a contract,
+    /// or predates the `admin` view that #1629 added.
+    NoProtocolAdmin = 50,
 }
 
 /// Stage of the paged `resolve_round` pipeline (#1639).

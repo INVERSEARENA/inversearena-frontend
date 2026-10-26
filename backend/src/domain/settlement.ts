@@ -1,3 +1,4 @@
+import { env } from "../config/env";
 export interface SettlementBreakdown {
   principal: number;
   yieldAmount: number;
@@ -10,8 +11,8 @@ const DEFAULT_PLATFORM_FEE_BPS = 0;
 const STROOP_PRECISION = 1e7;
 
 function platformFeeBps(): number {
-  const env = Number(process.env.PLATFORM_FEE_BPS);
-  return Number.isFinite(env) && env >= 0 && env <= 10_000 ? env : DEFAULT_PLATFORM_FEE_BPS;
+  const configured = Number(env.PLATFORM_FEE_BPS);
+  return Number.isFinite(configured) && configured >= 0 && configured <= 10_000 ? configured : DEFAULT_PLATFORM_FEE_BPS;
 }
 
 /** Pure calculation of the round's principal, yield, fee, and payout. */

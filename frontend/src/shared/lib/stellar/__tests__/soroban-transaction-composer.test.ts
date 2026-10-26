@@ -1,6 +1,7 @@
 import { describe, it, expect } from "@jest/globals";
 import { Account, Contract, type Operation, type xdr } from "@stellar/stellar-sdk";
 import {
+  buildArenaOperationFromPlan,
   buildClaimCallOperation,
   buildJoinCallOperation,
   buildRevealChoiceOperation,
@@ -9,6 +10,7 @@ import {
   roundSpeedToSeconds,
   buildCreatePoolCallOperation,
 } from "../soroban-transaction-composer";
+import { createArenaCommandPlan } from "../arena-command-plan";
 
 const VALID_CONTRACT =
   "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
@@ -65,6 +67,42 @@ describe("soroban-transaction-composer", () => {
     const invoked = invokedFunction(op);
     expect(invoked.functionName().toString()).toBe("claim");
     expect(invoked.args()).toHaveLength(1);
+  });
+
+  it("adapts a domain command plan into an SDK operation", () => {
+    const createdAt = new Date();
+    const plan = createArenaCommandPlan({
+      actor: VALID_PUBLIC_KEY,
+      contractId: VALID_CONTRACT,
+      call: { name: "join_arena" },
+      preconditions: [
+        { name: "player_joined", expected: false },
+        { name: "arena_phase", expected: "Lobby" },
+      ],
+      capabilityRevision: 7,
+      createdAt,
+      expiresInSeconds: 30,
+    });
+    const operation = buildArenaOperationFromPlan(new Contract(VALID_CONTRACT), plan);
+
+    expect(invokedFunction(operation).functionName().toString()).toBe("join_arena");
+    expect(plan.revisions.capabilityStore).toBe(7);
+    expect(plan.expiresAt).toBe(new Date(createdAt.getTime() + 30_000).toISOString());
+  });
+
+  it("refuses to construct SDK operations from an expired plan", () => {
+    const plan = createArenaCommandPlan({
+      actor: VALID_PUBLIC_KEY,
+      contractId: VALID_CONTRACT,
+      call: { name: "join_arena" },
+      preconditions: [],
+      capabilityRevision: 1,
+      createdAt: new Date(Date.now() - 60_000),
+      expiresInSeconds: 1,
+    });
+    expect(() => buildArenaOperationFromPlan(new Contract(VALID_CONTRACT), plan)).toThrow(
+      "Arena command plan has expired",
+    );
   });
 
   it("buildCreatePoolCallOperation returns an invoke operation", () => {

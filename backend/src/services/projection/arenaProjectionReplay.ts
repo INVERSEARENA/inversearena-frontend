@@ -21,6 +21,7 @@ import {
   type ArenaProjectionCheckpointStatus,
 } from "./arenaProjectionCheckpointStore";
 import {
+  compactArenaProjectionState,
   foldArenaProjectionEvents,
   initialArenaProjection,
   type ArenaProjectionState,
@@ -192,7 +193,7 @@ export async function replayArenaProjection(
         throw error;
       }
 
-      state = foldArenaProjectionEvents(state, page.events);
+      state = compactArenaProjectionState(foldArenaProjectionEvents(state, page.events));
       for (const event of page.events) {
         projectionEventsFoldedTotal.inc({ topic: event.topic });
       }

@@ -1,0 +1,19 @@
+[package]
+name = "cost-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Per-entry-point resource cost benchmarks for the Inverse Arena contracts (#1649)"
+
+[dependencies]
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+arena = { path = "../arena" }
+factory = { path = "../factory" }
+oracle = { path = "../oracle" }
+rwa-adapter = { path = "../rwa-adapter" }
+staking = { path = "../staking" }
+
+[lints]
+workspace = true

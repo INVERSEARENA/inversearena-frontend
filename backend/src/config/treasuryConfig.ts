@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { processEnv } from "./env";
 
 /**
  * Versioned protocol treasury configuration (#1511).
@@ -41,7 +42,7 @@ export interface TreasuryConfig {
   finalityGraceSeconds: number;
 }
 
-export function getTreasuryConfig(env: NodeJS.ProcessEnv = process.env): TreasuryConfig {
+export function getTreasuryConfig(env: NodeJS.ProcessEnv = processEnv): TreasuryConfig {
   const parsed = TreasuryEnvSchema.parse({
     TREASURY_DESTINATION: env.TREASURY_DESTINATION,
     TREASURY_FINALITY_GRACE_SECONDS: env.TREASURY_FINALITY_GRACE_SECONDS,

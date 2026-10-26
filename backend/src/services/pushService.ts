@@ -3,6 +3,7 @@ import type { PrismaClient } from "@prisma/client";
 import jwt from "jsonwebtoken";
 import { NotificationPreferencesService } from "./notificationPreferencesService";
 import { logger } from "../utils/logger";
+import { env } from "../config/env";
 
 /**
  * Web Push delivery for time-critical round phase alerts (#1571).
@@ -57,7 +58,8 @@ export type PushAlertType =
   | "commit-closing"
   | "reveal-open"
   | "you-won"
-  | "refund-available";
+  | "refund-available"
+  | "rematch";
 
 export interface SchedulePushesInput {
   arenaId: string;
@@ -99,15 +101,15 @@ interface PushServiceDeps {
 const ENCRYPTION_PREFIX = "v1";
 
 function vapidConfigFromEnv(): PushServiceDeps["vapid"] {
-  const publicKey = process.env.VAPID_PUBLIC_KEY;
-  const privateKey = process.env.VAPID_PRIVATE_KEY;
-  const subject = process.env.VAPID_SUBJECT;
+  const publicKey = env.VAPID_PUBLIC_KEY;
+  const privateKey = env.VAPID_PRIVATE_KEY;
+  const subject = env.VAPID_SUBJECT;
   if (!publicKey || !privateKey || !subject) return undefined;
   return { publicKey, privateKey, subject };
 }
 
 function encryptionKeyFromEnv(): Buffer | undefined {
-  const raw = process.env.PUSH_ENCRYPTION_KEY;
+  const raw = env.PUSH_ENCRYPTION_KEY;
   if (!raw) return undefined;
   if (!/^[0-9a-fA-F]{64}$/.test(raw)) {
     throw new PushNotConfiguredError(
@@ -220,6 +222,16 @@ export class PushService {
     this.validateSubscriptionPayload(payload);
     const userAgent =
       payload.userAgent !== undefined ? payload.userAgent.slice(0, 512) : undefined;
+    // Never silently transfer an existing browser endpoint to another wallet.
+    // An endpoint is bearer-like delivery authority; the previous owner must
+    // explicitly revoke it before a different wallet can subscribe it.
+    const existing = await this.prisma.pushSubscription.findUnique({
+      where: { endpoint: payload.endpoint },
+      select: { userId: true },
+    });
+    if (existing && existing.userId !== userId) {
+      throw new Error("PUSH_ENDPOINT_OWNED_BY_ANOTHER_WALLET");
+    }
     const record = await this.prisma.pushSubscription.upsert({
       where: { endpoint: payload.endpoint },
       create: {
@@ -402,10 +414,13 @@ export class PushService {
     void vapid;
 
     const dedupeKey = this.dedupeKey(input.arenaId, input.roundNumber, input.type);
+    // A rematch invite (#1572) is recorded under its own preference type;
+    // every other alert is a round alert.
+    const prefType = input.type === "rematch" ? "rematch" : "round";
 
     for (const userId of new Set(input.userIds)) {
       try {
-        const allowed = await this.prefs.shouldNotify(userId, "round", "push");
+        const allowed = await this.prefs.shouldNotify(userId, prefType, "push");
         if (!allowed) {
           result.skipped += 1;
           continue;
@@ -414,7 +429,7 @@ export class PushService {
           result.skipped += 1;
           continue;
         }
-        const deliveryId = await this.prefs.recordDelivery(userId, "round", "push", dedupeKey);
+        const deliveryId = await this.prefs.recordDelivery(userId, prefType, "push", dedupeKey);
 
         const subscriptions = await this.prisma.pushSubscription.findMany({
           where: { userId },

@@ -3,6 +3,7 @@ import { Router, type RequestHandler } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../middleware/validate";
 import { cacheMiddleware } from "../middleware/cache";
+import { publicCache } from "../middleware/cachePolicy";
 import { CacheKeys, cacheKeys, cacheTTL } from "../cache/cacheService";
 import { subscribeArena } from "../cache/arenaPoller";
 import { prisma } from "../db/prisma";
@@ -15,7 +16,11 @@ import { RoundRepository } from "../repositories/roundRepository";
 import { ParticipantEligibilityService } from "../services/participantEligibilityService";
 import { apiError } from "../utils/apiError";
 import type { ArenaParticipant } from "../types/arena";
-import { readOnChainPlayerStatus, readOnChainPlayers } from "../services/onChainReader";
+import {
+  readOnChainPlayerCount,
+  readOnChainPlayerStatus,
+  readOnChainPlayers,
+} from "../services/onChainReader";
 import { hasReadValue } from "../types/onChainRead";
 import { isAuthorizedAdminWallet } from "../services/walletRoleService";
 import { createRateLimitMiddleware, getSyncPlayersRateLimitConfig } from "../middleware/rateLimit";
@@ -35,6 +40,11 @@ import {
   EvidenceNotParticipantError,
 } from "../services/disputeEvidenceService";
 import { CancellationRecoveryService } from "../services/cancellationRecoveryService";
+import {
+  RematchService,
+  RematchArenaNotFoundError,
+  RematchConfigUnavailableError,
+} from "../services/rematchService";
 import { decodeCursorInput, encodeKeysetCursor } from "../utils/keysetPagination";
 
 const PaginationSchema = z.object({
@@ -67,6 +77,8 @@ const CreateArenaSchema = z.object({
   // The backend verifies this on-chain and reads the real arena address from
   // it — it never generates a contract address itself.
   txHash: z.string().trim().regex(/^[0-9a-f]{64}$/i, "Invalid transaction hash"),
+  // Optional source arena for a rematch pool (#1572).
+  rematchOf: z.string().trim().regex(/^C[A-Z2-7]{55}$/, "Invalid rematch source arena id").optional(),
 });
 
 function formatRound(round: {
@@ -143,8 +155,13 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   const arenaService = new ArenaService(prisma);
   const arenaStatsService = new ArenaStatsService(prisma);
   const arenaYieldService = new ArenaYieldService(prisma);
+  const rematchService = new RematchService(prisma);
   const roundRepository = new RoundRepository(prisma);
-  const eligibilityService = new ParticipantEligibilityService(prisma, readOnChainPlayerStatus);
+  const eligibilityService = new ParticipantEligibilityService(
+    prisma,
+    readOnChainPlayerStatus,
+    readOnChainPlayerCount,
+  );
   const sseConnectionLimiter = createSseConnectionLimitMiddleware();
   // Issue #1411
   const stakeService = new ActiveStakeLimitsService(prisma);
@@ -234,6 +251,7 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
    */
   router.get(
     "/",
+    publicCache({ maxAge: 30, staleWhileRevalidate: 120 }),
     cacheMiddleware((req) => {
       const filter = (req.query.filter as string) || "all";
       const search = (req.query.q as string) || "";
@@ -347,6 +365,7 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
    */
   router.get(
     "/:id/stats",
+    publicCache({ maxAge: 15, staleWhileRevalidate: 60 }),
     cacheMiddleware((req) => CacheKeys.arena.stats(req.params.id ?? ""), cacheTTL.ARENA_STATS),
     asyncHandler(async (req, res) => {
       const id = req.params.id;
@@ -367,6 +386,43 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
   );
 
   /**
+   * GET /api/arenas/:id/rematch-config
+   *
+   * Canonical rematch prefill for a finished arena (#1572). The config is
+   * derived from the arena's own `get_pool_config` chain read and the
+   * factory's current policy views — never from cached UI state. Returns
+   * `available: false` with a `blockedReason` when a rematch is not possible
+   * (arena still running, delisted token/vault/oracle, host at the active-pool
+   * limit) rather than failing the request.
+   */
+  router.get(
+    "/:id/rematch-config",
+    authMiddleware,
+    asyncHandler(async (req, res) => {
+      const id = req.params.id;
+      if (!id) {
+        throw apiError(400, "INVALID_ARENA_ID", "Arena id is required");
+      }
+
+      try {
+        const rematchConfig = await rematchService.getRematchConfig(
+          id,
+          req.user?.walletAddress ?? null,
+        );
+        res.json(rematchConfig);
+      } catch (error) {
+        if (error instanceof RematchArenaNotFoundError) {
+          throw apiError(404, "ARENA_NOT_FOUND", error.message);
+        }
+        if (error instanceof RematchConfigUnavailableError) {
+          throw apiError(503, "REMATCH_CONFIG_UNAVAILABLE", error.message);
+        }
+        throw error;
+      }
+    }),
+  );
+
+  /**
    * GET /api/arenas/:id/yield
    * Returns the per-round yield time-series for an arena (#1568), sourced
    * from indexed on-chain resolutions (round metadata). Ordered by round
@@ -377,6 +433,7 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
    */
   router.get(
     "/:id/yield",
+    publicCache({ maxAge: 60, staleWhileRevalidate: 300 }),
     cacheMiddleware(
       (req) =>
         CacheKeys.arena.yield(
@@ -495,7 +552,11 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
       const latestRound = arena.rounds[0] ?? null;
       const metadata = normalizeRoundMetadata(latestRound?.metadata);
       const choices = metadata.playerChoices ?? [];
-      const userIds = choices.map((choice) => choice.userId);
+      // Page the indexed choice list before resolving users. This keeps the
+      // query and response bounded when an arena has a large roster.
+      const total = choices.length;
+      const pageChoices = choices.slice(cursor, cursor + limit);
+      const userIds = pageChoices.map((choice) => choice.userId);
       const users =
         userIds.length > 0
           ? await prisma.user.findMany({
@@ -508,7 +569,7 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
         latestRound?.eliminationLogs.map((entry) => entry.userId) ?? [],
       );
 
-      const participants: ArenaParticipant[] = choices.map((choice, index) => {
+      const participants: ArenaParticipant[] = pageChoices.map((choice, index) => {
         const user = userById.get(choice.userId);
         const status: ArenaParticipant["status"] = eliminatedUsers.has(choice.userId)
           ? "ELIMINATED"
@@ -529,9 +590,6 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
           joinedAt: (latestRound?.createdAt ?? arena.createdAt).toISOString(),
         };
       });
-
-      const total = participants.length;
-      const items = participants.slice(cursor, cursor + limit);
 
       res.json({
         arenaId: id,
@@ -569,15 +627,37 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
         throw apiError(401, "UNAUTHORIZED", "Wallet address required");
       }
 
-      const eligibility = await eligibilityService.checkEligibility(id, playerWallet, balance, balanceAsset);
+      const eligibility = await eligibilityService.checkFreshEligibility(id, playerWallet, balance, balanceAsset);
 
       res.status(eligibility.isEligible ? 200 : 403).json({
         isEligible: eligibility.isEligible,
         errors: eligibility.errors,
         warnings: eligibility.warnings,
+        snapshot: eligibility.snapshot,
         metadata: eligibility.metadata,
         requestId: randomUUID(),
       });
+    }),
+  );
+
+  router.get(
+    "/:id/eligibility-snapshot/:snapshotId",
+    authMiddleware,
+    asyncHandler(async (req, res) => {
+      const arenaId = req.params.id;
+      const snapshotId = req.params.snapshotId;
+      const playerWallet = req.user?.walletAddress;
+      if (!arenaId || !snapshotId) {
+        throw apiError(400, "INVALID_ELIGIBILITY_SNAPSHOT", "Arena and snapshot IDs are required");
+      }
+      if (!playerWallet) {
+        throw apiError(401, "UNAUTHORIZED", "Wallet address required");
+      }
+      const snapshot = eligibilityService.getSnapshot(snapshotId, arenaId, playerWallet);
+      if (!snapshot) {
+        throw apiError(404, "ELIGIBILITY_SNAPSHOT_EXPIRED", "Eligibility snapshot is missing or expired");
+      }
+      res.json(snapshot);
     }),
   );
 

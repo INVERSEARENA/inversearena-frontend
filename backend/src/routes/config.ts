@@ -1,9 +1,14 @@
 import { Router, type RequestHandler } from "express";
 import { asyncHandler } from "../middleware/validate";
+import { publicCache } from "../middleware/cachePolicy";
 import { getStellarConfig } from "../config/stellarConfig";
 import { apiError } from "../utils/apiError";
 import { z } from "zod";
 import { buildCompatibilityManifest } from "../services/compatibilityManifest";
+import {
+  readRegistryLifecycle,
+  readRegistryRevision,
+} from "../services/registryLifecycle";
 import type { Request, Response } from "express";
 
 interface ProtocolConfig {
@@ -60,11 +65,43 @@ const CompatibilityQuerySchema = z.object({
 });
 
 /**
+ * The integrations whose lifecycle the caller wants to know about (#1688).
+ * At least one is required — the endpoint answers a question about specific
+ * integrations, not about the whole registry.
+ */
+const RegistryQuerySchema = z
+  .object({
+    token: z.string().regex(/^C[A-Z2-7]{55}$/).optional(),
+    vault: z.string().regex(/^C[A-Z2-7]{55}$/).optional(),
+    oracle: z.string().regex(/^C[A-Z2-7]{55}$/).optional(),
+  })
+  .refine((query) => Boolean(query.token || query.vault || query.oracle), {
+    message: "at least one of token, vault or oracle is required",
+  });
+
+/**
  * A manifest may be cached briefly, but a client can never act on an old one
  * unknowingly: every response carries `configRevision` (the ledger it was
  * derived at) and clients refuse to replace a manifest with a lower revision.
+ *
+ * #1626 — kept as the documented reference value; the route now emits the
+ * equivalent through `publicCache` so the personalized-request guard applies
+ * uniformly.
  */
-const COMPATIBILITY_CACHE_CONTROL = "public, max-age=15, must-revalidate";
+export const COMPATIBILITY_CACHE_CONTROL = "public, max-age=15, must-revalidate";
+
+/**
+ * #1626 — the protocol config is identical for every anonymous caller and only
+ * changes when the deployment's Soroban config does, so it is safe to serve
+ * from a shared cache with background revalidation. `max-age` is short (the
+ * endpoint already reports a fresh ledger each call) while the stale window
+ * lets the edge absorb bursts without touching the origin.
+ */
+const PROTOCOL_CONFIG_CACHE = {
+  maxAge: 15,
+  staleWhileRevalidate: 120,
+  staleIfError: 600,
+} as const;
 
 export function createConfigRouter(
   deps: { buildManifest?: typeof buildCompatibilityManifest } = {},
@@ -85,6 +122,7 @@ export function createConfigRouter(
    */
   router.get(
     "/protocol",
+    publicCache(PROTOCOL_CONFIG_CACHE),
     asyncHandler(async (req: Request, res: Response) => {
       try {
         const stellarConfig = getStellarConfig();
@@ -122,6 +160,7 @@ export function createConfigRouter(
    */
   router.get(
     "/compatibility",
+    publicCache(PROTOCOL_CONFIG_CACHE),
     asyncHandler(async (req: Request, res: Response) => {
       const parsed = CompatibilityQuerySchema.safeParse({ arenaId: req.query.arenaId });
       if (!parsed.success) {
@@ -130,12 +169,60 @@ export function createConfigRouter(
 
       try {
         const manifest = await buildManifest(parsed.data);
-        res.setHeader("Cache-Control", COMPATIBILITY_CACHE_CONTROL);
         res.json(manifest);
       } catch {
         // The manifest carries no partial answer: without a ledger there is no revision to stamp.
         throw apiError(503, "CONFIG_FETCH_ERROR", "Failed to build compatibility manifest");
       }
+    }),
+  );
+
+  /**
+   * GET /api/config/registry?token=C...&vault=C...&oracle=C...
+   * Returns the deprecation lifecycle of the requested integrations (#1688)
+   * together with the registry revision the answer was read at.
+   *
+   * The revision is the cache-invalidation key: it moves on every lifecycle
+   * change, so a client holding a snapshot with an older revision knows it
+   * is stale without replaying events.
+   *
+   * An integration the factory has no record of reads as `Active` — the same
+   * rule the contract applies — so a deployment that predates the lifecycle
+   * never looks like a deprecation.
+   */
+  router.get(
+    "/registry",
+    asyncHandler(async (req: Request, res: Response) => {
+      const parsed = RegistryQuerySchema.safeParse({
+        token: req.query.token,
+        vault: req.query.vault,
+        oracle: req.query.oracle,
+      });
+      if (!parsed.success) {
+        throw apiError(400, "INVALID_REGISTRY_QUERY", parsed.error.issues[0]?.message ?? "invalid query");
+      }
+
+      const snapshot = await readRegistryLifecycle(parsed.data);
+      res.setHeader("Cache-Control", COMPATIBILITY_CACHE_CONTROL);
+      res.json({
+        revision: snapshot.revision,
+        available: snapshot.available,
+        entries: snapshot.entries,
+      });
+    }),
+  );
+
+  /**
+   * GET /api/config/registry/revision
+   * The registry revision alone — the cheap poll a client uses to decide
+   * whether its cached lifecycle snapshot is still current (#1688).
+   */
+  router.get(
+    "/registry/revision",
+    asyncHandler(async (_req: Request, res: Response) => {
+      const revision = await readRegistryRevision();
+      res.setHeader("Cache-Control", COMPATIBILITY_CACHE_CONTROL);
+      res.json({ revision });
     }),
   );
 

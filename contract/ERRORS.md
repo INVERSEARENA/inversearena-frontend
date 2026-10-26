@@ -85,7 +85,12 @@ A transaction invokes one contract, which may call others (the arena calls the f
 | 42 | `NoStartDeadline` | Returned by `cancel_unstarted` when this arena has no start deadline configured (#1579). Arenas deployed by a factory always have one; the explicit error keeps an unconfigured arena from being cancelled under the permissionless path. |
 | 43 | `VaultWithdrawFailed` | Returned by `leave_arena` or `ban_player` when the vault cannot release the player's entry fee (#1580, #1581). The whole call reverts, so the player is neither removed nor refunded partially. |
 | 44 | `GloballyPaused` | Returned by fund-moving entry points while the protocol admin has set the factory-wide emergency pause (#1583). Distinct from `ContractPaused`, which is this arena's own host-controlled pause. |
-| 45 | `ArenaAlreadyHasPlayers` | Returned by `configure_player_limits` once at least one player has joined (#1640). Players joined under advertised limits, so those limits are frozen: a host cannot later lower the minimum to start a smaller field than promised, nor the maximum below the count already present. |
+| 45 | `ArenaAlreadyHasPlayers` | Returned by `configure_player_limits` once at least one player has joined (#1640). Players joined under advertised limits, so those limits are frozen for them: a host must not lower the minimum to start with a smaller field than promised, nor the maximum below the count already present. |
+| 46 | `ResolutionCursorMismatch` | Returned by `resolve_round_page` when `start` is ahead of the persisted cursor (#1639). Tallying or applying out of order would silently skip players, so the gap is refused; replaying a page at or behind the cursor is a no-op instead. |
+| 47 | `ResolutionIncomplete` | Returned by `finalize_resolution` before every resolution page has been applied (#1639), or when no paged resolution has been started. |
+| 48 | `ResolutionInProgress` | Returned by the one-shot `resolve_round` while a paged resolution (#1639) is in progress. Mixing the two would double-apply the round: drive the existing resolution to completion first. |
+| 49 | `FundsInVault` | Returned by `claim_refund` while the arena's principal is still held by the yield vault because a cancellation-time withdrawal failed (#1631). The arena cannot pay refunds from its own balance until `retry_withdraw` succeeds. Appended; existing ordinals unchanged. |
+| 50 | `NoProtocolAdmin` | Returned by a protocol-only entry point when the arena cannot resolve a protocol admin (#1629). The arena reads its protocol admin from the factory that deployed it, so this means the factory is not a contract, or predates the `admin` view that #1629 added. |
 
 ### `factory` — `FactoryError`
 
@@ -112,6 +117,11 @@ A transaction invokes one contract, which may call others (the arena calls the f
 | 19 | `NoPendingAdmin` | — |
 | 20 | `ArithmeticOverflow` | Scaling `min_stake` to a token's decimals overflowed i128 (#1361). |
 | 21 | `InvalidStartDeadline` | `PoolConfig.start_deadline` was outside the allowed window relative to the creation ledger (#1579). |
+| 22 | `VaultTokenMismatch` | The vault's stake token differs from `PoolConfig.stake_token`, or from the token the vault was approved with — e.g. the vault was upgraded to a different asset after approval (#1634). |
+| 23 | `OracleMismatch` | `PoolConfig.oracle_contract` is not the oracle the vault accrues yield from, so the arena's yield snapshots would disagree with what the vault actually pays (#1634). |
+| 24 | `DeprecatedIntegration` | The registry entry exists but is deprecated or disabled, so it is not accepted for a new arena (#1688). Existing arenas that already use it are unaffected. |
+| 25 | `OutstandingLiabilities` | The integration still carries liabilities — indexed pools that are still live, or pools created before the registry tracked them — so it cannot be disabled yet (#1688). The emergency removal path (`remove_approved_vault` and friends) is unaffected by this guard. |
+| 26 | `IntegrationNotApproved` | The entry is not approved, so it cannot be reactivated (#1688). |
 
 ### `fee_router` — `FeeRouterError`
 
@@ -138,6 +148,10 @@ A transaction invokes one contract, which may call others (the arena calls the f
 | 4 | `NoPendingAdmin` | — |
 | 5 | `DeltaTooLarge` | `\|new_rate - current_rate\| > max_delta_bps`. |
 | 6 | `DelayTooLong` | `activation_delay` (or a scheduled value) exceeds the hard bound. |
+| 7 | `NotReporter` | `submit_rate` called by an address that is not in the reporter set (#1578). |
+| 8 | `ReporterExists` | `add_reporter` called with an address already in the set (#1578). |
+| 9 | `ReporterLimitReached` | `add_reporter` would grow the set beyond `MAX_REPORTERS` (#1578). |
+| 10 | `InvalidQuorum` | `set_quorum` with `quorum == 0` or above `MAX_REPORTERS` (#1578). |
 
 ### `payout` — `PayoutError`
 
@@ -146,15 +160,23 @@ A transaction invokes one contract, which may call others (the arena calls the f
 | 1 | `NotInitialised` | The contract has not been initialised with an admin and token. |
 | 2 | `AlreadyInitialised` | `initialize` was called on an already-initialised contract. |
 | 3 | `Unauthorized` | Caller is not the configured admin. |
-| 4 | `AlreadyPaid` | A payout with this id has already been executed (idempotency guard). |
+| 4 | `AlreadyPaid` | This `(arena, recipient)` pair has already been paid (idempotency guard). |
 | 5 | `InvalidAmount` | A payout amount was zero or negative. |
-| 6 | `EmptyBatch` | A batch payout was submitted with no recipients. |
+| 6 | `EmptyBatch` | A batch payout was submitted with no entries. |
 | 8 | `InsufficientBalance` | Contract token balance is insufficient for the payout total. |
-| 9 | `DuplicateRecipient` | A batch contains duplicate recipient addresses. |
-| 10 | `BatchTooLarge` | Batch recipient count exceeds the configured maximum. |
+| 9 | `DuplicateRecipient` | A batch pays the same `(arena, recipient)` pair twice. |
+| 10 | `BatchTooLarge` | Batch entry count exceeds the configured maximum. |
 | 11 | `NoPendingAdmin` | No pending admin transfer has been proposed. |
-| 12 | `DestinationMismatch` | `distribute_winnings` was called with a destination that does not match the address pre-registered by `register_destination`. Issue #1450 — payout destination binding. |
-| 13 | `DestinationNotRegistered` | `distribute_winnings` was called for a payout_id that has no registered destination. Call `register_destination` first. Issue #1450 — payout destination binding. |
+| 14 | `ArenaSettlementUnavailable` | The arena does not answer `get_settlement` — it is not an arena, or it runs WASM older than #1632. Upgrade the arena before paying out (#1632). |
+| 15 | `UnknownArena` | The factory has no record of this arena at the pool id it reports, so it was not deployed by the protocol (#1632). |
+| 16 | `ArenaNotSettled` | The arena has not finished with a single winner (#1632). |
+| 17 | `NotArenaWinner` | The recipient is not the arena's recorded winner (#1632). |
+| 18 | `ExceedsEntitlement` | The amount exceeds the prize the arena records for its winner (#1632). |
+| 19 | `DailyCapExceeded` | Paying this would push today's outflow over the daily cap (#1632). |
+| 20 | `TokenMismatch` | The arena's prize is denominated in a different token from the one this contract pays out (#1632). |
+| 21 | `NoPendingCap` | `apply_daily_cap` was called with no cap increase pending (#1632). |
+| 22 | `CapTimelockPending` | The cap increase's timelock has not elapsed yet (#1632). |
+| 23 | `InvalidCap` | A daily cap must be positive (#1632). |
 
 ### `rwa_adapter` — `RwaError`
 

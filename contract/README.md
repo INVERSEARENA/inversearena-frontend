@@ -54,6 +54,17 @@ cargo build --target wasm32-unknown-unknown --release
 cargo test --workspace
 ```
 
+Several tests embed compiled WASM, so run `cargo build --workspace --target wasm32v1-none --release` first.
+
+### Coverage and Cost Benchmarks
+
+CI gates per-crate line and branch coverage (#1651) and per-entry-point resource costs (#1649):
+
+```bash
+make contracts-coverage     # from the repo root; see docs/COVERAGE.md
+make contracts-cost-bench   # see docs/COST_BENCHMARKS.md
+```
+
 ### ABI Snapshots
 
 ABI snapshots live at `<contract>/abi_snapshot.json` and are generated from compiled WASM artifacts.

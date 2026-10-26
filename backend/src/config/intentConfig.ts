@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { processEnv } from "./env";
 
 const EnvSchema = z.object({
   // How long an intent stays valid after creation before the service marks
@@ -22,8 +23,8 @@ export type IntentConfig = ReturnType<typeof getIntentConfig>;
 
 export function getIntentConfig() {
   const parsed = EnvSchema.parse({
-    INTENT_TTL_MS: process.env.INTENT_TTL_MS,
-    INTENT_MAX_SIGN_ATTEMPTS: process.env.INTENT_MAX_SIGN_ATTEMPTS,
+    INTENT_TTL_MS: processEnv.INTENT_TTL_MS,
+    INTENT_MAX_SIGN_ATTEMPTS: processEnv.INTENT_MAX_SIGN_ATTEMPTS,
   });
 
   return {

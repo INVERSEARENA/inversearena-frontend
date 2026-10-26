@@ -45,20 +45,17 @@ import {
   getSubmitRetryConfig,
 } from "@/shared/lib/stellar/stellar-fee-estimator";
 import {
-  buildClaimCallOperation,
+  buildArenaOperationFromPlan,
   buildCreatePoolCallOperation,
   buildGetArenaStateCallOperation,
   buildGetFullStateCallOperation,
   buildGetPlayerStatusCallOperation,
   buildGetVaultConfigCallOperation,
-  buildJoinCallOperation,
   buildLeaveArenaCallOperation,
-  buildRevealChoiceOperation,
-  buildStakeCallOperation,
-  buildSubmitCommitmentOperation,
-  buildUnstakeCallOperation,
   composeUnsignedTransaction,
 } from "@/shared/lib/stellar/soroban-transaction-composer";
+import { createArenaCommandPlan } from "@/shared/lib/stellar/arena-command-plan";
+import { compatibilityStore } from "@/shared/lib/stellar/compatibility-store";
 import { CreatePoolParamsSchema } from "@/shared/lib/stellar/stellar-transaction-schemas";
 import type { ArenaStateFromContract, PlayerStatus } from "@/shared/lib/stellar/contract-state";
 import {
@@ -237,11 +234,16 @@ export async function buildStakeProtocolTransaction(
     const stakingContract = new ContractClientFactory(SOROBAN_RPC_URL).createContract(STAKING_CONTRACT_ID,);
 
     const amountStroops = BigInt(Math.floor(validatedAmount * 10_000_000));
-    const operation = buildStakeCallOperation(
-      stakingContract,
-      amountStroops,
-      validatedPublicKey,
-    );
+    const plan = createArenaCommandPlan({
+      actor: validatedPublicKey,
+      contractId: STAKING_CONTRACT_ID,
+      call: { name: "stake", amountAtomic: amountStroops.toString() },
+      preconditions: [{ name: "contract_configured", expected: true }],
+      amounts: [{ asset: "XLM", atomicUnits: amountStroops.toString() }],
+      capabilityRevision: compatibilityStore.getVersion(),
+      expiresInSeconds: getStandardTxTimeoutSeconds(),
+    });
+    const operation = buildArenaOperationFromPlan(stakingContract, plan);
 
     const builtTx = composeUnsignedTransaction(account, {
       fee: getDefaultInvokeBaseFee(),
@@ -349,11 +351,16 @@ export async function buildUnstakeProtocolTransaction(
     const stakingContract = new ContractClientFactory(SOROBAN_RPC_URL).createContract(STAKING_CONTRACT_ID,);
 
     const sharesStroops = BigInt(Math.floor(validatedShares * 10_000_000));
-    const operation = buildUnstakeCallOperation(
-      stakingContract,
-      sharesStroops,
-      validatedPublicKey,
-    );
+    const plan = createArenaCommandPlan({
+      actor: validatedPublicKey,
+      contractId: STAKING_CONTRACT_ID,
+      call: { name: "unstake", amountAtomic: sharesStroops.toString() },
+      preconditions: [{ name: "contract_configured", expected: true }],
+      amounts: [{ asset: "staking_shares", atomicUnits: sharesStroops.toString() }],
+      capabilityRevision: compatibilityStore.getVersion(),
+      expiresInSeconds: getStandardTxTimeoutSeconds(),
+    });
+    const operation = buildArenaOperationFromPlan(stakingContract, plan);
 
     const builtTx = composeUnsignedTransaction(account, {
       fee: getDefaultInvokeBaseFee(),
@@ -386,7 +393,19 @@ export async function buildJoinArenaTransaction(
 
     const account = await getAccount(validatedPublicKey, FN);
     const poolContract = new ContractClientFactory(SOROBAN_RPC_URL).createContract(validatedPoolId);
-    const operation = buildJoinCallOperation(poolContract, validatedPublicKey);
+    const plan = createArenaCommandPlan({
+      actor: validatedPublicKey,
+      contractId: validatedPoolId,
+      call: { name: "join_arena" },
+      preconditions: [
+        { name: "capability_supported", expected: true },
+        { name: "player_joined", expected: false },
+        { name: "arena_phase", expected: "Lobby" },
+      ],
+      capabilityRevision: compatibilityStore.getVersion(),
+      expiresInSeconds: getStandardTxTimeoutSeconds(),
+    });
+    const operation = buildArenaOperationFromPlan(poolContract, plan);
 
     return composeUnsignedTransaction(account, {
       fee: getJoinArenaFee(),
@@ -450,7 +469,11 @@ export async function buildSubmitCommitmentTransaction(
     assertCapability("commit", validatedPoolId, FN);
 
     const salt = generateSalt();
-    const commitment = await computeCommitment(validatedChoice, salt);
+    const commitment = await computeCommitment(validatedChoice, salt, {
+      arenaId: validatedPoolId,
+      round: validatedRoundNumber,
+      player: validatedPublicKey,
+    });
     saveCommitment(validatedPoolId, validatedRoundNumber, validatedPublicKey, {
       choice: validatedChoice,
       salt,
@@ -458,11 +481,23 @@ export async function buildSubmitCommitmentTransaction(
 
     const account = await getAccount(validatedPublicKey, FN);
     const poolContract = new ContractClientFactory(SOROBAN_RPC_URL).createContract(validatedPoolId);
-    const operation = buildSubmitCommitmentOperation(
-      poolContract,
-      validatedPublicKey,
-      commitment,
-    );
+    const plan = createArenaCommandPlan({
+      actor: validatedPublicKey,
+      contractId: validatedPoolId,
+      call: {
+        name: "submit_commitment",
+        commitmentHex: Array.from(commitment, (byte) => byte.toString(16).padStart(2, "0")).join(""),
+        round: validatedRoundNumber,
+      },
+      preconditions: [
+        { name: "capability_supported", expected: true },
+        { name: "player_joined", expected: true },
+        { name: "arena_phase", expected: "Commit" },
+      ],
+      capabilityRevision: compatibilityStore.getVersion(),
+      expiresInSeconds: getStandardTxTimeoutSeconds(),
+    });
+    const operation = buildArenaOperationFromPlan(poolContract, plan);
 
     return composeUnsignedTransaction(account, {
       fee: getDefaultInvokeBaseFee(),
@@ -510,12 +545,25 @@ export async function buildRevealChoiceTransaction(
 
     const account = await getAccount(validatedPublicKey, FN);
     const poolContract = new ContractClientFactory(SOROBAN_RPC_URL).createContract(validatedPoolId);
-    const operation = buildRevealChoiceOperation(
-      poolContract,
-      validatedPublicKey,
-      stored.choice,
-      stored.salt,
-    );
+    const plan = createArenaCommandPlan({
+      actor: validatedPublicKey,
+      contractId: validatedPoolId,
+      call: {
+        name: "reveal_choice",
+        choice: stored.choice,
+        saltHex: Array.from(stored.salt, (byte) => byte.toString(16).padStart(2, "0")).join(""),
+        round: validatedRoundNumber,
+      },
+      preconditions: [
+        { name: "capability_supported", expected: true },
+        { name: "player_joined", expected: true },
+        { name: "arena_phase", expected: "Reveal" },
+        { name: "commitment_available", expected: true },
+      ],
+      capabilityRevision: compatibilityStore.getVersion(),
+      expiresInSeconds: getStandardTxTimeoutSeconds(),
+    });
+    const operation = buildArenaOperationFromPlan(poolContract, plan);
 
     return composeUnsignedTransaction(account, {
       fee: getDefaultInvokeBaseFee(),
@@ -563,7 +611,18 @@ export async function buildClaimWinningsTransaction(
 
     const account = await getAccount(validatedPublicKey, FN);
     const poolContract = new ContractClientFactory(SOROBAN_RPC_URL).createContract(validatedPoolId);
-    const operation = buildClaimCallOperation(poolContract, validatedPublicKey);
+    const plan = createArenaCommandPlan({
+      actor: validatedPublicKey,
+      contractId: validatedPoolId,
+      call: { name: "claim" },
+      preconditions: [
+        { name: "capability_supported", expected: true },
+        { name: "winner", expected: true },
+      ],
+      capabilityRevision: compatibilityStore.getVersion(),
+      expiresInSeconds: getShortTxTimeoutSeconds(),
+    });
+    const operation = buildArenaOperationFromPlan(poolContract, plan);
 
     return composeUnsignedTransaction(account, {
       fee: getDefaultInvokeBaseFee(),

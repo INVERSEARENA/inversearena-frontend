@@ -14,6 +14,12 @@ pub struct RwaConfig {
     pub stake_token: Address,
     pub oracle: Address,
     pub total_deposited: i128,
+    /// Total principal deposited across all positions, tracked separately from
+    /// yield reserves (#1628).
+    pub principal_total: i128,
+    /// Yield reserve funded by the operator/strategy; only this can pay accrued
+    /// yield. Never drawn from other depositors' principal (#1628).
+    pub yield_reserve: i128,
 }
 
 /// Public, read-only view of the settings a vault was initialised with
@@ -64,4 +70,6 @@ pub enum RwaError {
     NoPendingAdmin = 9,
     /// Returned when a non-admin caller attempts to propose a new admin.
     NotAdmin = 10,
+    /// Only the admin may fund the yield reserve (#1628).
+    NotAuthorized = 11,
 }

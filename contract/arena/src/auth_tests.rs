@@ -17,7 +17,7 @@ extern crate std;
 mod auth;
 
 use crate::types::Choice;
-use crate::{ArenaContract, ArenaContractClient};
+use crate::{ArenaContract, ArenaContractClient, EXPIRY_GRACE_SECONDS};
 use ::factory::types::{ArenaStatus, PoolConfig};
 use ::factory::{FactoryContract, FactoryContractClient};
 use ::oracle::{OracleContract, OracleContractClient};
@@ -35,7 +35,13 @@ struct Fx {
     env: Env,
     arena: Address,
     client: ArenaContractClient<'static>,
+    /// The **host** of the arena: runs the game and moderates the lobby
+    /// (#1629). Stored on chain as `ArenaConfig.admin`.
     admin: Address,
+    /// The **protocol admin** of the arena: the deploying factory's admin,
+    /// which holds the protocol powers — upgrade, platform fee, pause and
+    /// force-cancel (#1629).
+    protocol_admin: Address,
     factory: Address,
     factory_client: FactoryContractClient<'static>,
     token: Address,
@@ -48,6 +54,12 @@ struct Fx {
 impl Fx {
     fn tree(&self, fn_name: &'static str, args: impl IntoVal<Env, Vec<Val>>) -> Call {
         call(&self.env, &self.arena, fn_name, args)
+    }
+
+    /// A call on the deploying factory — the arena's protocol-admin role is
+    /// the factory's admin (#1629).
+    fn factory_tree(&self, fn_name: &'static str, args: impl IntoVal<Env, Vec<Val>>) -> Call {
+        call(&self.env, &self.factory, fn_name, args)
     }
 
     /// Run a setup step signed by `signer`.
@@ -86,12 +98,17 @@ impl Fx {
         });
     }
 
-    fn commitment(&self, choice: Choice, salt: &BytesN<32>) -> BytesN<32> {
-        ArenaContract::compute_commitment(&self.env, choice, salt)
+    fn commitment(
+        &self,
+        player: &Address,
+        choice: Choice,
+        salt: &BytesN<32>,
+    ) -> BytesN<32> {
+        ArenaContract::compute_commitment(&self.env, &self.arena, 1, player, choice, salt)
     }
 
     fn commit(&self, player: &Address, choice: Choice, salt: &BytesN<32>) {
-        let commitment = self.commitment(choice, salt);
+        let commitment = self.commitment(player, choice, salt);
         self.signed(
             player,
             self.tree("submit_commitment", (player.clone(), commitment.clone())),
@@ -187,7 +204,8 @@ fn setup(factory_is_contract: bool) -> Fx {
     if factory_is_contract {
         let factory = env.register(FactoryContract, ());
         let factory_client = FactoryContractClient::new(&env, &factory);
-        configure_factory(&env, &factory, &factory_client, &admin, &token, &vault, &oracle);
+        let protocol_admin =
+            configure_factory(&env, &factory, &factory_client, &admin, &token, &vault, &oracle);
         mint(&env, &token, &token_admin, &admin, FEE);
         let cfg = pool_config(&env, &token, &vault, &oracle);
         let tree = create_pool_tree(&env, &factory, &admin, &cfg, &token, &vault, &oracle);
@@ -199,6 +217,7 @@ fn setup(factory_is_contract: bool) -> Fx {
             env,
             arena,
             admin,
+            protocol_admin,
             factory,
             factory_client,
             token,
@@ -232,6 +251,7 @@ fn setup(factory_is_contract: bool) -> Fx {
         arena,
         client,
         admin,
+        protocol_admin: Address::generate(&env),
         factory,
         token,
         token_admin,
@@ -241,7 +261,9 @@ fn setup(factory_is_contract: bool) -> Fx {
 }
 
 /// Approve everything `create_pool` checks, each step signed by the
-/// protocol admin.
+/// protocol admin. Returns that protocol admin: it is the arena's
+/// protocol-admin role for as long as the factory's admin is unchanged
+/// (#1629).
 fn configure_factory(
     env: &Env,
     factory: &Address,
@@ -250,7 +272,7 @@ fn configure_factory(
     token: &Address,
     vault: &Address,
     oracle: &Address,
-) {
+) -> Address {
     let protocol_admin = Address::generate(env);
     let step = |fn_name: &'static str, args: Vec<Val>| {
         sign(env, &protocol_admin, &call(env, factory, fn_name, args));
@@ -266,9 +288,11 @@ fn configure_factory(
     step("add_approved_oracle", (oracle.clone(),).into_val(env));
     client.add_approved_oracle(oracle);
     let wasm = env.deployer().upload_contract_wasm(crate::WASM);
-    step("set_arena_wasm_hash", (wasm.clone(),).into_val(env));
+    step("set_arena_wasm_hash", (wasm.clone()).into_val(env));
     client.set_arena_wasm_hash(&wasm);
+    protocol_admin
 }
+
 
 fn pool_config(env: &Env, token: &Address, vault: &Address, oracle: &Address) -> PoolConfig {
     PoolConfig {
@@ -393,27 +417,32 @@ fn factory_create_pool_requires_exactly_the_host_and_their_stake_and_arena_init(
 }
 
 #[test]
-fn propose_upgrade_requires_exactly_the_admin() {
+fn propose_upgrade_requires_exactly_the_protocol_admin() {
     let fx = fixture();
     let hash = fx.env.deployer().upload_contract_wasm(crate::WASM);
     let tree = fx.tree("propose_upgrade", (hash.clone(),));
     let invoke = || fx.client.try_propose_upgrade(&hash).is_ok();
     assert_rejects_signer(&fx.env, &fx.intruder, &tree, invoke);
-    assert_exact_auth(&fx.env, &fx.admin, &tree, invoke);
+    // The host of the arena must not be able to upgrade it (#1629).
+    assert_rejects_signer(&fx.env, &fx.admin, &tree, invoke);
+    assert_exact_auth(&fx.env, &fx.protocol_admin, &tree, invoke);
 }
 
 #[test]
-fn execute_upgrade_requires_exactly_the_admin() {
+fn execute_upgrade_requires_exactly_the_protocol_admin() {
     let fx = fixture();
     let hash = fx.env.deployer().upload_contract_wasm(crate::WASM);
-    fx.signed(&fx.admin, fx.tree("propose_upgrade", (hash.clone(),)), || {
-        fx.client.propose_upgrade(&hash)
-    });
+    fx.signed(
+        &fx.protocol_admin,
+        fx.tree("propose_upgrade", (hash.clone(),)),
+        || fx.client.propose_upgrade(&hash),
+    );
     fx.advance(86_400);
     let tree = fx.tree("execute_upgrade", ());
     let invoke = || fx.client.try_execute_upgrade().is_ok();
     assert_rejects_signer(&fx.env, &fx.intruder, &tree, invoke);
-    assert_exact_auth(&fx.env, &fx.admin, &tree, invoke);
+    assert_rejects_signer(&fx.env, &fx.admin, &tree, invoke);
+    assert_exact_auth(&fx.env, &fx.protocol_admin, &tree, invoke);
 }
 
 #[test]
@@ -471,36 +500,79 @@ fn configure_leaderboard_limit_requires_exactly_the_admin() {
 }
 
 #[test]
-fn update_platform_fee_requires_exactly_the_admin() {
+fn update_platform_fee_requires_exactly_the_protocol_admin() {
     let fx = fixture();
     let tree = fx.tree("update_platform_fee", (250u32,));
     let invoke = || fx.client.try_update_platform_fee(&250).is_ok();
     assert_rejects_signer(&fx.env, &fx.intruder, &tree, invoke);
-    assert_exact_auth(&fx.env, &fx.admin, &tree, invoke);
+    // The host must not be able to change the protocol's fee (#1629).
+    assert_rejects_signer(&fx.env, &fx.admin, &tree, invoke);
+    assert_exact_auth(&fx.env, &fx.protocol_admin, &tree, invoke);
+    assert_eq!(fx.client.get_platform_fee_bps(), 250);
 }
 
 #[test]
-fn set_oracle_freshness_policy_requires_exactly_the_admin() {
+fn set_oracle_freshness_policy_requires_exactly_the_protocol_admin() {
     let fx = fixture();
     let tree = fx.tree("set_oracle_freshness_policy", (600u64, 300u64));
     let invoke = || fx.client.try_set_oracle_freshness_policy(&600, &300).is_ok();
     assert_rejects_signer(&fx.env, &fx.intruder, &tree, invoke);
-    assert_exact_auth(&fx.env, &fx.admin, &tree, invoke);
+    assert_rejects_signer(&fx.env, &fx.admin, &tree, invoke);
+    assert_exact_auth(&fx.env, &fx.protocol_admin, &tree, invoke);
 }
 
 #[test]
-fn pause_and_unpause_require_exactly_the_admin() {
+fn pause_and_unpause_require_exactly_the_protocol_admin() {
     let fx = fixture();
     let reason = Symbol::new(&fx.env, "maint");
     let tree = fx.tree("pause", (reason.clone(),));
     let invoke = || fx.client.try_pause(&reason).is_ok();
     assert_rejects_signer(&fx.env, &fx.intruder, &tree, invoke);
-    assert_exact_auth(&fx.env, &fx.admin, &tree, invoke);
+    // The host must not be able to pause the arena (#1629).
+    assert_rejects_signer(&fx.env, &fx.admin, &tree, invoke);
+    assert_exact_auth(&fx.env, &fx.protocol_admin, &tree, invoke);
+    assert!(!fx.client.pause_expired(), "a fresh pause has not expired");
 
     let tree = fx.tree("unpause", ());
     let invoke = || fx.client.try_unpause().is_ok();
     assert_rejects_signer(&fx.env, &fx.intruder, &tree, invoke);
-    assert_exact_auth(&fx.env, &fx.admin, &tree, invoke);
+    assert_rejects_signer(&fx.env, &fx.admin, &tree, invoke);
+    assert_exact_auth(&fx.env, &fx.protocol_admin, &tree, invoke);
+}
+
+/// The host keeps the game-operation powers and loses the protocol ones
+/// (#1629). Every protocol-only entry point must reject the host and accept
+/// the factory's admin.
+#[test]
+fn the_host_cannot_reach_the_protocol_powers() {
+    let fx = fixture();
+    let hash = fx.env.deployer().upload_contract_wasm(crate::WASM);
+    let reason = Symbol::new(&fx.env, "emerg");
+
+    let tree = fx.tree("propose_upgrade", (hash.clone(),));
+    assert_rejects_signer(&fx.env, &fx.admin, &tree, || {
+        fx.client.try_propose_upgrade(&hash).is_ok()
+    });
+
+    let tree = fx.tree("update_platform_fee", (500u32,));
+    assert_rejects_signer(&fx.env, &fx.admin, &tree, || {
+        fx.client.try_update_platform_fee(&500).is_ok()
+    });
+
+    let tree = fx.tree("pause", (reason.clone(),));
+    assert_rejects_signer(&fx.env, &fx.admin, &tree, || {
+        fx.client.try_pause(&reason).is_ok()
+    });
+
+    let tree = fx.tree("set_oracle_freshness_policy", (600u64, 300u64));
+    assert_rejects_signer(&fx.env, &fx.admin, &tree, || {
+        fx.client.try_set_oracle_freshness_policy(&600, &300).is_ok()
+    });
+
+    let tree = fx.tree("force_cancel_arena", ());
+    assert_rejects_signer(&fx.env, &fx.admin, &tree, || {
+        fx.client.try_force_cancel_arena().is_ok()
+    });
 }
 
 #[test]
@@ -568,7 +640,11 @@ fn submit_commitment_requires_exactly_the_player() {
     let fx = fixture();
     let players = fx.players(2);
     fx.start_round();
-    let commitment = fx.commitment(Choice::Heads, &BytesN::from_array(&fx.env, &[9; 32]));
+    let commitment = fx.commitment(
+        &players[0],
+        Choice::Heads,
+        &BytesN::from_array(&fx.env, &[9; 32]),
+    );
     let tree = fx.tree("submit_commitment", (players[0].clone(), commitment.clone()));
     let invoke = || fx.client.try_submit_commitment(&players[0], &commitment).is_ok();
     assert_rejects_signer(&fx.env, &players[1], &tree, invoke);
@@ -670,16 +746,73 @@ fn cancel_arena_requires_exactly_the_admin_and_arena_authorises_factory_callback
 }
 
 #[test]
-fn force_cancel_arena_requires_exactly_the_admin_and_arena_authorises_factory_callbacks() {
+fn force_cancel_arena_requires_exactly_the_protocol_admin_and_arena_authorises_factory_callbacks() {
     let fx = fixture();
     fx.players(2);
     fx.start_round();
     let tree = fx.tree("force_cancel_arena", ());
     let invoke = || fx.client.try_force_cancel_arena().is_ok();
     assert_rejects_signer(&fx.env, &fx.intruder, &tree, invoke);
-    assert_exact_auth(&fx.env, &fx.admin, &tree, invoke);
+    assert_rejects_signer(&fx.env, &fx.admin, &tree, invoke);
+    assert_exact_auth(&fx.env, &fx.protocol_admin, &tree, invoke);
     assert!(!fx.factory_tracks_arena());
     assert_eq!(fx.factory_status(), ArenaStatus::Cancelled);
+}
+
+/// A protocol pause is time-boxed (#1629): it blocks the arena while it is
+/// fresh, and once it has been held for `MAX_PAUSE_DURATION_SECONDS` it stops
+/// blocking — so a paused arena can never keep a player's fee locked.
+#[test]
+fn a_pause_expires_and_releases_claims_and_refunds() {
+    let fx = fixture();
+    let player = Address::generate(&fx.env);
+    fx.cancelled_with(&player);
+
+    let reason = Symbol::new(&fx.env, "emerg");
+    fx.signed(&fx.protocol_admin, fx.tree("pause", (reason.clone(),)), || {
+        fx.client.pause(&reason)
+    });
+
+    // A fresh pause blocks the refund path.
+    let refund_tree = fx.tree("claim_refund", (player.clone(),));
+    assert_rejects_signer(&fx.env, &player, &refund_tree, || {
+        fx.client.try_claim_refund(&player).is_ok()
+    });
+
+    // Once the pause has outlived its maximum duration it stops blocking and
+    // the refund goes out.
+    fx.advance(crate::MAX_PAUSE_DURATION_SECONDS);
+    assert!(fx.client.pause_expired());
+    fx.signed(&player, refund_tree, || fx.client.claim_refund(&player));
+    let token = soroban_sdk::token::TokenClient::new(&fx.env, &fx.token);
+    assert_eq!(token.balance(&player), FEE, "the refund must reach the player");
+}
+
+/// The protocol admin of an arena is the deploying factory's admin, read live:
+/// a factory-level rotation withdraws the old admin's protocol powers over
+/// every arena without touching the arena's own storage (#1629).
+#[test]
+fn the_protocol_admin_follows_the_factorys_admin_rotation() {
+    let fx = fixture();
+    assert_eq!(fx.client.protocol_admin().unwrap(), fx.protocol_admin);
+
+    let next = Address::generate(&fx.env);
+    let propose = fx.factory_tree("propose_admin", (next.clone(),));
+    fx.signed(&fx.protocol_admin, propose, || {
+        fx.factory_client.propose_admin(&next)
+    });
+    let accept = fx.factory_tree("accept_admin", ());
+    fx.signed(&next, accept, || fx.factory_client.accept_admin());
+
+    assert_eq!(fx.client.protocol_admin().unwrap(), next);
+
+    // The old admin has lost the protocol powers; the new one has them.
+    let reason = Symbol::new(&fx.env, "emerg");
+    let tree = fx.tree("pause", (reason.clone(),));
+    assert_rejects_signer(&fx.env, &fx.protocol_admin, &tree, || {
+        fx.client.try_pause(&reason).is_ok()
+    });
+    assert_exact_auth(&fx.env, &next, &tree, || fx.client.try_pause(&reason).is_ok());
 }
 
 /// The permissionless lifecycle exits need no signer at all, yet still move
@@ -689,7 +822,7 @@ fn permissionless_exits_need_no_signature_and_still_reach_the_factory() {
     let fx = fixture();
     fx.players(2);
     fx.start_round();
-    fx.advance(ROUND + 1);
+    fx.advance(ROUND + 1 + EXPIRY_GRACE_SECONDS);
     fx.env.set_auths(&[]);
     fx.client.expire_arena();
     assert!(fx.env.auths().is_empty(), "expire_arena must not require any signature");

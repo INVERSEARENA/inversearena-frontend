@@ -44,6 +44,13 @@ Current payload version: **1**
 | `UP_EXEC`     | `execute_upgrade()`    | `(v, new_wasm_hash: BytesN<32>)`         |
 | `UP_CANC`     | `cancel_upgrade()`     | `(v)`                                    |
 | `GPAUSE`      | `set_global_pause()` (#1583) | `(paused: bool, reason: Symbol)` — protocol-wide emergency pause set or cleared |
+| `VLT_DEP` / `VLT_DIS` / `VLT_REA` | `deprecate_approved_vault()` / `disable_approved_vault()` / `reactivate_approved_vault()` (#1688) | `(vault: Address, effective_ledger: u32, reason: Symbol, revision: u32)` — the yield vault's lifecycle transition |
+| `ORC_DEP` / `ORC_DIS` / `ORC_REA` | `deprecate_approved_oracle()` / `disable_approved_oracle()` / `reactivate_approved_oracle()` (#1688) | `(oracle: Address, effective_ledger: u32, reason: Symbol, revision: u32)` — the oracle's lifecycle transition |
+| `TOK_DEP` / `TOK_DIS` / `TOK_REA` | `deprecate_supported_token()` / `disable_supported_token()` / `reactivate_supported_token()` (#1688) | `(token: Address, effective_ledger: u32, reason: Symbol, revision: u32)` — the stake token's lifecycle transition |
+
+> Note (#1688): the lifecycle events carry the registry revision, which is
+> bumped on every transition. A consumer that caches the lifecycle can
+> invalidate its cache on the revision alone, without replaying events.
 
 ## Staking Contract
 
@@ -86,6 +93,26 @@ schedule is persisted by the next admin write.
 | `par_appl`  | (settle on next write) | `(params_effective_at: u64)` — due params applied |
 | `zeroed`    | `set_rate_to_zero()`   | `(0u32)` — emergency zero                        |
 | `adm_chg`   | `accept_admin()`       | `(old_admin: Address, new_admin: Address)`       |
+
+### Reporter set (#1578)
+
+Median aggregation over an admin-managed reporter set. `sub_ok` fires on
+every accepted submission; when a submission brings the fresh count to
+quorum the median is finalized: `out_rej` fires once per outlier dropped
+(beyond `max_deviation_bps` from the pre-filter median), then `med_set`
+and the usual `rate_obs` record the applied value. A finalized median
+supersedes any pending scheduled admin rate.
+
+| Topic       | Emitting Function      | Data Fields                                      |
+|-------------|------------------------|--------------------------------------------------|
+| `rep_add`   | `add_reporter()`       | `(reporter: Address, reporter_count: u32)`       |
+| `rep_rem`   | `remove_reporter()`    | `(reporter: Address, reporter_count: u32)`       |
+| `quorum`    | `set_quorum()`         | `(quorum: u32)`                                  |
+| `mage_set`  | `set_max_age_secs()`   | `(max_age_secs: u64)`                            |
+| `mdev_set`  | `set_max_deviation_bps()` | `(max_deviation_bps: u32)`                     |
+| `sub_ok`    | `submit_rate()`        | `(reporter: Address, rate_bps: u32, submitted_at: u64)` |
+| `out_rej`   | median finalization    | `(reporter: Address, rate_bps: u32, median_bps: u32)` — outlier dropped |
+| `med_set`   | median finalization    | `(median_bps: u32, report_count: u32, quorum: u32)` |
 
 ---
 

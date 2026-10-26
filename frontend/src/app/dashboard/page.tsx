@@ -17,6 +17,11 @@ import { Announcements } from "@/features/dashboard-home/components/Announcement
 import { MetricsPanel } from "@/features/dashboard-home/components/MetricsPanel";
 import { ClaimInboxPanel } from "@/features/claim-inbox/components/ClaimInboxPanel";
 import { PoolCreationModal } from "@/components/modals/PoolCreationModal";
+import {
+  fetchRematchConfig,
+  toRematchFormPrefill,
+  type RematchConfig,
+} from "@/features/pools/model/rematch-config";
 import StakeModal from "@/components/modals/StakeModal";
 import { PayoutTimeline } from "@/app/dashboard/payouts/PayoutTimeline";
 import { GlobalTelemetryBar } from "@/app/dashboard/telemetry-bar/page";
@@ -45,11 +50,31 @@ function DashboardHomeView() {
   const [isPoolModalOpen, setIsPoolModalOpen] = useState(false);
   const [hasStaked, setHasStaked] = useState(false);
   const [timelineTransactionId, setTimelineTransactionId] = useState<string | null>(null);
+  // #1572: a result page links here with ?rematch=<sourceArenaId>; the modal
+  // opens prefilled from that arena's canonical on-chain config.
+  const [rematch, setRematch] = useState<RematchConfig | null>(null);
 
   useEffect(() => {
     const stored = typeof window !== "undefined" && localStorage.getItem(HAS_STAKED_KEY);
     setHasStaked(stored === "true");
-    setTimelineTransactionId(new URLSearchParams(window.location.search).get("payoutTransactionId"));
+    const params = new URLSearchParams(window.location.search);
+    setTimelineTransactionId(params.get("payoutTransactionId"));
+
+    const rematchArenaId = params.get("rematch");
+    if (!rematchArenaId) return;
+    let cancelled = false;
+    fetchRematchConfig(rematchArenaId)
+      .then((config) => {
+        if (cancelled) return;
+        setRematch(config);
+        if (toRematchFormPrefill(config)) setIsPoolModalOpen(true);
+      })
+      .catch(() => {
+        // A blocked or unreadable rematch degrades to the normal create flow.
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleCreateArenaClick = () => {
@@ -120,10 +145,15 @@ function DashboardHomeView() {
 
       <PoolCreationModal
         isOpen={isPoolModalOpen}
-        onClose={() => setIsPoolModalOpen(false)}
+        onClose={() => {
+          setIsPoolModalOpen(false);
+          setRematch(null);
+        }}
         onInitialize={() => {
           setIsPoolModalOpen(false);
+          setRematch(null);
         }}
+        rematch={rematch}
       />
     </div>
   );
