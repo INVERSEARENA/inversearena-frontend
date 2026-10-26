@@ -2,15 +2,28 @@
 
 import { Suspense, useCallback, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import dynamic from "next/dynamic";
 import { motion } from "motion/react";
 import { Wallet } from "lucide-react";
-import { YieldPerformanceChart } from "@/components/analysis/charts/YieldPerformanceChart";
-import { YieldEventLog, type YieldEvent } from "@/components/analysis/logs/YieldEventLog";
-import { ReservesStatus } from "@/components/analysis/ReservesStatus";
+import type { YieldEvent } from "@/components/analysis/logs/YieldEventLog";
+import { ChartSkeleton } from "@/components/analysis/ChartSkeleton";
 import { AnalysisFooter } from "@/components/analysis/stats/AnalysisFooter";
 import { AnalysisHeader } from "@/components/analysis/stats/AnalysisHeader";
 import { StatsGrid } from "@/components/analysis/stats/StatsGrid";
 import { useArenaYield } from "@/features/yield";
+
+const YieldPerformanceChart = dynamic(
+  () => import("@/components/analysis/charts/YieldPerformanceChart").then((m) => m.YieldPerformanceChart),
+  { ssr: false, loading: () => <ChartSkeleton label="Loading yield chart" /> },
+);
+const YieldEventLog = dynamic(
+  () => import("@/components/analysis/logs/YieldEventLog").then((m) => m.YieldEventLog),
+  { ssr: false, loading: () => <ChartSkeleton label="Loading event history" /> },
+);
+const ReservesStatus = dynamic(
+  () => import("@/components/analysis/ReservesStatus").then((m) => m.ReservesStatus),
+  { ssr: false, loading: () => <ChartSkeleton label="Loading reserve status" /> },
+);
 
 function AnalysisContent() {
   const searchParams = useSearchParams();

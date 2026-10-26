@@ -552,7 +552,11 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
       const latestRound = arena.rounds[0] ?? null;
       const metadata = normalizeRoundMetadata(latestRound?.metadata);
       const choices = metadata.playerChoices ?? [];
-      const userIds = choices.map((choice) => choice.userId);
+      // Page the indexed choice list before resolving users. This keeps the
+      // query and response bounded when an arena has a large roster.
+      const total = choices.length;
+      const pageChoices = choices.slice(cursor, cursor + limit);
+      const userIds = pageChoices.map((choice) => choice.userId);
       const users =
         userIds.length > 0
           ? await prisma.user.findMany({
@@ -565,7 +569,7 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
         latestRound?.eliminationLogs.map((entry) => entry.userId) ?? [],
       );
 
-      const participants: ArenaParticipant[] = choices.map((choice, index) => {
+      const participants: ArenaParticipant[] = pageChoices.map((choice, index) => {
         const user = userById.get(choice.userId);
         const status: ArenaParticipant["status"] = eliminatedUsers.has(choice.userId)
           ? "ELIMINATED"
@@ -586,9 +590,6 @@ export function createArenasRouter(authMiddleware: RequestHandler): Router {
           joinedAt: (latestRound?.createdAt ?? arena.createdAt).toISOString(),
         };
       });
-
-      const total = participants.length;
-      const items = participants.slice(cursor, cursor + limit);
 
       res.json({
         arenaId: id,
