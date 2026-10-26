@@ -11,7 +11,7 @@
     "test:request-validation": "tsx --test tests/unit/request-validation.unit.test.ts",
     "test": "jest",
     "test:migration": "jest --selectProjects integration --testPathPattern=migration.test.ts --runInBand",
-    "test:ci": "prisma generate && npm run test:unit && npm run test:node:validation && npm run test:node",
+    "test:ci": "prisma generate && npm run test:unit && npm run test:node:validation && npm run test:node && tsx --test tests/load/compare-baseline.unit.test.ts tests/loadTestBypass.unit.test.ts",
     "typecheck": "tsc --noEmit",
     "lint": "node scripts/check-env-access.mjs",
     "migrate": "prisma migrate deploy",

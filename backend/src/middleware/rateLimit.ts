@@ -55,6 +55,13 @@ export function createRateLimitMiddleware(
   config: RateLimitConfig,
 ): RequestHandler {
   return async (req: Request, res: Response, next: NextFunction) => {
+    // Skip rate-limit accounting for k6 load-test VUs.
+    // req.__loadTestBypass is set by loadTestBypassMiddleware, which is itself
+    // a no-op unless LOAD_TEST_BYPASS_KEY is configured on the server.
+    if ((req as Request & { __loadTestBypass?: boolean }).__loadTestBypass) {
+      return next();
+    }
+
     // Resolve IP using the shared secure algorithm behind N proxies
     const ip = resolveClientIp(req.headers);
     const walletAddress =
