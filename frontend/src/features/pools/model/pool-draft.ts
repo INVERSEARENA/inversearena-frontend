@@ -19,6 +19,7 @@ export interface PoolDraftFields {
   currency: Currency;
   roundSpeed: RoundSpeed;
   arenaCapacity: number;
+  optionCount?: 2 | 3;
 }
 
 export function savePoolDraft(fields: PoolDraftFields): void {
@@ -28,6 +29,7 @@ export function savePoolDraft(fields: PoolDraftFields): void {
     currency: fields.currency,
     roundSpeed: fields.roundSpeed,
     arenaCapacity: fields.arenaCapacity,
+    optionCount: fields.optionCount ?? 2,
     savedAt: Date.now(),
   };
   localStorageManager.setItem(StorageKey.ARENA_POOL_DRAFT, draft);

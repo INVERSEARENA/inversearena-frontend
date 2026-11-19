@@ -275,3 +275,11 @@ handled per §6 (refuse, don't guess).
 - Salted commit-reveal secrecy (`frontend/src/shared/lib/stellar/commit-reveal.ts`)
   is out of scope here — the bundle only ever carries *revealed* choices,
   which are already public on-chain by the time a round resolves.
+# Three-option proof bundles
+
+The proof bundle accepts `option3` revealed choices and an optional
+`tally.option3` count. Older binary bundles omit the field and are interpreted
+as zero. Verification recomputes all three counts from `playerChoices`; in a
+three-option round every used choice tied for the lowest count survives, while
+an unused option is ignored. Binary ties retain their existing no-elimination
+rule.

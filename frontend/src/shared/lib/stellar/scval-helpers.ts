@@ -4,7 +4,7 @@ import {
   StellarPublicKeySchema,
 } from "@/shared/lib/security-validation";
 
-export type RoundChoice = "Heads" | "Tails";
+export type RoundChoice = "Heads" | "Tails" | "Option3";
 
 function toBigInt(value: bigint | number, label: string): bigint {
   if (typeof value === "bigint") return value;
@@ -61,10 +61,10 @@ export function encodeRound(round: bigint | number): xdr.ScVal {
   return nativeToScVal(n, { type: "u32" });
 }
 
-/** Encode the Heads/Tails choice as an `scvSymbol`. */
+/** Encode a supported arena choice as an `scvSymbol`. */
 export function encodeChoice(choice: RoundChoice): xdr.ScVal {
-  if (choice !== "Heads" && choice !== "Tails") {
-    throw new Error("choice must be either 'Heads' or 'Tails'");
+  if (choice !== "Heads" && choice !== "Tails" && choice !== "Option3") {
+    throw new Error("choice must be Heads, Tails, or Option3");
   }
   return xdr.ScVal.scvSymbol(choice);
 }

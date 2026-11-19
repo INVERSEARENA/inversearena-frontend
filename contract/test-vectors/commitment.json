@@ -2,7 +2,7 @@
   "$comment": "Golden test vectors shared by Rust (contract/arena) and TypeScript (frontend) tests. Regenerate with: cd contract && cargo test -p arena commitment_vectors -- --nocapture, or see contract/test-vectors/README.md. Do not hand-edit hashes.",
   "version": 1,
   "spec": {
-    "commitment": "SHA256(\"IA_COMMIT_V1\" || arena_xdr || round_u32_be || player_xdr || choice_byte || salt_32_bytes). arena_xdr and player_xdr are the ScVal XDR of the address (Address::to_xdr in Rust, Address.toScVal().toXDR() in TypeScript). Heads=0, Tails=1. Matches contract/arena/src/lib.rs compute_commitment and frontend/src/shared/lib/stellar/commit-reveal.ts computeCommitment.",
+    "commitment": "SHA256(\"IA_COMMIT_V1\" || arena_xdr || round_u32_be || player_xdr || choice_byte || salt_32_bytes). arena_xdr and player_xdr are the ScVal XDR of the address (Address::to_xdr in Rust, Address.toScVal().toXDR() in TypeScript). Heads=0, Tails=1, Option3=2. Matches contract/arena/src/lib.rs compute_commitment and frontend/src/shared/lib/stellar/commit-reveal.ts computeCommitment.",
     "metadataHash": "SHA256(canonical_json_utf8) with lexicographically sorted keys, no insignificant whitespace. Matches frontend/src/shared/lib/stellar/metadata-hash.ts and backend/src/utils/metadataHash.ts.",
     "amountEncoding": "Integer amounts map 1:1 to i128; non-integers are rejected. The vector documents the decimal string form that both sides must accept/reject identically."
   },
@@ -126,6 +126,21 @@
       "playerXdr": "0000001200000000000000003333333333333333333333333333333333333333333333333333333333333333",
       "preimage": "49415f434f4d4d49545f563100000012000000015c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c00000007000000120000000000000000333333333333333333333333333333333333333333333333333333333333333301000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
       "commitment": "67ec97ea3c5d259ecc4646304eae0aad75f73a5dfc63360b24e180a1ebafdee9"
+    },
+    {
+      "name": "option3-zero-salt",
+      "choice": "Option3",
+      "choiceByte": 2,
+      "salt": "0000000000000000000000000000000000000000000000000000000000000000",
+      "context": {
+        "arena": "CAIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRDB3V",
+        "round": 1,
+        "player": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+      },
+      "arenaXdr": "00000012000000011111111111111111111111111111111111111111111111111111111111111111",
+      "playerXdr": "0000001200000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "preimage": "49415f434f4d4d49545f563100000012000000011111111111111111111111111111111111111111111111111111111111111111000000010000001200000000000000000000000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000",
+      "commitment": "a5bcd8d7489537be8d9f45d827d82c6545a87933e6d1af3289688250cf6e39b9"
     }
   ],
   "metadataHash": [

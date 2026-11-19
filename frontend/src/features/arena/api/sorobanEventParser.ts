@@ -128,7 +128,7 @@ function parseChoiceSubmittedEvent(raw: RawContractEvent): ChoiceSubmittedEvent 
         type: 'ChoiceSubmitted',
         arenaId: raw.contractId,
         playerWallet: value.player,
-        choice: value.choice === 'Heads' ? 0 : 1,
+        choice: value.choice === 'Heads' ? 0 : value.choice === 'Tails' ? 1 : 2,
         roundNumber: Number(value.round),
         timestamp: getTimestamp(raw),
     };
@@ -142,7 +142,7 @@ function parseRoundResolvedEvent(raw: RawContractEvent): RoundResolvedEvent | nu
         type: 'RoundResolved',
         arenaId: raw.contractId,
         roundNumber: Number(value.round),
-        winningChoice: value.winner === 'Heads' ? 0 : 1,
+        winningChoice: value.winner === 'Heads' ? 0 : value.winner === 'Tails' ? 1 : 2,
         timestamp: getTimestamp(raw),
     };
 }
@@ -173,7 +173,7 @@ function parseChoiceRevealedEvent(raw: RawContractEvent): ChoiceSubmittedEvent |
         type: 'ChoiceSubmitted',
         arenaId: raw.contractId,
         playerWallet: player,
-        choice: value.choice === 'Heads' ? 0 : 1,
+        choice: value.choice === 'Heads' ? 0 : value.choice === 'Tails' ? 1 : 2,
         roundNumber: Number(value.round),
         timestamp: getTimestamp(raw),
     };

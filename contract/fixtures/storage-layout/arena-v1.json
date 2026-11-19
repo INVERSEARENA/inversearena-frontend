@@ -1,7 +1,7 @@
 {
   "contract": "arena",
-  "contract_version": 4,
-  "schema_checksum": "arena-storage-v3-canonical",
+  "contract_version": 7,
+  "schema_checksum": "arena-storage-v4-three-choice",
   "ledger": {
     "sequence": 12345678,
     "protocol": 22,
@@ -10,6 +10,12 @@
   "entries": [
     {
       "name": "Choice::Heads",
+      "storage_class": "instance",
+      "key_xdr_hex": "",
+      "value_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr"
+    },
+    {
+      "name": "Choice::Option3",
       "storage_class": "instance",
       "key_xdr_hex": "",
       "value_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr"
@@ -25,6 +31,12 @@
       "storage_class": "persistent",
       "key_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr",
       "value_xdr_hex": ""
+    },
+    {
+      "name": "DataKey::OptionCount",
+      "storage_class": "persistent",
+      "key_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr",
+      "value_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr"
     },
     {
       "name": "DataKey::EliminationReason",

@@ -132,6 +132,7 @@ export async function buildCreatePoolTransaction(
     currency: string;
     roundSpeed: string;
     arenaCapacity: number;
+    optionCount?: 2 | 3;
   },
 ) {
   const FN = "buildCreatePoolTransaction";
@@ -456,7 +457,7 @@ export async function buildLeaveArenaTransaction(
 export async function buildSubmitCommitmentTransaction(
   publicKey: string,
   poolId: string,
-  choice: "Heads" | "Tails",
+  choice: "Heads" | "Tails" | "Option3",
   roundNumber: number,
 ) {
   const FN = "buildSubmitCommitmentTransaction";

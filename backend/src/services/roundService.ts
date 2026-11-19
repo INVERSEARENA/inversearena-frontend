@@ -540,7 +540,7 @@ export class RoundService {
         // still reports a single, clean "accepted" rather than erroring or
         // double-reporting.
         const revealedChoice =
-          playerChoice.choice === 'heads' || playerChoice.choice === 'tails'
+          playerChoice.choice === 'heads' || playerChoice.choice === 'tails' || playerChoice.choice === 'option3'
             ? playerChoice.choice
             : undefined;
         receipt = {

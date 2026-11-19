@@ -13,7 +13,7 @@ import {
 } from "@/shared/lib/security/policy";
 import type { WalletHook } from "@/features/wallet/hooks/useStellarWallet";
 
-type Choice = "Heads" | "Tails";
+type Choice = "Heads" | "Tails" | "Option3";
 
 interface ChoiceSubmissionProps {
   arenaId: string;
@@ -22,6 +22,7 @@ interface ChoiceSubmissionProps {
   revealDeadline?: string;
   phase?: "commit" | "reveal" | "resolved";
   arenaStatus: string;
+  optionCount?: 2 | 3;
   wallet: Pick<
     WalletHook,
     "publicKey" | "isConnected" | "connectWallet" | "signTransaction" | "status"
@@ -51,11 +52,12 @@ function choiceStyles(choice: Choice, selected: Choice | null): string {
     }`;
   }
 
-  return `${base} ${
+  if (choice === "Tails") return `${base} ${
     active
       ? "border-[#FF0A54] bg-[#16070d] shadow-[0_0_0_1px_#FF0A54,0_0_24px_rgba(255,10,84,0.18)]"
       : "border-white/10 bg-[#08101a] hover:border-[#FF0A54]/60 hover:bg-[#0b1724]"
   }`;
+  return `${base} ${active ? "border-cyan-300 bg-cyan-950 shadow-[0_0_0_1px_#67e8f9]" : "border-white/10 bg-[#08101a] hover:border-cyan-300/60 hover:bg-[#0b1724]"}`;
 }
 
 export function ChoiceSubmission({
@@ -65,6 +67,7 @@ export function ChoiceSubmission({
   revealDeadline = "",
   phase: arenaPhase = "commit",
   arenaStatus,
+  optionCount = 2,
   wallet,
 }: ChoiceSubmissionProps) {
   const { publicKey, isConnected, connectWallet, signTransaction, status: walletStatus } = wallet;
@@ -185,7 +188,7 @@ export function ChoiceSubmission({
         </div>
       </div>
 
-      <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2">
+      <div className={`mt-5 grid grid-cols-1 gap-4 ${optionCount === 3 ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
         <button
           type="button"
           onClick={() => void handleSubmit("Heads")}
@@ -203,6 +206,14 @@ export function ChoiceSubmission({
             Higher risk, lower crowd
           </span>
         </button>
+        {optionCount === 3 && (
+          <button type="button" onClick={() => void handleSubmit("Option3")} disabled={!canInteract}
+            aria-label="Submit Option 3 choice" className={choiceStyles("Option3", selectedChoice)}>
+            <span className="text-[11px] font-semibold uppercase tracking-[0.28em] text-white/40">Option 3</span>
+            <span className="text-4xl font-black uppercase tracking-tight text-white sm:text-5xl">OPTION 3</span>
+            <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-cyan-300">A third path to the minority</span>
+          </button>
+        )}
 
         <button
           type="button"

@@ -74,7 +74,7 @@ export function buildCreatePoolCallOperation(
 
   // Encode PoolConfig struct as required by factory contract (#1105)
   // PoolConfig { stake_token, yield_vault, entry_fee, oracle_contract,
-  //              min_players, max_players, round_duration, start_deadline }
+  //              min_players, max_players, round_duration, start_deadline, option_count }
   const nowSeconds = Math.floor(Date.now() / 1_000);
   const startDeadlineSeconds = params.startDeadlineSeconds ?? 86_400;
   const startDeadline = BigInt(nowSeconds + startDeadlineSeconds);
@@ -87,6 +87,7 @@ export function buildCreatePoolCallOperation(
     max_players: params.arenaCapacity,
     round_duration: BigInt(roundSpeedSeconds),
     start_deadline: startDeadline,
+    option_count: params.optionCount,
   }, { type: "PoolConfig" });
 
   // Factory.create_pool(host: Address, config: PoolConfig, metadata_hash: BytesN<32>)
@@ -169,7 +170,7 @@ export function buildSubmitCommitmentOperation(
 export function buildRevealChoiceOperation(
   poolContract: Contract,
   playerPublicKey: string,
-  choice: "Heads" | "Tails",
+  choice: "Heads" | "Tails" | "Option3",
   salt: Uint8Array,
 ): SorobanOperation {
   return poolContract.call(

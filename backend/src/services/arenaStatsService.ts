@@ -179,6 +179,7 @@ export class ArenaStatsService {
       degraded,
       ledgerSequence: onChainOverlay?.ledgerSequence ?? null,
       snapshotVerifiedAt: onChainOverlay?.verifiedAt ?? null,
+      optionCount: onChainOverlay?.optionCount === 3 ? 3 : 2,
     };
   }
 

@@ -112,7 +112,7 @@ const CommitStatusParamsSchema = z.object({
 });
 
 function normalizeRoundMetadata(metadata: unknown): {
-  playerChoices?: Array<{ userId: string; choice: "heads" | "tails"; stake: number }>;
+  playerChoices?: Array<{ userId: string; choice: "heads" | "tails" | "option3"; stake: number }>;
 } {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
     return {};
@@ -131,7 +131,7 @@ function normalizeRoundMetadata(metadata: unknown): {
         const item = choice as Record<string, unknown>;
         const userId = typeof item.userId === "string" ? item.userId : null;
         const roundChoice =
-          item.choice === "heads" || item.choice === "tails"
+          item.choice === "heads" || item.choice === "tails" || item.choice === "option3"
             ? item.choice
             : null;
         const stake = typeof item.stake === "number" ? item.stake : null;
@@ -146,7 +146,7 @@ function normalizeRoundMetadata(metadata: unknown): {
           stake,
         };
       })
-      .filter((choice): choice is { userId: string; choice: "heads" | "tails"; stake: number } => choice !== null),
+      .filter((choice): choice is { userId: string; choice: "heads" | "tails" | "option3"; stake: number } => choice !== null),
   };
 }
 

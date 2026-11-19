@@ -23,6 +23,8 @@ export interface ArenaStats {
   ledgerSequence: number | null;
   /** ISO timestamp the on-chain fields were verified at. Null under the same condition as ledgerSequence. */
   snapshotVerifiedAt: string | null;
+  /** Configured choices for new contracts; absent/legacy arenas are binary. */
+  optionCount?: 2 | 3;
 }
 
 export interface ArenaParticipant {
@@ -32,7 +34,7 @@ export interface ArenaParticipant {
   // player's heads/tails pick must not be visible to other callers until
   // the round closes, or a caller could pick their own choice accordingly
   // (see #1212).
-  choice: "heads" | "tails" | null;
+  choice: "heads" | "tails" | "option3" | null;
   stake: number;
   status: "READY" | "ACTIVE" | "ELIMINATED";
   roundNumber: number;

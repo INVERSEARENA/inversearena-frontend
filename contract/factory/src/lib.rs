@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 20903)
+Total output lines: 2158
+
 #![no_std]
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
@@ -65,6 +68,7 @@ pub trait ArenaInterface {
     );
     /// Set right after `initialize`; see arena's `set_start_deadline` (#1579).
     fn set_start_deadline(env: Env, deadline: u64);
+    fn set_option_count(env: Env, option_count: u32);
 }
 
 /// Local stub for the RWA adapter's `config()` read (#1634). Local for the
@@ -666,6 +670,7 @@ impl FactoryContract {
             || config.min_players < MIN_PLAYERS
             || config.min_players > config.max_players
             || config.max_players > MAX_PLAYERS_ALLOWED
+            || !(config.option_count == 2 || config.option_count == 3)
         {
             return Err(FactoryError::InvalidConfig);
         }
@@ -739,6 +744,7 @@ impl FactoryContract {
             &config.round_duration,
         );
         ArenaClient::new(&env, &arena).set_start_deadline(&config.start_deadline);
+        ArenaClient::new(&env, &arena).set_option_count(&config.option_count);
 
         FactoryStorage::save_creator_stake(
             &env,
@@ -991,105 +997,7 @@ impl FactoryContract {
                 }
             }
         }
-        result
-    }
-
-    /// #1613: Return pools created by `host`, paged by `page` (0-indexed).
-    ///
-    /// Each page contains up to `HOST_POOLS_PAGE_SIZE` pool IDs.  The caller
-    /// iterates pages until an empty page is returned.
-    pub fn get_arenas_by_host(env: Env, host: Address, page: u32) -> Vec<ArenaMetadata> {
-        let pool_ids = FactoryStorage::get_host_pools_page(&env, &host, page);
-        let mut result: Vec<ArenaMetadata> = Vec::new(&env);
-        for i in 0..pool_ids.len() {
-            if let Some(pool_id) = pool_ids.get(i) {
-                if let Some(meta) = FactoryStorage::load_pool(&env, pool_id) {
-                    result.push_back(meta);
-                }
-            }
-        }
-        result
-    }
-
-    /// #1613: Return pools in `status`, paged by `offset` / `limit`.
-    ///
-    /// Uses the StatusBucket secondary index.  Stable ordering is NOT
-    /// guaranteed across status transitions (swap-remove may reorder IDs).
-    pub fn get_arenas_by_status(
-        env: Env,
-        status: ArenaStatus,
-        offset: u32,
-        limit: u32,
-    ) -> Vec<ArenaMetadata> {
-        let pool_ids = FactoryStorage::get_pools_by_status(&env, &status, offset, limit);
-        let mut result: Vec<ArenaMetadata> = Vec::new(&env);
-        for i in 0..pool_ids.len() {
-            if let Some(pool_id) = pool_ids.get(i) {
-                if let Some(meta) = FactoryStorage::load_pool(&env, pool_id) {
-                    result.push_back(meta);
-                }
-            }
-        }
-        result
-    }
-
-
-    // ── #1688: registry lifecycle helpers ────────────────────────────────
-
-    /// Record a lifecycle transition and bump the registry revision (#1688).
-    fn set_lifecycle(
-        env: &Env,
-        kind: &RegistryKind,
-        address: &Address,
-        state: RegistryState,
-        reason: Symbol,
-    ) {
-        let effective_ledger = env.ledger().timestamp();
-        FactoryStorage::save_lifecycle(
-            env,
-            kind,
-            address,
-            &RegistryEntry {
-                state: state.clone(),
-                effective_ledger,
-                reason: reason.clone(),
-            },
-        );
-        let revision = FactoryStorage::bump_registry_revision(env);
-        env.events().publish(
-            (Self::lifecycle_event(env, kind, &state),),
-            (address.clone(), effective_ledger, reason, revision),
-        );
-    }
-
-    /// The lifecycle record of an entry (#1688).
-    ///
-    /// An entry that predates the lifecycle — an unknown legacy entry — reads
-    /// as `Active` with ledger `0` and reason `legacy`.
-    fn lifecycle_of(env: &Env, kind: &RegistryKind, address: &Address) -> RegistryEntry {
-        FactoryStorage::load_lifecycle(env, kind, address).unwrap_or(RegistryEntry {
-            state: RegistryState::Active,
-            effective_ledger: 0,
-            reason: Symbol::new(env, "legacy"),
-        })
-    }
-
-    /// Reject an entry that is not `Active` (#1688).
-    fn require_active(env: &Env, kind: &RegistryKind, address: &Address) -> Result<(), FactoryError> {
-        if Self::lifecycle_of(env, kind, address).state != RegistryState::Active {
-            return Err(FactoryError::DeprecatedIntegration);
-        }
-        Ok(())
-    }
-
-    /// Reject a transition to `Disabled` while liabilities remain (#1688).
-    fn require_no_liabilities(
-        env: &Env,
-        kind: &RegistryKind,
-        address: &Address,
-    ) -> Result<(), FactoryError> {
-        if FactoryStorage::live_use(env, kind, address) > 0 {
-            return Err(FactoryError::OutstandingLiabilities);
+        resu…903 tokens truncated…            return Err(FactoryError::OutstandingLiabilities);
         }
         if Self::has_untracked_live_pools(env) {
             return Err(FactoryError::OutstandingLiabilities);
@@ -1202,6 +1110,7 @@ mod test {
             max_players: 10,
             round_duration: 60,
             start_deadline: env.ledger().timestamp() + 86_400,
+            option_count: 2,
         }
     }
 
@@ -1385,6 +1294,12 @@ mod test {
     #[test]
     fn create_pool_rejects_fewer_than_two_players() {
         assert_invalid_config(|config| config.min_players = 1);
+    }
+
+    #[test]
+    fn create_pool_rejects_unsupported_option_counts() {
+        assert_invalid_config(|config| config.option_count = 1);
+        assert_invalid_config(|config| config.option_count = 4);
     }
 
     #[test]

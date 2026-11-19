@@ -28,6 +28,9 @@ pub struct PoolConfig {
     /// cancelled permissionlessly via `cancel_unstarted` (#1579). Bounded by
     /// the factory relative to the creation ledger.
     pub start_deadline: u64,
+    /// Number of supported choices. `2` preserves the binary arena rules;
+    /// `3` enables the third minority option.
+    pub option_count: u32,
 }
 
 /// The vault settings `create_pool` checks a pool against (#1634).

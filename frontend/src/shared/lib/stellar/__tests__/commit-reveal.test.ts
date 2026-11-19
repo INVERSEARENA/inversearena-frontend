@@ -17,6 +17,7 @@ import {
 } from "../commit-reveal";
 
 const PUBLIC_KEY = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
+const PLAYER = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
 
 // Same arena/player the golden vector `heads-zero-salt` uses (contract/test-vectors).
 const ARENA_ID = "CAIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRDB3V";
@@ -83,6 +84,12 @@ describe("computeCommitment", () => {
   it("matches an independent SHA-256 of the bound preimage for Tails (byte 1)", async () => {
     const expected = independentSha256(boundPreimage(1, salt, context));
     const actual = await computeCommitment("Tails", salt, context);
+    expect(Buffer.from(actual).equals(Buffer.from(expected))).toBe(true);
+  });
+
+  it("matches an independent SHA-256 for the third option (byte 2)", async () => {
+    const expected = independentSha256(boundPreimage(2, salt, context));
+    const actual = await computeCommitment("Option3", salt, context);
     expect(Buffer.from(actual).equals(Buffer.from(expected))).toBe(true);
   });
 

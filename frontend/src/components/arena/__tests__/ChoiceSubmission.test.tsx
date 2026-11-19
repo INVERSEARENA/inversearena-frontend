@@ -69,6 +69,20 @@ describe("ChoiceSubmission", () => {
     expect(tailsButton).toBeEnabled();
   });
 
+  it("renders the third choice for a three-option arena", () => {
+    render(
+      <ChoiceSubmission
+        arenaId="arena-1"
+        roundNumber={1}
+        deadline={new Date(Date.now() + 300_000).toISOString()}
+        arenaStatus="open"
+        optionCount={3}
+        wallet={mockWallet}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /Submit Option 3 choice/i })).toBeEnabled();
+  });
+
   it("allows choice submission when joinDeadline is null (open-ended arena) (#1334)", async () => {
     // When deadline is an empty string (passed from null joinDeadline),
     // the component should treat it as "no deadline" and allow submission

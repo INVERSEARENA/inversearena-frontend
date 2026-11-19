@@ -22,7 +22,7 @@
 
 import { Address } from "@stellar/stellar-sdk";
 
-export type RoundChoice = "Heads" | "Tails";
+export type RoundChoice = "Heads" | "Tails" | "Option3";
 
 const STORAGE_PREFIX = "inversearena:commit-reveal";
 
@@ -31,7 +31,7 @@ function storageKey(arenaId: string, round: number, publicKey: string): string {
 }
 
 function choiceToByte(choice: RoundChoice): number {
-  return choice === "Heads" ? 0 : 1;
+  return choice === "Heads" ? 0 : choice === "Tails" ? 1 : 2;
 }
 
 /** Generates a cryptographically random 32-byte salt via WebCrypto. */
@@ -116,7 +116,10 @@ export async function computeCommitment(
   context: CommitmentContext,
 ): Promise<Uint8Array> {
   const preimage = buildCommitmentPreimage(choice, salt, context);
-  const digest = await crypto.subtle.digest("SHA-256", preimage);
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new Uint8Array(preimage).buffer as ArrayBuffer,
+  );
   return new Uint8Array(digest);
 }
 
@@ -184,7 +187,7 @@ export function loadCommitment(arenaId: string, round: number, publicKey: string
 
   try {
     const parsed = JSON.parse(raw) as StoredCommitmentJson;
-    if (parsed.choice !== "Heads" && parsed.choice !== "Tails") return null;
+    if (parsed.choice !== "Heads" && parsed.choice !== "Tails" && parsed.choice !== "Option3") return null;
     const salt = base64ToBytes(parsed.salt);
     if (salt.length !== 32) return null;
     return { choice: parsed.choice, salt };

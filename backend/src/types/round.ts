@@ -11,7 +11,7 @@ export enum RoundState {
 
 export const PlayerChoiceSchema = z.object({
   userId: z.string().uuid(),
-  choice: z.enum(['heads', 'tails']),
+  choice: z.enum(['heads', 'tails', 'option3']),
   stake: MoneySchema,
 });
 
@@ -126,7 +126,7 @@ export const ROUND_PROOF_BUNDLE_VERSION = 1 as const;
  */
 export interface ProofBundlePlayerChoice {
   userId: string;
-  choice: 'heads' | 'tails';
+  choice: 'heads' | 'tails' | 'option3';
 }
 
 /** Revealed-choice tally the bundle claims for the round, mirroring the
@@ -135,6 +135,7 @@ export interface ProofBundlePlayerChoice {
 export interface ProofBundleTally {
   heads: number;
   tails: number;
+  option3?: number;
 }
 
 /**
@@ -199,7 +200,7 @@ export interface CommitReceipt {
   /** Present only when status === "missing". */
   reason?: CommitReceiptMissingReason;
   /** The player's revealed choice, present only when status === "accepted". */
-  choice?: "heads" | "tails";
+  choice?: "heads" | "tails" | "option3";
   /** Server timestamp (ISO 8601) this status was computed at — see §5/§7 on staleness. */
   asOf: string;
 }

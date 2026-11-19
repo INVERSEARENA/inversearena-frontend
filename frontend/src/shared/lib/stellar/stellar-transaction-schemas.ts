@@ -11,6 +11,7 @@ export const CreatePoolParamsSchema = z.object({
   currency: PoolCurrencySchema,
   roundSpeed: RoundSpeedSchema,
   arenaCapacity: ArenaCapacitySchema,
+  optionCount: z.union([z.literal(2), z.literal(3)]).default(2),
   /** Seconds from now until the lobby stops accepting joins (#1579). */
   startDeadlineSeconds: z.number().int().positive().max(2_592_000).optional(),
   /** SHA-256 of the canonical metadata JSON (#1577), as 32 bytes. */

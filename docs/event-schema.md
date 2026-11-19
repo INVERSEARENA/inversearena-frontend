@@ -254,3 +254,10 @@ async function indexArenaEvents(
 - `i128` values are encoded as XDR `SCV_I128`; decode with `scValToNative` from `@stellar/stellar-sdk`.
 - `Address` values are encoded as XDR `SCV_ADDRESS`; call `.toString()` on the decoded `Address` to get the strkey.
 - `FINISH` can be emitted by either `finish_game()` (admin-driven) or `resolve_round()` (auto when ≤ 1 survivor). Index both paths.
+# Three-option round resolution
+
+Three-option arenas emit the existing `arena/rslvd2` event unchanged and an
+additional `arena/rslvd3` event. The `rslvd3` data tuple is
+`(version=2, heads_count, tails_count, option3_count, eliminated, survivors)`;
+the round number remains indexed in topic 2. Consumers should prefer `rslvd3`
+when present and otherwise decode `rslvd2` as a binary tally.

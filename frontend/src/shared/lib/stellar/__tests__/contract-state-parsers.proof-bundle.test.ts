@@ -99,9 +99,31 @@ describe("computeSurvivingChoice", () => {
   it("boundary: a single submitter survives", () => {
     expect(computeSurvivingChoice({ heads: 1, tails: 0 })).toBe("heads");
   });
+
+  it("handles a three-option tie for the least-used choices", () => {
+    expect(computeSurvivingChoice({ heads: 2, tails: 1, option3: 1 })).toBeNull();
+  });
 });
 
 describe("recomputeSurvivorship — normal paths", () => {
+  it("keeps every used choice tied for the three-option minimum", () => {
+    const bundle = buildBundle({
+      playerChoices: [
+        { userId: "p1", choice: "heads" },
+        { userId: "p2", choice: "heads" },
+        { userId: "p3", choice: "tails" },
+        { userId: "p4", choice: "option3" },
+      ],
+      allActivePlayerIds: ["p1", "p2", "p3", "p4"],
+      tally: { heads: 2, tails: 1, option3: 1 },
+      eliminatedPlayers: ["p1", "p2"],
+      survivors: ["p3", "p4"],
+    });
+    const result = recomputeSurvivorship(bundle);
+    expect(result.recomputedSurvivors).toEqual(["p3", "p4"]);
+    expect(result.matchesBundleClaim).toBe(true);
+  });
+
   it("recomputes minority-wins elimination and agrees with the bundle's own claim", () => {
     const bundle = buildBundle();
     const result = recomputeSurvivorship(bundle);

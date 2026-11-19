@@ -128,12 +128,13 @@ export const ROUND_PROOF_BUNDLE_VERSION = 1 as const;
 
 export interface ProofBundlePlayerChoice {
   userId: string;
-  choice: "heads" | "tails";
+  choice: "heads" | "tails" | "option3";
 }
 
 export interface ProofBundleTally {
   heads: number;
   tails: number;
+  option3?: number;
 }
 
 export interface ProofBundleNetwork {

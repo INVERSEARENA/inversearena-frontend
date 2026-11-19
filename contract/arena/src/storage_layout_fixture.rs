@@ -37,8 +37,9 @@ mod tests {
         let admin = fixed_address(&env, 1);
         let player = fixed_address(&env, 2);
 
-        let samples: [(&str, soroban_sdk::Bytes); 9] = [
+        let samples: [(&str, soroban_sdk::Bytes); 11] = [
             ("Choice::Heads", to_xdr(&env, Choice::Heads)),
+            ("Choice::Option3", to_xdr(&env, Choice::Option3)),
             (
                 "PlayerState",
                 to_xdr(
@@ -50,6 +51,7 @@ mod tests {
                 ),
             ),
             ("DataKey::Player", to_xdr(&env, DataKey::Player(player.clone()))),
+            ("DataKey::OptionCount", to_xdr(&env, DataKey::OptionCount)),
             (
                 "DataKey::EliminationReason",
                 to_xdr(&env, DataKey::EliminationReason(player)),
