@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 20903)
-Total output lines: 2158
-
 #![no_std]
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
@@ -997,7 +994,105 @@ impl FactoryContract {
                 }
             }
         }
-        resu…903 tokens truncated…            return Err(FactoryError::OutstandingLiabilities);
+        result
+    }
+
+    /// #1613: Return pools created by `host`, paged by `page` (0-indexed).
+    ///
+    /// Each page contains up to `HOST_POOLS_PAGE_SIZE` pool IDs.  The caller
+    /// iterates pages until an empty page is returned.
+    pub fn get_arenas_by_host(env: Env, host: Address, page: u32) -> Vec<ArenaMetadata> {
+        let pool_ids = FactoryStorage::get_host_pools_page(&env, &host, page);
+        let mut result: Vec<ArenaMetadata> = Vec::new(&env);
+        for i in 0..pool_ids.len() {
+            if let Some(pool_id) = pool_ids.get(i) {
+                if let Some(meta) = FactoryStorage::load_pool(&env, pool_id) {
+                    result.push_back(meta);
+                }
+            }
+        }
+        result
+    }
+
+    /// #1613: Return pools in `status`, paged by `offset` / `limit`.
+    ///
+    /// Uses the StatusBucket secondary index.  Stable ordering is NOT
+    /// guaranteed across status transitions (swap-remove may reorder IDs).
+    pub fn get_arenas_by_status(
+        env: Env,
+        status: ArenaStatus,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<ArenaMetadata> {
+        let pool_ids = FactoryStorage::get_pools_by_status(&env, &status, offset, limit);
+        let mut result: Vec<ArenaMetadata> = Vec::new(&env);
+        for i in 0..pool_ids.len() {
+            if let Some(pool_id) = pool_ids.get(i) {
+                if let Some(meta) = FactoryStorage::load_pool(&env, pool_id) {
+                    result.push_back(meta);
+                }
+            }
+        }
+        result
+    }
+
+
+    // ── #1688: registry lifecycle helpers ────────────────────────────────
+
+    /// Record a lifecycle transition and bump the registry revision (#1688).
+    fn set_lifecycle(
+        env: &Env,
+        kind: &RegistryKind,
+        address: &Address,
+        state: RegistryState,
+        reason: Symbol,
+    ) {
+        let effective_ledger = env.ledger().timestamp();
+        FactoryStorage::save_lifecycle(
+            env,
+            kind,
+            address,
+            &RegistryEntry {
+                state: state.clone(),
+                effective_ledger,
+                reason: reason.clone(),
+            },
+        );
+        let revision = FactoryStorage::bump_registry_revision(env);
+        env.events().publish(
+            (Self::lifecycle_event(env, kind, &state),),
+            (address.clone(), effective_ledger, reason, revision),
+        );
+    }
+
+    /// The lifecycle record of an entry (#1688).
+    ///
+    /// An entry that predates the lifecycle — an unknown legacy entry — reads
+    /// as `Active` with ledger `0` and reason `legacy`.
+    fn lifecycle_of(env: &Env, kind: &RegistryKind, address: &Address) -> RegistryEntry {
+        FactoryStorage::load_lifecycle(env, kind, address).unwrap_or(RegistryEntry {
+            state: RegistryState::Active,
+            effective_ledger: 0,
+            reason: Symbol::new(env, "legacy"),
+        })
+    }
+
+    /// Reject an entry that is not `Active` (#1688).
+    fn require_active(env: &Env, kind: &RegistryKind, address: &Address) -> Result<(), FactoryError> {
+        if Self::lifecycle_of(env, kind, address).state != RegistryState::Active {
+            return Err(FactoryError::DeprecatedIntegration);
+        }
+        Ok(())
+    }
+
+    /// Reject a transition to `Disabled` while liabilities remain (#1688).
+    fn require_no_liabilities(
+        env: &Env,
+        kind: &RegistryKind,
+        address: &Address,
+    ) -> Result<(), FactoryError> {
+        if FactoryStorage::live_use(env, kind, address) > 0 {
+            return Err(FactoryError::OutstandingLiabilities);
         }
         if Self::has_untracked_live_pools(env) {
             return Err(FactoryError::OutstandingLiabilities);
