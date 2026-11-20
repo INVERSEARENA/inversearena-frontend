@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "crypto";
 import { createHash } from "crypto";
 import jwt from "jsonwebtoken";
-import { Keypair } from "@stellar/stellar-sdk";
+import { Keypair, Transaction } from "@stellar/stellar-sdk";
 import { NonceModel } from "../db/models/nonce.model";
 import { UserModel } from "../db/models/user.model";
 import { RefreshTokenModel, generateFamilyId } from "../db/models/refreshToken.model";
@@ -12,6 +12,8 @@ import { getStellarConfig } from "../config/stellarConfig";
 import { env } from "../config/env";
 
 const NONCE_PREFIX = "Sign this message to authenticate with InverseArena:\n";
+/** Must stay in sync with the frontend challenge builder (session/challenge.ts). */
+const CHALLENGE_DATA_KEY = "inversearena_auth_challenge";
 
 const PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
 
@@ -104,13 +106,7 @@ export class AuthService {
     return { nonce, expiresAt };
   }
 
-  async verifySignatureAndLogin(
-    walletAddress: string,
-    signature: string,
-    device?: DeviceMetadata
-  ): Promise<TokenPair & { user: AuthUser }> {
-    validateWalletAddress(walletAddress);
-
+  private async findValidNonce(walletAddress: string) {
     const nonceRecord = await NonceModel.findOne({
       walletAddress,
       used: false,
@@ -124,22 +120,68 @@ export class AuthService {
       );
       throw err;
     }
+    return nonceRecord;
+  }
 
-    let valid = false;
+  /**
+   * Verifies the fallback proof for wallets that cannot sign an arbitrary
+   * message. The signed XDR is never submitted on-chain: it carries the SHA-256
+   * digest of the backend nonce in a manageData operation, so replaying it for
+   * a different challenge (or network) fails verification.
+   */
+  private verifyChallengeTransaction(signedChallengeXdr: string, nonce: string, walletAddress: string): void {
+    let transaction: Transaction;
     try {
-      const keypair = Keypair.fromPublicKey(walletAddress);
-      const messageBuffer = Buffer.from(nonceRecord.nonce, "utf-8");
-      const signatureBuffer = Buffer.from(signature, "base64");
-      valid = keypair.verify(messageBuffer, signatureBuffer);
+      transaction = new Transaction(signedChallengeXdr, getStellarConfig().networkPassphrase);
     } catch {
-      valid = false;
-    }
-
-    if (!valid) {
-      const err = Object.assign(new Error("Invalid signature"), { status: 401 });
+      const err = Object.assign(new Error("Invalid challenge transaction"), { status: 401 });
       throw err;
     }
 
+    const expectedDigest = createHash("sha256").update(nonce, "utf-8").digest();
+    const carriesNonce = transaction.operations.some((operation) => {
+      if (operation.type !== "manageData" || operation.name !== CHALLENGE_DATA_KEY) return false;
+      // stellar-base exposes manageData values as a Buffer when parsing XDR,
+      // while some SDK versions decouple them as base64 strings. Accept both.
+      const value = operation.value as unknown;
+      let valueBytes: Buffer;
+      if (typeof value === "string") {
+        valueBytes = Buffer.from(value, "base64");
+      } else if (value instanceof Uint8Array) {
+        valueBytes = Buffer.from(value);
+      } else {
+        return false;
+      }
+      return valueBytes.equals(expectedDigest);
+    });
+
+    const maxTime = transaction.timeBounds?.maxTime;
+    const notExpired = maxTime === undefined || Number(maxTime) > Math.floor(Date.now() / 1000);
+
+    let signatureValid = false;
+    if (carriesNonce && notExpired) {
+      try {
+        const keypair = Keypair.fromPublicKey(walletAddress);
+        const hash = transaction.hash();
+        signatureValid = transaction.signatures.some((signature) =>
+          keypair.verify(hash, signature.signature())
+        );
+      } catch {
+        signatureValid = false;
+      }
+    }
+
+    if (!signatureValid) {
+      const err = Object.assign(new Error("Invalid challenge signature"), { status: 401 });
+      throw err;
+    }
+  }
+
+  private async completeLogin(
+    nonceRecord: { _id: unknown; nonce: string },
+    walletAddress: string,
+    device?: DeviceMetadata
+  ): Promise<TokenPair & { user: AuthUser }> {
     await NonceModel.findByIdAndUpdate(nonceRecord._id, { used: true });
 
     const now = new Date();
@@ -162,6 +204,44 @@ export class AuthService {
     };
 
     return { ...tokens, user: authUser };
+  }
+
+  async verifySignatureAndLogin(
+    walletAddress: string,
+    signature: string,
+    device?: DeviceMetadata
+  ): Promise<TokenPair & { user: AuthUser }> {
+    validateWalletAddress(walletAddress);
+    const nonceRecord = await this.findValidNonce(walletAddress);
+
+    let valid = false;
+    try {
+      const keypair = Keypair.fromPublicKey(walletAddress);
+      const messageBuffer = Buffer.from(nonceRecord.nonce, "utf-8");
+      const signatureBuffer = Buffer.from(signature, "base64");
+      valid = keypair.verify(messageBuffer, signatureBuffer);
+    } catch {
+      valid = false;
+    }
+
+    if (!valid) {
+      const err = Object.assign(new Error("Invalid signature"), { status: 401 });
+      throw err;
+    }
+
+    return this.completeLogin(nonceRecord, walletAddress, device);
+  }
+
+  /** Fallback login for wallets that only support signing transactions. */
+  async verifyChallengeAndLogin(
+    walletAddress: string,
+    signedChallengeXdr: string,
+    device?: DeviceMetadata
+  ): Promise<TokenPair & { user: AuthUser }> {
+    validateWalletAddress(walletAddress);
+    const nonceRecord = await this.findValidNonce(walletAddress);
+    this.verifyChallengeTransaction(signedChallengeXdr, nonceRecord.nonce, walletAddress);
+    return this.completeLogin(nonceRecord, walletAddress, device);
   }
 
   async refreshTokens(refreshToken: string): Promise<TokenPair> {
