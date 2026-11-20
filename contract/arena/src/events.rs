@@ -132,6 +132,23 @@ impl ArenaEvents {
         );
     }
 
+    /// Three-choice proof event. `rslvd2` remains emitted unchanged for old
+    /// indexers; consumers that understand this event can verify all tallies.
+    pub fn round_resolved_v3(
+        env: &Env,
+        round: u32,
+        heads_count: u32,
+        tails_count: u32,
+        option3_count: u32,
+        eliminated: u32,
+        survivors: u32,
+    ) {
+        env.events().publish(
+            (ns(env), symbol_short!("rslvd3"), round),
+            (2u32, heads_count, tails_count, option3_count, eliminated, survivors),
+        );
+    }
+
     pub fn round_tied(env: &Env, round: u32, survivors: u32) {
         env.events()
             .publish((ns(env), symbol_short!("tied")), (EVENT_SCHEMA_VERSION, round, survivors));

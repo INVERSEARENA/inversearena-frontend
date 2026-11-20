@@ -23,6 +23,7 @@ const VECTORS_PATH = join(
   "..",
   "..",
   "..",
+  "..",
   "contract",
   "test-vectors",
   "commitment.json",
@@ -30,7 +31,7 @@ const VECTORS_PATH = join(
 
 interface CommitmentVector {
   name: string;
-  choice: "Heads" | "Tails";
+  choice: "Heads" | "Tails" | "Option3";
   choiceByte: number;
   salt: string;
   context: { arena: string; round: number; player: string };
@@ -95,7 +96,7 @@ describe("golden test vectors (#1643)", () => {
       async (_name, vector) => {
         const salt = hexToBytes(vector.salt);
         expect(salt.length).toBe(32);
-        expect(vector.choiceByte).toBe(vector.choice === "Heads" ? 0 : 1);
+        expect(vector.choiceByte).toBe(vector.choice === "Heads" ? 0 : vector.choice === "Tails" ? 1 : 2);
 
         const round = Buffer.alloc(4);
         round.writeUInt32BE(vector.context.round);

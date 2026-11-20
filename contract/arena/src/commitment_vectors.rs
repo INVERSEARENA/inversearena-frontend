@@ -33,6 +33,7 @@ fn choice_byte(choice: &str) -> u8 {
     match choice {
         "Heads" => 0,
         "Tails" => 1,
+        "Option3" => 2,
         other => panic!("unknown choice in vector: {other}"),
     }
 }

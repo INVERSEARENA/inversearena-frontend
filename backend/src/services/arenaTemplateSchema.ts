@@ -45,6 +45,8 @@ export interface ArenaTemplatePayload {
   asset: string;
   /** Arena capacity (maximum players). */
   capacity: number;
+  /** Two-choice default keeps templates created before #1718 compatible. */
+  optionCount?: 2 | 3;
   /** The round schedule. */
   roundSpeed: TemplateRoundSpeed;
   /** Round duration in seconds. */

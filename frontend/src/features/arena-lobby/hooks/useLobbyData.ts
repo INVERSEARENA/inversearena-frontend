@@ -16,7 +16,7 @@ import { z } from "zod";
 const arenaParticipantSchema = z.object({
   id: z.string(),
   walletAddress: z.string(),
-  choice: z.enum(["heads", "tails"]).nullable(),
+  choice: z.enum(["heads", "tails", "option3"]).nullable(),
   stake: z.number(),
   status: z.enum(["READY", "ACTIVE", "ELIMINATED"]),
   roundNumber: z.number(),
@@ -40,6 +40,7 @@ const arenaStatsSchema = z.object({
   degraded: z.boolean().optional(),
   ledgerSequence: z.number().nullable().optional(),
   snapshotVerifiedAt: z.string().nullable().optional(),
+  optionCount: z.union([z.literal(2), z.literal(3)]).optional(),
 });
 
 const arenaParticipantsResponseSchema = z.object({

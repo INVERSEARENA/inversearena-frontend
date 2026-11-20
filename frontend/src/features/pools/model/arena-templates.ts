@@ -31,6 +31,7 @@ export interface ArenaTemplatePayload {
   assetDecimals: number;
   asset: string;
   capacity: number;
+  optionCount?: 2 | 3;
   roundSpeed: RoundSpeed;
   roundDurationSeconds: number;
   startDeadlineSeconds?: number;
@@ -163,6 +164,7 @@ export interface TemplateFormValues {
   currency: Currency;
   roundSpeed: RoundSpeed;
   arenaCapacity: number;
+  optionCount?: 2 | 3;
 }
 
 /** The round duration each round speed implies, in seconds. */
@@ -187,6 +189,7 @@ export function toTemplatePayload(values: TemplateFormValues): ArenaTemplatePayl
     assetDecimals: decimals,
     asset: POOL_TOKEN_IDS[values.currency],
     capacity: values.arenaCapacity,
+    optionCount: values.optionCount ?? 2,
     roundSpeed: values.roundSpeed,
     roundDurationSeconds: ROUND_SPEED_SECONDS[values.roundSpeed],
     yieldVault: stellarConfig.rwaVaultContractId,
@@ -209,7 +212,7 @@ export function applyTemplateToForm(
   );
   if (!currency) {
     return {
-      values: { stakeAmountInput: "0", currency: "USDC", roundSpeed: payload.roundSpeed, arenaCapacity: payload.capacity },
+      values: { stakeAmountInput: "0", currency: "USDC", roundSpeed: payload.roundSpeed, arenaCapacity: payload.capacity, optionCount: payload.optionCount ?? 2 },
       error: "This template uses an asset the creation form does not offer.",
     };
   }
@@ -221,6 +224,7 @@ export function applyTemplateToForm(
       currency,
       roundSpeed: payload.roundSpeed,
       arenaCapacity: payload.capacity,
+      optionCount: payload.optionCount ?? 2,
     },
   };
 }

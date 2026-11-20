@@ -65,6 +65,7 @@ interface PoolCreationData {
   currency: Currency;
   roundSpeed: RoundSpeed;
   arenaCapacity: number;
+  optionCount: 2 | 3;
 }
 
 export function PoolCreationModal({
@@ -78,6 +79,7 @@ export function PoolCreationModal({
   const [currency, setCurrency] = useState<Currency>("USDC");
   const [roundSpeed, setRoundSpeed] = useState<RoundSpeed>("1M");
   const [arenaCapacity, setArenaCapacity] = useState(50);
+  const [optionCount, setOptionCount] = useState<2 | 3>(2);
 
   const [stakeError, setStakeError] = useState<string>("");
   const [capacityError, setCapacityError] = useState<string>("");
@@ -222,6 +224,7 @@ export function PoolCreationModal({
       setIsFormValid(false);
       setRoundSpeed("1M");
       setArenaCapacity(50);
+      setOptionCount(2);
       setIsDeploying(false);
       setDraftRestored(false);
     }
@@ -243,6 +246,7 @@ export function PoolCreationModal({
       if (rematchPrefill.currency) setCurrency(rematchPrefill.currency);
       setRoundSpeed(rematchPrefill.roundSpeed);
       setArenaCapacity(rematchPrefill.arenaCapacity);
+      setOptionCount(2);
       setDraftRestored(false);
       return;
     }
@@ -252,6 +256,7 @@ export function PoolCreationModal({
       setCurrency(draft.currency);
       setRoundSpeed(draft.roundSpeed);
       setArenaCapacity(draft.arenaCapacity);
+      setOptionCount(draft.optionCount);
       setDraftRestored(true);
     }
     // rematchPrefill is derived from `rematch`; re-running on its identity is
@@ -268,8 +273,8 @@ export function PoolCreationModal({
       suppressNextDraftSaveRef.current = false;
       return;
     }
-    savePoolDraft({ stakeAmountInput, currency, roundSpeed, arenaCapacity });
-  }, [isOpen, stakeAmountInput, currency, roundSpeed, arenaCapacity]);
+    savePoolDraft({ stakeAmountInput, currency, roundSpeed, arenaCapacity, optionCount });
+  }, [isOpen, stakeAmountInput, currency, roundSpeed, arenaCapacity, optionCount]);
 
   const handleDiscardDraft = () => {
     // Resetting fields below triggers the save effect on the next render;
@@ -281,6 +286,7 @@ export function PoolCreationModal({
     setCurrency("USDC");
     setRoundSpeed("1M");
     setArenaCapacity(50);
+      setOptionCount(2);
     setDraftRestored(false);
   };
 
@@ -476,6 +482,19 @@ export function PoolCreationModal({
                   </div>
                 )}
               </section>
+              <section className="bg-[#1e293b] border-3 border-black p-5 shadow-[4px_4px_0px_0px_#000]">
+                <h3 className="text-lg font-black uppercase tracking-tight text-white mb-3">Arena choices</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  {([2, 3] as const).map((count) => (
+                    <button key={count} type="button" aria-pressed={optionCount === count}
+                      onClick={() => setOptionCount(count)}
+                      className={`border-3 border-black py-3 font-black transition-all ${optionCount === count ? "bg-primary text-black" : "bg-background-dark text-white hover:bg-primary hover:text-black"}`}>
+                      {count === 2 ? "2 options" : "3 options"}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-2 text-xs text-slate-400">The least-selected revealed choice survives. Tied least-used choices all survive; unused choices are ignored.</p>
+              </section>
 
               <section className="bg-[#1e293b] border-3 border-black p-5 shadow-[4px_4px_0px_0px_#000]">
                 <div className="flex items-center gap-2 mb-5">
@@ -636,12 +655,13 @@ export function PoolCreationModal({
                 <TemplatePanel
                   isOpen={showTemplates}
                   onClose={() => setShowTemplates(false)}
-                  currentValues={{ stakeAmountInput, currency, roundSpeed, arenaCapacity }}
+                    currentValues={{ stakeAmountInput, currency, roundSpeed, arenaCapacity, optionCount }}
                   onApply={(values: TemplateFormValues) => {
                     setStakeAmountInput(values.stakeAmountInput);
                     setCurrency(values.currency);
                     setRoundSpeed(values.roundSpeed);
                     setArenaCapacity(values.arenaCapacity);
+                    setOptionCount(values.optionCount ?? 2);
                     setShowTemplates(false);
                   }}
                 />
@@ -674,6 +694,7 @@ export function PoolCreationModal({
                       { label: "Stake Amount", value: `${stakeAmount} ${currency}` },
                       { label: "Round Speed", value: roundSpeed },
                       { label: "Capacity", value: arenaCapacity },
+              { label: "Choices", value: optionCount },
                       { label: "Network Fee", value: formatFeeDisplay(estimatedFee) },
                       { label: "Network", value: "Soroban Testnet" },
                       ...(rematch
@@ -732,7 +753,7 @@ export function PoolCreationModal({
           if (!address) throw new Error("Wallet disconnected. Please reconnect and try again.");
           await runTrackedTransaction({
             kind: "create_pool",
-            actionKey: `create_pool:${currency}:${stakeAmount}:${roundSpeed}:${arenaCapacity}`,
+            actionKey: `create_pool:${currency}:${stakeAmount}:${roundSpeed}:${arenaCapacity}:${optionCount}`,
             publicKey: address,
             buildTransaction: () =>
               buildCreatePoolTransaction(address, {
@@ -740,6 +761,7 @@ export function PoolCreationModal({
                 currency,
                 roundSpeed,
                 arenaCapacity,
+                optionCount,
               }),
             signTransaction,
             submitSignedTransaction,
@@ -770,6 +792,7 @@ export function PoolCreationModal({
             currency,
             roundSpeed,
             arenaCapacity,
+            optionCount,
           });
           setShowTxModal(false);
           onClose();

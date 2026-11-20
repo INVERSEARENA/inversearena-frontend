@@ -1,7 +1,7 @@
 export type ArenaCommandCall =
   | { name: "join_arena" }
   | { name: "submit_commitment"; commitmentHex: string; round: number }
-  | { name: "reveal_choice"; choice: "Heads" | "Tails"; saltHex: string; round: number }
+  | { name: "reveal_choice"; choice: "Heads" | "Tails" | "Option3"; saltHex: string; round: number }
   | { name: "claim" }
   | { name: "stake"; amountAtomic: string }
   | { name: "unstake"; amountAtomic: string };

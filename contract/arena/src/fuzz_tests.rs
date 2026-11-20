@@ -15,7 +15,7 @@ mod fuzz_tests {
             heads in 0u32..50,
             tails in 0u32..50,
         ) {
-            let tally = Tally { heads, tails };
+            let tally = Tally { heads, tails, option3: 0 };
 
             if heads == 0 && tails == 0 {
                 // No votes at all — no survivor.
@@ -53,7 +53,7 @@ mod fuzz_tests {
             heads in 0u32..50,
             tails in 0u32..50,
         ) {
-            let tally = Tally { heads, tails };
+            let tally = Tally { heads, tails, option3: 0 };
             prop_assert_eq!(tally.total(), heads + tails);
 
             match surviving_choice(&tally) {

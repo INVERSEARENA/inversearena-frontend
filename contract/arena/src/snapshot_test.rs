@@ -21,11 +21,13 @@ mod snapshot_tests {
         let env = Env::default();
         let heads = to_xdr(&env, Choice::Heads);
         let tails = to_xdr(&env, Choice::Tails);
+        let option3 = to_xdr(&env, Choice::Option3);
 
         assert!(heads.len() > 0);
         assert!(tails.len() > 0);
         // Variant order must be stable — reordering would change discriminants.
         assert_ne!(heads, tails);
+        assert_ne!(tails, option3);
     }
 
     /// PlayerState is stored per-player in persistent storage. Adding, removing,

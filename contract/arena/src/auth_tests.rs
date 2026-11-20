@@ -304,6 +304,7 @@ fn pool_config(env: &Env, token: &Address, vault: &Address, oracle: &Address) ->
         max_players: 10,
         round_duration: ROUND,
         start_deadline: env.ledger().timestamp() + 86_400,
+        option_count: 2,
     }
 }
 

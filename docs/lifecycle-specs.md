@@ -67,3 +67,17 @@ The spec documents what the contract defines. The backend code does not match it
 These are not fixed by this change. They need a decision on which read the backend
 should use (for example `get_settlement` or `get_player_status`) before the reader
 is changed.
+# Three-option minority rounds
+
+New arenas may set `PoolConfig.option_count` to `2` or `3`. Existing arenas
+without this storage key remain binary (`2`). The third choice is encoded as
+`Option3` / byte `2`; `Heads` and `Tails` keep bytes `0` and `1`. Commitments
+remain bound to the arena, round, and player.
+
+After reveals, each choice with at least one vote is compared by count. In a
+three-option arena, every used choice tied for the lowest count survives; a
+choice with no votes is ignored so an unused option cannot eliminate every
+revealer. In a binary arena, an equal tally keeps the established rule that
+nobody is eliminated. Non-revealers are eliminated in either mode. The
+versioned `rslvd3` event adds the third tally while the existing `rslvd2`
+event remains available for older consumers.

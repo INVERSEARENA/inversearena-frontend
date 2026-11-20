@@ -65,6 +65,7 @@ pub trait ArenaInterface {
     );
     /// Set right after `initialize`; see arena's `set_start_deadline` (#1579).
     fn set_start_deadline(env: Env, deadline: u64);
+    fn set_option_count(env: Env, option_count: u32);
 }
 
 /// Local stub for the RWA adapter's `config()` read (#1634). Local for the
@@ -666,6 +667,7 @@ impl FactoryContract {
             || config.min_players < MIN_PLAYERS
             || config.min_players > config.max_players
             || config.max_players > MAX_PLAYERS_ALLOWED
+            || !(config.option_count == 2 || config.option_count == 3)
         {
             return Err(FactoryError::InvalidConfig);
         }
@@ -739,6 +741,7 @@ impl FactoryContract {
             &config.round_duration,
         );
         ArenaClient::new(&env, &arena).set_start_deadline(&config.start_deadline);
+        ArenaClient::new(&env, &arena).set_option_count(&config.option_count);
 
         FactoryStorage::save_creator_stake(
             &env,
@@ -1202,6 +1205,7 @@ mod test {
             max_players: 10,
             round_duration: 60,
             start_deadline: env.ledger().timestamp() + 86_400,
+            option_count: 2,
         }
     }
 
@@ -1385,6 +1389,12 @@ mod test {
     #[test]
     fn create_pool_rejects_fewer_than_two_players() {
         assert_invalid_config(|config| config.min_players = 1);
+    }
+
+    #[test]
+    fn create_pool_rejects_unsupported_option_counts() {
+        assert_invalid_config(|config| config.option_count = 1);
+        assert_invalid_config(|config| config.option_count = 4);
     }
 
     #[test]

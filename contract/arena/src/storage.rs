@@ -81,6 +81,8 @@ pub(crate) enum DataKey {
     /// treated as already expired, so an unbounded legacy pause can never
     /// lock player funds.
     PausedAt,
+    /// Choice count for this arena; absent on legacy instances means binary.
+    OptionCount,
 }
 
 pub struct ArenaRepository<'a> {
@@ -385,6 +387,16 @@ impl TtlRepository<soroban_sdk::Symbol> for ArenaRepository<'_> {
 pub struct ArenaStorage;
 
 impl ArenaStorage {
+    pub fn save_option_count(env: &Env, count: u32) {
+        Self::extend_persistent_ttl(env, &DataKey::OptionCount);
+        env.storage().persistent().set(&DataKey::OptionCount, &count);
+    }
+
+    pub fn load_option_count(env: &Env) -> u32 {
+        Self::extend_persistent_ttl(env, &DataKey::OptionCount);
+        env.storage().persistent().get(&DataKey::OptionCount).unwrap_or(2)
+    }
+
     fn extend_persistent_ttl<K>(env: &Env, key: &K)
     where
         K: IntoVal<Env, Val>,

@@ -34,6 +34,7 @@ const PayloadSchema = z.object({
   assetDecimals: z.number().int().min(0).max(9),
   asset: z.string().regex(CONTRACT_ID),
   capacity: z.number().int().min(1).max(10_000),
+  optionCount: z.union([z.literal(2), z.literal(3)]).optional().default(2),
   roundSpeed: z.enum(TEMPLATE_ROUND_SPEEDS),
   roundDurationSeconds: z.number().int().positive(),
   startDeadlineSeconds: z.number().int().positive().optional(),

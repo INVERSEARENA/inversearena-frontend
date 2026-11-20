@@ -251,7 +251,7 @@ export function ArenaLobbyClient({ arenaId, initialStats, initialParticipants, i
             nextCursor={lobby.nextCursor} onLoadMore={(c) => void lobby.fetchParticipants(c, false)} />
           <div className="space-y-6">
             <div id="choice-submission">
-              <ChoiceSubmission arenaId={arenaId} roundNumber={s.currentRound} deadline={s.joinDeadline ?? ""} arenaStatus={s.status}
+              <ChoiceSubmission arenaId={arenaId} roundNumber={s.currentRound} deadline={s.joinDeadline ?? ""} arenaStatus={s.status} optionCount={s.optionCount}
                 wallet={{ publicKey: wallet.publicKey, isConnected: wallet.isConnected, status: wallet.status, signTransaction: wallet.signTransaction,
                   connectWallet: async () => { const a = await wallet.connect(); if (!a) throw new Error("No address"); return a; } }} />
             </div>

@@ -321,6 +321,7 @@ fn factory_arena_payout_full_lifecycle() {
         max_players:      10,
         round_duration:   3600,
         start_deadline:   env.ledger().timestamp() + 86_400,
+        option_count:   2,
     };
     let metadata_hash = BytesN::from_array(&env, &[9u8; 32]);
     let arena_addr = factory_client.create_pool(&host, &pool_cfg, &metadata_hash);

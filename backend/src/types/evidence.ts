@@ -72,7 +72,7 @@ export interface EvidencePlayerStatus {
   eliminated?: boolean;
   survived?: boolean;
   /** The player's own revealed choice, if any — never another player's. */
-  revealedChoice?: 'heads' | 'tails';
+  revealedChoice?: 'heads' | 'tails' | 'option3';
 }
 
 export interface EvidenceCanonicalIdentifiers {

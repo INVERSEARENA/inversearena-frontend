@@ -41,7 +41,7 @@ export const StellarContractIdSchema = z
 
 export const PoolCurrencySchema = z.enum(["USDC", "XLM"]);
 export const RoundSpeedSchema = z.enum(["30S", "1M", "5M"]);
-export const RoundChoiceSchema = z.enum(["Heads", "Tails"]);
+export const RoundChoiceSchema = z.enum(["Heads", "Tails", "Option3"]);
 
 /**
  * Classic credit asset code (#1487).

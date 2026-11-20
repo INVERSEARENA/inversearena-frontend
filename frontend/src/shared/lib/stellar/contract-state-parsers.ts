@@ -166,7 +166,7 @@ export class ProofBundleNetworkMismatchError extends Error {
   }
 }
 
-export type SurvivingSide = "heads" | "tails" | null;
+export type SurvivingSide = "heads" | "tails" | "option3" | null;
 
 /**
  * The surviving choice under minority-wins rules — mirrors
@@ -175,11 +175,20 @@ export type SurvivingSide = "heads" | "tails" | null;
  */
 export function computeSurvivingChoice(tally: ProofBundleTally): SurvivingSide {
   const { heads, tails } = tally;
-  if (heads === 0 && tails === 0) return null;
-  if (tails === 0) return "heads";
-  if (heads === 0) return "tails";
-  if (heads === tails) return null;
-  return heads < tails ? "heads" : "tails";
+  const option3 = tally.option3 ?? 0;
+  if (option3 === 0) {
+    if (heads === 0 && tails === 0) return null;
+    if (tails === 0) return "heads";
+    if (heads === 0) return "tails";
+    if (heads === tails) return null;
+    return heads < tails ? "heads" : "tails";
+  }
+  const used = ([
+    ["heads", heads], ["tails", tails], ["option3", option3],
+  ] as const).filter(([, count]) => count > 0);
+  const least = Math.min(...used.map(([, count]) => count));
+  const survivors = used.filter(([, count]) => count === least);
+  return survivors.length === 1 ? survivors[0]?.[0] ?? null : null;
 }
 
 export interface SurvivorshipRecomputation {
@@ -246,7 +255,7 @@ export function recomputeSurvivorship(bundle: RoundProofBundle): SurvivorshipRec
   const revealerIds = new Set<string>();
   const recomputedTally: ProofBundleTally = { heads: 0, tails: 0 };
   for (const entry of bundle.playerChoices) {
-    if (entry.choice !== "heads" && entry.choice !== "tails") {
+    if (entry.choice !== "heads" && entry.choice !== "tails" && entry.choice !== "option3") {
       throw new ProofBundleShapeError(`Proof bundle has an invalid choice for player ${entry.userId}`);
     }
     if (!activeSet.has(entry.userId)) {
@@ -259,14 +268,30 @@ export function recomputeSurvivorship(bundle: RoundProofBundle): SurvivorshipRec
     }
     revealerIds.add(entry.userId);
     if (entry.choice === "heads") recomputedTally.heads += 1;
-    else recomputedTally.tails += 1;
+    else if (entry.choice === "tails") recomputedTally.tails += 1;
+    else recomputedTally.option3 = (recomputedTally.option3 ?? 0) + 1;
   }
 
   const nonRevealers = sortedUnique(bundle.allActivePlayerIds.filter((id) => !revealerIds.has(id)));
   const survivingChoice = computeSurvivingChoice(recomputedTally);
 
+  const activeChoices = new Set<SurvivingSide>();
+  if ((recomputedTally.option3 ?? 0) > 0) {
+    const used = ([
+      ["heads", recomputedTally.heads],
+      ["tails", recomputedTally.tails],
+      ["option3", recomputedTally.option3 ?? 0],
+    ] as const).filter(([, count]) => count > 0);
+    const least = Math.min(...used.map(([, count]) => count));
+    for (const [choice, count] of used) if (count === least) activeChoices.add(choice);
+  } else if (recomputedTally.heads === recomputedTally.tails && recomputedTally.heads > 0) {
+    activeChoices.add("heads");
+    activeChoices.add("tails");
+  } else if (survivingChoice) {
+    activeChoices.add(survivingChoice);
+  }
   const eliminatedRevealers = bundle.playerChoices
-    .filter((entry) => survivingChoice !== null && entry.choice !== survivingChoice)
+    .filter((entry) => !activeChoices.has(entry.choice))
     .map((entry) => entry.userId);
 
   const recomputedEliminatedPlayers = sortedUnique([...eliminatedRevealers, ...nonRevealers]);
@@ -275,7 +300,7 @@ export function recomputeSurvivorship(bundle: RoundProofBundle): SurvivorshipRec
   );
 
   const mismatches: string[] = [];
-  if (recomputedTally.heads !== bundle.tally.heads || recomputedTally.tails !== bundle.tally.tails) {
+  if (recomputedTally.heads !== bundle.tally.heads || recomputedTally.tails !== bundle.tally.tails || (recomputedTally.option3 ?? 0) !== (bundle.tally.option3 ?? 0)) {
     mismatches.push(
       `tally: recomputed heads=${recomputedTally.heads} tails=${recomputedTally.tails}, ` +
         `bundle claims heads=${bundle.tally.heads} tails=${bundle.tally.tails}`,

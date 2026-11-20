@@ -655,6 +655,7 @@ export interface OnChainArenaSnapshot {
   playerCount: number;
   gameState: OnChainGameState;
   yieldAccrued: number;
+  optionCount: number;
 }
 
 export interface BatchedOnChainArenaSnapshot extends OnChainArenaSnapshot { arenaId: string }
@@ -684,16 +685,18 @@ export async function getOnChainSnapshotOrThrow(
   vaultContractId: string,
 ): Promise<OnChainArenaSnapshot> {
   const stellarRpcGateway = new StellarRpcGateway();
-  const [playerCountRaw, gameStateRaw, yieldRaw] = await Promise.all([
+  const [playerCountRaw, gameStateRaw, yieldRaw, optionCountRaw] = await Promise.all([
     simulateViewCall(contractId, "get_player_count", stellarRpcGateway),
     simulateViewCall(contractId, "game_state", stellarRpcGateway),
     simulateViewCall(vaultContractId, "get_total_yield", stellarRpcGateway),
+    simulateViewCall(contractId, "get_option_count", stellarRpcGateway).catch(() => 2),
   ]);
 
   return {
     playerCount: Number(playerCountRaw as bigint | number),
     gameState: String(gameStateRaw) as OnChainGameState,
     yieldAccrued: Number(yieldRaw as bigint | number),
+    optionCount: Number(optionCountRaw as bigint | number) === 3 ? 3 : 2,
   };
 }
 

@@ -101,6 +101,8 @@ pub enum GameState {
 pub enum Choice {
     Heads,
     Tails,
+    /// Third choice used by arenas created with `option_count == 3`.
+    Option3,
 }
 
 impl Choice {
@@ -109,6 +111,7 @@ impl Choice {
         match self {
             Choice::Heads => 0,
             Choice::Tails => 1,
+            Choice::Option3 => 2,
         }
     }
 }

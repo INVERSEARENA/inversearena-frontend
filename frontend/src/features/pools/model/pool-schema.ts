@@ -25,7 +25,7 @@ export const poolSchema = z.object({
  * backward compatible, so loadPoolDraft() can tell an old, incompatible
  * draft apart from a current one instead of trusting stale field shapes.
  */
-export const POOL_DRAFT_VERSION = 1;
+export const POOL_DRAFT_VERSION = 2;
 
 /**
  * Unlike poolSchema (which validates the fully-typed, submission-ready
@@ -40,6 +40,7 @@ export const poolDraftSchema = z.object({
   currency: z.enum(["USDC", "XLM"]),
   roundSpeed: z.enum(["30S", "1M", "5M"]),
   arenaCapacity: z.number().int().positive(),
+  optionCount: z.union([z.literal(2), z.literal(3)]).default(2),
   savedAt: z.number().int().nonnegative(),
 });
 

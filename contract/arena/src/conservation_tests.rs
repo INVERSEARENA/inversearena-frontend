@@ -199,6 +199,7 @@ impl World {
                 max_players: PLAYERS as u32,
                 round_duration: ROUND,
                 start_deadline: world.env.ledger().timestamp() + 86_400,
+                option_count: 2,
             };
             let arena = world
                 .factory

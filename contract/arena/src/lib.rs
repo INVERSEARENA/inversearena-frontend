@@ -63,7 +63,8 @@ pub const MAX_PLAYERS_ALLOWED: u32 = 100;
 /// Bumped to 6 for #1572: adds `get_pool_config`, a read-only view of the
 /// arena's full pool configuration, so off-chain rematch prefills read the
 /// arena's own on-chain config instead of cached UI state.
-const CONTRACT_VERSION: u32 = 6;
+/// Bumped to 7 for #1718: adds three-choice arena configuration and views.
+const CONTRACT_VERSION: u32 = 7;
 const UPGRADE_TIMELOCK_SECONDS: u64 = 86_400; // 1 day
 /// Maximum allowed platform fee: 1000 bps (10%). Enforced by `update_platform_fee`.
 const MAX_PLATFORM_FEE_BPS: u32 = 1000;
@@ -375,6 +376,28 @@ impl ArenaContract {
         Ok(())
     }
 
+    /// Configure the number of choices for a newly-created arena. The factory
+    /// is the only caller and sets this before the arena is available to players.
+    pub fn set_option_count(env: Env, option_count: u32) -> Result<(), ArenaError> {
+        let config = ArenaStorage::load_config(&env)?;
+        if env.invoker() != config.factory {
+            return Err(ArenaError::Unauthorized);
+        }
+        if config.state != GameState::Open
+            || config.player_count != 0
+            || !(option_count == 2 || option_count == 3)
+        {
+            return Err(ArenaError::InvalidPlayerLimits);
+        }
+        ArenaStorage::save_option_count(&env, option_count);
+        Ok(())
+    }
+
+    /// Return the configured choice count (`2` for legacy instances).
+    pub fn get_option_count(env: Env) -> u32 {
+        ArenaStorage::load_option_count(&env)
+    }
+
     /// Return the lobby start deadline (#1579), or `0` if none is configured.
     /// The lobby UI uses this for its countdown and refund-availability state.
     pub fn get_start_deadline(env: Env) -> u64 {
@@ -651,6 +674,9 @@ impl ArenaContract {
     ) -> Result<(), ArenaError> {
         player.require_auth();
         let config = ArenaStorage::load_config(&env)?;
+        if choice.to_byte() >= ArenaStorage::load_option_count(&env) as u8 {
+            return Err(ArenaError::InvalidReveal);
+        }
         Self::require_not_paused(&env, &config)?;
         let player_state =
             ArenaStorage::load_player(&env, &player).ok_or(ArenaError::NotAPlayer)?;
@@ -1113,6 +1139,7 @@ impl ArenaContract {
         }
 
         let round = config.round_count.saturating_add(1);
+        let option_count = ArenaStorage::load_option_count(&env);
         let yield_bps = oracle::fetch_yield_bps(&env, &config.oracle_contract);
 
         // ── #1512: reject a yield-dependent resolution against stale oracle
@@ -1206,6 +1233,17 @@ impl ArenaContract {
             resolution.eliminated,
             resolution.survivors,
         );
+        if option_count == 3 {
+            ArenaEvents::round_resolved_v3(
+                &env,
+                round,
+                resolution.tally.heads,
+                resolution.tally.tails,
+                resolution.tally.option3,
+                resolution.eliminated,
+                resolution.survivors,
+            );
+        }
         if resolution.tied {
             ArenaEvents::round_tied(&env, round, resolution.survivors);
         }
@@ -1931,7 +1969,10 @@ impl ArenaContract {
         }
 
         let tally = eliminations::tally_choices(&active_choices);
-        let tied = tally.heads > 0 && tally.heads == tally.tails;
+        let option_count = ArenaStorage::load_option_count(env);
+        let tied = option_count == 2
+            && tally.heads > 0
+            && tally.heads == tally.tails;
         let mut eliminated = 0u32;
         let mut survivors = 0u32;
         let mut winner: Option<Address> = None;
@@ -1943,7 +1984,7 @@ impl ArenaContract {
                 continue;
             }
             let elimination = match ArenaStorage::load_choice(env, &player, round) {
-                Some(choice) if eliminations::is_eliminated(choice, &tally) => {
+                Some(choice) if eliminations::is_eliminated(choice, &tally, ArenaStorage::load_option_count(env)) => {
                     Some(EliminationReason::Majority)
                 }
                 Some(_) => None,
