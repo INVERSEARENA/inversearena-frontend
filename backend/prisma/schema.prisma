@@ -24,6 +24,11 @@ model User {
   notificationPreference NotificationPreference?
   notificationDeliveries NotificationDelivery[]
   pushSubscriptions PushSubscription[]
+  arenaMessages   ArenaMessage[]
+  messageReports  MessageReport[]
+  followers       Follow[] @relation("FollowedBy")
+  following       Follow[] @relation("Following")
+  clanMember      ClanMember?
 
   @@map("users")
 }
@@ -426,4 +431,140 @@ model StatusIncident {
   @@index([component, startedAt(sort: Desc)])
   @@index([startedAt(sort: Desc)])
   @@map("status_incidents")
+}
+
+// Progressive jackpot funded by platform fees (#1719)
+model Jackpot {
+  id              String   @id @default(uuid())
+  stakeToken      String   @map("stake_token") // The token this jackpot is for
+  balanceAtomic   BigInt   @default(0) @map("balance_atomic") // Balance in smallest unit
+  shareBps        Int      @default(500) @map("share_bps") // Basis points of fees routed here
+  awardRule       String   @default("PERFECT_STREAK") @map("award_rule") // Rule defining when to award
+  awardThreshold  Int?     @map("award_threshold") // Threshold value for award rule (e.g., N rounds survived)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  jackpotAwards   JackpotAward[]
+
+  @@unique([stakeToken])
+  @@index([createdAt(sort: Desc)])
+  @@map("jackpots")
+}
+
+// Award records for jackpot payouts (#1719)
+model JackpotAward {
+  id              String   @id @default(uuid())
+  jackpotId       String   @map("jackpot_id")
+  arenaId         String   @map("arena_id")
+  winnerId        String   @map("winner_id")
+  amountAtomic    BigInt   @map("amount_atomic")
+  awardReason     String   @map("award_reason") // Reason award was triggered
+  txHash          String?  @map("tx_hash") // On-chain tx hash if paid out
+  status          String   @default("pending") // pending | paid | failed
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  jackpot         Jackpot  @relation(fields: [jackpotId], references: [id], onDelete: Cascade)
+
+  @@index([jackpotId])
+  @@index([arenaId])
+  @@index([winnerId])
+  @@index([status])
+  @@map("jackpot_awards")
+}
+
+// In-lobby chat and reactions (#1724)
+model ArenaMessage {
+  id              String   @id @default(uuid())
+  arenaId         String   @map("arena_id")
+  userId          String   @map("user_id")
+  messageType     String   @default("chat") // chat | reaction
+  content         String   // Chat text or emoji
+  status          String   @default("active") // active | muted | deleted
+  reportCount     Int      @default(0) @map("report_count")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([arenaId, createdAt(sort: Desc)])
+  @@index([userId])
+  @@index([status])
+  @@map("arena_messages")
+}
+
+// User reports on arena messages (#1724)
+model MessageReport {
+  id              String   @id @default(uuid())
+  messageId       String   @map("message_id")
+  reporterId      String   @map("reporter_id")
+  reason          String   // Reason for report (spam, abuse, etc.)
+  status          String   @default("pending") // pending | reviewed | dismissed
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  reporter        User     @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@index([reporterId])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("message_reports")
+}
+
+// Follow relationships (#1723)
+model Follow {
+  id              String   @id @default(uuid())
+  followerId      String   @map("follower_id")
+  followingId     String   @map("following_id")
+  isFollowable    Boolean  @default(true) @map("is_followable")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  follower        User     @relation("FollowedBy", fields: [followerId], references: [id], onDelete: Cascade)
+  following       User     @relation("Following", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@index([followerId])
+  @@index([followingId])
+  @@index([followerId, createdAt(sort: Desc)])
+  @@map("follows")
+}
+
+// Clan memberships and details (#1725)
+model Clan {
+  id              String   @id @default(uuid())
+  name            String   @unique
+  tag             String   @unique @db.VarChar(5)
+  ownerAddress    String   @map("owner_address")
+  memberCount     Int      @default(1) @map("member_count")
+  totalWins       Int      @default(0) @map("total_wins")
+  totalStaked      Float    @default(0) @map("total_staked")
+  avgWinRate      Float    @default(0) @map("avg_win_rate")
+  joinPolicy      String   @default("open") // open | invite_only
+  description     String?
+  imageUrl        String?  @map("image_url")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  members         ClanMember[]
+
+  @@index([createdAt(sort: Desc)])
+  @@index([totalWins(sort: Desc)])
+  @@map("clans")
+}
+
+// Clan membership records (#1725)
+model ClanMember {
+  id              String   @id @default(uuid())
+  clanId          String   @map("clan_id")
+  userId          String   @map("user_id")
+  role            String   @default("member") // owner | officer | member
+  joinedAt        DateTime @default(now()) @map("joined_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  clan            Clan     @relation(fields: [clanId], references: [id], onDelete: Cascade)
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId]) // One clan per user at a time
+  @@index([clanId])
+  @@index([role])
+  @@map("clan_members")
 }

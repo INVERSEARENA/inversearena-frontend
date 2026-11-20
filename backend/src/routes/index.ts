@@ -26,6 +26,10 @@ import { createDashboardRouter } from "./dashboard";
 import { createCreatorRouter } from "./creator";
 import { createCreatorTemplatesRouter } from "./creatorTemplates";
 import { createHostWhitelistRouter } from "./hostWhitelist";
+import { createJackpotsRouter } from "./jackpots";
+import { createArenaMessagesRouter } from "./arenaMessages";
+import { createFollowsRouter } from "./follows";
+import { createClansRouter } from "./clans";
 import type { PrismaClient } from "@prisma/client";
 import type { PayoutsController } from "../controllers/payouts.controller";
 import type { WorkerController } from "../controllers/worker.controller";
@@ -102,6 +106,10 @@ export function createApiRouter(
   router.use("/dashboard", createDashboardRouter(requireAuth));
   router.use("/creator/templates", createCreatorTemplatesRouter(requireAuth));
   router.use("/creator", createCreatorRouter(requireAuth));
+  router.use("/jackpots", createJackpotsRouter(requireAuth));
+  router.use("/users", createFollowsRouter(requireAuth));
+  router.use("/arenas", createArenaMessagesRouter(requireAuth));
+  router.use("/clans", createClansRouter(requireAuth));
   if (prisma) {
     router.use(createHostWhitelistRouter(prisma, requireAuth, adminAuthMiddleware));
   }
