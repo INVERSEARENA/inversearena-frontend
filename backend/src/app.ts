@@ -7,6 +7,12 @@ import { createTreasuryRouter } from "./routes/treasury";
 import { refreshTreasuryMetrics } from "./services/treasury/treasuryMetrics";
 import { createWalletRoleRouter } from "./routes/walletRole";
 import { createMaintenanceStatusRouter } from "./routes/maintenance";
+import { createStatusRouter } from "./routes/status";
+import { StatusAggregatorService } from "./services/statusAggregatorService";
+import { createApiKeyRouter } from "./routes/apiKeys";
+import { ApiKeyService } from "./services/apiKeyService";
+import { createDataExportRouter } from "./routes/dataExport";
+import { DataExportService } from "./services/dataExportService";
 import { errorHandler } from "./middleware/errorHandler";
 import { requestLogger } from "./middleware/logger";
 import { requestContextMiddleware } from "./middleware/requestContext";
@@ -249,6 +255,22 @@ export function createApp(deps: AppDependencies): express.Application {
   );
   app.use("/api/admin", createTreasuryRouter(adminAuthMiddleware, prisma));
   app.use("/api", createMaintenanceStatusRouter(maintenanceService));
+
+  // #1738: Public status page backed by health checks and maintenance windows
+  const statusAggregator = new StatusAggregatorService({
+    prisma,
+    maintenanceService,
+    paymentService: deps.paymentService,
+  });
+  app.use("/api", createStatusRouter(statusAggregator));
+
+  // #1737: Scoped API key management (self-service, JWT-authenticated)
+  const apiKeyService = new ApiKeyService();
+  app.use("/api/users", createApiKeyRouter(apiKeyService, userAuthMiddleware));
+
+  // #1739: Data export and right-to-erasure
+  const dataExportService = new DataExportService(prisma);
+  app.use("/api/users", createDataExportRouter(dataExportService, userAuthMiddleware));
 
   app.use(errorHandler);
 

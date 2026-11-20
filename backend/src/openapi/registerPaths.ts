@@ -625,6 +625,290 @@ function registerCreatorTemplatePaths(registry: OpenAPIRegistry): void {
   });
 }
 
+// ── #1738: Public status page ─────────────────────────────────────────────────
+
+function registerStatusPaths(registry: OpenAPIRegistry): void {
+  const ComponentHealthSchema = z.object({
+    component: z.string(),
+    label: z.string(),
+    status: z.enum(["operational", "degraded", "partial_outage", "major_outage", "maintenance"]),
+    lastUpdated: z.string(),
+    detail: z.string().optional(),
+    flapping: z.boolean().optional(),
+  });
+
+  const StatusSummarySchema = z.object({
+    overallStatus: z.enum(["operational", "degraded", "partial_outage", "major_outage", "maintenance"]),
+    evaluatedAt: z.string(),
+    components: z.array(ComponentHealthSchema),
+    activeMaintenance: z.object({
+      active: z.boolean(),
+      reason: z.string().nullable(),
+      window: z.object({
+        id: z.string(),
+        startLedgerSequence: z.number(),
+        endLedgerSequence: z.number().nullable(),
+        reason: z.string(),
+      }).nullable(),
+    }),
+    incidents: z.array(z.object({
+      id: z.string(),
+      component: z.string(),
+      status: z.string(),
+      message: z.string(),
+      startedAt: z.string(),
+      resolvedAt: z.string().nullable(),
+    })),
+  });
+
+  registry.registerPath({
+    method: "get",
+    path: "/api/status",
+    summary: "Public system status page (#1738)",
+    description:
+      "Aggregates health signals from all subsystems (API, database, Redis, " +
+      "stream, keeper, RPC, oracle, maintenance) into a single public-facing " +
+      "response suitable for rendering a status page. Edge-cacheable.",
+    responses: {
+      200: {
+        description: "System status summary",
+        content: { "application/json": { schema: StatusSummarySchema } },
+      },
+    },
+  });
+}
+
+// ── #1737: Scoped API keys ───────────────────────────────────────────────────
+
+function registerApiKeyPaths(registry: OpenAPIRegistry): void {
+  const apiKeyAuth = {
+    type: "apiKey" as const,
+    in: "header" as const,
+    name: "X-Api-Key",
+    description: "Scoped API key for third-party read access (#1737)",
+  };
+
+  registry.registerComponent("securitySchemes", "apiKeyAuth", apiKeyAuth);
+
+  const ApiKeyViewSchema = z.object({
+    id: z.string(),
+    keyPrefix: z.string(),
+    owner: z.string(),
+    ownerLabel: z.string().nullable(),
+    scopes: z.array(z.string()),
+    quotaRequests: z.number(),
+    quotaWindowSeconds: z.number(),
+    status: z.enum(["active", "revoked", "rotated"]),
+    lastUsedAt: z.string().nullable(),
+    usageCount: z.number(),
+    expiresAt: z.string().nullable(),
+    createdAt: z.string(),
+  });
+
+  registry.registerPath({
+    method: "post",
+    path: "/api/users/me/api-keys",
+    summary: "Create a scoped API key (#1737)",
+    security: [{ bearerAuth: [] }],
+    request: {
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              ownerLabel: z.string().optional(),
+              scopes: z.array(z.string()).optional(),
+              quotaRequests: z.number().int().min(1).max(100000).optional(),
+              quotaWindowSeconds: z.number().int().min(1).max(86400).optional(),
+              expiresAt: z.string().datetime().optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      201: {
+        description: "API key created (raw key shown only once)",
+        content: {
+          "application/json": {
+            schema: z.object({
+              apiKey: ApiKeyViewSchema,
+              rawKey: z.string(),
+            }),
+          },
+        },
+      },
+      401: {
+        description: "Unauthorized",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+    },
+  });
+
+  registry.registerPath({
+    method: "get",
+    path: "/api/users/me/api-keys",
+    summary: "List the caller's API keys (#1737)",
+    security: [{ bearerAuth: [] }],
+    responses: {
+      200: {
+        description: "API keys (raw keys never returned)",
+        content: {
+          "application/json": {
+            schema: z.object({ keys: z.array(ApiKeyViewSchema) }),
+          },
+        },
+      },
+      401: {
+        description: "Unauthorized",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+    },
+  });
+
+  registry.registerPath({
+    method: "delete",
+    path: "/api/users/me/api-keys/{id}",
+    summary: "Revoke an API key (#1737)",
+    security: [{ bearerAuth: [] }],
+    request: { params: z.object({ id: z.string() }) },
+    responses: {
+      200: {
+        description: "Key revoked",
+        content: { "application/json": { schema: ApiKeyViewSchema } },
+      },
+      404: {
+        description: "Key not found",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+    },
+  });
+
+  registry.registerPath({
+    method: "post",
+    path: "/api/users/me/api-keys/{id}/rotate",
+    summary: "Rotate an API key (#1737)",
+    security: [{ bearerAuth: [] }],
+    request: { params: z.object({ id: z.string() }) },
+    responses: {
+      201: {
+        description: "New key issued (old key revoked)",
+        content: {
+          "application/json": {
+            schema: z.object({
+              apiKey: ApiKeyViewSchema,
+              rawKey: z.string(),
+            }),
+          },
+        },
+      },
+      404: {
+        description: "Key not found",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+      409: {
+        description: "Only active keys can be rotated",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+    },
+  });
+}
+
+// ── #1739: Data export and right-to-erasure ───────────────────────────────────
+
+function registerDataExportPaths(registry: OpenAPIRegistry): void {
+  registry.registerPath({
+    method: "get",
+    path: "/api/users/me/data-export",
+    summary: "Export all user-linked data (#1739)",
+    description:
+      "Returns a JSON archive of all off-chain personal data linked to the " +
+      "authenticated user: identity, aliases, watched arenas, notification " +
+      "preferences, push subscriptions, transactions, audit logs.",
+    security: [{ bearerAuth: [] }],
+    responses: {
+      200: {
+        description: "Data export archive",
+        content: { "application/json": { schema: z.object({}).passthrough() } },
+      },
+      401: {
+        description: "Unauthorized",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+    },
+  });
+
+  registry.registerPath({
+    method: "get",
+    path: "/api/users/me/retention",
+    summary: "Show the data retention matrix (#1739)",
+    description:
+      "Returns the retention matrix explaining which data categories are " +
+      "erasable, which are retained (pseudonymized) for compliance, and " +
+      "which cannot be erased (on-chain data).",
+    security: [{ bearerAuth: [] }],
+    responses: {
+      200: {
+        description: "Retention matrix",
+        content: { "application/json": { schema: z.object({}).passthrough() } },
+      },
+    },
+  });
+
+  registry.registerPath({
+    method: "post",
+    path: "/api/users/me/erasure",
+    summary: "Submit a right-to-erasure request (#1739)",
+    description:
+      "Executes the erasure workflow: deletes erasable data, pseudonymizes " +
+      "retained rows, revokes sessions and push subscriptions. Returns 409 " +
+      "if blockers exist (pending payouts).",
+    security: [{ bearerAuth: [] }],
+    request: {
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              reason: z.enum(["user_request", "regulatory"]).default("user_request"),
+              confirm: z.boolean().refine((v) => v === true, "Confirmation required"),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "Erasure completed",
+        content: { "application/json": { schema: z.object({}).passthrough() } },
+      },
+      409: {
+        description: "Erasure blocked (pending payouts) or already in progress",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+      401: {
+        description: "Unauthorized",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+    },
+  });
+
+  registry.registerPath({
+    method: "get",
+    path: "/api/users/me/erasure/status",
+    summary: "Check erasure request status (#1739)",
+    security: [{ bearerAuth: [] }],
+    responses: {
+      200: {
+        description: "Erasure request history",
+        content: { "application/json": { schema: z.object({}).passthrough() } },
+      },
+      401: {
+        description: "Unauthorized",
+        content: { "application/json": { schema: ApiErrorSchema } },
+      },
+    },
+  });
+}
+
 export function generateOpenApiDocument() {
   const registry = new OpenAPIRegistry();
 
@@ -638,6 +922,9 @@ export function generateOpenApiDocument() {
   registerOraclePaths(registry);
   registerClaimInboxPaths(registry);
   registerCreatorTemplatePaths(registry);
+  registerStatusPaths(registry);
+  registerApiKeyPaths(registry);
+  registerDataExportPaths(registry);
 
   const generator = new OpenApiGeneratorV31(registry.definitions);
   return generator.generateDocument({
