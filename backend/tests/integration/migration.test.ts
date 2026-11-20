@@ -45,6 +45,10 @@ describe("Prisma migration compatibility", () => {
       "rounds",
       "transactions",
       "elimination_logs",
+      "notification_channel_preferences",
+      "notification_channel_links",
+      "notification_link_codes",
+      "arena_notification_webhooks",
     ];
 
     for (const table of required) {
@@ -87,6 +91,38 @@ describe("Prisma migration compatibility", () => {
     expect(colNames).toContain("round_number");
     expect(colNames).toContain("state");
     expect(colNames).toContain("metadata");
+  });
+
+  it("notification channel columns exist after migrations", async () => {
+    if (!process.env.DATABASE_URL) return;
+
+    type ColRow = { column_name: string };
+    async function columnsFor(table: string): Promise<string[]> {
+      const rows = await prisma.$queryRaw<ColRow[]>`
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = ${table}
+      `;
+      return rows.map((row) => row.column_name);
+    }
+
+    expect(await columnsFor("notification_preferences")).toEqual(
+      expect.arrayContaining([
+        "telegram_enabled",
+        "discord_enabled",
+        "arena_announcement_notifications",
+      ]),
+    );
+    expect(await columnsFor("notification_deliveries")).toEqual(
+      expect.arrayContaining([
+        "attempts",
+        "next_attempt_at",
+        "dead_lettered_at",
+        "last_error",
+        "context",
+      ]),
+    );
   });
 
   it("key columns exist on the elimination_logs table", async () => {

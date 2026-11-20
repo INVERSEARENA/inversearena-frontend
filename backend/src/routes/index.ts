@@ -12,6 +12,12 @@ import { createPoolsRouter } from "./pools";
 import { createDocsRouter } from "./docs";
 import { createArenaReplayRouter } from "./arenaReplay";
 import { createNotificationPreferencesRouter } from "./notificationPreferences";
+import {
+  createNotificationBotWebhooksRouter,
+  createNotificationChannelsRouter,
+  createNotificationOpsRouter,
+  createCommunityWebhooksRouter,
+} from "./notificationChannels";
 import { createPushSubscriptionsRouter } from "./pushSubscriptions";
 import { createPortfolioExposureRouter } from "./portfolioExposure";
 import { createStakingPositionsRouter } from "./stakingPositions";
@@ -96,6 +102,9 @@ export function createApiRouter(
   router.use("/pools", createPoolsRouter(requireAuth));
   router.use("/rounds", createRoundProofBundleRouter(requireAuth, roundProofBundleService));
   router.use("/users", createNotificationPreferencesRouter(requireAuth));
+  router.use("/users", createNotificationChannelsRouter(requireAuth));
+  router.use("/notifications", createNotificationBotWebhooksRouter());
+  router.use("/notifications", createNotificationOpsRouter(adminAuthMiddleware));
   router.use("/users", createPushSubscriptionsRouter(requireAuth));
   router.use("/users", createPortfolioExposureRouter(requireAuth));
   router.use("/users", createStakingPositionsRouter(requireAuth));
@@ -109,6 +118,7 @@ export function createApiRouter(
   router.use("/jackpots", createJackpotsRouter(requireAuth));
   router.use("/users", createFollowsRouter(requireAuth));
   router.use("/arenas", createArenaMessagesRouter(requireAuth));
+  router.use("/arenas", createCommunityWebhooksRouter(requireAuth));
   router.use("/clans", createClansRouter(requireAuth));
   if (prisma) {
     router.use(createHostWhitelistRouter(prisma, requireAuth, adminAuthMiddleware));

@@ -32,6 +32,8 @@ import {
   type OnChainGameState,
 } from "./onChainReader";
 import { NotificationPreferencesService } from "./notificationPreferencesService";
+import { NotificationPipelineService } from "./notificationPipelineService";
+import { createNotificationChannels } from "./channels";
 import { PushService } from "./pushService";
 
 /** Why a rematch cannot be created right now. */
@@ -311,7 +313,8 @@ export class RematchService {
     sourceArenaId: string,
     rematchArenaId: string,
     prefs: NotificationPreferencesService = new NotificationPreferencesService(this.prisma),
-    push: PushService = new PushService(this.prisma, prefs),
+    push?: PushService,
+    pipeline?: NotificationPipelineService,
   ): Promise<number> {
     const recipients = await this.findPriorParticipantUserIds(sourceArenaId);
     const dedupeKey = `rematch:${sourceArenaId}:${rematchArenaId}`;
@@ -329,21 +332,41 @@ export class RematchService {
       }
     }
 
+    const message = {
+      title: "Rematch available",
+      body: "The host has started a rematch. Join before the deadline.",
+      url: `/arena/${rematchArenaId}`,
+      tag: `rematch-${rematchArenaId}`,
+    };
+
     try {
-      await push.scheduleRoundPhasePushes({
-        arenaId: rematchArenaId,
-        roundNumber: 0,
-        type: "rematch",
-        userIds: recipients,
-        message: {
-          title: "Rematch available",
-          body: "The host has started a rematch. Join before the deadline.",
-          url: `/arena/${rematchArenaId}`,
-          tag: `rematch-${rematchArenaId}`,
-        },
-      });
+      // Explicit push injection keeps existing unit tests on the legacy
+      // scheduler; production fans out across all configured channels.
+      if (push && !pipeline) {
+        await push.scheduleRoundPhasePushes({
+          arenaId: rematchArenaId,
+          roundNumber: 0,
+          type: "rematch",
+          userIds: recipients,
+          message,
+        });
+      } else {
+        const deliveryPipeline =
+          pipeline ??
+          (() => {
+            const bundle = createNotificationChannels(this.prisma, prefs);
+            return new NotificationPipelineService({ prefs, channels: bundle.channels });
+          })();
+        await deliveryPipeline.dispatch({
+          eventType: "rematch",
+          dedupeKey,
+          arenaId: rematchArenaId,
+          userIds: recipients,
+          message,
+        });
+      }
     } catch {
-      // Push is best-effort; the in-app inbox is the durable channel.
+      // Remote channels are best-effort; the in-app inbox is durable.
     }
 
     return notified;

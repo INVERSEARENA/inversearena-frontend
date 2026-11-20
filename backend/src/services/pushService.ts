@@ -88,6 +88,16 @@ export interface SchedulePushesResult {
   suppressed: boolean;
 }
 
+/** Result of one user's Web Push fan-out via the common channel interface. */
+export interface PushUserSendResult {
+  delivered: boolean;
+  sent: number;
+  expired: number;
+  failed: number;
+  skipped: boolean;
+  error?: string;
+}
+
 type Sender = (endpoint: string, init: RequestInit) => Promise<Response>;
 
 interface PushServiceDeps {
@@ -363,6 +373,69 @@ export class PushService {
       throw new Error(`Push service responded with status ${response.status}`);
     }
     return "sent";
+  }
+
+  /**
+   * Send to every active subscription for one wallet. Used by
+   * {@link PushChannel} through the common notification channel interface
+   * (#1735); the legacy scheduler below composes the same primitives.
+   */
+  async sendToUser(userId: string, message: PushMessage): Promise<PushUserSendResult> {
+    const result: PushUserSendResult = {
+      delivered: false,
+      sent: 0,
+      expired: 0,
+      failed: 0,
+      skipped: false,
+    };
+    try {
+      this.requireVapid();
+    } catch (err) {
+      return {
+        ...result,
+        skipped: true,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+
+    const subscriptions = await this.prisma.pushSubscription.findMany({
+      where: { userId },
+      select: { id: true, userId: true, endpoint: true, p256dh: true, auth: true, userAgent: true },
+    });
+    if (subscriptions.length === 0) {
+      return { ...result, skipped: true, error: "no push subscriptions" };
+    }
+
+    for (const subscription of subscriptions) {
+      try {
+        const outcome = await this.sendPush(subscription as StoredPushSubscription, message);
+        if (outcome === "expired") {
+          result.expired += 1;
+          await this.prisma.pushSubscription
+            .deleteMany({ where: { userId, endpoint: subscription.endpoint } })
+            .catch(() => {});
+          continue;
+        }
+        result.sent += 1;
+      } catch (err) {
+        result.failed += 1;
+        logger.warn(
+          {
+            subsystem: "push",
+            userId,
+            endpoint: subscription.endpoint,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "Push channel delivery failed",
+        );
+      }
+    }
+
+    result.delivered = result.sent > 0;
+    if (!result.delivered) {
+      result.error = result.failed > 0 ? "all push devices failed" : "all push devices expired";
+    }
+    return result;
   }
 
   // ── Scheduler ───────────────────────────────────────────────────────
