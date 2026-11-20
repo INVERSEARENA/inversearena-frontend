@@ -7,6 +7,7 @@
  * form. It also records the rematch linkage after `create_pool` confirms.
  */
 import { stellarConfig } from "@/shared/config/stellarConfig";
+import { getAuthHeaders } from "@/shared/lib/session/sessionClient";
 import type { Currency } from "@/shared/lib/form-validation";
 import type { RoundSpeed } from "./pool-schema";
 
@@ -52,12 +53,6 @@ export class RematchConfigError extends Error {
   }
 }
 
-function authHeaders(): HeadersInit {
-  const token =
-    typeof window !== "undefined" ? window.localStorage.getItem("access_token") : null;
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 /**
  * Reads the source arena's rematch prefill. 404 means the arena is unknown;
  * 503 means its on-chain config could not be read. Both are expected answers
@@ -66,7 +61,7 @@ function authHeaders(): HeadersInit {
 export async function fetchRematchConfig(arenaId: string): Promise<RematchConfig> {
   const response = await fetch(
     `/api/arenas/${encodeURIComponent(arenaId)}/rematch-config`,
-    { headers: authHeaders(), cache: "no-store" },
+    { headers: await getAuthHeaders(), cache: "no-store" },
   );
 
   if (!response.ok) {
@@ -144,7 +139,7 @@ export interface RecordRematchInput {
 export async function recordRematchArena(input: RecordRematchInput): Promise<{ id: string }> {
   const response = await fetch("/api/arenas", {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
+    headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) },
     body: JSON.stringify({
       name: `Rematch of ${input.sourceArenaId.slice(0, 6)}…${input.sourceArenaId.slice(-4)}`,
       entryFee: input.entryFee,

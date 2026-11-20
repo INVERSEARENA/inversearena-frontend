@@ -24,19 +24,12 @@ import {
 import { useAssetReadinessGate } from "@/features/asset-readiness";
 import { displayAmountToStroops } from "@/shared/lib/stellar/stellar-asset-reader";
 import { tryParseStellarAccountId } from "@/shared/lib/identity-value-objects";
+import { getAuthHeaders } from "@/shared/lib/session/sessionClient";
 import type { TransactionProgress } from "@/components/modals/TransactionModal";
 import type { ArenaStats } from "./useLobbyData";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
-
-function authHeaders(): HeadersInit {
-  const token =
-    typeof window !== "undefined"
-      ? window.localStorage.getItem("access_token")
-      : null;
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
 
 export interface UseJoinFlowProps {
   arenaId: string;
@@ -117,7 +110,7 @@ export function useJoinFlow({
     try {
       const response = await fetch(
         `${API_BASE}/api/arenas/${arenaId}/reservation`,
-        { method: "POST", headers: authHeaders() },
+        { method: "POST", headers: await getAuthHeaders() },
       );
       if (response.status === 409) {
         setReservationError("This arena has no open slots right now.");
@@ -140,10 +133,14 @@ export function useJoinFlow({
   };
 
   const releaseJoinSlot = () => {
-    void fetch(`${API_BASE}/api/arenas/${arenaId}/reservation`, {
-      method: "DELETE",
-      headers: authHeaders(),
-    }).catch(() => undefined);
+    void getAuthHeaders()
+      .then((headers) =>
+        fetch(`${API_BASE}/api/arenas/${arenaId}/reservation`, {
+          method: "DELETE",
+          headers,
+        }),
+      )
+      .catch(() => undefined);
   };
 
   const handleJoinClick = async () => {

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { z } from "zod";
+import { getAuthHeaders } from "@/shared/lib/session/sessionClient";
 
 // ── Zod schemas for runtime validation ─────────────────────────────
 const yieldPointSchema = z.object({
@@ -48,13 +49,7 @@ export function useArenaYield(arenaId: string | null): UseArenaYieldReturn {
     setLoading(true);
     setError(null);
     try {
-      const token =
-        typeof window !== "undefined"
-          ? window.localStorage.getItem("access_token")
-          : null;
-      const headers: HeadersInit = token
-        ? { Authorization: `Bearer ${token}` }
-        : {};
+      const headers = await getAuthHeaders();
       const res = await fetch(
         `${API_BASE}/api/arenas/${encodeURIComponent(arenaId)}/yield?limit=500`,
         { headers },

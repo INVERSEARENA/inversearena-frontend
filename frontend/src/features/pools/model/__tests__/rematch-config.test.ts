@@ -112,6 +112,7 @@ describe("rematch-config helpers (#1572)", () => {
 
     it("returns the parsed config and attaches the auth header", async () => {
       window.localStorage.setItem("access_token", "tok");
+      window.localStorage.setItem("refresh_token", "refresh-tok");
       fetchMock.mockResolvedValue({ ok: true, json: async () => baseConfig });
 
       await expect(fetchRematchConfig("ARENA")).resolves.toEqual(baseConfig);

@@ -13,6 +13,7 @@ import {
   getLiveArenas,
   getRecentHistory
 } from './mockProfile';
+import { getAuthHeaders } from '@/shared/lib/session/sessionClient';
 
 // Simulated API delay for realistic loading states
 const simulateApiDelay = (ms: number = 800): Promise<void> => {
@@ -84,24 +85,15 @@ class MockProfileRepository implements ProfileRepository {
 
 // Real API repository implementation
 class ProfileApiRepository implements ProfileRepository {
-  private getAuthHeaders(): HeadersInit {
-    // In a browser environment, getting the token from localStorage
-    if (typeof window !== 'undefined') {
-      const token = localStorage.getItem('access_token');
-      if (token) {
-        return {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        };
-      }
-    }
-    return { 'Content-Type': 'application/json' };
+  private async getAuthHeaders(): Promise<HeadersInit> {
+    const sessionHeaders = await getAuthHeaders();
+    return { 'Content-Type': 'application/json', ...sessionHeaders };
   }
 
   async getAgentIdentity(address?: string): Promise<AgentIdentity> {
     try {
       const response = await fetch('/api/users/me', {
-        headers: this.getAuthHeaders(),
+        headers: await this.getAuthHeaders(),
       });
 
       if (!response.ok) {
@@ -127,7 +119,7 @@ class ProfileApiRepository implements ProfileRepository {
   async getProfileStats(address?: string): Promise<ProfileStats> {
     try {
       const response = await fetch('/api/users/me', {
-        headers: this.getAuthHeaders(),
+        headers: await this.getAuthHeaders(),
       });
 
       if (!response.ok) {
@@ -164,7 +156,7 @@ class ProfileApiRepository implements ProfileRepository {
     // page is strictly more real data than the mock this replaces.
     try {
       const response = await fetch('/api/users/me/activity?limit=25', {
-        headers: this.getAuthHeaders(),
+        headers: await this.getAuthHeaders(),
       });
 
       if (!response.ok) {

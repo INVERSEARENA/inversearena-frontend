@@ -279,7 +279,8 @@ Sensitive write endpoints are protected with a Redis-backed limiter (`rate-limit
 
 ### Protected Endpoints
 
-- `POST /auth/nonce`
+- `POST /api/auth/nonce` (backend-issued wallet login challenge; the former
+  Next.js `/auth/nonce` stub has been removed)
 
 Pool creation is served by the backend API (`POST /api/pools`) and is rate
 limited there.
