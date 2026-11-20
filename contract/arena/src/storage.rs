@@ -83,6 +83,10 @@ pub(crate) enum DataKey {
     PausedAt,
     /// Choice count for this arena; absent on legacy instances means binary.
     OptionCount,
+    /// Payer who funded a sponsored ("Gift a seat") entry (#1715). Absent for
+    /// self-funded joins. Kept in its own key so the persisted `PlayerState`
+    /// XDR layout is unchanged. Refunds are paid to this address when present.
+    Sponsor(Address),
 }
 
 pub struct ArenaRepository<'a> {
@@ -1199,6 +1203,27 @@ impl ArenaStorage {
             .set(&DataKey::RefundClaimed(player.clone()), &true);
     }
 
+    /// Record the payer who funded a sponsored entry (#1715).
+    pub fn save_sponsor(env: &Env, player: &Address, sponsor: &Address) {
+        let key = DataKey::Sponsor(player.clone());
+        Self::extend_persistent_ttl(env, &key);
+        env.storage().persistent().set(&key, sponsor);
+    }
+
+    /// Remove the sponsor record when a player leaves the lobby (#1715).
+    pub fn remove_sponsor(env: &Env, player: &Address) {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Sponsor(player.clone()));
+    }
+
+    /// Who receives an entry-fee refund for `player` (#1715). Sponsored
+    /// entries return the fee to the payer who funded it; self-funded entries
+    /// return it to the player.
+    pub fn refund_recipient(env: &Env, player: &Address) -> Address {
+        Self::peek_sponsor(env, player).unwrap_or_else(|| player.clone())
+    }
+
     pub fn load_leaderboard(env: &Env) -> Vec<crate::types::LeaderboardEntry> {
         Self::extend_persistent_ttl(env, &DataKey::Leaderboard);
         env.storage()
@@ -1333,6 +1358,13 @@ impl ArenaStorage {
             .persistent()
             .get(&DataKey::RefundClaimed(player.clone()))
             .unwrap_or(false)
+    }
+
+    /// Read-only sponsor lookup used by `get_player_status` (#1715).
+    pub fn peek_sponsor(env: &Env, player: &Address) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Sponsor(player.clone()))
     }
 
     pub fn peek_winner(env: &Env) -> Option<Address> {

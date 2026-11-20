@@ -27,6 +27,7 @@ Current payload version: **1**
 | `oracle_stale_rejected` | `resolve_round()` (#1512) | `(round: u32, age_secs: u64)` — emitted only when resolution is refused for staleness |
 | `left`        | `leave_arena()` (#1580) | `(player_count: u32)` — topics `(left, player)` |
 | `refunded`    | `leave_arena()`, `ban_player()` (#1580, #1581) | `(amount: i128)` — topics `(refunded, player)`; emitted alongside `left`/`ban` |
+| `join_spon`   | `join_arena_for()` (#1715) | `(v, player_count: u32)` — topics `(arena, join_spon, payer, player)`; the payer is the refund destination and the player owns the seat/prizes |
 | `limits`      | `configure_player_limits()` (#1640) | `(min_players: u32, max_players: u32)` — topics `(limits)`; emitted only on success. Calls fail with `ArenaAlreadyHasPlayers` (45) once `player_count > 0`, so the event never fires for a post-join change. |
 
 > Note (#1512): several rows in this table (e.g. `fee_upd`, `vault_oracle_failed`)

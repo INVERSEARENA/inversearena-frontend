@@ -141,6 +141,7 @@ fn idle(phase: ArenaPhase, current_round: u32) -> PlayerStatus {
         winner: false,
         current_round,
         phase,
+        sponsor: None,
     }
 }
 
@@ -173,6 +174,23 @@ fn lobby_player_is_joined_and_active() {
     let arena = Arena::new();
     let player = arena.join();
     assert_eq!(arena.status(&player), joined_active(ArenaPhase::Lobby, 0));
+}
+
+#[test]
+fn sponsored_join_exposes_the_payer_and_leaves_the_payer_off_the_roster() {
+    let arena = Arena::new();
+    let payer = Address::generate(&arena.env);
+    StellarAssetClient::new(&arena.env, &arena.token).mint(&payer, &100);
+    let player = Address::generate(&arena.env);
+
+    arena.client.join_arena_for(&payer, &player);
+
+    let status = arena.status(&player);
+    assert!(status.joined);
+    assert!(status.active);
+    assert_eq!(status.sponsor, Some(payer.clone()));
+    // Funding a seat does not make the payer a player.
+    assert_eq!(arena.status(&payer), idle(ArenaPhase::Lobby, 0));
 }
 
 #[test]
@@ -386,8 +404,8 @@ fn read_cost_is_bounded_and_independent_of_roster_size() {
     let full = measure(10);
     std::println!("get_player_status (WASM, commit phase): {small:?}");
 
-    // Instance + code + config, player, commitment, choice.
-    assert!(small.read_entries <= 6, "read entries: {}", small.read_entries);
+    // Instance + code + config, player, commitment, choice, sponsor (#1715).
+    assert!(small.read_entries <= 7, "read entries: {}", small.read_entries);
     assert_eq!(full.read_entries, small.read_entries);
     assert_eq!(full.read_bytes, small.read_bytes);
     // Instruction metering includes a host-side per-ledger-entry overhead that

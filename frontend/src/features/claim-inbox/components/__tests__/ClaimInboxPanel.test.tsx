@@ -29,6 +29,7 @@ function item(over: Partial<ClaimInboxItem> = {}): ClaimInboxItem {
         txHash: null,
         confirmedAt: null,
         attempts: 0,
+        refundDestination: null,
       },
     ],
     totalsByAsset: [{ code: "XLM", issuer: null, amountStroops: "25000000" }],
@@ -99,6 +100,39 @@ describe("ClaimInboxPanel", () => {
     // 25_000_000 stroops rendered exactly, not through a float.
     expect(screen.getByText(/2\.5000000 XLM/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "CLAIM WINNINGS" })).toBeInTheDocument();
+  });
+
+  it("shows the payer as the refund destination on a sponsored entry (#1715)", async () => {
+    const payer = "GDVEU3DD4KOFECV66VIHWEZOYX4ZKR3WV27L464SIIPOU2IUI3JCZA57";
+    mockFetch.mockResolvedValueOnce(
+      ok(
+        page([
+          item({
+            kind: "refund",
+            reason: "refund_ready",
+            message: "This arena was cancelled and your stake is ready to be refunded.",
+            components: [
+              {
+                kind: "refund",
+                asset: { code: "XLM", issuer: null, decimals: 7 },
+                amountStroops: "25000000",
+                payoutId: null,
+                status: null,
+                txHash: null,
+                confirmedAt: null,
+                attempts: 0,
+                refundDestination: payer,
+              },
+            ],
+            action: { type: "refund", label: "CLAIM REFUND", endpoint: null },
+          }),
+        ]),
+      ),
+    );
+
+    render(<ClaimInboxPanel />);
+
+    expect(await screen.findByText(/Refund to GDVEU3…JCZA57/)).toBeInTheDocument();
   });
 
   it("renders an unavailable position as an explicit unknown with a retry", async () => {

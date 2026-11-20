@@ -16,6 +16,8 @@ export const ARENA_EVENT_TOPICS = [
   "START",
   "FINISH",
   "JOIN",
+  /** #1715 normalized `join_spon` event: payer funds the seat, player owns it. */
+  "JOIN_S",
   "CHOICE",
   "ELIM",
   "CLAIMED",
@@ -64,6 +66,15 @@ export interface ArenaPlayerJoinedEvent extends BaseArenaEvent {
   player: string;
 }
 
+/** #1715: `join_arena_for(payer, player)`; the payer is the refund destination. */
+export interface ArenaPlayerJoinedSponsoredEvent extends BaseArenaEvent {
+  topic: "JOIN_S";
+  payer: string;
+  player: string;
+  /** Roster size after the join, when the versioned payload supplied it. */
+  playerCount: number | null;
+}
+
 export interface ArenaChoiceSubmittedEvent extends BaseArenaEvent {
   topic: "CHOICE";
   player: string;
@@ -103,6 +114,7 @@ export type ArenaProjectionEvent =
   | ArenaStartedEvent
   | ArenaFinishedEvent
   | ArenaPlayerJoinedEvent
+  | ArenaPlayerJoinedSponsoredEvent
   | ArenaChoiceSubmittedEvent
   | ArenaPlayerEliminatedEvent
   | ArenaPrizeClaimedEvent

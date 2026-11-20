@@ -3,6 +3,7 @@ import {
     ArenaDomainEvent,
     ArenaCreatedEvent,
     PlayerJoinedEvent,
+    PlayerJoinedSponsoredEvent,
     RoundStartedEvent,
     ChoiceSubmittedEvent,
     RoundResolvedEvent,
@@ -33,6 +34,7 @@ export const EVENT_DECODER_REGISTRY: Readonly<Record<number, Readonly<Record<str
     1: {
         init: parseArenaCreatedEvent,
         join: parsePlayerJoinedEvent,
+        join_spon: parsePlayerJoinedSponsoredEvent,
         started: parseRoundStartedEvent,
         commit: parseChoiceSubmittedEvent,
         reveal: parseChoiceRevealedEvent,
@@ -53,8 +55,8 @@ export function parseArenaEvent(raw: RawContractEvent): ArenaDomainEvent | null 
     try {
         if (!raw.topic || raw.topic.length === 0) return null;
 
-        // The first topic is usually the event name as a symbol
-        const namespaceOffset = scValToNative(xdr.ScVal.fromXDR(raw.topic[0]!, 'base64')) === 'arena' ? 1 : 0;
+        // #1607 events prepend an "arena" namespace before the event name.
+        const namespaceOffset = getNamespaceOffset(raw);
         if (raw.topic.length <= namespaceOffset) return null;
         const eventNameScVal = xdr.ScVal.fromXDR(raw.topic[namespaceOffset]!, 'base64');
         const eventName = scValToNative(eventNameScVal);
@@ -90,13 +92,23 @@ function parseArenaCreatedEvent(raw: RawContractEvent): ArenaCreatedEvent | null
     };
 }
 
+/** 1 when the event uses the normalized `("arena", name, ...)` topics (#1607). */
+function getNamespaceOffset(raw: RawContractEvent): number {
+    try {
+        return scValToNative(xdr.ScVal.fromXDR(raw.topic[0]!, 'base64')) === 'arena' ? 1 : 0;
+    } catch {
+        return 0;
+    }
+}
+
 function parsePlayerJoinedEvent(raw: RawContractEvent): PlayerJoinedEvent | null {
-    // Player address is in topic[1], player_count is in value (#1106)
-    if (!raw.topic || raw.topic.length < 2) return null;
-    
-    const playerScVal = xdr.ScVal.fromXDR(raw.topic[1]!, 'base64');
+    // Player address follows the optional namespace, player_count is in value (#1106, #1607)
+    const offset = getNamespaceOffset(raw);
+    if (!raw.topic || raw.topic.length <= offset + 1) return null;
+
+    const playerScVal = xdr.ScVal.fromXDR(raw.topic[offset + 1]!, 'base64');
     const player = scValToNative(playerScVal);
-    
+
     const value = decodeValue(raw.value.xdr);
     if (!value) return null;
 
@@ -104,6 +116,28 @@ function parsePlayerJoinedEvent(raw: RawContractEvent): PlayerJoinedEvent | null
         type: 'PlayerJoined',
         arenaId: raw.contractId,
         playerWallet: player,
+        timestamp: getTimestamp(raw),
+    };
+}
+
+/** #1715: `join_spon` indexes payer then player, and carries the new roster size. */
+function parsePlayerJoinedSponsoredEvent(raw: RawContractEvent): PlayerJoinedSponsoredEvent | null {
+    const offset = getNamespaceOffset(raw);
+    // `offset` points at the event name; payer/player follow it immediately.
+    if (!raw.topic || raw.topic.length <= offset + 2) return null;
+
+    const payer = scValToNative(xdr.ScVal.fromXDR(raw.topic[offset + 1]!, 'base64'));
+    const player = scValToNative(xdr.ScVal.fromXDR(raw.topic[offset + 2]!, 'base64'));
+    const value = decodeValue(raw.value.xdr);
+    if (!value) return null;
+    const playerCount = Number(Array.isArray(value) ? value[1] : value);
+
+    return {
+        type: 'PlayerJoinedSponsored',
+        arenaId: raw.contractId,
+        payerWallet: payer,
+        playerWallet: player,
+        playerCount: Number.isFinite(playerCount) ? playerCount : 0,
         timestamp: getTimestamp(raw),
     };
 }

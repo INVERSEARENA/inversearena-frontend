@@ -167,6 +167,30 @@ describe("ownership enforcement", () => {
     // aggregator refuses to trust it.
     expect(page.items).toHaveLength(0);
   });
+
+  it("gives a sponsored refund to its payer and reports the destination (#1715)", async () => {
+    const repo = new InMemoryTransactionRepository();
+    const service = new ClaimInboxService({
+      prisma: {} as never,
+      transactions: repo,
+      now: () => T0.getTime() + 60_000,
+      verifyArenas: async (ids) => new Map(ids.map((id) => [id, "Cancelled" as const])),
+      // `walletAddress` is the seat owner; the payer is the destination.
+      findRefunds: async () => [
+        refund({
+          arenaId: ARENA_B,
+          walletAddress: OTHER_WALLET,
+          refundDestination: WALLET,
+        }),
+      ],
+    });
+
+    const page = await service.getInbox(WALLET, 20);
+
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]?.reason).toBe("refund_ready");
+    expect(page.items[0]?.components[0]?.refundDestination).toBe(WALLET);
+  });
 });
 
 describe("duplicate arenas are impossible", () => {

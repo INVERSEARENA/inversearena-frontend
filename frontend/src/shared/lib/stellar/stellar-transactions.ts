@@ -420,6 +420,55 @@ export async function buildJoinArenaTransaction(
 }
 
 /**
+ * Build a sponsored ("Gift a seat") join transaction (#1715).
+ *
+ * The connected wallet is the payer: it supplies the sequence number, signs
+ * the envelope and funds the entry fee. The recipient is registered as the
+ * player and receives any prizes; the contract records the sponsor so refunds
+ * on cancellation are returned to the payer.
+ */
+export async function buildJoinArenaForTransaction(
+  payerPublicKey: string,
+  playerPublicKey: string,
+  poolId: string,
+) {
+  const FN = "buildJoinArenaForTransaction";
+  try {
+    const validatedPayer = StellarPublicKeySchema.parse(payerPublicKey);
+    const validatedPlayer = StellarPublicKeySchema.parse(playerPublicKey);
+    const validatedPoolId = StellarContractIdSchema.parse(poolId);
+    // Same arena capability as a normal join — the sponsored entrypoint is an
+    // alternate way to join, not a separate capability surface.
+    assertCapability("join", validatedPoolId, FN);
+
+    const account = await getAccount(validatedPayer, FN);
+    const poolContract = new ContractClientFactory(SOROBAN_RPC_URL).createContract(validatedPoolId);
+    const plan = createArenaCommandPlan({
+      actor: validatedPayer,
+      contractId: validatedPoolId,
+      call: { name: "join_arena_for", payer: validatedPayer, player: validatedPlayer },
+      preconditions: [
+        { name: "capability_supported", expected: true },
+        { name: "player_joined", expected: false },
+        { name: "arena_phase", expected: "Lobby" },
+      ],
+      capabilityRevision: compatibilityStore.getVersion(),
+      expiresInSeconds: getStandardTxTimeoutSeconds(),
+    });
+    const operation = buildArenaOperationFromPlan(poolContract, plan);
+
+    return composeUnsignedTransaction(account, {
+      fee: getJoinArenaFee(),
+      networkPassphrase: NETWORK_PASSPHRASE,
+      timeout: getStandardTxTimeoutSeconds(),
+      operation,
+    });
+  } catch (error) {
+    throw parseContractError(error, FN, { kind: "arena", contractId: poolId });
+  }
+}
+
+/**
  * Commit phase (#1137): generate a random salt, compute
  * `SHA256([choice_byte] ++ salt)` client-side (WebCrypto), persist
  * `{ choice, salt }` in localStorage keyed by arena + round (needed again at

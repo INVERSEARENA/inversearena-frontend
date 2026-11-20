@@ -17,6 +17,7 @@ import {
   compactArenaProjectionState,
   hasValidProjectionHistoryAnchor,
   initialArenaProjection,
+  migrateArenaProjectionState,
   type ArenaProjectionState,
 } from "./arenaProjectionFold";
 import { OutboxStore } from "../outbox/outboxStore";
@@ -172,11 +173,12 @@ export class ArenaProjectionCheckpointStore {
         (eventId) => [eventId, row.lastLedgerSequence],
       ),
     );
-    const projectionState = {
+    const withEventDefaults = {
       ...storedState,
       eventLedgerSequences: storedState.eventLedgerSequences ?? legacyEventLedgerSequences,
       historyAnchor: storedState.historyAnchor ?? null,
     } as ArenaProjectionState;
+    const { state: projectionState } = migrateArenaProjectionState(withEventDefaults);
     if (!hasValidProjectionHistoryAnchor(projectionState)) {
       throw new CorruptCheckpointError(
         arenaId,
