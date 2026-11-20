@@ -403,3 +403,27 @@ model CreatorTemplate {
   @@index([ownerAddress, status, createdAt(sort: Desc)])
   @@map("creator_templates")
 }
+
+// Status page incident history (#1738).
+//
+// One row per incident: a component transitioning away from "operational"
+// creates an incident; it is resolved when the component returns to
+// "operational". The 30-day history window is enforced by a query-time
+// filter, not a retention job — rows older than 30 days are pruned by
+// the retention worker's cold-archive pass if the table is added to
+// MANAGED_PARTITIONED_TABLES, but for now the small volume (a handful
+// of incidents per month) means a simple createdAt index suffices.
+model StatusIncident {
+  id          String    @id @default(uuid())
+  component    String    // "api" | "stream" | "keeper" | "rpc" | "oracle" | "database" | "redis"
+  status       String    // "degraded" | "partial_outage" | "major_outage" | "maintenance"
+  message      String
+  startedAt    DateTime  @default(now()) @map("started_at")
+  resolvedAt   DateTime? @map("resolved_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@index([component, startedAt(sort: Desc)])
+  @@index([startedAt(sort: Desc)])
+  @@map("status_incidents")
+}

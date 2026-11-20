@@ -14,6 +14,16 @@ declare global {
       adminId?: string;
       user?: { id: string; walletAddress: string; jti: string };
       /**
+       * API key metadata attached by the apiKeyAuth middleware (#1737).
+       * Present when the request authenticated via X-Api-Key header.
+       */
+      apiKey?: {
+        id: string;
+        keyPrefix: string;
+        owner: string;
+        scopes: string[];
+      };
+      /**
        * Raw request body bytes, captured by the `express.json({ verify })`
        * hook mounted ahead of the oracle webhook route (see app.ts). Only
        * set for requests parsed by that parser — used by
