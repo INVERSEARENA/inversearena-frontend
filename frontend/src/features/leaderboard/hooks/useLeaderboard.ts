@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { z } from "zod";
 import type { Survivor } from "../model/types";
+import { getAuthHeaders } from "@/shared/lib/session/sessionClient";
 
 // ── Zod schemas for runtime validation ─────────────────────────────
 const apiPlayerSchema = z.object({
@@ -68,13 +69,7 @@ export function useLeaderboard(limit = 20): UseLeaderboardReturn {
         if (cursor) params.set("cursor", cursor);
 
         const url = `${API_BASE}/api/leaderboard?${params.toString()}`;
-        const token =
-          typeof window !== "undefined"
-            ? window.localStorage.getItem("access_token")
-            : null;
-        const headers: HeadersInit = token
-          ? { Authorization: `Bearer ${token}` }
-          : {};
+        const headers = await getAuthHeaders();
         const res = await fetch(url, { headers });
 
         if (!res.ok) {

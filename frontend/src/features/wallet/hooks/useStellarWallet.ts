@@ -6,6 +6,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { WalletStatus } from "../model/types";
 import { SignedXdrSchema } from "@/shared/lib/security-validation";
 import { isStellarConfigured, stellarConfig } from "@/shared/config/stellarConfig";
+import { normalizeSignature } from "@/shared/lib/session/challenge";
 
 // Define an interface for the wallet hook's return type
 export interface WalletHook {
@@ -17,6 +18,8 @@ export interface WalletHook {
   walletNetworkName: string | null;
   connectWallet: () => Promise<string | null>;
   signTransaction: (xdr: string) => Promise<string>;
+  /** Signs the backend auth challenge as a raw message (base64 result). */
+  signMessage: (message: string) => Promise<string>;
   disconnectWallet: () => void;
   /** Re-checks the connected wallet's active network without a full reconnect. */
   recheckNetwork: () => Promise<void>;
@@ -176,6 +179,43 @@ export const useStellarWallet = (network: Networks): WalletHook => {
     if (networkMatches) setError(null);
   }, [isConnected, checkNetwork]);
 
+  /**
+   * Signs an arbitrary UTF-8 message (used for the backend auth nonce). The
+   * kit exposes `signMessage` on Freighter/xBull but not on every module, so
+   * absence is reported explicitly and the session flow falls back to a
+   * signed challenge transaction (see #1714).
+   */
+  const signMessage = useCallback(async (message: string) => {
+    const walletAddress = publicKey ?? (await StellarWalletsKit.getAddress()).address;
+    if (!walletAddress) {
+      throw new Error("Wallet is not connected");
+    }
+
+    const networkMatches = await checkNetwork();
+    if (!networkMatches) {
+      setStatus('network-mismatch');
+      throw new Error(
+        'Your wallet is connected to a different network than this app. Switch your wallet network and try again.',
+      );
+    }
+
+    const kit = StellarWalletsKit as unknown as {
+      signMessage?: (
+        value: string,
+        options: { address: string; networkPassphrase: string },
+      ) => Promise<unknown>;
+    };
+    if (typeof kit.signMessage !== 'function') {
+      throw new Error('Connected wallet cannot sign arbitrary messages');
+    }
+
+    const signed = await kit.signMessage(message, {
+      address: walletAddress,
+      networkPassphrase: stellarConfig.passphrase,
+    });
+    return normalizeSignature(signed);
+  }, [publicKey, checkNetwork]);
+
   const signTransaction = useCallback(async (xdr: string) => {
     const walletAddress = publicKey ?? (await StellarWalletsKit.getAddress()).address;
 
@@ -225,6 +265,7 @@ export const useStellarWallet = (network: Networks): WalletHook => {
     walletNetworkName,
     connectWallet,
     signTransaction,
+    signMessage,
     disconnectWallet,
     recheckNetwork,
   };

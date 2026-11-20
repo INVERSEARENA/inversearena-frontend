@@ -15,6 +15,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { getAuthHeaders } from "@/shared/lib/session/sessionClient";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
 
@@ -52,12 +53,6 @@ export interface UseStakingPositionReturn {
   refresh: () => Promise<void>;
 }
 
-function authHeaders(): HeadersInit {
-  const token =
-    typeof window !== "undefined" ? window.localStorage.getItem("access_token") : null;
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 function isNonZero(value: string | null): boolean {
   return value !== null && /[1-9]/.test(value);
 }
@@ -76,7 +71,7 @@ export function deriveStakingState(position: StakingPosition | null): StakingPos
 
 async function fetchPosition(): Promise<StakingPosition> {
   const response = await fetch(`${API_BASE}/api/users/me/staking/positions`, {
-    headers: authHeaders(),
+    headers: await getAuthHeaders(),
     cache: "no-store",
   });
   if (!response.ok) {

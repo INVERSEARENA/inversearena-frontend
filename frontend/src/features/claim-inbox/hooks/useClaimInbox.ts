@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { claimInboxPageSchema, type ClaimInboxItem, type ClaimInboxSummary } from "../model/types";
+import { getAuthHeaders } from "@/shared/lib/session/sessionClient";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
 const PAGE_SIZE = 20;
@@ -43,17 +44,11 @@ export interface UseClaimInboxReturn {
   markSubmitted: (arenaId: string) => Promise<void>;
 }
 
-function authHeaders(): HeadersInit {
-  const token =
-    typeof window !== "undefined" ? window.localStorage.getItem("access_token") : null;
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 async function fetchPage(cursor: string | null): Promise<ReturnType<typeof claimInboxPageSchema.parse>> {
   const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
   if (cursor) params.set("cursor", cursor);
   const response = await fetch(`${API_BASE}/api/users/me/claim-inbox?${params.toString()}`, {
-    headers: authHeaders(),
+    headers: await getAuthHeaders(),
     cache: "no-store",
   });
   if (!response.ok) {
