@@ -9,7 +9,7 @@
  */
 import React from "react";
 import { render, screen } from "@testing-library/react";
-import WithdrawalSuccessPage from "../page";
+import WithdrawalSuccessPage from "../WithdrawalSuccessPage";
 import { markWithdrawalComplete, WITHDRAWAL_TOKEN_KEY } from "@/shared/lib/withdrawalSession";
 
 // ---------------------------------------------------------------------------

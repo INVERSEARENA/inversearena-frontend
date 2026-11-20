@@ -5,7 +5,8 @@ import { AnimatePresence, motion } from "framer-motion";
 import { TourStep } from "./TourStep";
 import { UIHighlight } from "./UIHighlight";
 
-const TOUR_STORAGE_KEY = "inverse.arena-v2.onboarding-complete";
+const TOUR_STORAGE_KEY = "inverse.arena.onboarding-complete";
+const LEGACY_TOUR_STORAGE_KEY = "inverse.arena-v2.onboarding-complete";
 
 type OnboardingStep = {
   title: string;
@@ -50,7 +51,11 @@ export function OnboardingTour() {
       return null;
     }
 
-    const completed = window.localStorage.getItem(TOUR_STORAGE_KEY) === "true";
+    const legacyCompleted = window.localStorage.getItem(LEGACY_TOUR_STORAGE_KEY) === "true";
+    const completed = window.localStorage.getItem(TOUR_STORAGE_KEY) === "true" || legacyCompleted;
+    if (legacyCompleted && !window.localStorage.getItem(TOUR_STORAGE_KEY)) {
+      window.localStorage.setItem(TOUR_STORAGE_KEY, "true");
+    }
     return !completed;
   });
   const [stepIndex, setStepIndex] = useState(0);

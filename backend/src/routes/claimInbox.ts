@@ -14,7 +14,8 @@ import type { PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import { asyncHandler } from "../middleware/validate";
 import { apiError } from "../utils/apiError";
-import { ClaimInboxService, type ClaimInboxRefundCandidate } from "../services/claimInboxService";
+import { ClaimInboxService } from "../services/claimInboxService";
+import { createCancellationRefundClaimSource } from "../services/claimInboxSources";
 import { CancellationRecoveryService } from "../services/cancellationRecoveryService";
 import { getStellarConfig } from "../config/stellarConfig";
 import { maskWalletAddress } from "../utils/logger";
@@ -30,19 +31,6 @@ const ClaimInboxQuerySchema = z.object({
   cursor: z.string().min(1).max(512).optional(),
 });
 
-/**
- * Display units to stroops, for a refund amount that cancellation recovery
- * stores as a float.
- *
- * `Math.floor` matches the frontend builders, so the figure the inbox quotes is
- * the figure the refund transaction will actually carry. Rounding up would
- * quote more than is paid; rounding down would understate the entitlement.
- */
-function refundAmountToStroops(amount: number): string {
-  if (!Number.isFinite(amount) || amount <= 0) return "0";
-  return Math.floor(amount * 10_000_000).toString();
-}
-
 export function createClaimInboxRouter(
   prisma: PrismaClient,
   authMiddleware: RequestHandler,
@@ -55,52 +43,7 @@ export function createClaimInboxRouter(
   // turning into a 500 on the first wallet that asks for its inbox.
   const { assetIssuers } = getStellarConfig();
 
-  /**
-   * Read refundable stakes for one wallet out of cancellation recovery.
-   *
-   * `getArenaRecovery` is per-arena and returns `null` for an arena that was
-   * not cancelled, so finding a wallet's positions means asking about the
-   * arenas it participated in. Participation is read from the elimination log
-   * and round player choices — the same derivation the per-arena endpoint uses,
-   * so the two cannot disagree about who is owed a refund.
-   */
-  const findRefunds = async (walletAddress: string): Promise<ClaimInboxRefundCandidate[]> => {
-      const rows = await prisma.round.findMany({
-        where: {
-          OR: [
-            { eliminationLogs: { some: { userId: walletAddress } } },
-            { allActivePlayerIds: { has: walletAddress } },
-          ],
-        },
-        select: { arenaId: true },
-        distinct: ["arenaId"],
-        take: 50,
-      });
-
-      const candidates: ClaimInboxRefundCandidate[] = [];
-      for (const row of rows) {
-        const recovery = await cancellation.getArenaRecovery(row.arenaId);
-        if (!recovery) continue;
-        const mine = recovery.participants.filter(
-          (p) => p.walletAddress === walletAddress,
-        );
-        for (const participant of mine) {
-          candidates.push({
-            arenaId: participant.arenaId,
-            arenaName: participant.arenaName,
-            walletAddress: participant.walletAddress,
-            // Cancellation recovery denominates refunds in XLM.
-            assetCode: "XLM",
-            refundAmountStroops: refundAmountToStroops(participant.refundAmount),
-            recoveryStatus: participant.recoveryStatus,
-            txHash: participant.txHash ?? null,
-            confirmedAt: participant.confirmedAt ?? null,
-            updatedAt: participant.submittedAt ? new Date(participant.submittedAt) : null,
-          });
-        }
-      }
-      return candidates;
-  };
+  const findRefunds = createCancellationRefundClaimSource(prisma, cancellation);
 
   const service = new ClaimInboxService({
     prisma,

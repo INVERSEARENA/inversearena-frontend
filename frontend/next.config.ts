@@ -33,6 +33,16 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  async redirects() {
+    return [
+      { source: "/arena-v2", destination: "/arena", permanent: true },
+      { source: "/arena-v2/settings", destination: "/arena/settings", permanent: true },
+      { source: "/arena-v2/waiting", destination: "/arena/waiting", permanent: true },
+      { source: "/arena-v2/withdrawal-success", destination: "/arena/withdrawal-success", permanent: true },
+      { source: "/arena-v2/share-test", destination: "/dev/share-test", permanent: true },
+      { source: "/dashboard/settings", destination: "/arena/settings", permanent: true },
+    ];
+  },
 };
 
 const sentryConfig: Parameters<typeof withSentryConfig>[1] = {
