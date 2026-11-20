@@ -52,8 +52,15 @@ import {
   buildGetPlayerStatusCallOperation,
   buildGetVaultConfigCallOperation,
   buildLeaveArenaCallOperation,
+  buildPathPaymentStrictReceiveOperation,
   composeUnsignedTransaction,
+  composeUnsignedTransactionWithOperations,
 } from "@/shared/lib/stellar/soroban-transaction-composer";
+import {
+  PathQuoteSchema,
+  assertFreshPathQuote,
+  type PathQuote,
+} from "@/shared/lib/stellar/path-payment-quote";
 import { createArenaCommandPlan } from "@/shared/lib/stellar/arena-command-plan";
 import { compatibilityStore } from "@/shared/lib/stellar/compatibility-store";
 import { CreatePoolParamsSchema } from "@/shared/lib/stellar/stellar-transaction-schemas";
@@ -378,6 +385,32 @@ export async function buildUnstakeProtocolTransaction(
   }
 }
 
+function buildJoinArenaOperation(
+  publicKey: string,
+  poolId: string,
+  fn: string,
+) {
+  const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
+  const validatedPoolId = StellarContractIdSchema.parse(poolId);
+  // Compatibility gate (#1491): refuse before any transaction exists.
+  assertCapability("join", validatedPoolId, fn);
+
+  const poolContract = new ContractClientFactory(SOROBAN_RPC_URL).createContract(validatedPoolId);
+  const plan = createArenaCommandPlan({
+    actor: validatedPublicKey,
+    contractId: validatedPoolId,
+    call: { name: "join_arena" },
+    preconditions: [
+      { name: "capability_supported", expected: true },
+      { name: "player_joined", expected: false },
+      { name: "arena_phase", expected: "Lobby" },
+    ],
+    capabilityRevision: compatibilityStore.getVersion(),
+    expiresInSeconds: getStandardTxTimeoutSeconds(),
+  });
+  return buildArenaOperationFromPlan(poolContract, plan);
+}
+
 /**
  * Build transaction to join an arena.
  */
@@ -388,31 +421,72 @@ export async function buildJoinArenaTransaction(
   const FN = "buildJoinArenaTransaction";
   try {
     const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
-    const validatedPoolId = StellarContractIdSchema.parse(poolId);
-    // Compatibility gate (#1491): refuse before any transaction exists.
-    assertCapability("join", validatedPoolId, FN);
-
     const account = await getAccount(validatedPublicKey, FN);
-    const poolContract = new ContractClientFactory(SOROBAN_RPC_URL).createContract(validatedPoolId);
-    const plan = createArenaCommandPlan({
-      actor: validatedPublicKey,
-      contractId: validatedPoolId,
-      call: { name: "join_arena" },
-      preconditions: [
-        { name: "capability_supported", expected: true },
-        { name: "player_joined", expected: false },
-        { name: "arena_phase", expected: "Lobby" },
-      ],
-      capabilityRevision: compatibilityStore.getVersion(),
-      expiresInSeconds: getStandardTxTimeoutSeconds(),
-    });
-    const operation = buildArenaOperationFromPlan(poolContract, plan);
+    const operation = buildJoinArenaOperation(publicKey, poolId, FN);
 
     return composeUnsignedTransaction(account, {
       fee: getJoinArenaFee(),
       networkPassphrase: NETWORK_PASSPHRASE,
       timeout: getStandardTxTimeoutSeconds(),
       operation,
+    });
+  } catch (error) {
+    throw parseContractError(error, FN, { kind: "arena", contractId: poolId });
+  }
+}
+
+/**
+ * Two-step fallback (#1716): fund the player's own stake-token balance with a
+ * strict-receive path payment. It is tracked as its own transaction intent so a
+ * later `join_arena` step can be resumed if the wallet flow is interrupted.
+ */
+export async function buildPathPaymentTransaction(
+  publicKey: string,
+  quote: PathQuote,
+) {
+  const FN = "buildPathPaymentTransaction";
+  try {
+    const parsed = PathQuoteSchema.parse(quote);
+    assertFreshPathQuote(parsed);
+    const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
+    const account = await getAccount(validatedPublicKey, FN);
+    const operation = buildPathPaymentStrictReceiveOperation(validatedPublicKey, parsed);
+
+    return composeUnsignedTransaction(account, {
+      fee: getJoinArenaFee(),
+      networkPassphrase: NETWORK_PASSPHRASE,
+      timeout: getStandardTxTimeoutSeconds(),
+      operation,
+    });
+  } catch (error) {
+    throw parseContractError(error, FN, { kind: "arena" });
+  }
+}
+
+/**
+ * Single-signature funded join (#1716). The path payment credits the player
+ * with the exact stake-token amount and the following `join_arena` call spends
+ * those tokens, so the wallet is only prompted once.
+ */
+export async function buildJoinWithPathPaymentTransaction(
+  publicKey: string,
+  poolId: string,
+  quote: PathQuote,
+) {
+  const FN = "buildJoinWithPathPaymentTransaction";
+  try {
+    const parsed = PathQuoteSchema.parse(quote);
+    assertFreshPathQuote(parsed);
+    const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
+    const account = await getAccount(validatedPublicKey, FN);
+    const pathPayment = buildPathPaymentStrictReceiveOperation(validatedPublicKey, parsed);
+    const joinArena = buildJoinArenaOperation(publicKey, poolId, FN);
+
+    return composeUnsignedTransactionWithOperations(account, {
+      fee: getJoinArenaFee(),
+      networkPassphrase: NETWORK_PASSPHRASE,
+      timeout: getStandardTxTimeoutSeconds(),
+      operations: [pathPayment, joinArena],
     });
   } catch (error) {
     throw parseContractError(error, FN, { kind: "arena", contractId: poolId });

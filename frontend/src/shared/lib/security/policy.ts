@@ -59,6 +59,10 @@ import {
 
 /** `changeTrust` is the only operation the TRUSTLINE policy accepts. */
 const CHANGE_TRUST_OPERATION = "changeTrust";
+const PATH_PAYMENT_OPERATION = "pathPaymentStrictReceive";
+const INVOKE_OPERATION = "invokeHostFunction";
+const JOIN_FUNCTION = "join_arena";
+const MAX_PATH_LENGTH = 10;
 
 /**
  * SDK operation names each protected flow is allowed to carry.
@@ -69,19 +73,23 @@ const CHANGE_TRUST_OPERATION = "changeTrust";
  * which is the definition of a suspicious one.
  */
 const ALLOWED_OPERATIONS: Record<ProtectedOpKey, ReadonlySet<string>> = {
-  JOIN: new Set(["invokeHostFunction"]),
-  CREATE: new Set(["invokeHostFunction"]),
-  COMMIT: new Set(["invokeHostFunction"]),
-  REVEAL: new Set(["invokeHostFunction"]),
-  CLAIM: new Set(["invokeHostFunction"]),
-  REFUND: new Set(["invokeHostFunction"]),
-  STAKE: new Set(["invokeHostFunction"]),
+  JOIN: new Set([INVOKE_OPERATION]),
+  JOIN_PATH: new Set([PATH_PAYMENT_OPERATION, INVOKE_OPERATION]),
+  PATH_PAYMENT: new Set([PATH_PAYMENT_OPERATION]),
+  CREATE: new Set([INVOKE_OPERATION]),
+  COMMIT: new Set([INVOKE_OPERATION]),
+  REVEAL: new Set([INVOKE_OPERATION]),
+  CLAIM: new Set([INVOKE_OPERATION]),
+  REFUND: new Set([INVOKE_OPERATION]),
+  STAKE: new Set([INVOKE_OPERATION]),
   TRUSTLINE: new Set([CHANGE_TRUST_OPERATION]),
 };
 
-/** Human label for the single operation each protected flow permits. */
+/** Human label for the operation sequence each protected flow permits. */
 const EXPECTED_OPERATION_LABEL: Record<ProtectedOpKey, string> = {
   JOIN: "an arena contract call",
+  JOIN_PATH: "a path payment followed by an arena contract call",
+  PATH_PAYMENT: "a single strict-receive path payment",
   CREATE: "a pool contract call",
   COMMIT: "a commitment contract call",
   REVEAL: "a reveal contract call",
@@ -109,6 +117,148 @@ function reject(
   return { ok: false, error: new SigningPolicyError(reason, opType, message) };
 }
 
+const POLICY_ASSET_CODE = /^[A-Z0-9]{1,12}$/;
+const POLICY_AMOUNT = /^\d+(\.\d{1,7})?$/;
+const STROOPS_PER_UNIT = 10_000_000n;
+
+interface PolicyAsset {
+  code: string;
+  issuer: string | null;
+}
+
+/** Only assets this app can honestly describe to a signer are accepted. */
+function parsePolicyAsset(value: unknown): PolicyAsset | null {
+  if (typeof value !== "object" || value === null) return null;
+  const code = (value as { code?: unknown }).code;
+  const issuer = (value as { issuer?: unknown }).issuer;
+  if (typeof code !== "string" || !POLICY_ASSET_CODE.test(code)) return null;
+  if (code === "XLM" && (issuer === undefined || issuer === null || issuer === "")) {
+    return { code, issuer: null };
+  }
+  if (typeof issuer !== "string" || !StrKey.isValidEd25519PublicKey(issuer)) return null;
+  return { code, issuer };
+}
+
+function isPositivePolicyAmount(value: unknown): value is string {
+  if (typeof value !== "string" || !POLICY_AMOUNT.test(value)) return false;
+  const [whole = "0", fraction = ""] = value.split(".");
+  return BigInt(whole) * STROOPS_PER_UNIT + BigInt(fraction.padEnd(7, "0")) > 0n;
+}
+
+/**
+ * Disclose a strict-receive path payment only when every field is one the
+ * builder could have produced and the summary UI can render exactly.
+ */
+function summarizePathPayment(op: unknown): DecodedOperationSummary | null {
+  if (typeof op !== "object" || op === null) return null;
+  const candidate = op as {
+    type?: unknown;
+    sendAsset?: unknown;
+    sendMax?: unknown;
+    destination?: unknown;
+    destAsset?: unknown;
+    destAmount?: unknown;
+    path?: unknown;
+  };
+  if (candidate.type !== PATH_PAYMENT_OPERATION) return null;
+
+  const sendAsset = parsePolicyAsset(candidate.sendAsset);
+  const destAsset = parsePolicyAsset(candidate.destAsset);
+  if (
+    sendAsset === null ||
+    destAsset === null ||
+    !isPositivePolicyAmount(candidate.sendMax) ||
+    !isPositivePolicyAmount(candidate.destAmount) ||
+    typeof candidate.destination !== "string" ||
+    !StrKey.isValidEd25519PublicKey(candidate.destination) ||
+    !Array.isArray(candidate.path) ||
+    candidate.path.length > MAX_PATH_LENGTH
+  ) {
+    return null;
+  }
+
+  const path: Array<{ code: string; issuer: string | null }> = [];
+  for (const entry of candidate.path) {
+    const asset = parsePolicyAsset(entry);
+    if (asset === null) return null;
+    path.push(asset);
+  }
+
+  return {
+    type: PATH_PAYMENT_OPERATION,
+    assetCode: null,
+    assetIssuer: null,
+    limit: null,
+    pathPayment: {
+      sendAssetCode: sendAsset.code,
+      sendAssetIssuer: sendAsset.issuer,
+      sendMax: candidate.sendMax,
+      destination: candidate.destination,
+      destAssetCode: destAsset.code,
+      destAssetIssuer: destAsset.issuer,
+      destAmount: candidate.destAmount,
+      path,
+    },
+  };
+}
+
+/**
+ * Read the invoked contract address and function name from the SDK's decoded
+ * invokeHostFunction union. Any shape deviation is treated as unreadable: a
+ * funded join must prove it is signing `join_arena`, not a bundled call to a
+ * different contract function.
+ */
+function summarizeInvocation(op: unknown): DecodedOperationSummary | null {
+  if (typeof op !== "object" || op === null) return null;
+  const candidate = op as { type?: unknown; func?: unknown };
+  if (candidate.type !== INVOKE_OPERATION) return null;
+
+  const func = candidate.func as
+    | { _switch?: { name?: unknown }; _value?: unknown }
+    | undefined;
+  if (func?._switch?.name !== "hostFunctionTypeInvokeContract") return null;
+
+  const invocation = func._value as
+    | { functionName?: unknown; contractAddress?: unknown }
+    | undefined;
+  const readFunctionName = invocation?.functionName;
+  const readContractAddress = invocation?.contractAddress;
+  if (typeof readFunctionName !== "function" || typeof readContractAddress !== "function") {
+    return null;
+  }
+
+  try {
+    // The SDK's attribute readers are getters that depend on `this` being the
+    // decoded union arm; calling an extracted reference loses that binding.
+    const nameBytes = (readFunctionName as () => unknown).call(invocation);
+    const addressUnion = (readContractAddress as () => unknown).call(invocation);
+    const readContractId = (addressUnion as { contractId?: unknown } | null)?.contractId;
+    const contractBytes =
+      typeof readContractId === "function"
+        ? (readContractId as () => unknown).call(addressUnion)
+        : null;
+    if (!(nameBytes instanceof Uint8Array) || !(contractBytes instanceof Uint8Array)) {
+      return null;
+    }
+    // `TextDecoder` is not a global in the jsdom Jest environment; Buffer is,
+    // and the function name is a short ASCII symbol in every app-built op.
+    const functionName = Buffer.from(nameBytes).toString("utf8");
+    if (functionName.length === 0) return null;
+    return {
+      type: INVOKE_OPERATION,
+      assetCode: null,
+      assetIssuer: null,
+      limit: null,
+      invocation: {
+        functionName,
+        contractId: StrKey.encodeContract(Buffer.from(contractBytes)),
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Read a decoded operation down to the fields the confirmation UI may show.
  *
@@ -121,6 +271,16 @@ function summarizeOperation(opType: ProtectedOpKey, op: unknown): DecodedOperati
   if (typeof op !== "object" || op === null) return null;
   const candidate = op as { type?: unknown; line?: unknown; limit?: unknown };
   if (typeof candidate.type !== "string") return null;
+
+  if (
+    opType === "PATH_PAYMENT" ||
+    (opType === "JOIN_PATH" && candidate.type === PATH_PAYMENT_OPERATION)
+  ) {
+    return summarizePathPayment(op);
+  }
+  if (opType === "JOIN_PATH" && candidate.type === INVOKE_OPERATION) {
+    return summarizeInvocation(op);
+  }
 
   const base: DecodedOperationSummary = {
     type: candidate.type,
@@ -302,33 +462,75 @@ export function validateEnvelope(
     );
   }
 
-  // 7. Operation set. Exactly one operation, of the permitted name.
+  // 7. Operation set. Every flow except a funded join is strictly single-op.
+  //    JOIN_PATH accepts one exact two-op sequence and no other ordering.
   const operations = Array.isArray(transaction.operations) ? transaction.operations : [];
   const allowed = ALLOWED_OPERATIONS[opType];
-  if (operations.length !== 1) {
+  if (opType === "JOIN_PATH") {
+    if (
+      operations.length !== 2 ||
+      operations[0]?.type !== PATH_PAYMENT_OPERATION ||
+      operations[1]?.type !== INVOKE_OPERATION
+    ) {
+      return reject(
+        "unexpected_operation",
+        opType,
+        `Expected ${EXPECTED_OPERATION_LABEL[opType]} but found ${operations.length} operations in a different order`,
+      );
+    }
+  } else if (operations.length !== 1) {
     return reject(
       "unexpected_operation",
       opType,
       `Expected exactly one ${EXPECTED_OPERATION_LABEL[opType]} but found ${operations.length} operations`,
     );
   }
-  const operationName = operations[0]?.type;
-  if (typeof operationName !== "string" || !allowed.has(operationName)) {
-    return reject(
-      "unexpected_operation",
-      opType,
-      `Expected ${EXPECTED_OPERATION_LABEL[opType]} but found "${String(operationName)}"`,
-    );
+  if (opType !== "JOIN_PATH") {
+    const operationName = operations[0]?.type;
+    if (typeof operationName !== "string" || !allowed.has(operationName)) {
+      return reject(
+        "unexpected_operation",
+        opType,
+        `Expected ${EXPECTED_OPERATION_LABEL[opType]} but found "${String(operationName)}"`,
+      );
+    }
   }
 
-  // 8. Field allow-list.
-  const summary = summarizeOperation(opType, operations[0]);
-  if (summary === null) {
-    return reject(
-      "extra_fields",
-      opType,
-      `Transaction contains fields the ${opLabels[opType]} policy does not expose`,
-    );
+  // 8. Field allow-list. Each operation is summarised independently so the
+  //    confirmation UI discloses both the swap and the join it funds.
+  const summaries: DecodedOperationSummary[] = [];
+  for (const [index, operation] of operations.entries()) {
+    const summary = summarizeOperation(opType, operation);
+    if (summary === null) {
+      return reject(
+        "extra_fields",
+        opType,
+        `Transaction contains fields the ${opLabels[opType]} policy does not expose`,
+      );
+    }
+    if (
+      opType === "JOIN_PATH" &&
+      index === 0 &&
+      summary.pathPayment?.destination !== transaction.source
+    ) {
+      return reject(
+        "extra_fields",
+        opType,
+        "The path payment must credit the signing account that joins the arena",
+      );
+    }
+    if (
+      opType === "JOIN_PATH" &&
+      index === 1 &&
+      summary.invocation?.functionName !== JOIN_FUNCTION
+    ) {
+      return reject(
+        "unexpected_operation",
+        opType,
+        `The bundled contract call must be ${JOIN_FUNCTION}`,
+      );
+    }
+    summaries.push(summary);
   }
 
   return {
@@ -339,7 +541,7 @@ export function validateEnvelope(
       fee: transaction.fee,
       seq: sequence,
       network: passphrase,
-      operations: [summary],
+      operations: summaries,
       timebounds: { minTime, maxTime },
     },
   };
