@@ -173,6 +173,7 @@ model NotificationPreference {
   roundNotifications Boolean @default(true) @map("round_notifications")
   payoutNotifications Boolean @default(true) @map("payout_notifications")
   eliminationNotifications Boolean @default(true) @map("elimination_notifications")
+  digestNotifications Boolean @default(true) @map("digest_notifications")
   email       String?
   pushToken   String?  @map("push_token")
   createdAt   DateTime @default(now()) @map("created_at")
@@ -567,4 +568,46 @@ model ClanMember {
   @@index([clanId])
   @@index([role])
   @@map("clan_members")
+}
+
+// Scheduled recurring arena series from creator templates (#1746)
+model ArenaSeries {
+  id               String                 @id @default(uuid())
+  creatorAddress   String                 @map("creator_address")
+  templateId       String                 @map("template_id")
+  name             String
+  cadence          String                 // cron-like syntax e.g. "0 20 * * *" or "@daily"
+  timezone         String                 @default("UTC")
+  status           String                 @default("active") // "active" | "paused" | "completed" | "cancelled"
+  endCondition     Json?                  @map("end_condition") // { maxInstances?: number, endDate?: string }
+  instancesCreated Int                    @default(0) @map("instances_created")
+  lastScheduledAt  DateTime?              @map("last_scheduled_at")
+  nextScheduledAt  DateTime?              @map("next_scheduled_at")
+  createdAt        DateTime               @default(now()) @map("created_at")
+  updatedAt        DateTime               @updatedAt @map("updated_at")
+
+  instances        ArenaSeriesInstance[]
+
+  @@index([creatorAddress, status])
+  @@index([status, nextScheduledAt])
+  @@map("arena_series")
+}
+
+model ArenaSeriesInstance {
+  id                 String      @id @default(uuid())
+  seriesId           String      @map("series_id")
+  arenaId            String?     @map("arena_id")
+  scheduledFor       DateTime    @map("scheduled_for")
+  status             String      @default("pending") // "pending" | "signed" | "created" | "skipped" | "failed"
+  signRequestPayload Json?       @map("sign_request_payload")
+  txHash             String?     @map("tx_hash")
+  errorMessage       String?     @map("error_message")
+  createdAt          DateTime    @default(now()) @map("created_at")
+  updatedAt          DateTime    @updatedAt @map("updated_at")
+
+  series             ArenaSeries @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+
+  @@index([seriesId, status])
+  @@index([scheduledFor, status])
+  @@map("arena_series_instances")
 }

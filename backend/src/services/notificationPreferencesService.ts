@@ -15,6 +15,7 @@ export interface NotificationPreferences {
   roundNotifications: boolean;
   payoutNotifications: boolean;
   eliminationNotifications: boolean;
+  digestNotifications?: boolean;
   email?: string;
   pushToken?: string;
 }
@@ -22,7 +23,7 @@ export interface NotificationPreferences {
 export interface DeliveryRecord {
   id: string;
   userId: string;
-  type: "round" | "payout" | "elimination" | "rematch";
+  type: "round" | "payout" | "elimination" | "rematch" | "digest";
   channel: "email" | "push" | "in_app";
   status: "pending" | "sent" | "delivered" | "failed";
   dedupeKey: string;
@@ -52,6 +53,7 @@ export class NotificationPreferencesService {
         roundNotifications: true,
         payoutNotifications: true,
         eliminationNotifications: true,
+        digestNotifications: true,
       };
     }
 
@@ -63,6 +65,7 @@ export class NotificationPreferencesService {
       roundNotifications: prefs.roundNotifications,
       payoutNotifications: prefs.payoutNotifications,
       eliminationNotifications: prefs.eliminationNotifications,
+      digestNotifications: (prefs as any).digestNotifications ?? true,
       ...(prefs.email != null ? { email: prefs.email } : {}),
       ...(prefs.pushToken != null ? { pushToken: prefs.pushToken } : {}),
     };
@@ -85,6 +88,7 @@ export class NotificationPreferencesService {
         roundNotifications: updates.roundNotifications ?? true,
         payoutNotifications: updates.payoutNotifications ?? true,
         eliminationNotifications: updates.eliminationNotifications ?? true,
+        digestNotifications: updates.digestNotifications ?? true,
         ...(updates.email !== undefined ? { email: updates.email } : {}),
         ...(updates.pushToken !== undefined ? { pushToken: updates.pushToken } : {}),
       },
@@ -95,6 +99,7 @@ export class NotificationPreferencesService {
         ...(updates.roundNotifications !== undefined && { roundNotifications: updates.roundNotifications }),
         ...(updates.payoutNotifications !== undefined && { payoutNotifications: updates.payoutNotifications }),
         ...(updates.eliminationNotifications !== undefined && { eliminationNotifications: updates.eliminationNotifications }),
+        ...(updates.digestNotifications !== undefined && { digestNotifications: updates.digestNotifications }),
         ...(updates.email !== undefined ? { email: updates.email } : {}),
         ...(updates.pushToken !== undefined ? { pushToken: updates.pushToken } : {}),
       },

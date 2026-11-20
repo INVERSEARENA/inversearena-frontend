@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { z } from "zod";
-import { getAuthHeaders } from "@/shared/lib/session/sessionClient";
+import { apiClient } from "@/shared/lib/api/client";
 
 // ── Zod schemas for runtime validation ─────────────────────────────
 const yieldPointSchema = z.object({
@@ -26,9 +26,6 @@ const yieldResponseSchema = z.object({
 export type ArenaYieldPoint = z.infer<typeof yieldPointSchema>;
 export type ArenaYieldResponse = z.infer<typeof yieldResponseSchema>;
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
-
 export interface UseArenaYieldReturn {
   points: ArenaYieldPoint[];
   asset: string;
@@ -49,15 +46,10 @@ export function useArenaYield(arenaId: string | null): UseArenaYieldReturn {
     setLoading(true);
     setError(null);
     try {
-      const headers = await getAuthHeaders();
-      const res = await fetch(
-        `${API_BASE}/api/arenas/${encodeURIComponent(arenaId)}/yield?limit=500`,
-        { headers },
+      const json = await apiClient.get<unknown>(
+        `/api/arenas/${encodeURIComponent(arenaId)}/yield`,
+        { params: { limit: "500" } },
       );
-      if (!res.ok) {
-        throw new Error(`Yield request failed: ${res.status}`);
-      }
-      const json = await res.json();
       setData(yieldResponseSchema.parse(json));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load yield");

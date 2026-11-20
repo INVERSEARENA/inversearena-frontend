@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef } from "react";
+import { apiClient } from "@/shared/lib/api/client";
 import { fetchArenaState } from "@/shared/lib/stellar/stellar-transactions";
 import type {
   ArenaActions,
@@ -118,11 +119,9 @@ async function addClaimReadiness(
   if (!state.hasWon) return state;
 
   try {
-    const response = await fetch(
+    const body = await apiClient.get<{ ready?: unknown }>(
       `/api/payouts/claim-readiness/${encodeURIComponent(arenaId)}`,
     );
-    if (!response.ok) return { ...state, claimReady: false };
-    const body = (await response.json()) as { ready?: unknown };
     return { ...state, claimReady: body.ready === true };
   } catch {
     return { ...state, claimReady: false };

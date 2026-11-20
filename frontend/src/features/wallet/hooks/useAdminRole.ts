@@ -1,14 +1,7 @@
 import { useEffect, useState } from "react";
+import { apiClient } from "@/shared/lib/api/client";
 
 export type AdminRoleStatus =
-  | "idle"
-  | "checking"
-  | "authorized"
-  | "unauthorized"
-  | "error";
-
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
 
 /**
  * Server-verified admin role check for a connected wallet.
@@ -29,18 +22,10 @@ export function useAdminRole(publicKey: string | null): AdminRoleStatus {
     (async () => {
       setRoleStatus("checking");
       try {
-        const params = new URLSearchParams({ address: publicKey });
-        const response = await fetch(
-          `${API_BASE}/api/admin/wallet-role?${params.toString()}`,
-          { cache: "no-store" },
-        );
-
-        if (!response.ok) {
-          if (!cancelled) setRoleStatus("error");
-          return;
-        }
-
-        const data = (await response.json()) as { isAdmin: boolean };
+        const data = await apiClient.get<{ isAdmin: boolean }>("/api/admin/wallet-role", {
+          params: { address: publicKey },
+          cache: "no-store",
+        });
         if (!cancelled) setRoleStatus(data.isAdmin ? "authorized" : "unauthorized");
       } catch {
         if (!cancelled) setRoleStatus("error");
