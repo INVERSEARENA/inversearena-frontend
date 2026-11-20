@@ -64,7 +64,9 @@ pub const MAX_PLAYERS_ALLOWED: u32 = 100;
 /// arena's full pool configuration, so off-chain rematch prefills read the
 /// arena's own on-chain config instead of cached UI state.
 /// Bumped to 7 for #1718: adds three-choice arena configuration and views.
-const CONTRACT_VERSION: u32 = 7;
+/// Bumped to 8 for #1715: adds `join_arena_for(payer, player)` for sponsored
+/// entries, and exposes the sponsor through `get_player_status`.
+const CONTRACT_VERSION: u32 = 8;
 const UPGRADE_TIMELOCK_SECONDS: u64 = 86_400; // 1 day
 /// Maximum allowed platform fee: 1000 bps (10%). Enforced by `update_platform_fee`.
 const MAX_PLATFORM_FEE_BPS: u32 = 1000;
@@ -438,6 +440,7 @@ impl ArenaContract {
         if ArenaStorage::load_player(&env, &player).is_some() {
             let refund = Self::refund_lobby_player(&env, &config, &player)?;
             ArenaStorage::remove_player(&env, &player);
+            ArenaStorage::remove_sponsor(&env, &player);
             ArenaEvents::player_refunded(&env, &player, refund);
         }
         Ok(())
@@ -476,10 +479,50 @@ impl ArenaContract {
     /// # Events
     /// Emits `player_joined` with the player address and updated total player count.
     pub fn join_arena(env: Env, player: Address) -> Result<(), ArenaError> {
-        ArenaStorage::enter_reentrancy_guard(&env)?;
-        player.require_auth();
-        let config = ArenaStorage::load_config(&env)?;
-        Self::require_not_paused(&env, &config)?;
+        Self::do_join_arena(&env, &player, &player, false)
+    }
+
+    /// Join the arena with the entry fee funded by a different account
+    /// ("Gift a seat", #1715).
+    ///
+    /// Both addresses must authorize this call: `payer` authorizes the fee and
+    /// the top-level invocation, `player` consents to taking the seat. The fee
+    /// is transferred from `payer`, the seat and any prizes belong to `player`,
+    /// and cancellation refunds are returned to `payer` (recorded as the
+    /// sponsor). The sponsor is exposed through `get_player_status`.
+    ///
+    /// # Parameters
+    /// - `payer`: Address funding the entry fee and receiving refunds.
+    /// - `player`: Address registered as the player. Must authorize this call.
+    ///
+    /// # Errors
+    /// Same guards as `join_arena` (the payer is checked for the fee instead of
+    /// the player). The payer may be an existing player — gifting a seat to a
+    /// second account is allowed.
+    ///
+    /// # Events
+    /// Emits `player_joined_sponsored` with both the payer and player addresses
+    /// and the updated total player count.
+    pub fn join_arena_for(env: Env, payer: Address, player: Address) -> Result<(), ArenaError> {
+        Self::do_join_arena(&env, &payer, &player, true)
+    }
+
+    /// Shared join implementation. `payer` funds the fee, `player` owns the
+    /// seat. For a self-funded join both are the same address and only one
+    /// `require_auth` is issued, preserving the existing auth tree.
+    fn do_join_arena(
+        env: &Env,
+        payer: &Address,
+        player: &Address,
+        sponsored: bool,
+    ) -> Result<(), ArenaError> {
+        ArenaStorage::enter_reentrancy_guard(env)?;
+        payer.require_auth();
+        if sponsored {
+            player.require_auth();
+        }
+        let config = ArenaStorage::load_config(env)?;
+        Self::require_not_paused(env, &config)?;
         if config.state != GameState::Open {
             return Err(ArenaError::InvalidGameState);
         }
@@ -495,53 +538,55 @@ impl ArenaContract {
         // #1579: the lobby closes at `start_deadline`. Once it has passed and
         // the first round has not started, entry is refused and anyone can
         // cancel the arena to unlock refunds.
-        let start_deadline = ArenaStorage::load_start_deadline(&env);
+        let start_deadline = ArenaStorage::load_start_deadline(env);
         if start_deadline != 0 && env.ledger().timestamp() >= start_deadline {
             return Err(ArenaError::StartDeadlinePassed);
         }
-        if player == config.admin {
+        if player == &config.admin {
             return Err(ArenaError::CreatorCannotJoin);
         }
-        if ArenaStorage::is_player_banned(&env, &player) {
+        if ArenaStorage::is_player_banned(env, player) {
             return Err(ArenaError::PlayerBanned);
         }
         // Reject a second join by the same player: charging the entry fee twice
         // and inflating the player count would corrupt the game. A player who
         // has joined already has stored player state.
-        if ArenaStorage::load_player(&env, &player).is_some() {
+        if ArenaStorage::load_player(env, player).is_some() {
             return Err(ArenaError::AlreadyJoined);
         }
-        if let Some(max_players) = ArenaStorage::load_max_players(&env)
+        if let Some(max_players) = ArenaStorage::load_max_players(env)
             && config.player_count >= max_players
         {
             return Err(ArenaError::ArenaFull);
         }
 
-        let token_client = token::TokenClient::new(&env, &config.stake_token);
+        let token_client = token::TokenClient::new(env, &config.stake_token);
         let arena_addr = env.current_contract_address();
-        token_client.transfer(&player, &arena_addr, &config.entry_fee);
+        // The payer funds the seat. For self-funded joins payer == player, so
+        // this is byte-for-byte the original transfer.
+        token_client.transfer(payer, &arena_addr, &config.entry_fee);
 
         // The vault's `deposit` pulls the fee with `transfer(arena, vault, fee)`.
         // The arena is not the direct invoker of that transfer (the vault is),
         // so without this pre-authorisation it fails under real auth and every
         // join reverts with VaultDepositFailed (#1636).
         env.authorize_as_current_contract(soroban_sdk::vec![
-            &env,
+            env,
             InvokerContractAuthEntry::Contract(SubContractInvocation {
                 context: ContractContext {
                     contract: config.stake_token.clone(),
-                    fn_name: Symbol::new(&env, "transfer"),
+                    fn_name: Symbol::new(env, "transfer"),
                     args: (arena_addr.clone(), config.yield_vault.clone(), config.entry_fee)
-                        .into_val(&env),
+                        .into_val(env),
                 },
-                sub_invocations: soroban_sdk::vec![&env],
+                sub_invocations: soroban_sdk::vec![env],
             }),
         ]);
 
         // Deposit entry fee into vault and return an error if it fails.
         // The token transfer above will be rolled back together with any storage mutations
         // when we return an error, so no funds are permanently locked.
-        let rwa_client = RwaAdapterClient::new(&env, &config.yield_vault);
+        let rwa_client = RwaAdapterClient::new(env, &config.yield_vault);
         if rwa_client
             .try_deposit(&arena_addr, &config.entry_fee)
             .is_err()
@@ -549,13 +594,20 @@ impl ArenaContract {
             return Err(ArenaError::VaultDepositFailed);
         }
 
-        let baseline = ArenaStorage::load_last_vault_balance(&env).saturating_add(config.entry_fee);
-        ArenaStorage::save_last_vault_balance(&env, baseline);
+        let baseline = ArenaStorage::load_last_vault_balance(env).saturating_add(config.entry_fee);
+        ArenaStorage::save_last_vault_balance(env, baseline);
 
-        ArenaStorage::add_player(&env, &player);
-        let count = ArenaStorage::load_roster_count(&env);
-        ArenaEvents::player_joined(&env, &player, count);
-        ArenaStorage::exit_reentrancy_guard(&env);
+        ArenaStorage::add_player(env, player);
+        let count = ArenaStorage::load_roster_count(env);
+        if sponsored {
+            // Record before the event so indexers can query the sponsor from
+            // `get_player_status` by the time they observe the join.
+            ArenaStorage::save_sponsor(env, player, payer);
+            ArenaEvents::player_joined_sponsored(env, payer, player, count);
+        } else {
+            ArenaEvents::player_joined(env, player, count);
+        }
+        ArenaStorage::exit_reentrancy_guard(env);
         Ok(())
     }
 
@@ -600,6 +652,7 @@ impl ArenaContract {
         // before any token movement. A failing vault call reverts everything.
         ArenaStorage::remove_player(&env, &player);
         let refund = Self::refund_lobby_player(&env, &config, &player)?;
+        ArenaStorage::remove_sponsor(&env, &player);
         let count = ArenaStorage::load_roster_count(&env);
 
         ArenaEvents::player_left(&env, &player, count);
@@ -878,7 +931,8 @@ impl ArenaContract {
     ///
     /// An address that never joined (or left the lobby) yields
     /// `joined: false` rather than an error. The read writes nothing, does not
-    /// extend TTLs, and touches at most four storage entries.
+    /// extend TTLs, and touches at most five storage entries (the sponsor key
+    /// added in #1715 is read only for joined players).
     ///
     /// # Errors
     /// - `ArenaError::NotInitialized` if `initialize` has not been called.
@@ -926,6 +980,11 @@ impl ArenaContract {
                 config.commit_deadline,
                 env.ledger().timestamp(),
             ),
+            sponsor: if joined {
+                ArenaStorage::peek_sponsor(&env, &player)
+            } else {
+                None
+            },
         })
     }
 
@@ -1555,8 +1614,11 @@ impl ArenaContract {
 
         ArenaStorage::set_refund_claimed(&env, &player);
 
+        // #1715: a sponsored entry's fee is refunded to the payer who funded
+        // it, not to the player occupying the seat.
+        let refund_recipient = ArenaStorage::refund_recipient(&env, &player);
         let token_client = token::TokenClient::new(&env, &config.stake_token);
-        token_client.transfer(&env.current_contract_address(), &player, &config.entry_fee);
+        token_client.transfer(&env.current_contract_address(), &refund_recipient, &config.entry_fee);
 
         ArenaEvents::refund_claimed(&env, &player);
         ArenaStorage::exit_reentrancy_guard(&env);
@@ -1902,8 +1964,10 @@ impl ArenaContract {
         matches!(rwa_client.try_withdraw_all(&arena_addr), Ok(Ok(_)))
     }
 
-    /// Release one lobby player's entry fee from the vault and transfer it back
-    /// to them. Used by `leave_arena` and `ban_player` (#1580, #1581).
+    /// Release one lobby player's entry fee from the vault and transfer it to
+    /// the refund destination. Used by `leave_arena` and `ban_player`
+    /// (#1580, #1581). For sponsored entries the destination is the payer who
+    /// funded the fee (#1715); otherwise it is the player.
     ///
     /// Yield accrued on the refunded principal is intentionally left in the
     /// vault for the remaining pool.
@@ -1924,8 +1988,9 @@ impl ArenaContract {
             withdrawn
         };
 
+        let refund_recipient = ArenaStorage::refund_recipient(env, player);
         let token_client = token::TokenClient::new(env, &config.stake_token);
-        token_client.transfer(&arena_addr, player, &refund);
+        token_client.transfer(&arena_addr, &refund_recipient, &refund);
 
         let baseline = ArenaStorage::load_last_vault_balance(env);
         ArenaStorage::save_last_vault_balance(env, baseline.saturating_sub(config.entry_fee));

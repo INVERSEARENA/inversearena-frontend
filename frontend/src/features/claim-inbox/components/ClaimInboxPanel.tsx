@@ -52,6 +52,11 @@ function shortAge(seconds: number | null): string | null {
   return `${Math.round(seconds / 86400)}d ago`;
 }
 
+/** Keep the sponsor visible for refund attribution without logging a full id. */
+function shortWallet(address: string): string {
+  return address.length > 14 ? `${address.slice(0, 6)}…${address.slice(-6)}` : address;
+}
+
 function ClaimInboxRow({
   item,
   reconciling,
@@ -65,6 +70,9 @@ function ClaimInboxRow({
 }) {
   const style = STATE_STYLES[item.state];
   const age = shortAge(item.freshness.recordAgeSeconds);
+  const refundDestination = item.components.find(
+    (component) => component.kind === "refund" && component.refundDestination,
+  )?.refundDestination;
 
   return (
     <li className={`border-l-2 ${style.border} pl-3 py-2`}>
@@ -94,6 +102,12 @@ function ClaimInboxRow({
         render verbatim. The app has no i18n layer.
       */}
       <p className="mt-1 text-xs text-zinc-500">{item.message}</p>
+
+      {refundDestination ? (
+        <p className="mt-1 text-xs text-zinc-500">
+          Refund to {shortWallet(refundDestination)}
+        </p>
+      ) : null}
 
       <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-zinc-600">
         {age ? <span>records {age}</span> : null}

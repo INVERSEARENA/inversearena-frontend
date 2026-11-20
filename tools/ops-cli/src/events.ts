@@ -19,6 +19,8 @@ interface Layout {
 export const ARENA_EVENT_LAYOUTS: Record<string, Layout> = {
   init: { event: "initialized", topics: [], data: ["admin"] },
   join: { event: "player_joined", topics: ["player"], data: ["player_count"] },
+  // #1715: both addresses are indexed; payer is the refund destination.
+  join_spon: { event: "player_joined_sponsored", topics: ["payer", "player"], data: ["player_count"] },
   ban: { event: "player_banned", topics: ["admin"], data: ["player"] },
   unban: { event: "player_unbanned", topics: ["admin"], data: ["player"] },
   left: { event: "player_left", topics: ["player"], data: ["player_count"] },

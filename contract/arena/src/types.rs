@@ -351,6 +351,10 @@ pub struct PlayerStatus {
     /// The round in progress, or the last completed round when none is running.
     pub current_round: u32,
     pub phase: ArenaPhase,
+    /// Payer who funded this player's sponsored entry (#1715). `None` for a
+    /// self-funded join. Refunds on cancellation are paid to this address,
+    /// while prizes are always paid to the player.
+    pub sponsor: Option<Address>,
 }
 
 /// Error codes returned by arena contract functions.

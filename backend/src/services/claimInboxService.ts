@@ -110,6 +110,13 @@ export interface ClaimInboxRefundCandidate {
   arenaName: string | null;
   walletAddress: string;
   /**
+   * Where the contract will send this refund (#1715). Defaults to the
+   * participant for a self-funded entry; a sponsored entry sets it to the
+   * payer. A payer can therefore own a refund even though `walletAddress`
+   * names the seat's player.
+   */
+  refundDestination?: string;
+  /**
    * Asset the refund is denominated in. Stated rather than derived, because a
    * position may hold a winnings asset and a refund asset at once and
    * totalling them under one code would be a lie.
@@ -398,7 +405,11 @@ function aggregate(
   }
 
   for (const refund of refunds) {
-    if (refund.walletAddress !== walletAddress) continue;
+    // #1715: the payer owns a sponsored refund even though `walletAddress`
+    // still identifies the player whose seat was funded.
+    if (refund.walletAddress !== walletAddress && refund.refundDestination !== walletAddress) {
+      continue;
+    }
     const entry = position(refund.arenaId);
     entry.refunds.push(refund);
     entry.arenaName ??= refund.arenaName;
@@ -460,6 +471,7 @@ function buildItem(input: BuildItemInput): ClaimInboxItem {
       txHash: payout.txHash ?? null,
       confirmedAt: payout.confirmedAt ? payout.confirmedAt.toISOString() : null,
       attempts: payout.attempts,
+      refundDestination: null,
     })),
     ...position.refunds.map((refund) => ({
       kind: "refund" as const,
@@ -470,6 +482,7 @@ function buildItem(input: BuildItemInput): ClaimInboxItem {
       txHash: refund.txHash ?? null,
       confirmedAt: refund.confirmedAt ?? null,
       attempts: 0,
+      refundDestination: refund.refundDestination ?? refund.walletAddress,
     })),
   ];
 
