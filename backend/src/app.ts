@@ -137,6 +137,17 @@ export function createApp(deps: AppDependencies): express.Application {
       },
     }),
   );
+  // Bot callbacks (#1735): Discord interactions are Ed25519-signed over the
+  // exact wire bytes, so capture them before the global JSON parser runs.
+  app.use(
+    "/api/notifications",
+    express.json({
+      limit: "64kb",
+      verify: (req, _res, buf) => {
+        (req as express.Request).rawBody = Buffer.from(buf);
+      },
+    }),
+  );
   app.use(express.json());
   app.use(requestLogger);
   app.use(requestContextMiddleware);

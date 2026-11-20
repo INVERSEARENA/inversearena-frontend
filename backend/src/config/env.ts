@@ -639,6 +639,43 @@ export const ENV_VARS = {
     secret: true,
     schema: z.string().regex(/^[0-9a-fA-F]{64}$/, "must be 64 hex characters"),
   },
+
+  // ── Notification channels (#1735) ─────────────────────────────────────────
+  TELEGRAM_BOT_TOKEN: {
+    section: "Notification channels",
+    description: "Telegram bot token from BotFather. Telegram delivery is disabled when unset.",
+    secret: true,
+    schema: text,
+  },
+  TELEGRAM_WEBHOOK_SECRET: {
+    section: "Notification channels",
+    description: "Shared secret required in `x-telegram-bot-api-secret-token` on bot updates.",
+    secret: true,
+    schema: z.string().min(16),
+  },
+  DISCORD_BOT_TOKEN: {
+    section: "Notification channels",
+    description: "Discord bot token. Discord delivery is disabled when unset.",
+    secret: true,
+    schema: text,
+  },
+  DISCORD_PUBLIC_KEY: {
+    section: "Notification channels",
+    description: "Discord application public key (64 hex chars) used to verify interactions.",
+    schema: z.string().regex(/^[0-9a-fA-F]{64}$/, "must be 64 hex characters"),
+  },
+  NOTIFICATION_RETRY_MAX_ATTEMPTS: {
+    section: "Notification channels",
+    description: "Maximum delivery attempts before a notification is dead-lettered.",
+    default: "5",
+    schema: int(1, 20),
+  },
+  NOTIFICATION_RETRY_BASE_MS: {
+    section: "Notification channels",
+    description: "Base exponential-backoff delay in milliseconds for retryable delivery failures.",
+    default: "60000",
+    schema: int(1000),
+  },
 } satisfies Record<string, EnvVarSpec>;
 
 export type EnvKey = keyof typeof ENV_VARS;

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useWallet } from "@/features/wallet/hooks/useWallet";
+import { CommunityWebhookSettings } from "@/features/notifications";
 import {
   Play,
   XCircle,
@@ -54,6 +55,7 @@ export default function CreatorOperationsConsole() {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
   const [banner, setBanner] = useState<{ type: "success" | "error"; message: string } | null>(null);
+  const [webhookArenaId, setWebhookArenaId] = useState<string | null>(null);
 
   const fetchCreatorArenas = useCallback(async () => {
     if (!address) {
@@ -338,6 +340,16 @@ export default function CreatorOperationsConsole() {
                         {actionLoading[`${arena.id}-settle`] ? "Settling..." : "Settle"}
                       </button>
                     )}
+
+                    {/* Issue #1735 — host-only community announcements. */}
+                    <button
+                      onClick={() =>
+                        setWebhookArenaId((current) => (current === arena.id ? null : arena.id))
+                      }
+                      className="px-3 py-1.5 border border-white/20 text-white/60 hover:text-white hover:border-neon-green/50 text-xs rounded transition"
+                    >
+                      {webhookArenaId === arena.id ? "Hide webhooks" : "Community webhooks"}
+                    </button>
                   </div>
                 </div>
 
@@ -376,6 +388,12 @@ export default function CreatorOperationsConsole() {
                     </span>
                   </div>
                 </div>
+
+                {webhookArenaId === arena.id && (
+                  <div className="pt-3 border-t border-white/5">
+                    <CommunityWebhookSettings arenaId={arena.id} />
+                  </div>
+                )}
               </div>
             );
           })}
