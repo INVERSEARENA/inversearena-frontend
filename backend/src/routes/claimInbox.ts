@@ -14,7 +14,8 @@ import type { PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import { asyncHandler } from "../middleware/validate";
 import { apiError } from "../utils/apiError";
-import { ClaimInboxService, type ClaimInboxRefundCandidate } from "../services/claimInboxService";
+import { ClaimInboxService } from "../services/claimInboxService";
+import { createCancellationRefundClaimSource } from "../services/claimInboxSources";
 import { CancellationRecoveryService } from "../services/cancellationRecoveryService";
 import { getStellarConfig } from "../config/stellarConfig";
 import { maskWalletAddress } from "../utils/logger";
@@ -30,19 +31,6 @@ const ClaimInboxQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(MAX_LIMIT).default(DEFAULT_LIMIT),
   cursor: z.string().min(1).max(512).optional(),
 });
-
-/**
- * Display units to stroops, for a refund amount that cancellation recovery
- * stores as a float.
- *
- * `Math.floor` matches the frontend builders, so the figure the inbox quotes is
- * the figure the refund transaction will actually carry. Rounding up would
- * quote more than is paid; rounding down would understate the entitlement.
- */
-function refundAmountToStroops(amount: number): string {
-  if (!Number.isFinite(amount) || amount <= 0) return "0";
-  return Math.floor(amount * 10_000_000).toString();
-}
 
 export function createClaimInboxRouter(
   prisma: PrismaClient,

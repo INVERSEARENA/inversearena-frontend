@@ -5,19 +5,10 @@
  */
 
 import { Router } from "express";
-import { z } from "zod";
 import { asyncHandler } from "../middleware/validate";
 import { prisma } from "../db/prisma";
 import { CancellationRecoveryService } from "../services/cancellationRecoveryService";
 import { apiError } from "../utils/apiError";
-import { STRING_LIMITS, boundedString } from "../validation/payloadLimits";
-
-const UpdateRecoverySchema = z.object({
-  status: z.enum(["refundable", "submitted", "confirmed", "failed"]),
-  refundAmount: z.number().finite().nonnegative().optional(),
-  txHash: boundedString(STRING_LIMITS.shortText).optional(),
-  failureReason: boundedString(STRING_LIMITS.reason).optional(),
-});
 
 export function createCancellationRecoveryRouter(authMiddleware: any): Router {
   const router = Router();
@@ -60,38 +51,6 @@ export function createCancellationRecoveryRouter(authMiddleware: any): Router {
 
       const recovery = await recoveryService.getUserRecoveryStatus(userId);
       res.json({ items: recovery });
-    }),
-  );
-
-  /**
-   * PUT /api/arenas/:id/recovery/:userId
-   * Updates recovery status for a participant (admin only).
-   */
-  router.put(
-    "/:id/recovery/:userId",
-    authMiddleware,
-    asyncHandler(async (req, res) => {
-      const { id, userId } = req.params;
-      if (!id || !userId) {
-        throw apiError(400, "INVALID_PARAMS", "Arena id and user id are required");
-      }
-
-      // Check if user is admin
-      const caller = req.user?.walletAddress;
-      if (!caller) {
-        throw apiError(401, "UNAUTHORIZED", "Unauthorized");
-      }
-
-      // TODO: Add admin check here
-
-      const updates = UpdateRecoverySchema.parse(req.body);
-      await recoveryService.updateRecoveryStatus(id, userId, updates.status, {
-        refundAmount: updates.refundAmount,
-        txHash: updates.txHash,
-        failureReason: updates.failureReason,
-      });
-
-      res.json({ success: true });
     }),
   );
 

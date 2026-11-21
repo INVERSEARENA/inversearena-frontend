@@ -1,11 +1,8 @@
-/**
- * Cancellation Recovery Service (#1398)
- *
- * Implements cancellation recovery status for every participant.
- * Each participant can see refundable, submitted, confirmed, or failed recovery state.
- */
-
+/** Cancellation recovery is derived from typed round data and live contract state. */
 import { PrismaClient, type Arena, type Round } from "@prisma/client";
+import { readOnChainGameState, readOnChainPlayerStatus } from "./onChainReader";
+import { isVerifiedRead } from "../types/onChainRead";
+import type { PlayerChoice } from "../types/round";
 
 export type RecoveryStatus = "refundable" | "submitted" | "confirmed" | "failed";
 
@@ -17,10 +14,7 @@ export interface ParticipantRecovery {
   totalStaked: number;
   recoveryStatus: RecoveryStatus;
   refundAmount: number;
-  submittedAt?: string;
-  confirmedAt?: string;
   failureReason?: string;
-  txHash?: string;
 }
 
 export interface ArenaCancellationRecovery {
@@ -32,229 +26,101 @@ export interface ArenaCancellationRecovery {
   totalRefunded: number;
 }
 
+type ParticipantStake = { userId: string; totalStaked: number };
+
+/** Typed Round.playerChoices is the persisted participant/stake source. */
+function collectParticipants(rounds: Round[]): Map<string, ParticipantStake> {
+  const participants = new Map<string, ParticipantStake>();
+  for (const round of rounds) {
+    const choices = Array.isArray(round.playerChoices)
+      ? (round.playerChoices as unknown as PlayerChoice[])
+      : [];
+    for (const choice of choices) {
+      if (!choice || typeof choice.userId !== "string" || typeof choice.stake !== "number") continue;
+      const current = participants.get(choice.userId);
+      if (current) current.totalStaked += choice.stake;
+      else participants.set(choice.userId, { userId: choice.userId, totalStaked: choice.stake });
+    }
+  }
+  return participants;
+}
+
 export class CancellationRecoveryService {
   constructor(private prisma: PrismaClient) {}
 
-  /**
-   * Get cancellation recovery status for an arena.
-   */
   async getArenaRecovery(arenaId: string): Promise<ArenaCancellationRecovery | null> {
     const arena = await this.prisma.arena.findUnique({
       where: { id: arenaId },
-      include: {
-        rounds: {
-          include: {
-            eliminationLogs: true,
-          },
-        },
-      },
+      include: { rounds: { orderBy: { roundNumber: "asc" } } },
     });
+    if (!arena) return null;
 
-    if (!arena) {
-      return null;
-    }
+    const chainState = await readOnChainGameState(arena.id);
+    if (!isVerifiedRead(chainState) || chainState.value !== "Cancelled") return null;
 
-    const metadata = (arena.metadata as Record<string, unknown>) ?? {};
-    const arenaName = (metadata.name as string) ?? `Arena ${arena.id.slice(0, 8)}`;
-
-    // Check if arena was cancelled
-    const isCancelled = arena.rounds.some((r) => {
-      const roundMetadata = (r.metadata as Record<string, unknown>) ?? {};
-      return roundMetadata.cancelled === true;
-    });
-
-    if (!isCancelled) {
-      return null;
-    }
-
-    // Find the cancellation timestamp
-    const cancelledRound = arena.rounds.find((r) => {
-      const roundMetadata = (r.metadata as Record<string, unknown>) ?? {};
-      return roundMetadata.cancelled === true;
-    });
-
-    const cancelledAt = cancelledRound?.createdAt.toISOString() ?? arena.updatedAt.toISOString();
-
-    // Get all participants across all rounds
-    const allParticipants = new Map<string, { userId: string; totalStaked: number }>();
-
-    for (const round of arena.rounds) {
-      const roundMetadata = (round.metadata as Record<string, unknown>) ?? {};
-      const playerChoices = (roundMetadata.playerChoices as Array<{ userId: string; stake: number }>) ?? [];
-
-      for (const choice of playerChoices) {
-        const existing = allParticipants.get(choice.userId);
-        if (existing) {
-          existing.totalStaked += choice.stake;
-        } else {
-          allParticipants.set(choice.userId, {
-            userId: choice.userId,
-            totalStaked: choice.stake,
-          });
-        }
-      }
-    }
-
-    // Get user wallet addresses
-    const userIds = Array.from(allParticipants.keys());
-    const users = userIds.length > 0
-      ? await this.prisma.user.findMany({
-          where: { id: { in: userIds } },
-        })
+    const participants = collectParticipants(arena.rounds);
+    const users = participants.size
+      ? await this.prisma.user.findMany({ where: { id: { in: [...participants.keys()] } } })
       : [];
-
-    const userById = new Map(users.map((u) => [u.id, u.walletAddress]));
-
-    // Build participant recovery records
-    const participants: ParticipantRecovery[] = [];
-    let totalRefundable = 0;
-    let totalRefunded = 0;
-
-    for (const [userId, data] of allParticipants) {
-      const walletAddress = userById.get(userId) ?? userId;
-
-      // Check recovery status from metadata
-      const recoveryMetadata = (metadata.recoveryStatus as Record<string, Record<string, unknown>>)?.[userId];
-      const recoveryStatus = (recoveryMetadata?.status as RecoveryStatus) ?? "refundable";
-      const refundAmount = (recoveryMetadata?.refundAmount as number) ?? data.totalStaked;
-      const submittedAt = recoveryMetadata?.submittedAt as string | undefined;
-      const confirmedAt = recoveryMetadata?.confirmedAt as string | undefined;
-      const failureReason = recoveryMetadata?.failureReason as string | undefined;
-      const txHash = recoveryMetadata?.txHash as string | undefined;
-
-      participants.push({
-        userId,
-        walletAddress,
-        arenaId: arena.id,
-        arenaName,
-        totalStaked: data.totalStaked,
-        recoveryStatus,
-        refundAmount,
-        submittedAt,
-        confirmedAt,
-        failureReason,
-        txHash,
-      });
-
-      if (recoveryStatus === "refundable") {
-        totalRefundable += refundAmount;
-      } else if (recoveryStatus === "confirmed") {
-        totalRefunded += refundAmount;
-      }
-    }
-
-    return {
-      arenaId: arena.id,
-      arenaName,
-      cancelledAt,
-      participants,
-      totalRefundable,
-      totalRefunded,
-    };
+    const walletById = new Map(users.map((user) => [user.id, user.walletAddress]));
+    const records = await Promise.all([...participants.values()].map((participant) =>
+      this.toRecovery(arena, participant, walletById.get(participant.userId) ?? ""),
+    ));
+    return this.buildArenaRecovery(arena, records);
   }
 
-  /**
-   * Get recovery status for a specific user across all cancelled arenas.
-   */
   async getUserRecoveryStatus(userId: string): Promise<ParticipantRecovery[]> {
-    // Find all cancelled arenas where the user participated
-    const arenas = await this.prisma.arena.findMany({
-      include: {
-        rounds: true,
-      },
-    });
+    const [arenas, user] = await Promise.all([
+      this.prisma.arena.findMany({ include: { rounds: { orderBy: { roundNumber: "asc" } } } }),
+      this.prisma.user.findUnique({ where: { id: userId }, select: { walletAddress: true } }),
+    ]);
+    if (!user?.walletAddress) return [];
 
     const results: ParticipantRecovery[] = [];
-
     for (const arena of arenas) {
-      const metadata = (arena.metadata as Record<string, unknown>) ?? {};
-
-      // Check if arena was cancelled
-      const isCancelled = arena.rounds.some((r) => {
-        const roundMetadata = (r.metadata as Record<string, unknown>) ?? {};
-        return roundMetadata.cancelled === true;
-      });
-
-      if (!isCancelled) continue;
-
-      // Check if user participated
-      let userStaked = 0;
-      for (const round of arena.rounds) {
-        const roundMetadata = (round.metadata as Record<string, unknown>) ?? {};
-        const playerChoices = (roundMetadata.playerChoices as Array<{ userId: string; stake: number }>) ?? [];
-        const userChoice = playerChoices.find((c) => c.userId === userId);
-        if (userChoice) {
-          userStaked += userChoice.stake;
-        }
-      }
-
-      if (userStaked === 0) continue;
-
-      // Get recovery status
-      const recoveryMetadata = (metadata.recoveryStatus as Record<string, Record<string, unknown>>)?.[userId];
-      const recoveryStatus = (recoveryMetadata?.status as RecoveryStatus) ?? "refundable";
-      const refundAmount = (recoveryMetadata?.refundAmount as number) ?? userStaked;
-
-      const arenaName = (metadata.name as string) ?? `Arena ${arena.id.slice(0, 8)}`;
-
-      results.push({
-        userId,
-        walletAddress: "", // Will be filled by caller if needed
-        arenaId: arena.id,
-        arenaName,
-        totalStaked: userStaked,
-        recoveryStatus,
-        refundAmount,
-        submittedAt: recoveryMetadata?.submittedAt as string | undefined,
-        confirmedAt: recoveryMetadata?.confirmedAt as string | undefined,
-        failureReason: recoveryMetadata?.failureReason as string | undefined,
-        txHash: recoveryMetadata?.txHash as string | undefined,
-      });
+      const participant = collectParticipants(arena.rounds).get(userId);
+      if (!participant) continue;
+      const state = await readOnChainGameState(arena.id);
+      if (!isVerifiedRead(state) || state.value !== "Cancelled") continue;
+      results.push(await this.toRecovery(arena, participant, user.walletAddress));
     }
-
     return results;
   }
 
-  /**
-   * Update recovery status for a participant.
-   */
-  async updateRecoveryStatus(
-    arenaId: string,
-    userId: string,
-    status: RecoveryStatus,
-    details: {
-      refundAmount?: number;
-      txHash?: string;
-      failureReason?: string;
-    } = {},
-  ): Promise<void> {
-    const arena = await this.prisma.arena.findUnique({
-      where: { id: arenaId },
-    });
-
-    if (!arena) {
-      throw new Error(`Arena ${arenaId} not found`);
-    }
-
-    const metadata = (arena.metadata as Record<string, unknown>) ?? {};
-    const recoveryStatus = (metadata.recoveryStatus as Record<string, Record<string, unknown>>) ?? {};
-
-    recoveryStatus[userId] = {
-      status,
-      ...details,
-      updatedAt: new Date().toISOString(),
-      ...(status === "submitted" && { submittedAt: new Date().toISOString() }),
-      ...(status === "confirmed" && { confirmedAt: new Date().toISOString() }),
+  private async toRecovery(
+    arena: Arena,
+    participant: ParticipantStake,
+    walletAddress: string,
+  ): Promise<ParticipantRecovery> {
+    const status = walletAddress
+      ? await readOnChainPlayerStatus(arena.id, walletAddress)
+      : null;
+    const recoveryStatus: RecoveryStatus = status && isVerifiedRead(status) && status.value.joined
+      ? status.value.refundClaimed ? "confirmed" : "refundable"
+      : "failed";
+    return {
+      userId: participant.userId,
+      walletAddress,
+      arenaId: arena.id,
+      arenaName: `Arena ${arena.id.slice(0, 8)}`,
+      totalStaked: participant.totalStaked,
+      recoveryStatus,
+      refundAmount: participant.totalStaked,
+      ...(status && isVerifiedRead(status)
+        ? status.value.joined ? {} : { failureReason: "Wallet is not recorded as a participant on-chain." }
+        : { failureReason: "Could not verify refund status on-chain; retry later." }),
     };
+  }
 
-    await this.prisma.arena.update({
-      where: { id: arenaId },
-      data: {
-        metadata: {
-          ...metadata,
-          recoveryStatus,
-        },
-      },
-    });
+  private buildArenaRecovery(arena: Arena, participants: ParticipantRecovery[]): ArenaCancellationRecovery {
+    const cancelledRound = (arena as Arena & { rounds?: Round[] }).rounds?.find((round) => round.state === "CANCELLED");
+    return {
+      arenaId: arena.id,
+      arenaName: `Arena ${arena.id.slice(0, 8)}`,
+      cancelledAt: (cancelledRound?.updatedAt ?? arena.updatedAt).toISOString(),
+      participants,
+      totalRefundable: participants.filter((p) => p.recoveryStatus === "refundable").reduce((sum, p) => sum + p.refundAmount, 0),
+      totalRefunded: participants.filter((p) => p.recoveryStatus === "confirmed").reduce((sum, p) => sum + p.refundAmount, 0),
+    };
   }
 }

@@ -33,55 +33,16 @@
 
 import type { PrismaClient } from "@prisma/client";
 import type { TransactionRepository } from "../repositories/transactionRepository";
-import type { PaymentStatus, TransactionRecord } from "../types/payment";
-import type {
-  ClaimInboxAsset,
-  ClaimInboxComponent,
-  ClaimInboxCursor,
-  ClaimInboxItem,
-  ClaimInboxPage,
-  ClaimInboxPositionKind,
-  ClaimInboxReason,
-  ClaimInboxState,
-  ClaimInboxSummary,
-  ClaimInboxArenaState,
-} from "../types/claimInbox";
+import type { ClaimInboxArenaState, ClaimInboxItem, ClaimInboxPage } from "../types/claimInbox";
 import {
-  claimInboxActionableItems,
-  claimInboxScanDuration,
   claimInboxSourceCount,
-  claimInboxVerificationFailures,
+  claimInboxScanDuration,
   claimInboxItemCount,
-  claimInboxUnconfiguredAssets,
+  claimInboxActionableItems,
 } from "../utils/metrics";
-import { logger } from "../utils/logger";
-
-/**
- * Statuses that mean a transaction is already moving and the chain decides.
- *
- * `built` is deliberately *not* here. A built payout has unsigned XDR and has
- * never been submitted, so the arena's winnings are still claimable and the
- * user still has something to do — which is the same rule the existing
- * per-arena `getClaimReadiness` applies, where only `submitted` and
- * `confirmed` block a claim.
- */
-const LIVE_PAYOUT_STATUSES: PaymentStatus[] = [
-  "queued",
-  "awaiting_signature",
-  "submitted",
-];
-
-/** Statuses that mean the payout will not move again without intervention. */
-const TERMINAL_PAYOUT_STATUSES: PaymentStatus[] = ["confirmed", "failed", "dead"];
-
-/**
- * Statuses counted as "settled".
- *
- * `unknown` is deliberately excluded: a payout the reconciler has given up on
- * understanding is not a completed claim, and presenting it as one would
- * remove it from the actionable list on the strength of a failure.
- */
-const SETTLED_STATUSES: PaymentStatus[] = ["confirmed"];
+import { aggregate, buildItem, summarize, encodeCursor, decodeCursor } from "./claimInboxPresenter";
+import { loadRefundsSafely, verifyArenasSafely } from "./claimInboxSafety";
+import { TransactionPayoutClaimSource } from "./claimInboxSources";
 
 /**
  * A record older than this is reported with `stale: true`.
@@ -162,22 +123,14 @@ export interface ClaimInboxDeps {
  * previous page could skip it or return it twice. Epoch sorts it last, which is
  * also the honest answer: we do not know when this happened.
  */
-const UNKNOWN_SORT_KEY = "1970-01-01T00:00:00.000Z";
-
-/**
- * XLM is native and has no issuer. Every other code must be configured
- * explicitly — see `parseAssetIssuers`. A code that is neither native nor
- * configured is reported with a null issuer and counted, because inventing one
- * would tell a client to trust an account nobody chose.
- */
-const NATIVE_ASSET_CODE = "XLM";
-
 export class ClaimInboxService {
+  private readonly payoutSource: TransactionPayoutSource;
   private readonly verifyArenas: ClaimInboxVerifier;
   private readonly findRefunds: ClaimInboxRefundSource;
   private readonly now: () => number;
 
   constructor(private readonly deps: ClaimInboxDeps) {
+    this.payoutSource = new TransactionPayoutClaimSource(deps.transactions);
     this.now = deps.now ?? Date.now;
     this.verifyArenas = deps.verifyArenas ?? defaultNoVerify;
     this.findRefunds = deps.findRefunds ?? defaultNoRefunds;
@@ -202,14 +155,14 @@ export class ClaimInboxService {
     // Fetch one extra row to detect a further page without a count query.
     const scanLimit = Math.min(limit * 4 + 1, 200);
     const [payouts, refunds] = await Promise.all([
-      this.deps.transactions.listByDestination(
+      this.payoutSource.list(
         walletAddress,
         scanLimit,
         decoded ? { updatedAt: new Date(decoded.sortKey), id: decoded.id } : null,
       ),
       // A refund source that throws must not take the whole inbox down: the
       // Mongo records still describe real money the user is owed.
-      this.safeRefunds(walletAddress),
+      loadRefundsSafely(this.findRefunds, walletAddress),
     ]);
 
     claimInboxSourceCount.inc({ source: "payouts" }, payouts.length);
@@ -220,7 +173,7 @@ export class ClaimInboxService {
 
     // ── Bounded on-chain verification ─────────────────────────────────────
     const candidates = positions.slice(0, this.deps.maxVerify ?? CLAIM_INBOX_MAX_VERIFY);
-    const chainStates = await this.safeVerify(candidates.map((p) => p.arenaId));
+    const chainStates = await verifyArenasSafely(this.verifyArenas, candidates.map((p) => p.arenaId), this.deps.verifyBudgetMs ?? CLAIM_INBOX_VERIFY_BUDGET_MS);
     const verifiedAt = new Date(this.now()).toISOString();
     // Unverified for two distinct reasons, and the page must not imply
     // otherwise: reads that failed, and positions past the verification cap

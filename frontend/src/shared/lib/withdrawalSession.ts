@@ -1,7 +1,7 @@
 /**
  * Utilities for the single-use withdrawal-success session guard (#1298).
  *
- * Before navigating to `/arena-v2/withdrawal-success`, the withdrawal flow
+ * Before navigating to `/arena/withdrawal-success`, the withdrawal flow
  * must call `markWithdrawalComplete()` to store a one-time token in
  * sessionStorage.  The success page calls `consumeWithdrawalToken()` which
  * returns `true` exactly once and immediately removes the token, preventing
