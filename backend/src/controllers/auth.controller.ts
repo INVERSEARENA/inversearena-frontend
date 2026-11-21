@@ -19,12 +19,14 @@ export class AuthController {
   };
 
   verify = async (req: Request, res: Response): Promise<void> => {
-    const { walletAddress, signature } = VerifySchema.parse(req.body);
+    const { walletAddress, signature, signedChallengeXdr } = VerifySchema.parse(req.body);
     const device = {
       deviceLabel: describeUserAgent(req.headers["user-agent"]),
       ip: req.ip ?? null,
     };
-    const result = await this.authService.verifySignatureAndLogin(walletAddress, signature, device);
+    const result = signedChallengeXdr
+      ? await this.authService.verifyChallengeAndLogin(walletAddress, signedChallengeXdr, device)
+      : await this.authService.verifySignatureAndLogin(walletAddress, signature!, device);
     res.json(result);
   };
 

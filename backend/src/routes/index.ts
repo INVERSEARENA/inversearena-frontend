@@ -25,6 +25,7 @@ import { createLobbyReservationRouter } from "./lobbyReservation";
 import { createDashboardRouter } from "./dashboard";
 import { createCreatorRouter } from "./creator";
 import { createCreatorTemplatesRouter } from "./creatorTemplates";
+import { createCreatorSeriesRouter } from "./creatorSeries";
 import { createHostWhitelistRouter } from "./hostWhitelist";
 import { createJackpotsRouter } from "./jackpots";
 import { createArenaMessagesRouter } from "./arenaMessages";
@@ -105,6 +106,7 @@ export function createApiRouter(
   );
   router.use("/dashboard", createDashboardRouter(requireAuth));
   router.use("/creator/templates", createCreatorTemplatesRouter(requireAuth));
+  router.use("/creator/series", createCreatorSeriesRouter(requireAuth));
   router.use("/creator", createCreatorRouter(requireAuth));
   router.use("/jackpots", createJackpotsRouter(requireAuth));
   router.use("/users", createFollowsRouter(requireAuth));

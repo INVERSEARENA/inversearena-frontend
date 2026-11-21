@@ -29,6 +29,23 @@ jest.mock("@creit-tech/stellar-wallets-kit", () => ({
   },
 }));
 
+// Session establishment is exercised in its own suites; keep the wallet
+// provider tests focused on wallet/balance behaviour (no auth HTTP traffic).
+jest.mock("@/shared/lib/session/sessionClient", () => ({
+  loginWithWallet: jest.fn(async () => undefined),
+  revokeSessionForWalletChange: jest.fn(),
+  logoutSession: jest.fn(async () => undefined),
+}));
+jest.mock("@/shared/lib/session/sessionStore", () => ({
+  getSessionState: jest.fn(() => ({
+    status: "unauthenticated",
+    walletAddress: null,
+    expiresAt: 0,
+    error: null,
+  })),
+  clearSession: jest.fn(),
+}));
+
 jest.mock("@creit-tech/stellar-wallets-kit/modules/freighter", () => ({
   FreighterModule: jest.fn().mockImplementation(() => ({})),
 }));

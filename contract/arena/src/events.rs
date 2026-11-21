@@ -44,6 +44,27 @@ impl ArenaEvents {
             .publish((ns(env), symbol_short!("join"), player.clone()), (EVENT_SCHEMA_VERSION, player_count));
     }
 
+    /// Emitted for a sponsored ("Gift a seat") entry (#1715). Both addresses
+    /// are indexed: `payer` funded the fee and is the refund destination,
+    /// `player` owns the seat and receives any prizes. `player_count` is the
+    /// roster size after the join, matching `player_joined`.
+    pub fn player_joined_sponsored(
+        env: &Env,
+        payer: &Address,
+        player: &Address,
+        player_count: u32,
+    ) {
+        env.events().publish(
+            (
+                ns(env),
+                symbol_short!("join_spon"),
+                payer.clone(),
+                player.clone(),
+            ),
+            (EVENT_SCHEMA_VERSION, player_count),
+        );
+    }
+
     pub fn player_banned(env: &Env, admin: &Address, player: &Address) {
         env.events()
             .publish((ns(env), symbol_short!("ban"), admin.clone()), (EVENT_SCHEMA_VERSION, player.clone()));

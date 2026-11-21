@@ -14,6 +14,16 @@ export interface PlayerJoinedEvent {
     timestamp: number;
 }
 
+/** #1715: a payer funded the entry fee for `playerWallet`. */
+export interface PlayerJoinedSponsoredEvent {
+    type: 'PlayerJoinedSponsored';
+    arenaId: string;
+    payerWallet: string;
+    playerWallet: string;
+    playerCount: number;
+    timestamp: number;
+}
+
 export interface RoundStartedEvent {
     type: 'RoundStarted';
     arenaId: string;
@@ -59,6 +69,7 @@ export interface PlayerEliminatedEvent {
 export type ArenaDomainEvent =
     | ArenaCreatedEvent
     | PlayerJoinedEvent
+    | PlayerJoinedSponsoredEvent
     | RoundStartedEvent
     | ChoiceSubmittedEvent
     | RoundResolvedEvent

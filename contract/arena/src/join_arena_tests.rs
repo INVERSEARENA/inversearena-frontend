@@ -490,3 +490,70 @@ fn late_join_does_not_increase_the_player_count() {
         "a rejected late join must not dilute the field",
     );
 }
+
+// ── Sponsored entries (#1715) ─────────────────────────────────────────────────
+
+#[test]
+fn sponsored_join_charges_the_payer_and_registers_the_player() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+    let payer = Address::generate(&env);
+    let player = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &100);
+
+    client.join_arena_for(&payer, &player);
+
+    let token = TokenClient::new(&env, &token_id);
+    assert_eq!(token.balance(&payer), 0, "the payer funds the entry fee");
+    assert_eq!(token.balance(&player), 100, "the recipient pays nothing");
+    assert_eq!(token.balance(&client.address), 100);
+    assert_eq!(client.player_count(), 1);
+    let roster = client.get_players(&0);
+    assert_eq!(roster.len(), 1);
+    assert_eq!(roster.get(0).unwrap(), player);
+    assert_eq!(
+        client.get_player_status(&player).sponsor,
+        Some(payer),
+        "the sponsor is exposed for refund routing"
+    );
+}
+
+#[test]
+fn sponsored_join_emits_the_sponsored_topic_with_both_addresses() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+    let payer = Address::generate(&env);
+    let player = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &100);
+
+    client.join_arena_for(&payer, &player);
+
+    let topic: soroban_sdk::Vec<Val> = (
+        symbol_short!("arena"),
+        symbol_short!("join_spon"),
+        payer.clone(),
+        player.clone(),
+    )
+        .into_val(&env);
+    assert!(
+        env.events()
+            .all()
+            .iter()
+            .any(|(contract, topics, _)| contract == client.address && topics == topic),
+        "join_arena_for must emit player_joined_sponsored(payer, player)"
+    );
+}
+
+#[test]
+fn a_payer_can_fund_more_than_one_seat() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &200);
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+
+    client.join_arena_for(&payer, &first);
+    client.join_arena_for(&payer, &second);
+
+    assert_eq!(client.player_count(), 2);
+    assert_eq!(TokenClient::new(&env, &token_id).balance(&payer), 0);
+    assert_eq!(client.get_player_status(&second).sponsor, Some(payer));
+}

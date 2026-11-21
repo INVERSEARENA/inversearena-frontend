@@ -25,7 +25,11 @@ import { createApp } from "./app";
 import { shutdownApplication } from "./appLifecycle";
 import { initLedgerContinuity } from "./services/ledgerContinuity";
 import { OutboxStore } from "./services/outbox/outboxStore";
-import { OutboxDispatcher, outboxPayloadObject } from "./workers/outboxDispatcher";
+import {
+  OutboxDispatcher,
+  outboxPayloadObject,
+} from "./workers/outboxDispatcher";
+import { WebhookService } from "./services/webhooks/webhookService";
 import { cache, invalidateArena, tags } from "./cache/cacheService";
 import { publishArenaProjectionUpdate } from "./cache/arenaPoller";
 
@@ -48,7 +52,11 @@ async function main() {
   projectionStreamSubscriber.on("pmessage", (_pattern, channel, rawMessage) => {
     try {
       const parsed: unknown = JSON.parse(rawMessage);
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        Array.isArray(parsed)
+      ) {
         throw new Error("Projection stream message must be an object");
       }
       const update = parsed as Record<string, unknown>;
@@ -62,7 +70,9 @@ async function main() {
         typeof update.status !== "string" ||
         channel !== `arena:projection:${update.arenaId}`
       ) {
-        throw new Error("Projection stream message has an invalid shape or channel");
+        throw new Error(
+          "Projection stream message has an invalid shape or channel",
+        );
       }
       publishArenaProjectionUpdate({
         id: update.id,
@@ -73,7 +83,10 @@ async function main() {
         status: update.status,
       });
     } catch (error) {
-      logger.error({ channel, err: error }, "Discarded invalid projection stream message");
+      logger.error(
+        { channel, err: error },
+        "Discarded invalid projection stream message",
+      );
     }
   });
   await projectionStreamSubscriber.connect();
@@ -86,16 +99,24 @@ async function main() {
   const txQueue = createTxQueue();
   const paymentService = new PaymentService(transactions);
   const paymentConfig = getPaymentConfig();
-  const paymentWorker = new PaymentWorker(transactions, paymentService, txQueue, {
-    failedRetryMax: paymentConfig.failedRetryMax,
-    failedRetryBaseMs: paymentConfig.failedRetryBaseMs,
-  });
+  const paymentWorker = new PaymentWorker(
+    transactions,
+    paymentService,
+    txQueue,
+    {
+      failedRetryMax: paymentConfig.failedRetryMax,
+      failedRetryBaseMs: paymentConfig.failedRetryBaseMs,
+    },
+  );
   const reconciler = startTxReconcilerWorker(paymentService, transactions);
   const adminService = new AdminService();
   const authService = new AuthService();
   const roundService = new RoundService(prisma);
   const roundProofBundleService = new RoundProofBundleService(prisma);
-  const transactionIntentService = new TransactionIntentService(new MongoTransactionIntentRepository());
+  const transactionIntentService = new TransactionIntentService(
+    new MongoTransactionIntentRepository(),
+  );
+  const webhookService = new WebhookService(prisma);
   const outboxDispatcher = new OutboxDispatcher(
     new OutboxStore(prisma),
     async (message) => {
@@ -114,16 +135,20 @@ async function main() {
         if (typeof arenaId !== "string") {
           throw new Error(`Outbox event ${message.id} has no arenaId`);
         }
-        await redis.publish(`arena:projection:${arenaId}`, JSON.stringify({
-          id: message.id,
-          type: message.eventType,
-          dedupeKey: message.dedupeKey,
-          ...payload,
-        }));
+        await redis.publish(
+          `arena:projection:${arenaId}`,
+          JSON.stringify({
+            id: message.id,
+            type: message.eventType,
+            dedupeKey: message.dedupeKey,
+            ...payload,
+          }),
+        );
         return;
       }
       throw new Error(`Unsupported outbox event type: ${message.eventType}`);
     },
+    webhookService,
   );
   // #1391: reconciles the Arena table against the factory contract's
   // authoritative get_arenas state. Same env var confirmArenaDeployment
@@ -134,7 +159,10 @@ async function main() {
       "ARENA_FACTORY_CONTRACT_ID is not configured with a valid Soroban contract ID",
     );
   }
-  const arenaBackfillWorker = new ArenaBackfillWorker(prisma, arenaFactoryContractId);
+  const arenaBackfillWorker = new ArenaBackfillWorker(
+    prisma,
+    arenaFactoryContractId,
+  );
   // #1622: monthly partition maintenance + retention for high-volume tables;
   // triggered via POST /api/worker/retention/run (admin-gated).
   const retentionWorker = new RetentionWorker(prisma);
@@ -156,20 +184,21 @@ async function main() {
     logger.info({ port: PORT }, "InverseArena backend listening");
   });
   outboxDispatcher.start();
-  const shutdown = () => void shutdownApplication({
-    httpServer,
-    txQueue,
-    stopWorkers: async () => {
-      await Promise.all([
-        reconciler.close(),
-        outboxDispatcher.stop(),
-        projectionStreamSubscriber.quit(),
-      ]);
-    },
-  }).catch((err) => {
-    logger.error({ err }, "Failed to shut down backend cleanly");
-    process.exitCode = 1;
-  });
+  const shutdown = () =>
+    void shutdownApplication({
+      httpServer,
+      txQueue,
+      stopWorkers: async () => {
+        await Promise.all([
+          reconciler.close(),
+          outboxDispatcher.stop(),
+          projectionStreamSubscriber.quit(),
+        ]);
+      },
+    }).catch((err) => {
+      logger.error({ err }, "Failed to shut down backend cleanly");
+      process.exitCode = 1;
+    });
   process.once("SIGTERM", shutdown);
   process.once("SIGINT", shutdown);
 }

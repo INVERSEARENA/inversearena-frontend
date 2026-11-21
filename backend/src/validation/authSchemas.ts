@@ -13,17 +13,26 @@ export const NonceRequestSchema = z.object({
     .openapi({ example: STELLAR_WALLET_EXAMPLE }),
 });
 
-export const VerifySchema = z.object({
-  walletAddress: z
-    .string()
-    .trim()
-    .regex(PUBLIC_KEY_REGEX, "Invalid Stellar wallet address")
-    .openapi({ example: STELLAR_WALLET_EXAMPLE }),
-  signature: z
-    .string()
-    .min(1, "Signature is required")
-    .openapi({ example: "base64-ed25519-signature" }),
-});
+export const VerifySchema = z
+  .object({
+    walletAddress: z
+      .string()
+      .trim()
+      .regex(PUBLIC_KEY_REGEX, "Invalid Stellar wallet address")
+      .openapi({ example: STELLAR_WALLET_EXAMPLE }),
+    // Message-signature path (Freighter / xBull signMessage).
+    signature: z
+      .string()
+      .min(1)
+      .optional()
+      .openapi({ example: "base64-ed25519-signature" }),
+    // Fallback for wallets that cannot sign arbitrary messages: the wallet
+    // signs a challenge transaction containing the nonce digest instead.
+    signedChallengeXdr: z.string().min(1).optional(),
+  })
+  .refine((value) => Boolean(value.signature) !== Boolean(value.signedChallengeXdr), {
+    message: "Provide exactly one of signature or signedChallengeXdr",
+  });
 
 export const RefreshSchema = z.object({
   refreshToken: z

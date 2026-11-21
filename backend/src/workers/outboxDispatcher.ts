@@ -1,6 +1,10 @@
 import type { Prisma } from "@prisma/client";
 import { logger } from "../utils/logger";
-import { OutboxStore, type OutboxMessage } from "../services/outbox/outboxStore";
+import {
+  OutboxStore,
+  type OutboxMessage,
+} from "../services/outbox/outboxStore";
+import type { WebhookService } from "../services/webhooks/webhookService";
 
 export type OutboxPublisher = (message: OutboxMessage) => Promise<void>;
 
@@ -12,6 +16,7 @@ export class OutboxDispatcher {
   constructor(
     private readonly store: OutboxStore,
     private readonly publish: OutboxPublisher,
+    private readonly webhookService?: WebhookService,
     private readonly pollIntervalMs = 1_000,
   ) {}
 
@@ -32,6 +37,28 @@ export class OutboxDispatcher {
     for (const message of messages) {
       try {
         await this.publish(message);
+
+        // Dispatch to webhooks if service is available
+        if (this.webhookService) {
+          try {
+            await this.webhookService.dispatchToSubscriptions(
+              message.id,
+              message.eventType,
+              message.aggregateId,
+              message.payload,
+            );
+          } catch (webhookErr) {
+            logger.error(
+              {
+                outboxEventId: message.id,
+                err: webhookErr,
+              },
+              "Webhook dispatch failed; continuing with outbox marking",
+            );
+            // Don't fail the entire event due to webhook dispatch errors
+          }
+        }
+
         await this.store.markPublished(message.id, message.leaseOwner);
       } catch (error) {
         logger.error(
@@ -44,7 +71,12 @@ export class OutboxDispatcher {
           },
           "Outbox event publication failed; retry scheduled",
         );
-        await this.store.scheduleRetry(message.id, message.leaseOwner, message.attempts, error);
+        await this.store.scheduleRetry(
+          message.id,
+          message.leaseOwner,
+          message.attempts,
+          error,
+        );
       }
     }
     return messages.length;
@@ -67,8 +99,14 @@ export class OutboxDispatcher {
   }
 }
 
-export function outboxPayloadObject(payload: Prisma.JsonValue): Record<string, unknown> {
-  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+export function outboxPayloadObject(
+  payload: Prisma.JsonValue,
+): Record<string, unknown> {
+  if (
+    typeof payload !== "object" ||
+    payload === null ||
+    Array.isArray(payload)
+  ) {
     throw new Error("Outbox event payload must be a JSON object");
   }
   return payload as Record<string, unknown>;

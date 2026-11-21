@@ -11,7 +11,10 @@ const mockFetch = jest.fn();
 beforeEach(() => {
   global.fetch = mockFetch as unknown as typeof fetch;
   mockFetch.mockReset();
-  const store: Record<string, string> = { access_token: "test-token" };
+  const store: Record<string, string> = {
+    access_token: "test-token",
+    refresh_token: "test-refresh-token",
+  };
   Object.defineProperty(window, "localStorage", {
     configurable: true,
     value: {

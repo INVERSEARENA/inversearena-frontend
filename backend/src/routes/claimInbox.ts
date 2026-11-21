@@ -20,6 +20,7 @@ import { CancellationRecoveryService } from "../services/cancellationRecoverySer
 import { getStellarConfig } from "../config/stellarConfig";
 import { maskWalletAddress } from "../utils/logger";
 import { verifyArenasOnChain } from "../services/claimInboxVerifier";
+import { ArenaProjectionCheckpointStore } from "../services/projection/arenaProjectionCheckpointStore";
 import type { TransactionRepository } from "../repositories/transactionRepository";
 import { logger } from "../utils/logger";
 
@@ -41,9 +42,115 @@ export function createClaimInboxRouter(
   // Resolved once here, not per request: this validates the Stellar env, so it
   // belongs at boot where a bad `ASSET_ISSUERS` should fail loudly, rather than
   // turning into a 500 on the first wallet that asks for its inbox.
-  const { assetIssuers } = getStellarConfig();
+  const { assetIssuers, networkPassphrase } = getStellarConfig();
+  const projectionCheckpoints = new ArenaProjectionCheckpointStore(prisma);
 
-  const findRefunds = createCancellationRefundClaimSource(prisma, cancellation);
+  /**
+   * Sponsor map for one arena from the checkpointed projection (#1715).
+   * A missing/corrupt checkpoint must not make the whole inbox unavailable;
+   * refunds then simply use the legacy self-funded destination.
+   */
+  const readSponsors = async (arenaId: string): Promise<Record<string, string>> => {
+    try {
+      const checkpoint = await projectionCheckpoints.load(arenaId, networkPassphrase);
+      return checkpoint?.projectionState.sponsors ?? {};
+    } catch (error) {
+      logger.warn(
+        {
+          subsystem: "claim-inbox",
+          arenaId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "Could not read projection sponsors for refund destination",
+      );
+      return {};
+    }
+  };
+
+  /** Arena ids where `walletAddress` funded at least one sponsored seat. */
+  const findSponsoredArenaIds = async (walletAddress: string): Promise<string[]> => {
+    try {
+      const checkpoints = await prisma.arenaProjectionCheckpoint.findMany({
+        where: { network: networkPassphrase },
+        orderBy: { lastLedgerSequence: "desc" },
+        take: 200,
+        select: { arenaId: true, projectionState: true },
+      });
+      return checkpoints
+        .filter((row) => {
+          const sponsors = (row.projectionState as { sponsors?: Record<string, string> })?.sponsors;
+          return !!sponsors && Object.values(sponsors).includes(walletAddress);
+        })
+        .map((row) => row.arenaId);
+    } catch (error) {
+      logger.warn(
+        {
+          subsystem: "claim-inbox",
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "Could not scan projection sponsor checkpoints",
+      );
+      return [];
+    }
+  };
+
+  /**
+   * Read refundable stakes for one wallet out of cancellation recovery.
+   *
+   * `getArenaRecovery` is per-arena and returns `null` for an arena that was
+   * not cancelled, so finding a wallet's positions means asking about the
+   * arenas it participated in. Participation is read from the elimination log
+   * and round player choices — the same derivation the per-arena endpoint uses,
+   * so the two cannot disagree about who is owed a refund.
+   */
+  const findRefunds = async (walletAddress: string): Promise<ClaimInboxRefundCandidate[]> => {
+      const [rows, sponsoredArenaIds] = await Promise.all([
+        prisma.round.findMany({
+          where: {
+            OR: [
+              { eliminationLogs: { some: { userId: walletAddress } } },
+              { allActivePlayerIds: { has: walletAddress } },
+            ],
+          },
+          select: { arenaId: true },
+          distinct: ["arenaId"],
+          take: 50,
+        }),
+        findSponsoredArenaIds(walletAddress),
+      ]);
+      const arenaIds = Array.from(
+        new Set([...rows.map((row) => row.arenaId), ...sponsoredArenaIds]),
+      ).slice(0, 50);
+
+      const candidates: ClaimInboxRefundCandidate[] = [];
+      for (const arenaId of arenaIds) {
+        const recovery = await cancellation.getArenaRecovery(arenaId);
+        if (!recovery) continue;
+        const sponsors = await readSponsors(arenaId);
+        // A payer owns the refund for every seat it funded, even though the
+        // recovery participant is the player occupying the seat (#1715).
+        const mine = recovery.participants.filter(
+          (p) => p.walletAddress === walletAddress || sponsors[p.walletAddress] === walletAddress,
+        );
+        for (const participant of mine) {
+          const refundDestination = sponsors[participant.walletAddress] ?? participant.walletAddress;
+          candidates.push({
+            arenaId: participant.arenaId,
+            arenaName: participant.arenaName,
+            walletAddress: participant.walletAddress,
+            refundDestination,
+            // Cancellation recovery denominates refunds in XLM.
+            assetCode: "XLM",
+            refundAmountStroops: refundAmountToStroops(participant.refundAmount),
+            recoveryStatus: participant.recoveryStatus,
+            txHash: participant.txHash ?? null,
+            confirmedAt: participant.confirmedAt ?? null,
+            updatedAt: participant.submittedAt ? new Date(participant.submittedAt) : null,
+          });
+        }
+      }
+      return candidates;
+  };
 
   const service = new ClaimInboxService({
     prisma,

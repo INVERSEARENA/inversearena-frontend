@@ -52,6 +52,20 @@ const eslintConfig = defineConfig([
       "import/no-restricted-paths": ["error", { zones: boundaryZones }],
     },
   },
+  {
+    files: ["src/features/**/*.{ts,tsx}"],
+    ignores: ["src/test/**", "src/__mocks__/**", "**/__tests__/**", "**/*.test.{ts,tsx}"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "CallExpression[callee.name='fetch']",
+          message:
+            "Direct fetch() is forbidden in features. Use apiClient from '@/shared/lib/api/client' instead.",
+        },
+      ],
+    },
+  },
 ]);
 
 export default eslintConfig;

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { apiClient } from "@/shared/lib/api/client";
 
 export type ReasonCode =
   | "similar_stake"
@@ -30,7 +31,7 @@ const REASON_LABELS: Record<ReasonCode, string> = {
   popular_now:      "Trending",
 };
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
+
 
 function useRecommendedArenas(address: string | undefined) {
   const [arenas, setArenas] = useState<RecommendedArena[]>([]);
@@ -46,11 +47,10 @@ function useRecommendedArenas(address: string | undefined) {
     const load = async () => {
       setStatus("loading");
       try {
-        const res = await fetch(
-          `${API_BASE}/api/players/${address}/recommendations?limit=4`,
+        const data = await apiClient.get<RecommendedArena[]>(
+          `/api/players/${address}/recommendations`,
+          { params: { limit: "4" } },
         );
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data: RecommendedArena[] = await res.json();
         if (!cancelled) { setArenas(data); setStatus("success"); }
       } catch {
         if (!cancelled) setStatus("error");

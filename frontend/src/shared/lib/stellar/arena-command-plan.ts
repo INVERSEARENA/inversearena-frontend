@@ -1,5 +1,7 @@
 export type ArenaCommandCall =
   | { name: "join_arena" }
+  /** Sponsored entry: `payer` funds the fee, `player` is the joined seat (#1715). */
+  | { name: "join_arena_for"; payer: string; player: string }
   | { name: "submit_commitment"; commitmentHex: string; round: number }
   | { name: "reveal_choice"; choice: "Heads" | "Tails" | "Option3"; saltHex: string; round: number }
   | { name: "claim" }

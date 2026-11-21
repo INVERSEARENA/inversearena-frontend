@@ -1,7 +1,10 @@
 import {
+  compactArenaProjectionState,
   foldArenaProjectionEvent,
   foldArenaProjectionEvents,
+  hasValidProjectionHistoryAnchor,
   initialArenaProjection,
+  migrateArenaProjectionState,
   type ArenaProjectionState,
 } from "../../src/services/projection/arenaProjectionFold";
 import type { ArenaProjectionEvent } from "../../src/services/projection/arenaEventTypes";
@@ -33,6 +36,26 @@ function joinEvent(id: string, ledger: number, player: string): ArenaProjectionE
     txHash: `tx-${id}`,
     topic: "JOIN",
     player,
+  });
+}
+
+function sponsoredJoinEvent(
+  id: string,
+  ledger: number,
+  payer: string,
+  player: string,
+  playerCount = 2,
+): ArenaProjectionEvent {
+  return ev({
+    id,
+    contractId: ARENA_ID,
+    ledgerSequence: ledger,
+    ledgerClosedAt: new Date(2026, 0, 1, 0, 0, ledger).toISOString(),
+    txHash: `tx-${id}`,
+    topic: "JOIN_S",
+    payer,
+    player,
+    playerCount,
   });
 }
 
@@ -129,6 +152,8 @@ describe("initialArenaProjection", () => {
       gameState: "unknown",
       admin: null,
       players: [],
+      sponsors: {},
+      sponsoredPlayers: [],
       choicesSubmitted: [],
       eliminated: [],
       winner: null,
@@ -136,7 +161,29 @@ describe("initialArenaProjection", () => {
       totalYieldStroops: "0",
       appliedEventIds: [],
       skippedEventIds: [],
+      eventLedgerSequences: {},
+      historyAnchor: null,
     });
+  });
+});
+
+describe("migrateArenaProjectionState", () => {
+  it("defaults sponsor fields and refreshes the anchor on a pre-#1715 checkpoint", () => {
+    const current = compactArenaProjectionState(
+      foldArenaProjectionEvent(initialArenaProjection(ARENA_ID), joinEvent("j1", 42, "GPLAYER1")),
+    );
+    const legacy = {
+      ...current,
+      sponsors: undefined,
+      sponsoredPlayers: undefined,
+    } as unknown as ArenaProjectionState;
+
+    const { state, migrated } = migrateArenaProjectionState(legacy);
+
+    expect(migrated).toBe(true);
+    expect(state.sponsors).toEqual({});
+    expect(state.sponsoredPlayers).toEqual([]);
+    expect(hasValidProjectionHistoryAnchor(state)).toBe(true);
   });
 });
 
@@ -198,6 +245,22 @@ describe("foldArenaProjectionEvents — normal sequences", () => {
     expect(result.players).toEqual(["GPLAYER1"]);
     // Both distinct event ids were still applied (idempotency is per event id, not per effect).
     expect(result.appliedEventIds).toEqual(["j1", "j2"]);
+  });
+
+  it("records the payer for sponsored joins without adding them to the roster (#1715)", () => {
+    const events: ArenaProjectionEvent[] = [
+      sponsoredJoinEvent("s1", 1, "GPAYER", "GPLAYER1", 1),
+      sponsoredJoinEvent("s2", 2, "GPAYER", "GPLAYER2", 2),
+    ];
+    const result = foldArenaProjectionEvents(initialArenaProjection(ARENA_ID), events);
+
+    expect(result.players).toEqual(["GPLAYER1", "GPLAYER2"]);
+    expect(result.sponsoredPlayers).toEqual(["GPLAYER1", "GPLAYER2"]);
+    expect(result.sponsors).toEqual({
+      GPLAYER1: "GPAYER",
+      GPLAYER2: "GPAYER",
+    });
+    expect(result.appliedEventIds).toEqual(["s1", "s2"]);
   });
 });
 

@@ -14,38 +14,38 @@ datasource db {
 // TODO(#1444): Store the supporting EXPLAIN fixtures.
 
 model User {
-  id             String           @id @default(uuid())
-  walletAddress  String           @unique @map("wallet_address")
-  createdAt      DateTime         @default(now()) @map("created_at")
-  updatedAt      DateTime         @updatedAt @map("updated_at")
+  id            String   @id @default(uuid())
+  walletAddress String   @unique @map("wallet_address")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
 
-  transactions   Transaction[]
-  eliminationLogs EliminationLog[]
+  transactions           Transaction[]
+  eliminationLogs        EliminationLog[]
   notificationPreference NotificationPreference?
   notificationDeliveries NotificationDelivery[]
-  pushSubscriptions PushSubscription[]
-  arenaMessages   ArenaMessage[]
-  messageReports  MessageReport[]
-  followers       Follow[] @relation("FollowedBy")
-  following       Follow[] @relation("Following")
-  clanMember      ClanMember?
+  pushSubscriptions      PushSubscription[]
+  arenaMessages          ArenaMessage[]
+  messageReports         MessageReport[]
+  followers              Follow[]                @relation("FollowedBy")
+  following              Follow[]                @relation("Following")
+  clanMember             ClanMember?
 
   @@map("users")
 }
 
 model Arena {
-  id          String   @id @default(uuid())
-  metadata    Json?    // Stores generic arena settings (e.g. entry fee, limits)
+  id        String   @id @default(uuid())
+  metadata  Json? // Stores generic arena settings (e.g. entry fee, limits)
   // Arena id this arena is a rematch of (#1572). Null for original arenas.
-  rematchOf   String?  @map("rematch_of")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  rematchOf String?  @map("rematch_of")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
-  pools       Pool[]
-  rounds      Round[]
-  stats       ArenaStats?
-  rematchSource Arena?  @relation("ArenaRematch", fields: [rematchOf], references: [id])
-  rematches     Arena[] @relation("ArenaRematch")
+  pools         Pool[]
+  rounds        Round[]
+  stats         ArenaStats?
+  rematchSource Arena?      @relation("ArenaRematch", fields: [rematchOf], references: [id])
+  rematches     Arena[]     @relation("ArenaRematch")
 
   @@index([createdAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
   @@index([rematchOf])
@@ -53,17 +53,17 @@ model Arena {
 }
 
 model ArenaStats {
-  id             String   @id @default(uuid())
-  arenaId        String   @unique @map("arena_id")
-  players        Int      @default(0)
-  rounds         Int      @default(0)
-  eliminations   Int      @default(0)
-  yieldAccrued   Float    @default(0) @map("yield_accrued")
-  version        Int      @default(0)
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  id           String   @id @default(uuid())
+  arenaId      String   @unique @map("arena_id")
+  players      Int      @default(0)
+  rounds       Int      @default(0)
+  eliminations Int      @default(0)
+  yieldAccrued Float    @default(0) @map("yield_accrued")
+  version      Int      @default(0)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
-  arena          Arena    @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+  arena Arena @relation(fields: [arenaId], references: [id], onDelete: Cascade)
 
   @@map("arena_stats")
 }
@@ -71,11 +71,11 @@ model ArenaStats {
 model Pool {
   id          String   @id @default(uuid())
   arenaId     String   @map("arena_id")
-  stakeAmount Float  @map("stake_amount") // Using Float for exact representations of crypto amounts
+  stakeAmount Float    @map("stake_amount") // Using Float for exact representations of crypto amounts
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  arena       Arena    @relation(fields: [arenaId], references: [id])
+  arena Arena @relation(fields: [arenaId], references: [id])
 
   @@index([arenaId]) // Index to quickly find pools for an arena
   @@index([arenaId, createdAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
@@ -87,7 +87,7 @@ model Round {
   arenaId            String   @map("arena_id")
   roundNumber        Int      @map("round_number")
   state              String   @default("OPEN") // OPEN, CLOSED, RESOLVED, SETTLED
-  metadata           Json?    // Legacy extensible metadata JSON document
+  metadata           Json? // Legacy extensible metadata JSON document
   oracleYield        Float?   @map("oracle_yield")
   randomSeed         String?  @map("random_seed")
   playerChoices      Json?    @map("player_choices")
@@ -96,8 +96,8 @@ model Round {
   createdAt          DateTime @default(now()) @map("created_at")
   updatedAt          DateTime @updatedAt @map("updated_at")
 
-  arena              Arena    @relation(fields: [arenaId], references: [id])
-  eliminationLogs    EliminationLog[]
+  arena           Arena            @relation(fields: [arenaId], references: [id])
+  eliminationLogs EliminationLog[]
 
   @@unique([arenaId, roundNumber]) // Each round is unique per arena
   @@index([arenaId])
@@ -113,15 +113,15 @@ model Round {
 // (txHash, createdAt). Aged partitions are moved to the cold `archive` schema
 // by the retention worker (docs/PARTITION_RETENTION_RUNBOOK.md).
 model Transaction {
-  id          String   @default(uuid())
-  txHash      String   @map("tx_hash") // The on-chain transaction hash (unique per createdAt month)
-  userId      String   @map("user_id")
-  amount      Float  // Amount involved
-  type        String  // Type of transaction e.g., "DEPOSIT", "WITHDRAW"
-  status      String  // Status of transaction e.g., "PENDING", "SUCCESS", "FAILED"
-  createdAt   DateTime @default(now()) @map("created_at")
+  id        String   @default(uuid())
+  txHash    String   @map("tx_hash") // The on-chain transaction hash (unique per createdAt month)
+  userId    String   @map("user_id")
+  amount    Float // Amount involved
+  type      String // Type of transaction e.g., "DEPOSIT", "WITHDRAW"
+  status    String // Status of transaction e.g., "PENDING", "SUCCESS", "FAILED"
+  createdAt DateTime @default(now()) @map("created_at")
 
-  user        User     @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
 
   @@id([id, createdAt])
   @@unique([txHash, createdAt])
@@ -148,14 +148,14 @@ model BackfillCursor {
 // (never deleted) by the retention worker —
 // docs/PARTITION_RETENTION_RUNBOOK.md documents restore procedures.
 model EliminationLog {
-  id          String   @default(uuid())
-  roundId     String   @map("round_id")
-  userId      String   @map("user_id")
-  reason      String?  // Reason for elimination if applicable
+  id           String   @default(uuid())
+  roundId      String   @map("round_id")
+  userId       String   @map("user_id")
+  reason       String? // Reason for elimination if applicable
   eliminatedAt DateTime @default(now()) @map("eliminated_at")
 
-  round       Round    @relation(fields: [roundId], references: [id])
-  user        User     @relation(fields: [userId], references: [id])
+  round Round @relation(fields: [roundId], references: [id])
+  user  User  @relation(fields: [userId], references: [id])
 
   @@id([id, eliminatedAt])
   @@index([roundId])
@@ -165,36 +165,37 @@ model EliminationLog {
 }
 
 model NotificationPreference {
-  id          String   @id @default(uuid())
-  userId      String   @unique @map("user_id")
-  emailEnabled Boolean @default(false) @map("email_enabled")
-  pushEnabled Boolean @default(false) @map("push_enabled")
-  inAppEnabled Boolean @default(true) @map("in_app_enabled")
-  roundNotifications Boolean @default(true) @map("round_notifications")
-  payoutNotifications Boolean @default(true) @map("payout_notifications")
-  eliminationNotifications Boolean @default(true) @map("elimination_notifications")
-  email       String?
-  pushToken   String?  @map("push_token")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id                       String   @id @default(uuid())
+  userId                   String   @unique @map("user_id")
+  emailEnabled             Boolean  @default(false) @map("email_enabled")
+  pushEnabled              Boolean  @default(false) @map("push_enabled")
+  inAppEnabled             Boolean  @default(true) @map("in_app_enabled")
+  roundNotifications       Boolean  @default(true) @map("round_notifications")
+  payoutNotifications      Boolean  @default(true) @map("payout_notifications")
+  eliminationNotifications Boolean  @default(true) @map("elimination_notifications")
+  digestNotifications      Boolean  @default(true) @map("digest_notifications")
+  email                    String?
+  pushToken                String?  @map("push_token")
+  createdAt                DateTime @default(now()) @map("created_at")
+  updatedAt                DateTime @updatedAt @map("updated_at")
 
-  user        User     @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
 
   @@map("notification_preferences")
 }
 
 model NotificationDelivery {
-  id          String   @id @default(uuid())
-  userId      String   @map("user_id")
-  type        String   // "round" | "payout" | "elimination"
-  channel     String   // "email" | "push" | "in_app"
-  status      String   // "pending" | "sent" | "delivered" | "failed"
-  dedupeKey   String   @map("dedupe_key")
-  sentAt      DateTime? @map("sent_at")
-  error       String?
-  createdAt   DateTime @default(now()) @map("created_at")
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  type      String // "round" | "payout" | "elimination"
+  channel   String // "email" | "push" | "in_app"
+  status    String // "pending" | "sent" | "delivered" | "failed"
+  dedupeKey String    @map("dedupe_key")
+  sentAt    DateTime? @map("sent_at")
+  error     String?
+  createdAt DateTime  @default(now()) @map("created_at")
 
-  user        User     @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
 
   @@index([userId])
   @@index([userId, dedupeKey, channel])
@@ -205,32 +206,32 @@ model NotificationDelivery {
 // p256dh/auth are AES-256-GCM encrypted at rest (see pushService);
 // the service never returns them to clients.
 model PushSubscription {
-  id          String   @id @default(uuid())
-  userId      String   @map("user_id")
-  endpoint    String   @unique
-  p256dh      String
-  auth        String
-  userAgent   String?  @map("user_agent")
-  createdAt   DateTime @default(now()) @map("created_at")
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
 
-  user        User     @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
 
   @@index([userId])
   @@map("push_subscriptions")
 }
 
 model HostWhitelistApplication {
-  id          String   @id @default(uuid())
+  id          String    @id @default(uuid())
   wallet      String
   contact     String
   intent      String
-  status      String   @default("PENDING") // PENDING | APPROVED | REJECTED | CONFIRMED
+  status      String    @default("PENDING") // PENDING | APPROVED | REJECTED | CONFIRMED
   reviewer    String?
-  reviewNote  String?  @map("review_note")
-  unsignedXdr String?  @map("unsigned_xdr")
-  txHash      String?  @map("tx_hash")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  reviewNote  String?   @map("review_note")
+  unsignedXdr String?   @map("unsigned_xdr")
+  txHash      String?   @map("tx_hash")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
   reviewedAt  DateTime? @map("reviewed_at")
   confirmedAt DateTime? @map("confirmed_at")
 
@@ -249,7 +250,7 @@ model HostWhitelistApplication {
 model ArenaProjectionCheckpoint {
   id                 String    @id @default(uuid())
   arenaId            String    @map("arena_id")
-  network            String    // networkPassphrase-derived key; keeps testnet/mainnet checkpoints isolated
+  network            String // networkPassphrase-derived key; keeps testnet/mainnet checkpoints isolated
   lastLedgerSequence Int       @map("last_ledger_sequence")
   // Full folded ArenaProjectionState (see arenaProjectionFold.ts), stored as
   // JSON so the replay engine can resume without re-deriving state from
@@ -278,15 +279,15 @@ model ArenaProjectionCheckpoint {
 // Read-only reporting — this table never drives a transfer. See
 // backend/docs/TREASURY_RECONCILIATION_DESIGN.md.
 model TreasuryFeeRecord {
-  id     String @id @default(uuid())
+  id          String  @id @default(uuid())
   // networkPassphrase-derived key; keeps testnet/mainnet records isolated,
   // same convention as ArenaProjectionCheckpoint.network.
-  network String
+  network     String
   // "platform_fee" today; the schema leaves room for other treasury record
   // types (e.g. creator-stake collect/refund) as a documented follow-up.
-  recordType String @default("platform_fee") @map("record_type")
-  arenaId    String @map("arena_id")
-  asset      String
+  recordType  String  @default("platform_fee") @map("record_type")
+  arenaId     String  @map("arena_id")
+  asset       String
   assetIssuer String? @map("asset_issuer")
 
   // Canonical source event identity — the idempotency key (network, tx hash,
@@ -301,16 +302,16 @@ model TreasuryFeeRecord {
   // exact integer (atomic-unit) math.
   expectedAmountAtomic BigInt  @map("expected_amount_atomic")
   configVersion        Int     @map("config_version")
-  feeBpsApplied         Int     @map("fee_bps_applied")
-  destination           String? @map("destination")
+  feeBpsApplied        Int     @map("fee_bps_applied")
+  destination          String? @map("destination")
 
   // Actual side — filled in only once/if a matching transfer is found.
-  actualAmountAtomic  BigInt? @map("actual_amount_atomic")
-  actualTxHash        String? @map("actual_tx_hash")
-  actualDestination   String? @map("actual_destination")
+  actualAmountAtomic BigInt? @map("actual_amount_atomic")
+  actualTxHash       String? @map("actual_tx_hash")
+  actualDestination  String? @map("actual_destination")
 
   // pending | balanced | discrepant
-  status String @default("pending")
+  status          String    @default("pending")
   // missing_transfer | unexpected_transfer | amount_mismatch | destination_mismatch | unfinalized_ledger
   discrepancyType String?   @map("discrepancy_type")
   reconciledAt    DateTime? @map("reconciled_at")
@@ -330,22 +331,22 @@ model TreasuryFeeRecord {
 // scoped to this ingestion job specifically (a distinct job from the #1382
 // arena state projection).
 model TreasuryReconciliationCheckpoint {
-  id                 String   @id @default(uuid())
-  arenaId            String   @map("arena_id")
+  id                 String    @id @default(uuid())
+  arenaId            String    @map("arena_id")
   network            String
-  lastLedgerSequence Int      @map("last_ledger_sequence")
+  lastLedgerSequence Int       @map("last_ledger_sequence")
   // The `platform_fee_bps` in effect as of `lastLedgerSequence`, carried
   // forward across ingestion runs so a resumed run knows which fee rate
   // applied to a `claimed` event without re-scanning full history. Defaults
   // to the contract's own global default (see `load_platform_fee_bps`).
-  lastKnownFeeBps Int @default(1000) @map("last_known_fee_bps")
+  lastKnownFeeBps    Int       @default(1000) @map("last_known_fee_bps")
   // idle | ingesting | caught_up | failed
-  status     String    @default("idle")
-  lastError  String?   @map("last_error")
-  leaseOwner String?   @map("lease_owner")
-  leaseExpiresAt DateTime? @map("lease_expires_at")
-  createdAt  DateTime  @default(now()) @map("created_at")
-  updatedAt  DateTime  @updatedAt @map("updated_at")
+  status             String    @default("idle")
+  lastError          String?   @map("last_error")
+  leaseOwner         String?   @map("lease_owner")
+  leaseExpiresAt     DateTime? @map("lease_expires_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
 
   @@unique([arenaId, network])
   @@index([status])
@@ -362,10 +363,10 @@ model TreasuryReconciliationCheckpoint {
 model IdempotentCommand {
   id             String   @id @default(uuid())
   idempotencyKey String   @unique @map("idempotency_key")
-  action         String   // "resolve_round" | "close_round"
+  action         String // "resolve_round" | "close_round"
   roundId        String   @map("round_id")
-  status         String   // "in_progress" | "completed" | "failed"
-  result         Json?    // The durable response body to replay on retry, once completed
+  status         String // "in_progress" | "completed" | "failed"
+  result         Json? // The durable response body to replay on retry, once completed
   errorMessage   String?  @map("error_message")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
@@ -419,14 +420,14 @@ model CreatorTemplate {
 // MANAGED_PARTITIONED_TABLES, but for now the small volume (a handful
 // of incidents per month) means a simple createdAt index suffices.
 model StatusIncident {
-  id          String    @id @default(uuid())
-  component    String    // "api" | "stream" | "keeper" | "rpc" | "oracle" | "database" | "redis"
-  status       String    // "degraded" | "partial_outage" | "major_outage" | "maintenance"
-  message      String
-  startedAt    DateTime  @default(now()) @map("started_at")
-  resolvedAt   DateTime? @map("resolved_at")
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @updatedAt @map("updated_at")
+  id         String    @id @default(uuid())
+  component  String // "api" | "stream" | "keeper" | "rpc" | "oracle" | "database" | "redis"
+  status     String // "degraded" | "partial_outage" | "major_outage" | "maintenance"
+  message    String
+  startedAt  DateTime  @default(now()) @map("started_at")
+  resolvedAt DateTime? @map("resolved_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
 
   @@index([component, startedAt(sort: Desc)])
   @@index([startedAt(sort: Desc)])
@@ -435,16 +436,16 @@ model StatusIncident {
 
 // Progressive jackpot funded by platform fees (#1719)
 model Jackpot {
-  id              String   @id @default(uuid())
-  stakeToken      String   @map("stake_token") // The token this jackpot is for
-  balanceAtomic   BigInt   @default(0) @map("balance_atomic") // Balance in smallest unit
-  shareBps        Int      @default(500) @map("share_bps") // Basis points of fees routed here
-  awardRule       String   @default("PERFECT_STREAK") @map("award_rule") // Rule defining when to award
-  awardThreshold  Int?     @map("award_threshold") // Threshold value for award rule (e.g., N rounds survived)
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  id             String   @id @default(uuid())
+  stakeToken     String   @map("stake_token") // The token this jackpot is for
+  balanceAtomic  BigInt   @default(0) @map("balance_atomic") // Balance in smallest unit
+  shareBps       Int      @default(500) @map("share_bps") // Basis points of fees routed here
+  awardRule      String   @default("PERFECT_STREAK") @map("award_rule") // Rule defining when to award
+  awardThreshold Int?     @map("award_threshold") // Threshold value for award rule (e.g., N rounds survived)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
-  jackpotAwards   JackpotAward[]
+  jackpotAwards JackpotAward[]
 
   @@unique([stakeToken])
   @@index([createdAt(sort: Desc)])
@@ -453,18 +454,18 @@ model Jackpot {
 
 // Award records for jackpot payouts (#1719)
 model JackpotAward {
-  id              String   @id @default(uuid())
-  jackpotId       String   @map("jackpot_id")
-  arenaId         String   @map("arena_id")
-  winnerId        String   @map("winner_id")
-  amountAtomic    BigInt   @map("amount_atomic")
-  awardReason     String   @map("award_reason") // Reason award was triggered
-  txHash          String?  @map("tx_hash") // On-chain tx hash if paid out
-  status          String   @default("pending") // pending | paid | failed
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  id           String   @id @default(uuid())
+  jackpotId    String   @map("jackpot_id")
+  arenaId      String   @map("arena_id")
+  winnerId     String   @map("winner_id")
+  amountAtomic BigInt   @map("amount_atomic")
+  awardReason  String   @map("award_reason") // Reason award was triggered
+  txHash       String?  @map("tx_hash") // On-chain tx hash if paid out
+  status       String   @default("pending") // pending | paid | failed
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
-  jackpot         Jackpot  @relation(fields: [jackpotId], references: [id], onDelete: Cascade)
+  jackpot Jackpot @relation(fields: [jackpotId], references: [id], onDelete: Cascade)
 
   @@index([jackpotId])
   @@index([arenaId])
@@ -475,17 +476,17 @@ model JackpotAward {
 
 // In-lobby chat and reactions (#1724)
 model ArenaMessage {
-  id              String   @id @default(uuid())
-  arenaId         String   @map("arena_id")
-  userId          String   @map("user_id")
-  messageType     String   @default("chat") // chat | reaction
-  content         String   // Chat text or emoji
-  status          String   @default("active") // active | muted | deleted
-  reportCount     Int      @default(0) @map("report_count")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  id          String   @id @default(uuid())
+  arenaId     String   @map("arena_id")
+  userId      String   @map("user_id")
+  messageType String   @default("chat") // chat | reaction
+  content     String // Chat text or emoji
+  status      String   @default("active") // active | muted | deleted
+  reportCount Int      @default(0) @map("report_count")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
 
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([arenaId, createdAt(sort: Desc)])
   @@index([userId])
@@ -495,14 +496,14 @@ model ArenaMessage {
 
 // User reports on arena messages (#1724)
 model MessageReport {
-  id              String   @id @default(uuid())
-  messageId       String   @map("message_id")
-  reporterId      String   @map("reporter_id")
-  reason          String   // Reason for report (spam, abuse, etc.)
-  status          String   @default("pending") // pending | reviewed | dismissed
-  createdAt       DateTime @default(now()) @map("created_at")
+  id         String   @id @default(uuid())
+  messageId  String   @map("message_id")
+  reporterId String   @map("reporter_id")
+  reason     String // Reason for report (spam, abuse, etc.)
+  status     String   @default("pending") // pending | reviewed | dismissed
+  createdAt  DateTime @default(now()) @map("created_at")
 
-  reporter        User     @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+  reporter User @relation(fields: [reporterId], references: [id], onDelete: Cascade)
 
   @@index([messageId])
   @@index([reporterId])
@@ -512,14 +513,14 @@ model MessageReport {
 
 // Follow relationships (#1723)
 model Follow {
-  id              String   @id @default(uuid())
-  followerId      String   @map("follower_id")
-  followingId     String   @map("following_id")
-  isFollowable    Boolean  @default(true) @map("is_followable")
-  createdAt       DateTime @default(now()) @map("created_at")
+  id           String   @id @default(uuid())
+  followerId   String   @map("follower_id")
+  followingId  String   @map("following_id")
+  isFollowable Boolean  @default(true) @map("is_followable")
+  createdAt    DateTime @default(now()) @map("created_at")
 
-  follower        User     @relation("FollowedBy", fields: [followerId], references: [id], onDelete: Cascade)
-  following       User     @relation("Following", fields: [followingId], references: [id], onDelete: Cascade)
+  follower  User @relation("FollowedBy", fields: [followerId], references: [id], onDelete: Cascade)
+  following User @relation("Following", fields: [followingId], references: [id], onDelete: Cascade)
 
   @@unique([followerId, followingId])
   @@index([followerId])
@@ -530,21 +531,21 @@ model Follow {
 
 // Clan memberships and details (#1725)
 model Clan {
-  id              String   @id @default(uuid())
-  name            String   @unique
-  tag             String   @unique @db.VarChar(5)
-  ownerAddress    String   @map("owner_address")
-  memberCount     Int      @default(1) @map("member_count")
-  totalWins       Int      @default(0) @map("total_wins")
-  totalStaked      Float    @default(0) @map("total_staked")
-  avgWinRate      Float    @default(0) @map("avg_win_rate")
-  joinPolicy      String   @default("open") // open | invite_only
-  description     String?
-  imageUrl        String?  @map("image_url")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  id           String   @id @default(uuid())
+  name         String   @unique
+  tag          String   @unique @db.VarChar(5)
+  ownerAddress String   @map("owner_address")
+  memberCount  Int      @default(1) @map("member_count")
+  totalWins    Int      @default(0) @map("total_wins")
+  totalStaked  Float    @default(0) @map("total_staked")
+  avgWinRate   Float    @default(0) @map("avg_win_rate")
+  joinPolicy   String   @default("open") // open | invite_only
+  description  String?
+  imageUrl     String?  @map("image_url")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
-  members         ClanMember[]
+  members ClanMember[]
 
   @@index([createdAt(sort: Desc)])
   @@index([totalWins(sort: Desc)])
@@ -553,18 +554,101 @@ model Clan {
 
 // Clan membership records (#1725)
 model ClanMember {
-  id              String   @id @default(uuid())
-  clanId          String   @map("clan_id")
-  userId          String   @map("user_id")
-  role            String   @default("member") // owner | officer | member
-  joinedAt        DateTime @default(now()) @map("joined_at")
-  createdAt       DateTime @default(now()) @map("created_at")
+  id        String   @id @default(uuid())
+  clanId    String   @map("clan_id")
+  userId    String   @map("user_id")
+  role      String   @default("member") // owner | officer | member
+  joinedAt  DateTime @default(now()) @map("joined_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
-  clan            Clan     @relation(fields: [clanId], references: [id], onDelete: Cascade)
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clan Clan @relation(fields: [clanId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId]) // One clan per user at a time
   @@index([clanId])
   @@index([role])
   @@map("clan_members")
+}
+
+// Scheduled recurring arena series from creator templates (#1746)
+model ArenaSeries {
+  id               String    @id @default(uuid())
+  creatorAddress   String    @map("creator_address")
+  templateId       String    @map("template_id")
+  name             String
+  cadence          String // cron-like syntax e.g. "0 20 * * *" or "@daily"
+  timezone         String    @default("UTC")
+  status           String    @default("active") // "active" | "paused" | "completed" | "cancelled"
+  endCondition     Json?     @map("end_condition") // { maxInstances?: number, endDate?: string }
+  instancesCreated Int       @default(0) @map("instances_created")
+  lastScheduledAt  DateTime? @map("last_scheduled_at")
+  nextScheduledAt  DateTime? @map("next_scheduled_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  instances ArenaSeriesInstance[]
+
+  @@index([creatorAddress, status])
+  @@index([status, nextScheduledAt])
+  @@map("arena_series")
+}
+
+model ArenaSeriesInstance {
+  id                 String   @id @default(uuid())
+  seriesId           String   @map("series_id")
+  arenaId            String?  @map("arena_id")
+  scheduledFor       DateTime @map("scheduled_for")
+  status             String   @default("pending") // "pending" | "signed" | "created" | "skipped" | "failed"
+  signRequestPayload Json?    @map("sign_request_payload")
+  txHash             String?  @map("tx_hash")
+  errorMessage       String?  @map("error_message")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  series ArenaSeries @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+
+  @@index([seriesId, status])
+  @@index([scheduledFor, status])
+  @@map("arena_series_instances")
+}
+
+// Webhook subscriptions for integrators (#XXXX)
+model WebhookSubscription {
+  id            String    @id @default(uuid())
+  url           String // Must pass SSRF validation
+  secret        String // HMAC-256 signing key
+  eventFilters  String[]  @default(["*"]) @map("event_filters") // Empty or ["*"] means all; specific types otherwise
+  status        String    @default("active") // "active" | "disabled"
+  failureCount  Int       @default(0) @map("failure_count") // Consecutive delivery failures
+  lastFailedAt  DateTime? @map("last_failed_at")
+  lastSuccessAt DateTime? @map("last_success_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  deliveryLogs WebhookDeliveryLog[]
+
+  @@index([status, createdAt(sort: Desc)])
+  @@index([status])
+  @@map("webhook_subscriptions")
+}
+
+// Delivery log for each webhook dispatch attempt
+model WebhookDeliveryLog {
+  id             String   @id @default(uuid())
+  subscriptionId String   @map("subscription_id")
+  outboxEventId  String   @map("outbox_event_id")
+  idempotencyKey String   @map("idempotency_key") // Prevents replay duplication
+  httpStatus     Int?     @map("http_status")
+  responseTime   Int?     @map("response_time") // milliseconds
+  error          String? // Error message if delivery failed
+  status         String   @default("pending") // "pending" | "delivered" | "failed"
+  attempt        Int      @default(1)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@unique([subscriptionId, idempotencyKey])
+  @@index([subscriptionId, createdAt(sort: Desc)])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("webhook_delivery_logs")
 }

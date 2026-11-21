@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { z } from "zod";
 import type { Survivor } from "../model/types";
+import { apiClient } from "@/shared/lib/api/client";
 
 // ── Zod schemas for runtime validation ─────────────────────────────
 const apiPlayerSchema = z.object({
@@ -37,9 +38,6 @@ function toSurvivor(p: z.infer<typeof apiPlayerSchema>): Survivor {
   };
 }
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
-
 export interface UseLeaderboardReturn {
   survivors: Survivor[];
   loading: boolean;
@@ -67,21 +65,7 @@ export function useLeaderboard(limit = 20): UseLeaderboardReturn {
         const params = new URLSearchParams({ limit: limit.toString() });
         if (cursor) params.set("cursor", cursor);
 
-        const url = `${API_BASE}/api/leaderboard?${params.toString()}`;
-        const token =
-          typeof window !== "undefined"
-            ? window.localStorage.getItem("access_token")
-            : null;
-        const headers: HeadersInit = token
-          ? { Authorization: `Bearer ${token}` }
-          : {};
-        const res = await fetch(url, { headers });
-
-        if (!res.ok) {
-          throw new Error(`Leaderboard request failed: ${res.status}`);
-        }
-
-        const json = await res.json();
+        const json = await apiClient.get<unknown>("/api/leaderboard", { params });
         const data = leaderboardApiResponseSchema.parse(json);
         const newSurvivors = data.players.map(toSurvivor);
 
