@@ -7,10 +7,49 @@ services:
       POSTGRES_USER: testuser
       POSTGRES_PASSWORD: testpassword
       POSTGRES_DB: inversearenatest
+      # Allow more connections for PgBouncer pooling
+      POSTGRES_MAX_CONNECTIONS: 200
     ports:
-      - "5432:5432"
+      - "5433:5432"  # Changed to avoid conflict with PgBouncer
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U testuser"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  pgbouncer:
+    image: edoburu/pgbouncer:1.21.0
+    environment:
+      DATABASE_URL: postgres://testuser:testpassword@postgres:5432/inversearenatest
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 25
+      MIN_POOL_SIZE: 10
+      RESERVE_POOL_SIZE: 5
+      RESERVE_POOL_TIMEOUT: 3
+      MAX_DB_CONNECTIONS: 100
+      MAX_USER_CONNECTIONS: 100
+      SERVER_IDLE_TIMEOUT: 600
+      SERVER_LIFETIME: 3600
+      SERVER_CONNECT_TIMEOUT: 15
+      QUERY_TIMEOUT: 30
+      QUERY_WAIT_TIMEOUT: 120
+      CLIENT_IDLE_TIMEOUT: 0
+      IDLE_TRANSACTION_TIMEOUT: 300
+      STATS_USERS: testuser
+      ADMIN_USERS: testuser
+      LOG_CONNECTIONS: 0
+      LOG_DISCONNECTIONS: 0
+      LOG_POOLER_ERRORS: 1
+    ports:
+      - "5432:5432"  # PgBouncer listens on standard PostgreSQL port
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "psql", "-h", "localhost", "-U", "testuser", "-d", "pgbouncer", "-c", "SHOW VERSION;"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -24,3 +63,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,203 @@
+name: Load Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Test duration (e.g., 60s, 5m)'
+        required: false
+        default: '60s'
+      vus:
+        description: 'Number of virtual users'
+        required: false
+        default: '50'
+      target_url:
+        description: 'Target URL'
+        required: false
+        default: 'http://localhost:3001'
+  pull_request:
+    paths:
+      - 'backend/src/db/**'
+      - 'backend/src/config/database.ts'
+      - 'backend/load-tests/**'
+      - '.github/workflows/load-test.yml'
+
+jobs:
+  load-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: inversearenatest
+          POSTGRES_MAX_CONNECTIONS: 200
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      pgbouncer:
+        image: edoburu/pgbouncer:1.21.0
+        env:
+          DATABASE_URL: postgres://testuser:testpassword@postgres:5432/inversearenatest
+          POOL_MODE: transaction
+          MAX_CLIENT_CONN: 1000
+          DEFAULT_POOL_SIZE: 25
+          MAX_DB_CONNECTIONS: 100
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "psql -h localhost -U testuser -d pgbouncer -c 'SHOW VERSION;'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Run database migrations
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest?schema=public
+          PROCESS_ROLE: MIGRATION
+        run: npm run migrate
+
+      - name: Seed database
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest?schema=public
+        run: npx prisma db seed
+
+      - name: Start backend server
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest?schema=public
+          PROCESS_ROLE: API
+          DB_POOL_SIZE: 10
+          PORT: 3001
+          REDIS_URL: redis://localhost:6379
+          JWT_SECRET: test-secret-minimum-32-characters-long
+          ADMIN_API_KEY: test-admin-key
+        run: |
+          npm run build
+          node dist/server.js &
+          echo $! > server.pid
+          sleep 5
+
+      - name: Wait for server readiness
+        run: |
+          for i in {1..30}; do
+            if curl -f http://localhost:3001/health > /dev/null 2>&1; then
+              echo "Server is ready"
+              exit 0
+            fi
+            echo "Waiting for server... ($i/30)"
+            sleep 2
+          done
+          echo "Server failed to start"
+          exit 1
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: Run baseline load test (without PgBouncer)
+        working-directory: backend
+        env:
+          BASE_URL: http://localhost:3001
+        run: |
+          echo "Running baseline test..."
+          k6 run --vus ${{ github.event.inputs.vus || '50' }} \
+                 --duration ${{ github.event.inputs.duration || '60s' }} \
+                 --out json=baseline-results.json \
+                 load-tests/connection-pooling.js
+        continue-on-error: true
+
+      - name: Restart server with PgBouncer
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest?schema=public&pgbouncer=true
+          PROCESS_ROLE: API
+          DB_POOL_SIZE: 10
+          PORT: 3001
+          REDIS_URL: redis://localhost:6379
+          JWT_SECRET: test-secret-minimum-32-characters-long
+          ADMIN_API_KEY: test-admin-key
+        run: |
+          if [ -f server.pid ]; then
+            kill $(cat server.pid) || true
+            rm server.pid
+          fi
+          sleep 2
+          node dist/server.js &
+          echo $! > server.pid
+          sleep 5
+
+      - name: Run PgBouncer load test
+        working-directory: backend
+        env:
+          BASE_URL: http://localhost:3001
+        run: |
+          echo "Running PgBouncer test..."
+          k6 run --vus ${{ github.event.inputs.vus || '50' }} \
+                 --duration ${{ github.event.inputs.duration || '60s' }} \
+                 --out json=pgbouncer-results.json \
+                 load-tests/connection-pooling.js
+
+      - name: Compare results
+        working-directory: backend
+        run: |
+          echo "=== Baseline Results ==="
+          cat baseline-results.json | jq '.metrics.http_req_duration.values'
+          echo ""
+          echo "=== PgBouncer Results ==="
+          cat pgbouncer-results.json | jq '.metrics.http_req_duration.values'
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-results
+          path: |
+            backend/baseline-results.json
+            backend/pgbouncer-results.json
+            backend/summary.json
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f backend/server.pid ]; then
+            kill $(cat backend/server.pid) || true
+          fi

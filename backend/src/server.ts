@@ -16,13 +16,18 @@ import { startTxReconcilerWorker } from "./workers/txReconciler";
 import { createApp } from "./app";
 
 import { initSentry } from "./utils/sentry";
+import { startPoolMonitor } from "./utils/poolMonitor";
 
 const PORT = Number(process.env.PORT ?? 3001);
 
 async function main() {
   initSentry();
+  
+  // Start connection pool monitoring
+  startPoolMonitor(10000); // Poll every 10 seconds
+  
   await connectDB();
-   await redis.connect();
+  await redis.connect();
 
 
   const transactions = new MongoTransactionRepository();

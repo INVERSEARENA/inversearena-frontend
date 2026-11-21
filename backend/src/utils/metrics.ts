@@ -18,6 +18,51 @@ export const httpRequestDuration = new Histogram({
   registers: [register],
 });
 
+// Database Connection Pool Metrics
+export const dbPoolConnectionsActive = new Gauge({
+  name: 'db_pool_connections_active',
+  help: 'Number of active database connections in the pool',
+  labelNames: ['role'],
+  registers: [register],
+});
+
+export const dbPoolConnectionsIdle = new Gauge({
+  name: 'db_pool_connections_idle',
+  help: 'Number of idle database connections in the pool',
+  labelNames: ['role'],
+  registers: [register],
+});
+
+export const dbPoolWaitTime = new Histogram({
+  name: 'db_pool_wait_time_seconds',
+  help: 'Time spent waiting for a database connection from the pool',
+  labelNames: ['role'],
+  buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 2, 5],
+  registers: [register],
+});
+
+export const dbPoolAcquireCount = new Counter({
+  name: 'db_pool_acquire_total',
+  help: 'Total number of connection acquisitions from the pool',
+  labelNames: ['role', 'status'],
+  registers: [register],
+});
+
+export const dbPoolTimeoutCount = new Counter({
+  name: 'db_pool_timeout_total',
+  help: 'Total number of connection pool timeout errors',
+  labelNames: ['role'],
+  registers: [register],
+});
+
+export const dbQueryDuration = new Histogram({
+  name: 'db_query_duration_seconds',
+  help: 'Database query duration in seconds',
+  labelNames: ['model', 'operation'],
+  buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 2],
+  registers: [register],
+});
+
 // Worker Metrics
 export const workerJobsPending = new Gauge({
   name: 'worker_jobs_pending',
