@@ -29,6 +29,8 @@ model User {
   followers              Follow[]                @relation("FollowedBy")
   following              Follow[]                @relation("Following")
   clanMember             ClanMember?
+  referralCodesIssued    ReferralCode[]          @relation("ReferralCodesIssued")
+  referralRewards        ReferralReward[]        @relation("ReferralRewardsReceived")
 
   @@map("users")
 }
@@ -651,4 +653,47 @@ model WebhookDeliveryLog {
   @@index([subscriptionId, createdAt(sort: Desc)])
   @@index([status, createdAt(sort: Desc)])
   @@map("webhook_delivery_logs")
+}
+
+// Referral program: codes, reward ledger, payout tracking
+model ReferralCode {
+  id              String   @id @default(uuid())
+  referrerId      String   @map("referrer_id")
+  code            String   @unique
+  attributionWindowExpiresAt DateTime @map("attribution_window_expires_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  referrer User @relation("ReferralCodesIssued", fields: [referrerId], references: [id], onDelete: Cascade)
+  rewards ReferralReward[]
+
+  @@index([referrerId])
+  @@index([code])
+  @@map("referral_codes")
+}
+
+// Referral reward ledger: tracks referee signup, qualification, and payout
+model ReferralReward {
+  id              String   @id @default(uuid())
+  referralCodeId  String   @map("referral_code_id")
+  refereeId       String   @map("referee_id")
+  // pending = referee signed up, awaiting qualification
+  // qualified = referee completed N arenas with min stake
+  // paid = reward paid out
+  // revoked = referee ineligible (self-referral, already existed, etc.)
+  state           String   @default("pending") // pending | qualified | paid | revoked
+  arenaCount      Int      @default(0) @map("arena_count")
+  totalStake      Float    @default(0) @map("total_stake")
+  rewardAmount    Float?   @map("reward_amount")
+  revokeReason    String?  @map("revoke_reason")
+  createdAt       DateTime @default(now()) @map("created_at")
+  qualifiedAt     DateTime? @map("qualified_at")
+  paidAt          DateTime? @map("paid_at")
+
+  referralCode ReferralCode @relation(fields: [referralCodeId], references: [id], onDelete: Cascade)
+  referee User @relation("ReferralRewardsReceived", fields: [refereeId], references: [id], onDelete: Cascade)
+
+  @@unique([referralCodeId, refereeId])
+  @@index([refereeId])
+  @@index([state, createdAt(sort: Desc)])
+  @@map("referral_rewards")
 }
