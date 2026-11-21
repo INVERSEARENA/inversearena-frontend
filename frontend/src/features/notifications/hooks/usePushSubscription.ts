@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { getAuthHeaders } from "@/shared/lib/session/sessionClient";
+import { apiClient } from "@/shared/lib/api/client";
 
 function urlBase64ToUint8Array(base64String: string): ArrayBuffer {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -88,19 +88,15 @@ export function usePushSubscription(): UsePushSubscriptionReturn {
       if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) {
         throw new Error("Browser did not return a complete push subscription");
       }
-      const res = await fetch(`${API_BASE}/api/users/me/push-subscriptions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) },
-        body: JSON.stringify({
+      try {
+        await apiClient.post("/api/users/me/push-subscriptions", {
           endpoint: json.endpoint,
           keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
           userAgent: navigator.userAgent,
-        }),
-      });
-      if (!res.ok) {
-        // Don't strand the browser subscription when the backend rejects it.
+        });
+      } catch (postErr) {
         await sub.unsubscribe().catch(() => {});
-        throw new Error(`Subscription request failed: ${res.status}`);
+        throw postErr;
       }
       setSubscribed(true);
     } catch (err) {
@@ -117,14 +113,14 @@ export function usePushSubscription(): UsePushSubscriptionReturn {
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
       if (sub) {
-        await fetch(`${API_BASE}/api/users/me/push-subscriptions`, {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) },
-          body: JSON.stringify({ endpoint: sub.endpoint }),
-        }).catch(() => {
-          // Backend cleanup is best-effort; the browser unsubscribe below
-          // still stops delivery, and the scheduler drops 404/410 endpoints.
-        });
+        await apiClient
+          .delete("/api/users/me/push-subscriptions", {
+            body: { endpoint: sub.endpoint },
+          })
+          .catch(() => {
+            // Backend cleanup is best-effort; the browser unsubscribe below
+            // still stops delivery, and the scheduler drops 404/410 endpoints.
+          });
         await sub.unsubscribe();
       }
       setSubscribed(false);

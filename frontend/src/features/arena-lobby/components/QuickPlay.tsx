@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { apiClient, ApiError } from "@/shared/lib/api/client";
 
 export interface QuickPlayPreferences {
   asset: string;       // e.g. "XLM", "USDC"
@@ -26,7 +27,7 @@ const DEFAULT_PREFS: QuickPlayPreferences = {
 };
 
 const PREFS_KEY = "inversearena.quickplay.prefs";
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
+
 
 function loadPrefs(): QuickPlayPreferences {
   try {
@@ -68,13 +69,15 @@ export function useQuickPlay(walletAddress: string | undefined) {
         size: prefs.preferredSize,
         player: walletAddress,
       });
-      const res = await fetch(`${API_BASE}/api/arenas/quick-play?${params}`);
-      if (res.status === 404) { setStatus("none"); setMatch(null); return; }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: QuickPlayMatch = await res.json();
+      const data = await apiClient.get<QuickPlayMatch>("/api/arenas/quick-play", { params });
       setMatch(data);
       setStatus("found");
     } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        setStatus("none");
+        setMatch(null);
+        return;
+      }
       setError(err instanceof Error ? err.message : "Could not find an arena.");
       setStatus("error");
     }

@@ -16,6 +16,8 @@
  */
 import { POOL_TOKEN_IDS } from "@/shared/lib/stellar/stellar-transactions";
 import { stellarConfig } from "@/shared/config/stellarConfig";
+import { apiClient, ApiError } from "@/shared/lib/api/client";
+import { getSessionTokens } from "@/shared/lib/session/sessionStore";
 import type { Currency } from "@/shared/lib/form-validation";
 import type { RoundSpeed } from "./pool-schema";
 
@@ -63,50 +65,33 @@ export interface ArenaTemplate {
   incompatible: boolean;
 }
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
-
 /**
- * The access token of the signed-in creator.
- *
- * The templates API is wallet-authenticated. When no token is stored the
- * UI shows its signed-out state instead of failing every request.
+ * The access token of the signed-in creator, resolved from the unified session store.
  */
 export function readAccessToken(): string | null {
   if (typeof window === "undefined") return null;
-  try {
-    return window.localStorage.getItem("arena.accessToken");
-  } catch {
-    return null;
-  }
+  return getSessionTokens()?.accessToken ?? null;
 }
 
 async function request<T>(
   path: string,
   init: { method?: string; body?: unknown } = {},
 ): Promise<T> {
-  const token = readAccessToken();
-  const response = await fetch(`${API_BASE}/api/creator/templates${path}`, {
-    method: init.method ?? "GET",
-    headers: {
-      accept: "application/json",
-      ...(init.body ? { "content-type": "application/json" } : {}),
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-    },
-    ...(init.body ? { body: JSON.stringify(init.body) } : {}),
-  });
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as
-      | { error?: { code?: string; message?: string; details?: { remediation?: TemplateRemediation[] } } }
-      | null;
-    const error = new Error(body?.error?.message ?? `Request failed (${response.status})`);
-    (error as Error & { code?: string; remediation?: TemplateRemediation[] }).code =
-      body?.error?.code ?? "REQUEST_FAILED";
-    (error as Error & { code?: string; remediation?: TemplateRemediation[] }).remediation =
-      body?.error?.details?.remediation ?? [];
-    throw error;
+  try {
+    return await apiClient.request<T>(`/api/creator/templates${path}`, {
+      method: init.method ?? "GET",
+      body: init.body,
+    });
+  } catch (err) {
+    if (err instanceof ApiError) {
+      const error = new Error(err.message);
+      (error as Error & { code?: string; remediation?: TemplateRemediation[] }).code = err.code;
+      (error as Error & { code?: string; remediation?: TemplateRemediation[] }).remediation =
+        (err.details as { remediation?: TemplateRemediation[] } | undefined)?.remediation ?? [];
+      throw error;
+    }
+    throw err;
   }
-  if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
 }
 
 /** The templates owned by the signed-in creator. */

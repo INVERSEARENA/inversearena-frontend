@@ -7,7 +7,7 @@
  * form. It also records the rematch linkage after `create_pool` confirms.
  */
 import { stellarConfig } from "@/shared/config/stellarConfig";
-import { getAuthHeaders } from "@/shared/lib/session/sessionClient";
+import { apiClient, ApiError } from "@/shared/lib/api/client";
 import type { Currency } from "@/shared/lib/form-validation";
 import type { RoundSpeed } from "./pool-schema";
 
@@ -59,20 +59,20 @@ export class RematchConfigError extends Error {
  * for a finished arena whose deployment drifted, not programming errors.
  */
 export async function fetchRematchConfig(arenaId: string): Promise<RematchConfig> {
-  const response = await fetch(
-    `/api/arenas/${encodeURIComponent(arenaId)}/rematch-config`,
-    { headers: await getAuthHeaders(), cache: "no-store" },
-  );
-
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { message?: string } | null;
+  try {
+    return await apiClient.get<RematchConfig>(
+      `/api/arenas/${encodeURIComponent(arenaId)}/rematch-config`,
+      { cache: "no-store" },
+    );
+  } catch (err) {
+    if (err instanceof ApiError) {
+      throw new RematchConfigError(err.status, err.message);
+    }
     throw new RematchConfigError(
-      response.status,
-      body?.message ?? `Rematch configuration request failed (${response.status})`,
+      500,
+      err instanceof Error ? err.message : "Rematch configuration request failed",
     );
   }
-
-  return (await response.json()) as RematchConfig;
 }
 
 /** Maps the canonical 7-decimal token amount to a form-friendly number. */
@@ -137,10 +137,8 @@ export interface RecordRematchInput {
  * so this must only be called with a confirmed transaction hash.
  */
 export async function recordRematchArena(input: RecordRematchInput): Promise<{ id: string }> {
-  const response = await fetch("/api/arenas", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) },
-    body: JSON.stringify({
+  try {
+    const body = await apiClient.post<{ arena?: { id: string } }>("/api/arenas", {
       name: `Rematch of ${input.sourceArenaId.slice(0, 6)}…${input.sourceArenaId.slice(-4)}`,
       entryFee: input.entryFee,
       maxPlayers: input.maxPlayers,
@@ -148,20 +146,20 @@ export async function recordRematchArena(input: RecordRematchInput): Promise<{ i
       stakeToken: input.stakeToken,
       txHash: input.txHash,
       rematchOf: input.rematchOf,
-    }),
-  });
+    });
 
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { message?: string } | null;
+    if (!body.arena?.id) {
+      throw new RematchConfigError(500, "Rematch arena response was missing an id");
+    }
+    return body.arena;
+  } catch (err) {
+    if (err instanceof RematchConfigError) throw err;
+    if (err instanceof ApiError) {
+      throw new RematchConfigError(err.status, err.message);
+    }
     throw new RematchConfigError(
-      response.status,
-      body?.message ?? `Could not record the rematch arena (${response.status})`,
+      500,
+      err instanceof Error ? err.message : "Could not record the rematch arena",
     );
   }
-
-  const body = (await response.json()) as { arena?: { id: string } };
-  if (!body.arena?.id) {
-    throw new RematchConfigError(response.status, "Rematch arena response was missing an id");
-  }
-  return body.arena;
 }

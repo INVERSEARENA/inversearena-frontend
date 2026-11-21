@@ -7,6 +7,7 @@ import { ActiveStakeLimitsService, MAX_ACTIVE_STAKE_USDC } from "../services/act
 import { AliasService } from "../services/aliasService";
 import { createWatchlistRouter } from "./watchlist";
 import { createClaimInboxRouter } from "./claimInbox";
+import { WeeklyDigestService } from "../services/weeklyDigestService";
 import type { TransactionRepository } from "../repositories/transactionRepository";
 import { apiError } from "../utils/apiError";
 import { z } from "zod";
@@ -132,6 +133,22 @@ export function createUsersRouter(
   // the same reason as the watchlist above: routes/claimInbox.ts must stay
   // importable without pulling in services whose metric imports are broken.
   router.use(createClaimInboxRouter(prisma, authMiddleware, transactions));
+
+  // Issue #1747 — Weekly activity digests for players and hosts.
+  const digestService = new WeeklyDigestService(prisma);
+  router.get(
+    "/me/digest/weekly",
+    authMiddleware,
+    asyncHandler(async (req, res) => {
+      const userId = req.user?.id;
+      if (!userId) throw apiError(401, "UNAUTHORIZED", "Unauthorized");
+
+      const now = new Date();
+      const weekStart = new Date(now.getTime() - 7 * 86_400_000);
+      const digest = await digestService.buildUserDigest(userId, weekStart, now);
+      res.json({ digest });
+    }),
+  );
 
   return router;
 }

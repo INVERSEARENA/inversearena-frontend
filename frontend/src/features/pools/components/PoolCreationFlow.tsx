@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Modal } from "@/components/ui/Modal";
+import { apiClient } from "@/shared/lib/api/client";
 import { useWallet } from "@/features/wallet/hooks/useWallet";
 import { TransactionModal } from "@/components/modals/TransactionModal";
 import {
@@ -148,9 +149,9 @@ export function PoolCreationModal({
     if (!isOpen || !isConnected || !address) return;
     let cancelled = false;
     setWhitelistState("checking");
-    fetch("/api/whitelist/status", { credentials: "include" })
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error("status unavailable")))
-      .then((data: { isWhitelisted?: boolean }) => {
+    apiClient
+      .get<{ isWhitelisted?: boolean }>("/api/whitelist/status")
+      .then((data) => {
         if (!cancelled) setWhitelistState(data.isWhitelisted ? "allowed" : "required");
       })
       .catch(() => { if (!cancelled) setWhitelistState("unknown"); });

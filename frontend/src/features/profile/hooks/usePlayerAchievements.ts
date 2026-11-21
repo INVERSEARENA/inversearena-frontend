@@ -1,9 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { apiClient } from "@/shared/lib/api/client";
 import type { PlayerAchievement } from "./achievement-types";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
 
 export function usePlayerAchievements(address: string | undefined) {
   const [achievements, setAchievements] = useState<PlayerAchievement[]>([]);
@@ -15,9 +14,9 @@ export function usePlayerAchievements(address: string | undefined) {
     if (!address) return;
     setStatus("loading");
     try {
-      const res = await fetch(`${API_BASE}/api/players/${address}/achievements`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: PlayerAchievement[] = await res.json();
+      const data = await apiClient.get<PlayerAchievement[]>(
+        `/api/players/${address}/achievements`,
+      );
       setAchievements(data);
       setStatus("success");
     } catch (err) {

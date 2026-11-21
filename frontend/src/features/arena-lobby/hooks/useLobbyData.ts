@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { z } from "zod";
+import { apiClient } from "@/shared/lib/api/client";
 
 // ── Schemas ──────────────────────────────────────────────────────────────
 
@@ -54,8 +55,7 @@ const arenaParticipantsResponseSchema = z.object({
 export type ArenaStats = z.infer<typeof arenaStatsSchema>;
 export type ArenaParticipant = z.infer<typeof arenaParticipantSchema>;
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
+
 
 // ── Hook ─────────────────────────────────────────────────────────────────
 
@@ -114,13 +114,9 @@ export function useLobbyData({
   const fetchStats = useCallback(async () => {
     setLoadingStats(true);
     try {
-      const response = await fetch(`${API_BASE}/api/arenas/${arenaId}/stats`, {
+      const json = await apiClient.get<unknown>(`/api/arenas/${arenaId}/stats`, {
         cache: "no-store",
       });
-      if (!response.ok) {
-        throw new Error(`Stats request failed (${response.status})`);
-      }
-      const json = await response.json();
       const parsed = arenaStatsSchema.safeParse(json);
       if (!parsed.success) {
         throw new Error(`Invalid stats response: ${parsed.error.message}`);
@@ -142,18 +138,13 @@ export function useLobbyData({
     async (cursor = 0, replace = false) => {
       setLoadingParticipants(true);
       try {
-        const params = new URLSearchParams({
-          limit: "12",
-          cursor: String(cursor),
-        });
-        const response = await fetch(
-          `${API_BASE}/api/arenas/${arenaId}/participants?${params.toString()}`,
-          { cache: "no-store" },
+        const json = await apiClient.get<unknown>(
+          `/api/arenas/${arenaId}/participants`,
+          {
+            params: { limit: "12", cursor: String(cursor) },
+            cache: "no-store",
+          },
         );
-        if (!response.ok) {
-          throw new Error(`Participants request failed (${response.status})`);
-        }
-        const json = await response.json();
         const parsed = arenaParticipantsResponseSchema.safeParse(json);
         if (!parsed.success) {
           throw new Error(
