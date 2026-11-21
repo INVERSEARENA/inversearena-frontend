@@ -48,3 +48,39 @@ export const roundResolutionDuration = new Histogram({
   buckets: [0.1, 0.5, 1, 2, 5, 10],
   registers: [register],
 });
+
+// Proof Generation Metrics
+export const proofGenerationDuration = new Histogram({
+  name: 'proof_generation_duration_seconds',
+  help: 'Proof bundle generation duration in seconds',
+  labelNames: ['type'], // bundle or evidence
+  buckets: [0.1, 0.5, 1, 2, 5, 10, 30],
+  registers: [register],
+});
+
+export const proofCacheHits = new Counter({
+  name: 'proof_cache_hits_total',
+  help: 'Total number of proof cache hits',
+  labelNames: ['type'], // bundle or evidence
+  registers: [register],
+});
+
+export const proofCacheMisses = new Counter({
+  name: 'proof_cache_misses_total',
+  help: 'Total number of proof cache misses',
+  labelNames: ['type'], // bundle or evidence
+  registers: [register],
+});
+
+export const proofStorageSize = new Gauge({
+  name: 'proof_storage_bytes',
+  help: 'Total size of proof artifacts in bytes',
+  registers: [register],
+});
+
+export const proofArtifactsTotal = new Gauge({
+  name: 'proof_artifacts_total',
+  help: 'Total number of proof artifacts stored',
+  labelNames: ['type'], // bundle or evidence
+  registers: [register],
+});
