@@ -35,7 +35,12 @@ import { LeaderboardController } from "./controllers/leaderboard.controller";
 import { TransactionsController } from "./controllers/transactions.controller";
 import { TransactionIntentsController } from "./controllers/transactionIntents.controller";
 import { RoundController } from "./controllers/round.controller";
-import { refreshArenaMetrics, refreshQueueMetrics, register } from "./utils/metrics";
+import { WebhookSubscriptionController } from "./controllers/webhookSubscription.controller";
+import {
+  refreshArenaMetrics,
+  refreshQueueMetrics,
+  register,
+} from "./utils/metrics";
 import { redis } from "./cache/redisClient";
 import { createLoadTestBypassMiddleware } from "./middleware/loadTestBypass";
 import type { QueueSnapshotSource } from "./queues/txQueue";
@@ -51,6 +56,7 @@ import type { RoundService } from "./services/roundService";
 import type { RoundProofBundleService } from "./services/roundProofBundleService";
 import { LandingStatsService } from "./services/landingStatsService";
 import { RevalidationService } from "./services/revalidationService";
+import { WebhookService } from "./services/webhooks/webhookService";
 import { prisma } from "./db/prisma";
 import { env } from "./config/env";
 
@@ -101,13 +107,15 @@ export function createApp(deps: AppDependencies): express.Application {
       permittedCrossDomainPolicies: {
         permittedPolicies: "none",
       },
-    })
+    }),
   );
   const allowedOrigins = (env.ALLOWED_ORIGINS || "").split(",").filter(Boolean);
-  app.use(cors({
-    origin: allowedOrigins.length > 0 ? allowedOrigins : undefined,
-    credentials: true,
-  }));
+  app.use(
+    cors({
+      origin: allowedOrigins.length > 0 ? allowedOrigins : undefined,
+      credentials: true,
+    }),
+  );
   // Oracle webhook (#1127): enforce a strict body size cap before the default
   // JSON parser buffers the payload. Mounted ahead of the global parser so
   // oversized webhook bodies are rejected with 413 at the network layer
@@ -177,13 +185,17 @@ export function createApp(deps: AppDependencies): express.Application {
     } catch (error) {
       res.status(503).json({
         status: "not_ready",
-        error: error instanceof Error ? error.message : "Readiness check failed",
+        error:
+          error instanceof Error ? error.message : "Readiness check failed",
       });
     }
   });
 
   app.get("/metrics", async (_req, res) => {
-    const refreshes: Promise<unknown>[] = [refreshArenaMetrics(prisma), refreshTreasuryMetrics(prisma)];
+    const refreshes: Promise<unknown>[] = [
+      refreshArenaMetrics(prisma),
+      refreshTreasuryMetrics(prisma),
+    ];
     if (deps.queueSnapshotSource) {
       const queueOptions =
         deps.queueCapacity === undefined
@@ -202,7 +214,11 @@ export function createApp(deps: AppDependencies): express.Application {
     deps.paymentService,
     deps.transactions,
   );
-  const workerController = new WorkerController(deps.paymentWorker, deps.arenaBackfillWorker, deps.retentionWorker);
+  const workerController = new WorkerController(
+    deps.paymentWorker,
+    deps.arenaBackfillWorker,
+    deps.retentionWorker,
+  );
   const adminController = new AdminController(
     deps.adminService,
     deps.paymentService,
@@ -213,8 +229,12 @@ export function createApp(deps: AppDependencies): express.Application {
   const usersController = new UsersController(prisma);
   const leaderboardController = new LeaderboardController(prisma);
   const transactionsController = new TransactionsController(deps.transactions);
-  const transactionIntentsController = new TransactionIntentsController(deps.transactionIntentService);
+  const transactionIntentsController = new TransactionIntentsController(
+    deps.transactionIntentService,
+  );
   const roundController = new RoundController(deps.roundService);
+  const webhookService = new WebhookService(prisma);
+  const webhookController = new WebhookSubscriptionController(webhookService);
 
   const adminAuthMiddleware = requireAdmin(new ApiKeyAuthProvider());
   const userAuthMiddleware = requireAuth(deps.authService);
@@ -224,7 +244,10 @@ export function createApp(deps: AppDependencies): express.Application {
   const revalidationService =
     deps.revalidationService ??
     new RevalidationService({
-      frontendOrigin: env.FRONTEND_ORIGIN ?? env.PUBLIC_WEB_ORIGIN ?? "https://app.inversearena.com",
+      frontendOrigin:
+        env.FRONTEND_ORIGIN ??
+        env.PUBLIC_WEB_ORIGIN ??
+        "https://app.inversearena.com",
       secret: env.REVALIDATION_WEBHOOK_SECRET,
     });
 
@@ -251,7 +274,12 @@ export function createApp(deps: AppDependencies): express.Application {
   app.use("/api/admin", createWalletRoleRouter());
   app.use(
     "/api/admin",
-    createAdminRouter(adminController, roundController, adminAuthMiddleware),
+    createAdminRouter(
+      adminController,
+      roundController,
+      webhookController,
+      adminAuthMiddleware,
+    ),
   );
   app.use("/api/admin", createTreasuryRouter(adminAuthMiddleware, prisma));
   app.use("/api", createMaintenanceStatusRouter(maintenanceService));
@@ -270,7 +298,10 @@ export function createApp(deps: AppDependencies): express.Application {
 
   // #1739: Data export and right-to-erasure
   const dataExportService = new DataExportService(prisma);
-  app.use("/api/users", createDataExportRouter(dataExportService, userAuthMiddleware));
+  app.use(
+    "/api/users",
+    createDataExportRouter(dataExportService, userAuthMiddleware),
+  );
 
   app.use(errorHandler);
 
