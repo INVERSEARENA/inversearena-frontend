@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiClient, ApiError } from "@/shared/lib/api/client";
+import { localStorageManager, StorageKey } from "@/shared/lib/localStorage";
 
 export interface QuickPlayPreferences {
   asset: string;       // e.g. "XLM", "USDC"
@@ -26,20 +27,13 @@ const DEFAULT_PREFS: QuickPlayPreferences = {
   preferredSize: "any",
 };
 
-const PREFS_KEY = "inversearena.quickplay.prefs";
-
-
 function loadPrefs(): QuickPlayPreferences {
-  try {
-    const raw = localStorage.getItem(PREFS_KEY);
-    return raw ? { ...DEFAULT_PREFS, ...JSON.parse(raw) } : DEFAULT_PREFS;
-  } catch {
-    return DEFAULT_PREFS;
-  }
+  const saved = localStorageManager.getItem<Partial<QuickPlayPreferences> | null>(StorageKey.QUICK_PLAY_PREFS, null);
+  return saved ? { ...DEFAULT_PREFS, ...saved } : DEFAULT_PREFS;
 }
 
 function savePrefs(prefs: QuickPlayPreferences) {
-  try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* ignore */ }
+  localStorageManager.setItem(StorageKey.QUICK_PLAY_PREFS, prefs);
 }
 
 export function useQuickPlay(walletAddress: string | undefined) {

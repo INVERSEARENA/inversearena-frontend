@@ -12,6 +12,7 @@ import {
   waitForRefreshLock,
 } from "./sessionStore";
 import type { AuthChallenge, ChallengeSigner, LoginProof, SessionTokens } from "./types";
+import { localStorageManager } from "../localStorage";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
 const REFRESH_SKEW_MS = 60_000;
@@ -153,6 +154,7 @@ export async function logoutSession(): Promise<void> {
   stopRefreshTimer();
   const tokens = getSessionTokens();
   clearSession();
+  localStorageManager.clearUserScopedState();
   if (!tokens) return;
   try {
     await postJson("/api/auth/logout", {}, tokens.accessToken);

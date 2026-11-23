@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { localStorageManager, StorageKey } from "@/shared/lib/localStorage";
 import { useRouter } from "next/navigation";
 import { ErrorBoundary } from "@/components/error-boundary/ErrorBoundary";
 import { ErrorFallback } from "@/components/error-boundary/ErrorFallback";
@@ -34,7 +35,6 @@ import {
   activeAnnouncement,
 } from "@/features/dashboard-home/model/mockHome";
 
-const HAS_STAKED_KEY = "inversearena_has_staked";
 
 export default function DashboardHomePage() {
   return (
@@ -55,8 +55,7 @@ function DashboardHomeView() {
   const [rematch, setRematch] = useState<RematchConfig | null>(null);
 
   useEffect(() => {
-    const stored = typeof window !== "undefined" && localStorage.getItem(HAS_STAKED_KEY);
-    setHasStaked(stored === "true");
+    setHasStaked(localStorageManager.getItem<boolean>(StorageKey.HAS_STAKED, false));
     const params = new URLSearchParams(window.location.search);
     setTimelineTransactionId(params.get("payoutTransactionId"));
 
@@ -87,7 +86,7 @@ function DashboardHomeView() {
 
   const handleStakeSuccess = () => {
     if (typeof window !== "undefined") {
-      localStorage.setItem(HAS_STAKED_KEY, "true");
+      localStorageManager.setItem(StorageKey.HAS_STAKED, true);
     }
     setHasStaked(true);
     setIsStakeModalOpen(false);
