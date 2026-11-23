@@ -2,6 +2,7 @@ import { rpc } from "@stellar/stellar-sdk";
 import { getStellarConfig } from "../config/stellarConfig";
 import logger from "../utils/logger";
 
+
 export type RpcProtocolStatus = {
   ok: boolean;
   networkPassphrase?: string;
@@ -30,10 +31,7 @@ export async function checkRpcProtocolSupport(): Promise<RpcProtocolStatus> {
     const passphraseOk = !cfg.networkPassphrase || passphrase === cfg.networkPassphrase;
     const ok = protocolOk && passphraseOk;
     if (!ok) {
-      logger.error(
-        { protocolVersion, passphrase, supportedMin, supportedMax },
-        "RPC protocol/network gate failed",
-      );
+      try { logger.error({ protocolVersion, passphrase, supportedMin, supportedMax }, "RPC protocol/network gate failed"); } catch {}
     }
     return {
       ok,
@@ -45,7 +43,7 @@ export async function checkRpcProtocolSupport(): Promise<RpcProtocolStatus> {
     };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
-    logger.error({ err, supportedMin, supportedMax }, "RPC protocol probe failed");
+    try { logger.error({ err, supportedMin, supportedMax }, "RPC protocol probe failed"); } catch {}
     return { ok: false, supportedMin, supportedMax, error };
   }
 }
