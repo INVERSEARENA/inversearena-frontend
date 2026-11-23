@@ -35,6 +35,8 @@ import {
   getOracleReading,
 } from './onChainReader';
 import { NotificationPreferencesService } from './notificationPreferencesService';
+import { NotificationPipelineService } from './notificationPipelineService';
+import { createNotificationChannels } from './channels';
 import { PushService } from './pushService';
 import { getStellarConfig, type StellarConfig } from '../config/stellarConfig';
 import { buildRoundResolution } from '../domain/roundResolution';
@@ -143,6 +145,7 @@ export class RoundService {
   private idempotentCommands: IdempotentCommandRepository;
 
   private pushService: PushService | null = null;
+  private notificationPipeline: NotificationPipelineService | null = null;
 
   constructor(
     private prisma: PrismaClient,
@@ -150,6 +153,7 @@ export class RoundService {
     onChainReader?: OnChainReader,
     private stellarRpcGateway: StellarRpcGateway = new StellarRpcGateway(),
     pushService?: PushService,
+    notificationPipeline?: NotificationPipelineService,
   ) {
     this.roundRepo = new RoundRepository(prisma);
     this.onChainReader = onChainReader ?? new SorobanOnChainReader();
@@ -159,13 +163,15 @@ export class RoundService {
     this.explicitStellarConfig = stellarConfig;
     this.idempotentCommands = new IdempotentCommandRepository(prisma);
     if (pushService) this.pushService = pushService;
+    if (notificationPipeline) this.notificationPipeline = notificationPipeline;
   }
 
 
   /**
-   * Best-effort Web Push fan-out after a round resolves (#1571): alerts the
-   * round's players that the next commit window is opening. Never throws —
-   * resolution must not fail because push is unconfigured or unreachable.
+   * Best-effort multi-channel fan-out after a round resolves (#1571, #1735):
+   * alerts the round's players that the next commit window is opening.
+   * Telegram/Discord/webhooks join Web Push through the common pipeline.
+   * Never throws — resolution must not fail because a channel is unreachable.
    */
   private async notifyRoundResolved(
     arenaId: string,
@@ -173,27 +179,43 @@ export class RoundService {
     userIds: string[],
   ): Promise<void> {
     try {
-      if (!this.pushService) {
-        if (!env.VAPID_PUBLIC_KEY) return;
-        this.pushService = new PushService(
-          this.prisma,
-          new NotificationPreferencesService(this.prisma),
-        );
+      const message = {
+        title: "Round resolved",
+        body: `Round ${roundNumber} resolved — the next commit window is opening.`,
+        url: `/arena/${arenaId}`,
+        tag: `arena-${arenaId}-round-${roundNumber}-started`,
+      };
+
+      // Explicit push injection keeps existing unit tests on the legacy
+      // scheduler; production uses the multi-channel pipeline.
+      if (this.pushService && !this.notificationPipeline) {
+        await this.pushService.scheduleRoundPhasePushes({
+          arenaId,
+          roundNumber,
+          type: "round-started",
+          message,
+          userIds,
+        });
+        return;
       }
-      await this.pushService.scheduleRoundPhasePushes({
+
+      if (!this.notificationPipeline) {
+        const prefs = new NotificationPreferencesService(this.prisma);
+        const bundle = createNotificationChannels(this.prisma, prefs);
+        this.notificationPipeline = new NotificationPipelineService({
+          prefs,
+          channels: bundle.channels,
+        });
+      }
+      await this.notificationPipeline.dispatch({
+        eventType: "round",
+        dedupeKey: `push:${arenaId}:${roundNumber}:round-started`,
         arenaId,
-        roundNumber,
-        type: "round-started",
-        message: {
-          title: "Round resolved",
-          body: `Round ${roundNumber} resolved — the next commit window is opening.`,
-          url: `/arena/${arenaId}`,
-          tag: `arena-${arenaId}-round-${roundNumber}-started`,
-        },
         userIds,
+        message,
       });
     } catch {
-      // Push is advisory; resolution already succeeded.
+      // Notifications are advisory; resolution already succeeded.
     }
   }
 

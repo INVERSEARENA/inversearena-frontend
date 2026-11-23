@@ -207,6 +207,7 @@ model NotificationDelivery {
 
   @@index([userId])
   @@index([userId, dedupeKey, channel])
+  @@index([status, nextAttemptAt])
   @@map("notification_deliveries")
 }
 
@@ -226,6 +227,82 @@ model PushSubscription {
 
   @@index([userId])
   @@map("push_subscriptions")
+}
+
+// Per-(event, channel) opt-ins layered over the legacy boolean switches in
+// NotificationPreference (#1735). A missing row means "inherit the legacy
+// preference", so existing accounts keep their current behaviour.
+model NotificationChannelPreference {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  eventType String   @map("event_type")
+  channel   String
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([userId, eventType, channel])
+  @@index([userId])
+  @@map("notification_channel_preferences")
+}
+
+// A linked Telegram chat or Discord user, keyed by channel so a wallet has at
+// most one destination per platform. `externalId` is chat id (Telegram) or
+// user id (Discord); neither is a secret. Platform tokens stay in env vars.
+model NotificationChannelLink {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  channel     String
+  externalId  String   @map("external_id")
+  displayName String?  @map("display_name")
+  metadata    Json?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@unique([userId, channel])
+  @@unique([channel, externalId])
+  @@index([userId])
+  @@map("notification_channel_links")
+}
+
+// Short-lived one-time codes used by the Telegram `/start` and Discord
+// `/link` bot commands. Only an HMAC digest is stored (#1735).
+model NotificationLinkCode {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  channel   String
+  codeHash  String   @unique @map("code_hash")
+  expiresAt DateTime @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("notification_link_codes")
+}
+
+// Community destination configured by an arena host. The webhook URL carries
+// bearer-like authority, so it is AES-256-GCM encrypted at rest.
+model ArenaNotificationWebhook {
+  id        String   @id @default(uuid())
+  arenaId   String   @map("arena_id")
+  url       String
+  name      String?
+  createdBy String   @map("created_by")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user      User     @relation(fields: [createdBy], references: [id])
+  arena     Arena    @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+
+  @@index([arenaId])
+  @@map("arena_notification_webhooks")
 }
 
 model HostWhitelistApplication {

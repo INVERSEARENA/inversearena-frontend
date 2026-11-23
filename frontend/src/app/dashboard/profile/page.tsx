@@ -11,8 +11,8 @@ import { useProfile, type MyArenasFilter } from "@/features/profile";
 import { useWallet } from "@/features/wallet/hooks/useWallet";
 // Issue #1414 — alias management
 import { AliasManager } from "./AliasManager";
-// Issue #1571 — Web Push opt-in for round-phase alerts
-import { PushSubscribeButton } from "@/features/notifications";
+// Issue #1735 — Web Push, Telegram, Discord and per-event preferences
+import { NotificationChannelSettings } from "@/features/notifications";
 import StakingPositionPanel from "@/features/staking/components/StakingPositionPanel";
 
 const truncateAddress = (address: string) => {
@@ -383,17 +383,12 @@ export default function ProfilePage() {
             </div>
           </div>
 
-          {/* Issue #1571 — opt in to Web Push round-phase alerts (works with
-              the app closed; delivery honors notification preferences). */}
-          <div className="p-6 border border-white/5 bg-black/20 backdrop-blur-sm space-y-4">
-            <div className="flex justify-between items-start gap-4">
-              <div>
-                <h4 className="text-[10px] font-bold tracking-[0.2em] text-zinc-500 uppercase">PUSH_ALERTS</h4>
-                <p className="text-[10px] text-zinc-600 mt-1 uppercase">ROUND_START_COMMIT_REVEAL_PAYOUT</p>
-              </div>
-              <PushSubscribeButton />
-            </div>
-          </div>
+        </div>
+
+        {/* Issue #1735 — opt in to Web Push / bot alerts and tune delivery
+            per event, using legacy switches as defaults. */}
+        <div className="p-6 border border-white/5 bg-black/20 backdrop-blur-sm">
+          <NotificationChannelSettings />
         </div>
       </section>
     </div>

@@ -47,6 +47,11 @@ CI runs `scripts/env-example.ts <app> --check` and fails when a committed
   `process.env` on every access, so tests can set variables, or replace
   `process.env` entirely, before exercising code. Feature config modules keep
   their own parsing and defaults.
+- **Notification channels.** Telegram/Discord bot credentials and retry
+  tunables are optional backend variables declared in the same schema; see
+  [NOTIFICATION_CHANNELS.md](./NOTIFICATION_CHANNELS.md) for the delivery
+  behaviour they control. Web Push continues to use the VAPID and
+  `PUSH_ENCRYPTION_KEY` variables.
 
 ## Frontend
 

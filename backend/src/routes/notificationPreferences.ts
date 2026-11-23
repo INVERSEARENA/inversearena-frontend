@@ -15,10 +15,13 @@ import { STRING_LIMITS, boundedString } from "../validation/payloadLimits";
 const UpdatePreferencesSchema = z.object({
   emailEnabled: z.boolean().optional(),
   pushEnabled: z.boolean().optional(),
+  telegramEnabled: z.boolean().optional(),
+  discordEnabled: z.boolean().optional(),
   inAppEnabled: z.boolean().optional(),
   roundNotifications: z.boolean().optional(),
   payoutNotifications: z.boolean().optional(),
   eliminationNotifications: z.boolean().optional(),
+  arenaAnnouncementNotifications: z.boolean().optional(),
   email: z.string().max(STRING_LIMITS.email).email().optional(),
   pushToken: boundedString(STRING_LIMITS.pushToken).optional(),
 });
@@ -59,7 +62,7 @@ export function createNotificationPreferencesRouter(authMiddleware: any): Router
       }
 
       const updates = UpdatePreferencesSchema.parse(req.body);
-      const preferences = await prefsService.updatePreferences(userId, updates);
+      const preferences = await prefsService.updatePreferences(userId, updates as any);
       res.json(preferences);
     }),
   );
