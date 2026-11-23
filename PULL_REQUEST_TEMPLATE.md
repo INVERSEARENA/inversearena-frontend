@@ -17,4 +17,5 @@ Closes #<number>
 - [ ] Docs were updated or marked N/A
 - [ ] CI passes
 - [ ] Breaking/security impact was considered
+- [ ] Does this change cross a protocol trust boundary? If so, link the threat-model control.
 <!-- pr-triage:checklist:end -->

@@ -27,6 +27,7 @@ export class AuthController {
     const result = signedChallengeXdr
       ? await this.authService.verifyChallengeAndLogin(walletAddress, signedChallengeXdr, device)
       : await this.authService.verifySignatureAndLogin(walletAddress, signature!, device);
+    // #1780: httpOnly SameSite cookie issuance and CSRF are tracked separately.
     res.json(result);
   };
 
