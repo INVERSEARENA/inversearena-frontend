@@ -54,14 +54,14 @@ describe("LandingStatsService (#1626)", () => {
     expect(stats.totalYieldAccrued).toBe(0);
   });
 
-  it("filters active arenas by metadata.status", async () => {
+  it("filters active arenas by indexed status column", async () => {
     const prisma = fakePrisma({ totalArenas: 5, activeArenas: 2 });
     const service = new LandingStatsService(prisma);
 
     await service.getLandingStats();
 
     expect(prisma.arena.count).toHaveBeenCalledWith({
-      where: { metadata: { path: ["status"], equals: "ACTIVE" } },
+      where: { status: "ACTIVE" },
     });
   });
 });

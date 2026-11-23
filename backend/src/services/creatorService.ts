@@ -67,13 +67,13 @@ export class CreatorService {
     const decoded = decodeCursorInput(cursor);
 
     // Keyset query against arenas owned by this wallet
-    // Since metadata is JSON in Postgres, we query createdBy inside metadata
+    // Indexed column createdBy with optional status filter (#1765)
     let whereClause: any = {
-      metadata: {
-        path: ["createdBy"],
-        equals: walletAddress,
-      },
+      createdBy: walletAddress,
     };
+    if (statusFilter) {
+      whereClause.status = statusFilter;
+    }
 
     let skip: number | undefined = undefined;
 
@@ -280,6 +280,7 @@ export class CreatorService {
       await this.prisma.arena.update({
         where: { id: arenaId },
         data: {
+          status: "ACTIVE",
           metadata: {
             ...currentMeta,
             status: "ACTIVE",
@@ -309,6 +310,7 @@ export class CreatorService {
       await this.prisma.arena.update({
         where: { id: arenaId },
         data: {
+          status: "CANCELLED",
           metadata: {
             ...currentMeta,
             status: "CANCELLED",

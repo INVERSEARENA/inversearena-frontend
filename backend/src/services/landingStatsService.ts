@@ -45,7 +45,7 @@ export class LandingStatsService {
     const [totalArenas, activeArenas, statsAggregate] = await Promise.all([
       this.prisma.arena.count(),
       this.prisma.arena.count({
-        where: { metadata: { path: ["status"], equals: "ACTIVE" } },
+        where: { status: "ACTIVE" },
       }),
       this.prisma.arenaStats.aggregate({
         _sum: { players: true, yieldAccrued: true },
