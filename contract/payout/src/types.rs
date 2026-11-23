@@ -50,6 +50,8 @@ pub enum PayoutError {
     CapTimelockPending = 22,
     /// A daily cap must be positive (#1632).
     InvalidCap = 23,
+    /// Storage layout requires explicit migration.
+    MigrationPending = 24,
 }
 
 /// Mirror of `arena::types::Settlement`, decoded from the arena's

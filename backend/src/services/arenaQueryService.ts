@@ -7,6 +7,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { decodeCursorInput, encodeKeysetCursor } from "../utils/keysetPagination";
 import { apiError } from "../utils/apiError";
+import { getConfiguredNetwork } from "../config/network";
 
 export interface ListArenasOptions {
   limit?: number;
@@ -25,7 +26,7 @@ export class ArenaQueryService {
 
     const decoded = decodeCursorInput(options.cursor);
 
-    const where: any = {};
+    const where: any = { network: getConfiguredNetwork() };
 
     if (filter !== "all") {
       where.status = filter === "active" ? "ACTIVE" : filter === "pending" ? "PENDING" : "CLOSED";
@@ -86,6 +87,7 @@ export class ArenaQueryService {
     return {
       items: items.map((arena) => ({
         id: arena.id,
+        network: arena.network,
         number: (arena.metadata as any)?.number ?? `#${arena.id.substring(0, 4)}`,
         name: (arena.metadata as any)?.name ?? "Unnamed Arena",
         playersJoined: arena.pools.length,
@@ -104,8 +106,8 @@ export class ArenaQueryService {
   }
 
   async getArenaById(id: string) {
-    const arena = await this.prisma.arena.findUnique({
-      where: { id },
+    const arena = await this.prisma.arena.findFirst({
+      where: { id, network: getConfiguredNetwork() },
       include: {
         rounds: {
           orderBy: { roundNumber: "desc" },

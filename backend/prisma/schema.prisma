@@ -37,6 +37,7 @@ model User {
 
 model Arena {
   id        String   @id @default(uuid())
+  network   String   @default("Test SDF Network ; September 2015") @map("network")
   metadata  Json? // Stores generic arena settings (e.g. entry fee, limits)
   // Arena id this arena is a rematch of (#1572). Null for original arenas.
   rematchOf String?  @map("rematch_of")
@@ -51,12 +52,12 @@ model Arena {
   rematchSource Arena?      @relation("ArenaRematch", fields: [rematchOf], references: [id])
   rematches     Arena[]     @relation("ArenaRematch")
 
-  @@index([createdAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
-  @@index([rematchOf])
-  @@index([status])
-  @@index([createdBy])
-  @@index([status, createdAt(sort: Desc), id(sort: Desc)])
-  @@index([createdBy, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([network, createdAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
+  @@index([network, rematchOf])
+  @@index([network, status])
+  @@index([network, createdBy])
+  @@index([network, status, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([network, createdBy, createdAt(sort: Desc), id(sort: Desc)])
   @@map("arenas")
 }
 
@@ -78,6 +79,7 @@ model ArenaStats {
 
 model Pool {
   id          String   @id @default(uuid())
+  network     String   @default("Test SDF Network ; September 2015") @map("network")
   arenaId     String   @map("arena_id")
   stakeAmount Float    @map("stake_amount") // Using Float for exact representations of crypto amounts
   createdAt   DateTime @default(now()) @map("created_at")
@@ -85,13 +87,14 @@ model Pool {
 
   arena Arena @relation(fields: [arenaId], references: [id])
 
-  @@index([arenaId]) // Index to quickly find pools for an arena
-  @@index([arenaId, createdAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
+  @@index([network, arenaId]) // Index to quickly find pools for an arena
+  @@index([network, arenaId, createdAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
   @@map("pools")
 }
 
 model Round {
   id                 String   @id @default(uuid())
+  network            String   @default("Test SDF Network ; September 2015") @map("network")
   arenaId            String   @map("arena_id")
   roundNumber        Int      @map("round_number")
   state              String   @default("OPEN") // OPEN, CLOSED, RESOLVED, SETTLED
@@ -107,10 +110,10 @@ model Round {
   arena           Arena            @relation(fields: [arenaId], references: [id])
   eliminationLogs EliminationLog[]
 
-  @@unique([arenaId, roundNumber]) // Each round is unique per arena
-  @@index([arenaId])
-  @@index([arenaId, roundNumber(sort: Asc), id(sort: Asc)]) // Keyset pagination index (#1520)
-  @@index([state])
+  @@unique([network, arenaId, roundNumber]) // Each round is unique per arena/network
+  @@index([network, arenaId])
+  @@index([network, arenaId, roundNumber(sort: Asc), id(sort: Asc)]) // Keyset pagination index (#1520)
+  @@index([network, state])
   @@map("rounds")
 }
 
@@ -122,7 +125,8 @@ model Round {
 // by the retention worker (docs/PARTITION_RETENTION_RUNBOOK.md).
 model Transaction {
   id        String   @default(uuid())
-  txHash    String   @map("tx_hash") // The on-chain transaction hash (unique per createdAt month)
+  network   String   @default("Test SDF Network ; September 2015") @map("network")
+  txHash    String   @map("tx_hash") // The on-chain transaction hash (unique per network/month)
   userId    String   @map("user_id")
   amount    Float // Amount involved
   type      String // Type of transaction e.g., "DEPOSIT", "WITHDRAW"
@@ -132,9 +136,9 @@ model Transaction {
   user User @relation(fields: [userId], references: [id])
 
   @@id([id, createdAt])
-  @@unique([txHash, createdAt])
-  @@index([userId])
-  @@index([status]) // Useful for querying unconfirmed transactions
+  @@unique([network, txHash, createdAt])
+  @@index([network, userId])
+  @@index([network, status]) // Useful for querying unconfirmed transactions
   @@map("transactions")
 }
 
@@ -157,6 +161,7 @@ model BackfillCursor {
 // docs/PARTITION_RETENTION_RUNBOOK.md documents restore procedures.
 model EliminationLog {
   id           String   @default(uuid())
+  network      String   @default("Test SDF Network ; September 2015") @map("network")
   roundId      String   @map("round_id")
   userId       String   @map("user_id")
   reason       String? // Reason for elimination if applicable
@@ -166,9 +171,9 @@ model EliminationLog {
   user  User  @relation(fields: [userId], references: [id])
 
   @@id([id, eliminatedAt])
-  @@index([roundId])
-  @@index([roundId, eliminatedAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
-  @@index([userId])
+  @@index([network, roundId])
+  @@index([network, roundId, eliminatedAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
+  @@index([network, userId])
   @@map("elimination_logs")
 }
 

@@ -63,4 +63,6 @@ pub enum StakingError {
     /// A checked arithmetic operation on total_staked, total_shares, or a
     /// position's amount/shares would overflow or underflow i128 (#1362).
     ArithmeticOverflow = 10,
+    MigrationPending = 11,
+    Unauthorized = 12,
 }

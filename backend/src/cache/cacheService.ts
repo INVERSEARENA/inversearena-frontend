@@ -222,7 +222,7 @@ export const CacheKeys = {
       tags: [tags.arena(arenaId)],
     }),
     health: (arenaId: string): TypedCacheKeyDescriptor => ({
-      key: `arena:health:${arenaId}`,
+      key: `arena:${getNetworkIdentity()}:health:${arenaId}`,
       namespace: "arena_health",
       tags: [tags.arena(arenaId)],
     }),
@@ -231,7 +231,7 @@ export const CacheKeys = {
       limit: number | string = 25,
       cursor: string = "0",
     ): TypedCacheKeyDescriptor => ({
-      key: `arena:rounds:${arenaId}:${limit}:${cursor}`,
+      key: `arena:${getNetworkIdentity()}:rounds:${arenaId}:${limit}:${cursor}`,
       namespace: "arena_rounds",
       tags: [tags.arena(arenaId)],
     }),
@@ -265,7 +265,7 @@ export const CacheKeys = {
       limit: string | number = 25,
       cursor: string = "0",
     ): TypedCacheKeyDescriptor => ({
-      key: `arenas:list:${filter}:${search}:${limit}:${cursor}`,
+      key: `arenas:${getNetworkIdentity()}:list:${filter}:${search}:${limit}:${cursor}`,
       namespace: "arenas_list",
       tags: [tags.arenas()],
     }),
@@ -276,14 +276,14 @@ export const CacheKeys = {
       limit: number | string = 25,
       cursor: string = "0",
     ): TypedCacheKeyDescriptor => ({
-      key: `pool:eliminations:${poolId}:${limit}:${cursor}`,
+      key: `pool:${getNetworkIdentity()}:eliminations:${poolId}:${limit}:${cursor}`,
       namespace: "pool_eliminations",
       tags: [tags.pool(poolId), tags.arena(poolId)],
     }),
   },
   round: {
     proofBundle: (roundId: string): TypedCacheKeyDescriptor => ({
-      key: `round:proof-bundle:${roundId}`,
+      key: `round:${getNetworkIdentity()}:proof-bundle:${roundId}`,
       namespace: "round_proof_bundle",
       tags: [tags.round(roundId)],
     }),
@@ -297,7 +297,7 @@ export const CacheKeys = {
   },
   oracle: {
     yield: (): TypedCacheKeyDescriptor => ({
-      key: "oracle:yield",
+      key: `oracle:${getNetworkIdentity()}:yield`,
       namespace: "oracle_yield",
       tags: [tags.oracle()],
     }),
@@ -306,7 +306,7 @@ export const CacheKeys = {
     limit: number | string = 20,
     cursor: string = "0",
   ): TypedCacheKeyDescriptor => ({
-    key: `leaderboard:${limit}:${cursor}`,
+    key: `leaderboard:${getNetworkIdentity()}:${limit}:${cursor}`,
     namespace: "leaderboard",
     tags: [tags.leaderboard()],
   }),

@@ -8,6 +8,7 @@ export interface TransactionDocument extends Omit<TransactionRecord, "id"> {
 const TransactionSchema = new Schema<TransactionDocument>(
   {
     _id: { type: String, required: true },
+    network: { type: String, required: true, default: process.env.STELLAR_NETWORK_PASSPHRASE || "Test SDF Network ; September 2015", index: true },
     // Unique: one on-chain payout per payout id. Without this a retry that
     // generated a fresh idempotencyKey passed the de-dup check and produced a
     // second, independently-submittable transaction for the same prize (#1353).
@@ -48,14 +49,14 @@ const TransactionSchema = new Schema<TransactionDocument>(
 
 // Unique so two concurrent payout creations can never win the same
 // {sourceAccount, nonce} slot — the loser fails closed instead of double-spend.
-TransactionSchema.index({ sourceAccount: 1, nonce: 1 }, { unique: true });
-TransactionSchema.index({ status: 1 });
-TransactionSchema.index({ txHash: 1 });
+TransactionSchema.index({ network: 1, sourceAccount: 1, nonce: 1 }, { unique: true });
+TransactionSchema.index({ network: 1, status: 1 });
+TransactionSchema.index({ network: 1, txHash: 1 });
 
 // Claim inbox (#1489): one wallet's positions, newest first, keyset-paged.
 // The trailing `_id` matches the sort exactly so a page boundary can be served
 // from the index without an in-memory sort. Without this the query scans the
 // whole collection for every inbox request.
-TransactionSchema.index({ destinationAccount: 1, updatedAt: -1, _id: -1 });
+TransactionSchema.index({ network: 1, destinationAccount: 1, updatedAt: -1, _id: -1 });
 
 export const TransactionModel = model<TransactionDocument>("Transaction", TransactionSchema);

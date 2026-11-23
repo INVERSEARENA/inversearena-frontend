@@ -10,6 +10,7 @@ import { getRollbackGuard } from "./ledgerContinuity";
 import { getSorobanBreaker } from "../utils/circuitBreaker";
 import { cache, cacheKeys, cacheTTL } from "../cache/cacheService";
 import { logger } from "../utils/logger";
+import { getConfiguredNetwork } from "../config/network";
 
 interface VerifiedOnChainSnapshot extends OnChainArenaSnapshot {
   ledgerSequence: number;
@@ -20,8 +21,7 @@ export class ArenaStatsService {
   constructor(private prisma: PrismaClient) {}
 
   async getArenaStats(arenaId: string): Promise<ArenaStats> {
-    const arena = await this.prisma.arena.findUnique({
-      where: { id: arenaId },
+    const arena = await this.prisma.arena.findFirst({ where: { id: arenaId, network: getConfiguredNetwork() },
       include: {
         // Round-level fields (state/metadata) are needed across the *whole*
         // history — yield fallback and SETTLED detection both scan every

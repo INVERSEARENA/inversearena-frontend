@@ -224,6 +224,26 @@ impl ArenaContract {
         CONTRACT_VERSION
     }
 
+    /// Current storage layout version.
+    pub fn storage_version(env: Env) -> u32 {
+        ArenaStorage::load_storage_version_raw(&env)
+    }
+
+    /// Admin-only, idempotent, resumable storage migration.
+    pub fn migrate(env: Env, caller: Address, max_steps: u32) -> Result<u32, ArenaError> {
+        caller.require_auth();
+        let config = ArenaStorage::load_config(&env)?;
+        let host = config.admin.clone();
+        if caller != host {
+            // allow protocol admin too
+            let protocol = Self::resolve_protocol_admin(&env, &config)?;
+            if caller != protocol {
+                return Err(ArenaError::Unauthorized);
+            }
+        }
+        Ok(ArenaStorage::migrate(&env, max_steps))
+    }
+
     /// Return the host of this arena — the address that runs the game and
     /// moderates the lobby (#1629).
     ///
@@ -283,6 +303,7 @@ impl ArenaContract {
     /// # Events
     /// Emits `upgrade_proposed`.
     pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         let config = ArenaStorage::load_config(&env)?;
         Self::require_protocol_admin(&env, &config)?;
         let proposed_at = env.ledger().timestamp();
@@ -308,6 +329,7 @@ impl ArenaContract {
     /// - `ArenaError::NoProtocolAdmin` if the deploying factory cannot name a
     ///   protocol admin.
     pub fn execute_upgrade(env: Env) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         let pending =
             ArenaStorage::load_pending_upgrade(&env).ok_or(ArenaError::NoPendingUpgrade)?;
         let config = ArenaStorage::load_config(&env)?;
@@ -343,6 +365,7 @@ impl ArenaContract {
         min_players: u32,
         max_players: u32,
     ) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         let config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
         Self::validate_player_limits(min_players, max_players)?;
@@ -369,6 +392,7 @@ impl ArenaContract {
     /// - `ArenaError::NotInitialized` if `initialize` has not been called.
     /// - `ArenaError::InvalidGameState` if the lobby is no longer open.
     pub fn set_start_deadline(env: Env, deadline: u64) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         let config = ArenaStorage::load_config(&env)?;
         config.factory.require_auth();
         if config.state != GameState::Open || config.round_count > 0 {
@@ -381,6 +405,7 @@ impl ArenaContract {
     /// Configure the number of choices for a newly-created arena. The factory
     /// is the only caller and sets this before the arena is available to players.
     pub fn set_option_count(env: Env, option_count: u32) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         let config = ArenaStorage::load_config(&env)?;
         if env.invoker() != config.factory {
             return Err(ArenaError::Unauthorized);
@@ -424,6 +449,7 @@ impl ArenaContract {
     /// - `ArenaError::VaultWithdrawFailed` if a joined player's refund cannot
     ///   be released; the whole call reverts.
     pub fn ban_player(env: Env, player: Address) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         let config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
         // Refunds move funds, so the protocol-wide pause applies (#1583); the
@@ -448,6 +474,7 @@ impl ArenaContract {
 
     /// Remove a player's join ban.
     pub fn unban_player(env: Env, player: Address) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         let config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
         ArenaStorage::set_player_banned(&env, &player, false);
@@ -479,6 +506,7 @@ impl ArenaContract {
     /// # Events
     /// Emits `player_joined` with the player address and updated total player count.
     pub fn join_arena(env: Env, player: Address) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         Self::do_join_arena(&env, &player, &player, false)
     }
 
@@ -504,6 +532,7 @@ impl ArenaContract {
     /// Emits `player_joined_sponsored` with both the payer and player addresses
     /// and the updated total player count.
     pub fn join_arena_for(env: Env, payer: Address, player: Address) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         Self::do_join_arena(&env, &payer, &player, true)
     }
 
@@ -634,6 +663,7 @@ impl ArenaContract {
     /// # Events
     /// Emits `player_left` and `player_refunded`.
     pub fn leave_arena(env: Env, player: Address) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         ArenaStorage::enter_reentrancy_guard(&env)?;
         player.require_auth();
         let config = ArenaStorage::load_config(&env)?;
@@ -679,6 +709,7 @@ impl ArenaContract {
         player: Address,
         commitment: BytesN<32>,
     ) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         player.require_auth();
         let config = ArenaStorage::load_config(&env)?;
         Self::require_not_paused(&env, &config)?;
@@ -725,6 +756,7 @@ impl ArenaContract {
         choice: Choice,
         salt: BytesN<32>,
     ) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         player.require_auth();
         let config = ArenaStorage::load_config(&env)?;
         if choice.to_byte() >= ArenaStorage::load_option_count(&env) as u8 {
@@ -766,6 +798,7 @@ impl ArenaContract {
     /// - `ArenaError::ContractPaused` if the contract is paused.
     /// - `ArenaError::InvalidGameState` if the arena is not in the `Open` state.
     pub fn cancel_arena(env: Env) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
@@ -804,6 +837,7 @@ impl ArenaContract {
     /// # Events
     /// Emits `arena_cancelled`.
     pub fn cancel_unstarted(env: Env) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
         Self::require_not_paused(&env, &config)?;
@@ -859,6 +893,7 @@ impl ArenaContract {
     /// account cancel the game before reveals or resolution, forcing refunds
     /// and letting a losing player escape elimination.
     pub fn expire_arena(env: Env) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
         Self::require_not_paused(&env, &config)?;
@@ -1063,6 +1098,7 @@ impl ArenaContract {
     /// # Events
     /// Emits `game_started` with the round number and duration.
     pub fn start_round(env: Env, duration_seconds: u64) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
         Self::require_not_paused(&env, &config)?;
@@ -1118,6 +1154,7 @@ impl ArenaContract {
     /// Start a subsequent round with the stored duration after the host has
     /// missed the inter-round grace period.
     pub fn start_next_round(env: Env, caller: Address) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         caller.require_auth();
         let mut config = ArenaStorage::load_config(&env)?;
         Self::require_not_paused(&env, &config)?;
@@ -1177,6 +1214,7 @@ impl ArenaContract {
     /// Emits `oracle_freshness_observed` with this round's oracle freshness classification and age (#1512).
     /// Emits `oracle_stale_rejected` instead of the above when the resolution is rejected for staleness.
     pub fn resolve_round(env: Env) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
         Self::require_not_paused(&env, &config)?;
@@ -1360,6 +1398,7 @@ impl ArenaContract {
     /// # Events
     /// Emits `prize_claimed` with the winner address, total payout, and yield portion.
     pub fn claim(env: Env, winner: Address) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         ArenaStorage::enter_reentrancy_guard(&env)?;
         winner.require_auth();
         let mut config = ArenaStorage::load_config(&env)?;
@@ -1428,6 +1467,7 @@ impl ArenaContract {
     /// - `ArenaError::NotInitialized` if `initialize` has not been called.
     /// - `ArenaError::ContractPaused` if the contract is paused.
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         let config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
         Self::require_not_paused(&env, &config)?;
@@ -1448,6 +1488,7 @@ impl ArenaContract {
     /// # Events
     /// Emits `admin_changed` with the old and new admin addresses.
     pub fn accept_admin(env: Env) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         let pending = ArenaStorage::load_pending_admin(&env).ok_or(ArenaError::NoPendingAdmin)?;
         pending.new_admin.require_auth();
         let mut config = ArenaStorage::load_config(&env)?;
@@ -1472,6 +1513,7 @@ impl ArenaContract {
     /// # Errors
     /// See `propose_admin`.
     pub fn change_admin(env: Env, new_admin: Address) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         Self::propose_admin(env, new_admin)
     }
 
@@ -1505,6 +1547,7 @@ impl ArenaContract {
     /// # Events
     /// Emits `paused` with the protocol admin address and reason symbol.
     pub fn pause(env: Env, reason: Symbol) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
         let protocol_admin = Self::require_protocol_admin(&env, &config)?;
         config.paused = true;
@@ -1527,6 +1570,7 @@ impl ArenaContract {
     /// # Events
     /// Emits `unpaused` with the protocol admin address.
     pub fn unpause(env: Env) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
         let protocol_admin = Self::require_protocol_admin(&env, &config)?;
         config.paused = false;
@@ -1543,6 +1587,7 @@ impl ArenaContract {
     /// protocol-wide pause is set (#1583): cancelling drains the yield vault,
     /// which an incident response may need to keep untouched.
     pub fn force_cancel_arena(env: Env) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         ArenaStorage::enter_reentrancy_guard(&env)?;
         let mut config = ArenaStorage::load_config(&env)?;
         Self::require_protocol_admin(&env, &config)?;
@@ -1583,6 +1628,7 @@ impl ArenaContract {
 
     /// Claim a refund when the arena has been cancelled.
     pub fn claim_refund(env: Env, player: Address) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         ArenaStorage::enter_reentrancy_guard(&env)?;
         player.require_auth();
 
@@ -1637,6 +1683,7 @@ impl ArenaContract {
     /// - `ArenaError::InvalidGameState` if the arena is not `Cancelled`.
     /// - `ArenaError::VaultWithdrawFailed` if the vault still refuses to release.
     pub fn retry_withdraw(env: Env) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         ArenaStorage::enter_reentrancy_guard(&env)?;
         let config = ArenaStorage::load_config(&env)?;
         Self::require_not_paused(&env, &config)?;
@@ -1673,6 +1720,7 @@ impl ArenaContract {
     /// - `ArenaError::InvalidLeaderboardLimit` if `limit` is 0 or exceeds
     ///   `types::MAX_LEADERBOARD_LIMIT`. Nothing is persisted in that case.
     pub fn configure_leaderboard_limit(env: Env, limit: u32) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         let config = ArenaStorage::load_config(&env)?;
         config.admin.require_auth();
 
@@ -1704,6 +1752,7 @@ impl ArenaContract {
     /// - `ArenaError::NoProtocolAdmin` if the deploying factory cannot name a
     ///   protocol admin.
     pub fn update_platform_fee(env: Env, new_fee_bps: u32) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         let config = ArenaStorage::load_config(&env)?;
         let protocol_admin = Self::require_protocol_admin(&env, &config)?;
 
@@ -1745,6 +1794,7 @@ impl ArenaContract {
         max_age_secs: u64,
         warn_age_secs: u64,
     ) -> Result<(), ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
         let config = ArenaStorage::load_config(&env)?;
         let protocol_admin = Self::require_protocol_admin(&env, &config)?;
 

@@ -11,16 +11,17 @@ import { enforcePayloadLimits } from '../validation/payloadLimits';
 import { roundMetadataMismatchesTotal } from '../utils/metrics';
 import { logger } from '../utils/logger';
 import { decodeCursorInput, encodeKeysetCursor } from '../utils/keysetPagination';
+import { getConfiguredNetwork } from "../config/network";
 
 export class RoundRepository {
   constructor(private prisma: PrismaClient) {}
 
   async create(arenaId: string, roundNumber: number): Promise<RoundData> {
     const round = await this.prisma.$transaction(async (tx) => {
-      const created = await tx.round.create({ data: { arenaId, roundNumber } });
-      const players = await tx.pool.count({ where: { arenaId } });
+      const created = await tx.round.create({ data: { arenaId, roundNumber, network: getConfiguredNetwork() } });
+      const players = await tx.pool.count({ where: { arenaId, network: getConfiguredNetwork() } });
       await tx.arenaStats.upsert({
-        where: { arenaId },
+        where: { arenaId, network: getConfiguredNetwork() },
         create: { arenaId, rounds: 1, players },
         update: { rounds: { increment: 1 }, players, version: { increment: 1 } },
       });
@@ -31,8 +32,8 @@ export class RoundRepository {
   }
 
   async findById(roundId: string): Promise<RoundData | null> {
-    const round = await this.prisma.round.findUnique({
-      where: { id: roundId },
+    const round = await this.prisma.round.findFirst({
+      where: { id: roundId, network: getConfiguredNetwork() },
     });
 
     if (!round) return null;
@@ -46,7 +47,7 @@ export class RoundRepository {
     metadata: RoundMetadata,
   ): Promise<void> {
     await this.prisma.round.update({
-      where: { id: roundId },
+      where: { id: roundId, network: getConfiguredNetwork() },
       data: {
         oracleYield: metadata.oracleYield ?? null,
         randomSeed: metadata.randomSeed ?? null,
@@ -133,9 +134,10 @@ export class RoundRepository {
     arenaId: string,
     roundNumber: number,
   ): Promise<RoundData | null> {
-    const round = await this.prisma.round.findUnique({
+    const round = await this.prisma.round.findFirst({
       where: {
-        arenaId_roundNumber: {
+        network_arenaId_roundNumber: {
+          network: getConfiguredNetwork(),
           arenaId,
           roundNumber,
         },
@@ -191,8 +193,10 @@ export class RoundRepository {
         });
       }
 
-      const arenaId = (await tx.round.findUniqueOrThrow({ where: { id: roundId }, select: { arenaId: true } })).arenaId;
-      const players = await tx.pool.count({ where: { arenaId } });
+      const roundRow = await tx.round.findFirst({ where: { id: roundId, network: getConfiguredNetwork() }, select: { arenaId: true } });
+      if (!roundRow) throw new Error(`Round ${roundId} not found for network`);
+      const arenaId = roundRow.arenaId;
+      const players = await tx.pool.count({ where: { arenaId, network: getConfiguredNetwork() } });
       await tx.arenaStats.upsert({
         where: { arenaId },
         create: {
@@ -352,8 +356,8 @@ export class RoundRepository {
   }
 
   async updateState(roundId: string, state: RoundState): Promise<void> {
-    await this.prisma.round.update({
-      where: { id: roundId },
+    await this.prisma.round.updateMany({
+      where: { id: roundId, network: getConfiguredNetwork() },
       data: { state, updatedAt: new Date() },
     });
   }

@@ -1,5 +1,6 @@
 import { TransactionModel } from "../db/models/transaction.model";
 import { PayoutNonceCounterModel } from "../db/models/payoutNonceCounter.model";
+import { getConfiguredNetwork } from "../config/network";
 import type { PaymentStatus, TransactionRecord } from "../types/payment";
 import type { TransactionPatch, TransactionRepository } from "./transactionRepository";
 
@@ -34,17 +35,17 @@ function docToRecord(doc: { toObject(): Record<string, unknown> } & { _id: strin
 
 export class MongoTransactionRepository implements TransactionRepository {
   async findByIdempotencyKey(idempotencyKey: string): Promise<TransactionRecord | null> {
-    const doc = await TransactionModel.findOne({ idempotencyKey });
+    const doc = await TransactionModel.findOne({ idempotencyKey, network: getConfiguredNetwork() });
     return doc ? docToRecord(doc) : null;
   }
 
   async findByPayoutId(payoutId: string): Promise<TransactionRecord | null> {
-    const doc = await TransactionModel.findOne({ payoutId });
+    const doc = await TransactionModel.findOne({ payoutId, network: getConfiguredNetwork() });
     return doc ? docToRecord(doc) : null;
   }
 
   async findById(id: string): Promise<TransactionRecord | null> {
-    const doc = await TransactionModel.findById(id);
+    const doc = await TransactionModel.findOne({ _id: id, network: getConfiguredNetwork() });
     return doc ? docToRecord(doc) : null;
   }
 
@@ -54,7 +55,7 @@ export class MongoTransactionRepository implements TransactionRepository {
     for (let attempt = 0; ; attempt += 1) {
       try {
         const counter = await PayoutNonceCounterModel.findOneAndUpdate(
-          { _id: sourceAccount },
+          { _id: `${getConfiguredNetwork()}:${sourceAccount}` },
           { $inc: { lastNonce: 1 } },
           { upsert: true, new: true }
         );
@@ -71,6 +72,7 @@ export class MongoTransactionRepository implements TransactionRepository {
   async insert(record: TransactionRecord): Promise<void> {
     await TransactionModel.create({
       _id: record.id,
+      network: getConfiguredNetwork(),
       payoutId: record.payoutId,
       arenaId: record.arenaId ?? null,
       idempotencyKey: record.idempotencyKey,
@@ -98,8 +100,8 @@ export class MongoTransactionRepository implements TransactionRepository {
     id: string,
     patch: TransactionPatch
   ): Promise<TransactionRecord> {
-    const doc = await TransactionModel.findByIdAndUpdate(
-      id,
+    const doc = await TransactionModel.findOneAndUpdate(
+      { _id: id, network: getConfiguredNetwork() },
       { $set: patch },
       { new: true, runValidators: true }
     );
@@ -112,7 +114,7 @@ export class MongoTransactionRepository implements TransactionRepository {
   async listByStatus(statuses: PaymentStatus[], limit: number): Promise<TransactionRecord[]> {
     if (statuses.length === 0 || limit <= 0) return [];
     const docs = await TransactionModel
-      .find({ status: { $in: statuses } })
+      .find({ status: { $in: statuses }, network: getConfiguredNetwork() })
       .sort({ createdAt: 1 })
       .limit(limit);
     return docs.map(docToRecord);
@@ -145,7 +147,7 @@ export class MongoTransactionRepository implements TransactionRepository {
           ],
         }
       : {};
-    const docs = await TransactionModel.find({ destinationAccount, ...after })
+    const docs = await TransactionModel.find({ destinationAccount, network: getConfiguredNetwork(), ...after })
       .sort({ updatedAt: -1, _id: -1 })
       .limit(limit);
     return docs.map(docToRecord);

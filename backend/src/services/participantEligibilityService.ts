@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "crypto";
 import type { PlayerStatusReader } from "./playerStatus";
 import type { OnChainReadResult } from "../types/onChainRead";
+import { getConfiguredNetwork } from "../config/network";
 
 const ELIGIBILITY_SNAPSHOT_TTL_MS = 10_000;
 const MAX_ELIGIBILITY_SNAPSHOTS = 5_000;
@@ -70,7 +71,7 @@ export class ParticipantEligibilityService {
     const errors: EligibilityError[] = [];
     const warnings: string[] = [];
 
-    const arena = await this.prisma.arena.findUnique({ where: { id: arenaId } });
+    const arena = await this.prisma.arena.findFirst({ where: { id: arenaId, network: getConfiguredNetwork() },});
 
     if (!arena) {
       return {

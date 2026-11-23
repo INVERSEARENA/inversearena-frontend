@@ -30,6 +30,7 @@ export type IntentKind =
 
 export interface TransactionIntentRecord {
   id: string;
+  network?: string;
   /** Caller-supplied dedup key, stable across retries of the same logical action. */
   idempotencyKey: string;
   kind: IntentKind;

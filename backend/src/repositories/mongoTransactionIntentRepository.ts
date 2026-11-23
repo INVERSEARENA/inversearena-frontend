@@ -1,6 +1,7 @@
 import { TransactionIntentModel } from "../db/models/transactionIntent.model";
 import type { IntentKind, IntentStatus, TransactionIntentRecord } from "../types/transactionIntent";
 import type { TransactionIntentRepository } from "./transactionIntentRepository";
+import { getConfiguredNetwork } from "../config/network";
 
 function docToRecord(doc: { toObject(): Record<string, unknown> } & { _id: string }): TransactionIntentRecord {
   const obj = doc.toObject() as Record<string, unknown>;
@@ -25,18 +26,19 @@ function docToRecord(doc: { toObject(): Record<string, unknown> } & { _id: strin
 
 export class MongoTransactionIntentRepository implements TransactionIntentRepository {
   async findByIdempotencyKey(idempotencyKey: string): Promise<TransactionIntentRecord | null> {
-    const doc = await TransactionIntentModel.findOne({ idempotencyKey });
+    const doc = await TransactionIntentModel.findOne({ idempotencyKey, network: getConfiguredNetwork() });
     return doc ? docToRecord(doc) : null;
   }
 
   async findById(id: string): Promise<TransactionIntentRecord | null> {
-    const doc = await TransactionIntentModel.findById(id);
+    const doc = await TransactionIntentModel.findOne({ _id: id, network: getConfiguredNetwork() });
     return doc ? docToRecord(doc) : null;
   }
 
   async insert(record: TransactionIntentRecord): Promise<void> {
     await TransactionIntentModel.create({
       _id: record.id,
+      network: getConfiguredNetwork(),
       idempotencyKey: record.idempotencyKey,
       kind: record.kind,
       ownerWallet: record.ownerWallet,
@@ -56,8 +58,8 @@ export class MongoTransactionIntentRepository implements TransactionIntentReposi
     id: string,
     patch: Partial<Omit<TransactionIntentRecord, "id" | "createdAt">>
   ): Promise<TransactionIntentRecord> {
-    const doc = await TransactionIntentModel.findByIdAndUpdate(
-      id,
+    const doc = await TransactionIntentModel.findOneAndUpdate(
+      { _id: id, network: getConfiguredNetwork() },
       { $set: patch },
       { new: true, runValidators: true }
     );
@@ -69,7 +71,7 @@ export class MongoTransactionIntentRepository implements TransactionIntentReposi
 
   async listByStatus(statuses: IntentStatus[], limit: number): Promise<TransactionIntentRecord[]> {
     if (statuses.length === 0 || limit <= 0) return [];
-    const docs = await TransactionIntentModel.find({ status: { $in: statuses } })
+    const docs = await TransactionIntentModel.find({ status: { $in: statuses }, network: getConfiguredNetwork() })
       .sort({ createdAt: 1 })
       .limit(limit);
     return docs.map(docToRecord);

@@ -558,6 +558,10 @@ pub enum ArenaError {
     /// been applied (#1639), or when no paged resolution has been started.
     ResolutionIncomplete = 47,
 
+    /// Returned when a state-changing entrypoint detects a storage layout
+    /// older than `CURRENT_STORAGE_VERSION` and requires explicit migration.
+    MigrationPending = 48,
+
     /// Returned by the one-shot `resolve_round` while a paged resolution
     /// (#1639) is in progress. Mixing the two would double-apply the round:
     /// drive the existing resolution to completion first.
