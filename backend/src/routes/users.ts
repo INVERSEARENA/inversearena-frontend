@@ -12,6 +12,18 @@ import type { TransactionRepository } from "../repositories/transactionRepositor
 import { apiError } from "../utils/apiError";
 import { z } from "zod";
 
+import {
+  getPublicUserProfile,
+  getUserPrivacySettings,
+  updateUserPrivacySettings,
+  ProfileNotFoundError,
+} from "../services/userProfileService";
+
+const PrivacyUpdateSchema = z.object({
+  hideHistory: z.boolean().optional(),
+  hideFromSearch: z.boolean().optional(),
+});
+
 const AliasUpdateSchema = z.object({
   alias: z
     .string()
@@ -65,6 +77,48 @@ export function createUsersRouter(
         remainingCapacity: Math.max(0, MAX_ACTIVE_STAKE_USDC - current),
         limitExceeded: current >= MAX_ACTIVE_STAKE_USDC,
       });
+    }),
+  );
+
+  // ── Issue #1742 — Privacy settings ──────────────────────────────────────────
+  router.get(
+    "/me/privacy",
+    authMiddleware,
+    asyncHandler(async (req, res) => {
+      const userId = req.user?.id;
+      if (!userId) throw apiError(401, "UNAUTHORIZED", "Unauthorized");
+      const settings = await getUserPrivacySettings(userId);
+      res.json(settings);
+    }),
+  );
+
+  router.put(
+    "/me/privacy",
+    authMiddleware,
+    asyncHandler(async (req, res) => {
+      const userId = req.user?.id;
+      if (!userId) throw apiError(401, "UNAUTHORIZED", "Unauthorized");
+      const parsed = PrivacyUpdateSchema.parse(req.body);
+      const updated = await updateUserPrivacySettings(userId, parsed);
+      res.json(updated);
+    }),
+  );
+
+  // ── Issue #1742 — Public profile by alias or wallet address ─────────────────
+  router.get(
+    "/public/:aliasOrAddress",
+    asyncHandler(async (req, res) => {
+      const target = req.params.aliasOrAddress?.trim();
+      if (!target) throw apiError(400, "INVALID_TARGET", "Alias or wallet address is required");
+      try {
+        const profile = await getPublicUserProfile(prisma, target);
+        res.json(profile);
+      } catch (err) {
+        if (err instanceof ProfileNotFoundError) {
+          throw apiError(404, "PLAYER_NOT_FOUND", `Player profile '${target}' not found`);
+        }
+        throw err;
+      }
     }),
   );
 

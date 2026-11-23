@@ -98,7 +98,7 @@ export function tryParseStellarAccountId(raw: string): StellarAccountId | null {
  */
 export type SorobanContractId = Branded<string, "SorobanContractId">;
 
-const PLACEHOLDER_CONTRACT_RE = /^C\.{3}[A-Z0-9_-]+$/;
+const PLACEHOLDER_CONTRACT_RE = /^C[A-Z0-9]*\.{3}[A-Z0-9_-]+$/;
 
 export interface ParseContractIdOptions {
   /** Allow test placeholder IDs that start with `C...`. */

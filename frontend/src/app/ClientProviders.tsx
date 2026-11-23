@@ -1,7 +1,9 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { ReactNode } from "react";
+import { ReactNode, useState } from "react";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { createQueryClient } from "@/shared/lib/query/queryClient";
 import { NotificationProvider } from "@/components/ui/NotificationProvider";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { MaintenanceBanner } from "@/components/maintenance/MaintenanceBanner";
@@ -14,13 +16,17 @@ const WalletProvider = dynamic(
 );
 
 export function ClientProviders({ children }: { children: ReactNode }) {
+    const [queryClient] = useState(() => createQueryClient());
+
     return (
         <ErrorBoundary>
-            <NotificationProvider>
-                <WalletProvider>{children}</WalletProvider>
-                <MaintenanceBanner />
-                <CompatibilitySync />
-            </NotificationProvider>
+            <QueryClientProvider client={queryClient}>
+                <NotificationProvider>
+                    <WalletProvider>{children}</WalletProvider>
+                    <MaintenanceBanner />
+                    <CompatibilitySync />
+                </NotificationProvider>
+            </QueryClientProvider>
         </ErrorBoundary>
     );
 }

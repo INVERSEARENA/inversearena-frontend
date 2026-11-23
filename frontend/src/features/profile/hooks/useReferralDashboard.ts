@@ -1,4 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { queryKeys } from "@/shared/lib/query/queryClient";
 
 export interface ReferralStats {
   totalReferrals: number;
@@ -37,38 +39,33 @@ interface UseReferralDashboardState {
  * Hook to fetch and manage referral dashboard data
  */
 export function useReferralDashboard(): UseReferralDashboardState {
-  const [data, setData] = useState<ReferralDashboard | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const fetchDashboard = async () => {
-    try {
-      setLoading(true);
-      setError(null);
+  const query = useQuery({
+    queryKey: queryKeys.profile.referrals(),
+    queryFn: async () => {
       const response = await fetch("/api/referrals/dashboard");
-
       if (!response.ok) {
         throw new Error(
           `Failed to fetch referral dashboard: ${response.statusText}`
         );
       }
+      return (await response.json()) as ReferralDashboard;
+    },
+  });
 
-      const dashboard: ReferralDashboard = await response.json();
-      setData(dashboard);
-    } catch (err) {
-      const errorMessage =
-        err instanceof Error ? err.message : "Unknown error";
-      setError(errorMessage);
-    } finally {
-      setLoading(false);
-    }
+  const refetch = useCallback(async () => {
+    await query.refetch();
+  }, [query]);
+
+  return {
+    data: query.data ?? null,
+    loading: query.isLoading,
+    error: query.error
+      ? query.error instanceof Error
+        ? query.error.message
+        : "Unknown error"
+      : null,
+    refetch,
   };
-
-  useEffect(() => {
-    fetchDashboard();
-  }, []);
-
-  return { data, loading, error, refetch: fetchDashboard };
 }
 
 /**
