@@ -1,4 +1,5 @@
 import type { SessionState, SessionStatus, SessionTokens } from "./types";
+import { localStorageManager as storageManager, StorageKey } from "../localStorage";
 
 /**
  * Single source of truth for the backend wallet session.
@@ -7,11 +8,11 @@ import type { SessionState, SessionStatus, SessionTokens } from "./types";
  * `access_token` directly: the store owns token rotation, expiry bookkeeping,
  * and cross-tab synchronisation (see #1714).
  */
-export const ACCESS_TOKEN_KEY = "access_token";
-export const REFRESH_TOKEN_KEY = "refresh_token";
-export const SESSION_WALLET_KEY = "inversearena:session:walletAddress";
-export const SESSION_EXPIRES_KEY = "inversearena:session:expiresAt";
-export const REFRESH_LOCK_KEY = "inversearena:session:refresh-lock";
+export const ACCESS_TOKEN_KEY = StorageKey.ACCESS_TOKEN;
+export const REFRESH_TOKEN_KEY = StorageKey.REFRESH_TOKEN;
+export const SESSION_WALLET_KEY = StorageKey.SESSION_WALLET;
+export const SESSION_EXPIRES_KEY = StorageKey.SESSION_EXPIRES;
+export const REFRESH_LOCK_KEY = StorageKey.SESSION_REFRESH_LOCK;
 export const SESSION_CHANNEL = "inversearena:session";
 
 const REFRESH_SKEW_MS = 60_000;
@@ -31,10 +32,6 @@ let state: SessionState = { ...INITIAL_STATE };
 let hydrated = false;
 let channel: BroadcastChannel | null = null;
 
-function storage(): Storage | null {
-  return typeof window === "undefined" ? null : window.localStorage;
-}
-
 /** Decodes the `exp` claim of a JWT without verifying its signature. */
 export function decodeTokenExpiry(token: string): number {
   try {
@@ -49,15 +46,12 @@ export function decodeTokenExpiry(token: string): number {
 }
 
 function readState(): SessionState {
-  const store = storage();
-  if (!store) return { ...INITIAL_STATE };
-
-  const accessToken = store.getItem(ACCESS_TOKEN_KEY);
-  const refreshToken = store.getItem(REFRESH_TOKEN_KEY);
+  const accessToken = storageManager.getString(ACCESS_TOKEN_KEY);
+  const refreshToken = storageManager.getString(REFRESH_TOKEN_KEY);
   if (!accessToken || !refreshToken) return { ...INITIAL_STATE };
 
-  const walletAddress = store.getItem(SESSION_WALLET_KEY);
-  const storedExpiry = Number(store.getItem(SESSION_EXPIRES_KEY) ?? 0);
+  const walletAddress = storageManager.getString(SESSION_WALLET_KEY);
+  const storedExpiry = Number(storageManager.getString(SESSION_EXPIRES_KEY) ?? 0);
   const expiresAt = Number.isFinite(storedExpiry) && storedExpiry > 0
     ? storedExpiry
     : decodeTokenExpiry(accessToken);
@@ -106,13 +100,10 @@ function broadcast(type: "tokens" | "cleared", tokens?: SessionTokens, walletAdd
 export function setSession(tokens: SessionTokens, walletAddress: string | null = null): void {
   getSessionState();
   const expiresAt = decodeTokenExpiry(tokens.accessToken);
-  const store = storage();
-  if (store) {
-    store.setItem(ACCESS_TOKEN_KEY, tokens.accessToken);
-    store.setItem(REFRESH_TOKEN_KEY, tokens.refreshToken);
-    if (walletAddress) store.setItem(SESSION_WALLET_KEY, walletAddress);
-    store.setItem(SESSION_EXPIRES_KEY, String(expiresAt));
-  }
+  storageManager.setString(ACCESS_TOKEN_KEY, tokens.accessToken);
+  storageManager.setString(REFRESH_TOKEN_KEY, tokens.refreshToken);
+  if (walletAddress) storageManager.setString(SESSION_WALLET_KEY, walletAddress);
+  storageManager.setString(SESSION_EXPIRES_KEY, String(expiresAt));
   emit({
     status: "authenticated",
     walletAddress: walletAddress ?? state.walletAddress,
@@ -125,22 +116,17 @@ export function setSession(tokens: SessionTokens, walletAddress: string | null =
 /** Clears the local session (and tells other tabs to do the same). */
 export function clearSession(): void {
   getSessionState();
-  const store = storage();
-  if (store) {
-    store.removeItem(ACCESS_TOKEN_KEY);
-    store.removeItem(REFRESH_TOKEN_KEY);
-    store.removeItem(SESSION_WALLET_KEY);
-    store.removeItem(SESSION_EXPIRES_KEY);
-  }
+  storageManager.removeItem(ACCESS_TOKEN_KEY);
+  storageManager.removeItem(REFRESH_TOKEN_KEY);
+  storageManager.removeItem(SESSION_WALLET_KEY);
+  storageManager.removeItem(SESSION_EXPIRES_KEY);
   emit({ ...INITIAL_STATE });
   broadcast("cleared");
 }
 
 export function getSessionTokens(): SessionTokens | null {
-  const store = storage();
-  if (!store) return null;
-  const accessToken = store.getItem(ACCESS_TOKEN_KEY);
-  const refreshToken = store.getItem(REFRESH_TOKEN_KEY);
+  const accessToken = storageManager.getString(ACCESS_TOKEN_KEY);
+  const refreshToken = storageManager.getString(REFRESH_TOKEN_KEY);
   return accessToken && refreshToken ? { accessToken, refreshToken } : null;
 }
 
@@ -153,29 +139,20 @@ export function isAccessTokenExpiringSoon(now = Date.now()): boolean {
 
 /** Cross-tab single-flight: only one tab may call /auth/refresh at a time. */
 export function acquireRefreshLock(owner: string): boolean {
-  const store = storage();
-  if (!store) return true;
-  const current = store.getItem(REFRESH_LOCK_KEY);
+  const current = storageManager.getItem<{ owner: string; at: number } | null>(REFRESH_LOCK_KEY, null);
   if (current) {
-    try {
-      const heldAt = JSON.parse(current) as { owner: string; at: number };
-      if (Date.now() - heldAt.at < LOCK_TTL_MS && heldAt.owner !== owner) return false;
-    } catch {
-      // Malformed lock — treat it as stale and take ownership.
-    }
+    if (Date.now() - current.at < LOCK_TTL_MS && current.owner !== owner) return false;
   }
-  store.setItem(REFRESH_LOCK_KEY, JSON.stringify({ owner, at: Date.now() }));
+  storageManager.setItem(REFRESH_LOCK_KEY, { owner, at: Date.now() });
   return true;
 }
 
 export function releaseRefreshLock(owner: string): void {
-  const store = storage();
-  if (!store) return;
   try {
-    const current = JSON.parse(store.getItem(REFRESH_LOCK_KEY) ?? "null") as { owner: string } | null;
-    if (current?.owner === owner) store.removeItem(REFRESH_LOCK_KEY);
+    const current = storageManager.getItem<{ owner: string } | null>(REFRESH_LOCK_KEY, null);
+    if (current?.owner === owner) storageManager.removeItem(REFRESH_LOCK_KEY);
   } catch {
-    store.removeItem(REFRESH_LOCK_KEY);
+    storageManager.removeItem(REFRESH_LOCK_KEY);
   }
 }
 

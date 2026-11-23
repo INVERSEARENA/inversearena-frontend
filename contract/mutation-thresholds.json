@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "groups": {
+    "arena-state-machine": {
+      "files": ["arena/src/state_machine.rs"],
+      "minimum_caught_pct": 100,
+      "minimum_mutants": 1
+    },
+    "settlement-critical": {
+      "files": [
+        "arena/src/lib.rs",
+        "payout/src/lib.rs",
+        "rwa-adapter/src/lib.rs"
+      ],
+      "functions": [
+        "claim",
+        "expire_arena",
+        "force_cancel_arena",
+        "claim_refund",
+        "retry_withdraw",
+        "resolve_round",
+        "release_vault_principal",
+        "distribute_winnings",
+        "distribute_batch",
+        "validate_payout",
+        "consume_daily_allowance",
+        "withdraw_all",
+        "withdraw",
+        "balance_of",
+        "deposit"
+      ],
+      "minimum_caught_pct": 100,
+      "minimum_mutants": 1
+    },
+    "global": {
+      "files": ["*"],
+      "report_only": true
+    }
+  }
+}

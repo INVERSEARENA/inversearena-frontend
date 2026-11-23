@@ -152,3 +152,293 @@ export async function getUserProfileSummary(
     ...stats,
   };
 }
+
+export interface PublicPlayerProfile {
+  address: string;
+  alias: string | null;
+  level: number;
+  joinedAt: string;
+  stats: {
+    gamesPlayed: number;
+    gamesWon: number;
+    totalYieldEarned: string;
+    currentRank: number | null;
+    winRate: number;
+  };
+  achievements: Array<{
+    definitionId: string;
+    title: string;
+    description: string;
+    tier: "bronze" | "silver" | "gold" | "platinum";
+    unlockedAt: string;
+  }>;
+  recentSettledArenas: Array<{
+    arenaId: string;
+    name: string;
+    settledAt: string;
+    result: "won" | "eliminated" | "participant";
+    payout?: string;
+  }>;
+  privacy: {
+    hideHistory: boolean;
+    hideFromSearch: boolean;
+  };
+  isUnknown?: boolean;
+  isBanned?: boolean;
+  redirect?: boolean;
+  canonicalAlias?: string;
+}
+
+const STELLAR_ADDRESS_REGEX = /^G[A-Z2-7]{55}$/i;
+const ALIAS_GRACE_PERIOD_DAYS = 30;
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function computeLevel(gamesPlayed: number, gamesWon: number): number {
+  return Math.max(1, Math.floor(Math.sqrt(gamesPlayed * 2 + gamesWon * 6)) + 1);
+}
+
+function computeAchievements(gamesPlayed: number, gamesWon: number, totalYield: number) {
+  const achievements: PublicPlayerProfile["achievements"] = [];
+  const now = new Date().toISOString();
+
+  if (gamesWon >= 1) {
+    achievements.push({
+      definitionId: "first_win",
+      title: "First Blood",
+      description: "Win your first arena",
+      tier: "bronze",
+      unlockedAt: now,
+    });
+  }
+  if (gamesPlayed >= 10) {
+    achievements.push({
+      definitionId: "joined_10",
+      title: "Veteran",
+      description: "Join 10 arenas",
+      tier: "bronze",
+      unlockedAt: now,
+    });
+  }
+  if (gamesWon >= 3) {
+    achievements.push({
+      definitionId: "win_streak_3",
+      title: "On Fire",
+      description: "Win 3 arenas in a row",
+      tier: "silver",
+      unlockedAt: now,
+    });
+  }
+  if (gamesPlayed >= 50) {
+    achievements.push({
+      definitionId: "joined_50",
+      title: "Arena Legend",
+      description: "Join 50 arenas",
+      tier: "gold",
+      unlockedAt: now,
+    });
+  }
+  if (totalYield >= 1000) {
+    achievements.push({
+      definitionId: "big_pot_win",
+      title: "High Roller",
+      description: "Win an arena with a pot over 1,000",
+      tier: "platinum",
+      unlockedAt: now,
+    });
+  }
+
+  return achievements;
+}
+
+export async function getPublicUserProfile(
+  prisma: PrismaClient,
+  aliasOrAddress: string,
+): Promise<PublicPlayerProfile> {
+  const query = aliasOrAddress.trim();
+  const isAddress = STELLAR_ADDRESS_REGEX.test(query);
+
+  let user: any = null;
+  let redirectedFromOldAlias = false;
+  let canonicalAlias: string | undefined = undefined;
+
+  // 1. Try resolving as active alias
+  user = await UserModel.findOne({
+    "aliasHistory.alias": { $regex: new RegExp(`^${escapeRegex(query)}$`, "i") },
+    "aliasHistory.retiredAt": null,
+  }).lean();
+
+  // 2. If not active alias, check if it was recently retired (alias change redirect)
+  if (!user && !isAddress) {
+    const graceCutoff = new Date(Date.now() - ALIAS_GRACE_PERIOD_DAYS * 24 * 60 * 60 * 1000);
+    const retiredMatch = await UserModel.findOne({
+      "aliasHistory.alias": { $regex: new RegExp(`^${escapeRegex(query)}$`, "i") },
+      "aliasHistory.retiredAt": { $gte: graceCutoff.toISOString() },
+    }).lean();
+
+    if (retiredMatch) {
+      user = retiredMatch;
+      redirectedFromOldAlias = true;
+      const activeEntry = (retiredMatch.aliasHistory as any[])?.find((h) => h.retiredAt === null);
+      canonicalAlias = activeEntry?.alias || retiredMatch.walletAddress;
+    }
+  }
+
+  // 3. If not found by alias and query looks like wallet address, look up by walletAddress
+  if (!user && isAddress) {
+    user = await UserModel.findOne({ walletAddress: query }).lean();
+  }
+
+  // 4. Unknown address edge case: return on-chain-only default profile
+  if (!user) {
+    if (isAddress) {
+      return {
+        address: query,
+        alias: null,
+        level: 1,
+        joinedAt: new Date().toISOString(),
+        stats: {
+          gamesPlayed: 0,
+          gamesWon: 0,
+          totalYieldEarned: "0.00",
+          currentRank: null,
+          winRate: 0,
+        },
+        achievements: [],
+        recentSettledArenas: [],
+        privacy: {
+          hideHistory: false,
+          hideFromSearch: false,
+        },
+        isUnknown: true,
+      };
+    }
+    throw new ProfileNotFoundError();
+  }
+
+  // 5. Banned / moderated players edge case
+  if (user.isBanned) {
+    return {
+      address: user.walletAddress,
+      alias: user.displayName ?? null,
+      level: 1,
+      joinedAt: user.joinedAt ? new Date(user.joinedAt).toISOString() : new Date().toISOString(),
+      stats: {
+        gamesPlayed: 0,
+        gamesWon: 0,
+        totalYieldEarned: "0.00",
+        currentRank: null,
+        winRate: 0,
+      },
+      achievements: [],
+      recentSettledArenas: [],
+      privacy: {
+        hideHistory: true,
+        hideFromSearch: true,
+      },
+      isBanned: true,
+    };
+  }
+
+  // 6. Aggregate platform stats
+  const stats = await aggregateStats(prisma, user._id.toString());
+  const gamesPlayed = stats.gamesPlayed || 0;
+  const gamesWon = stats.gamesWon || 0;
+  const totalYield = Number(stats.totalYieldEarned) || 0;
+  const winRate = gamesPlayed > 0 ? Math.round((gamesWon / gamesPlayed) * 100) : 0;
+  const level = computeLevel(gamesPlayed, gamesWon);
+  const achievements = computeAchievements(gamesPlayed, gamesWon, totalYield);
+
+  // 7. Privacy filtering: respect hideHistory and hideFromSearch
+  const privacy = {
+    hideHistory: Boolean(user.privacySettings?.hideHistory),
+    hideFromSearch: Boolean(user.privacySettings?.hideFromSearch),
+  };
+
+  let recentSettledArenas: PublicPlayerProfile["recentSettledArenas"] = [];
+
+  if (!privacy.hideHistory) {
+    try {
+      // Find recent settled rounds where user participated
+      const settledArenas = await prisma.arena.findMany({
+        where: {
+          OR: [
+            { status: "SETTLED" },
+            { rounds: { some: { state: "SETTLED" } } },
+          ],
+        },
+        orderBy: { updatedAt: "desc" },
+        take: 10,
+        include: {
+          rounds: {
+            where: { state: "SETTLED" },
+            take: 1,
+          },
+        },
+      });
+
+      recentSettledArenas = settledArenas.slice(0, 5).map((a) => {
+        const meta = (a.metadata as Record<string, any>) || {};
+        return {
+          arenaId: a.id,
+          name: meta.name || `Arena #${a.id.slice(0, 6)}`,
+          settledAt: a.updatedAt.toISOString(),
+          result: "participant",
+        };
+      });
+    } catch {
+      recentSettledArenas = [];
+    }
+  }
+
+  const activeAlias = (user.aliasHistory as any[])?.find((h) => h.retiredAt === null)?.alias ?? user.displayName ?? null;
+
+  return {
+    address: user.walletAddress,
+    alias: activeAlias,
+    level,
+    joinedAt: user.joinedAt ? new Date(user.joinedAt).toISOString() : new Date().toISOString(),
+    stats: {
+      gamesPlayed,
+      gamesWon,
+      totalYieldEarned: stats.totalYieldEarned,
+      currentRank: stats.currentRank,
+      winRate,
+    },
+    achievements,
+    recentSettledArenas,
+    privacy,
+    ...(redirectedFromOldAlias ? { redirect: true, canonicalAlias } : {}),
+  };
+}
+
+export async function getUserPrivacySettings(userId: string) {
+  const user = await UserModel.findById(userId).lean();
+  if (!user) throw new ProfileNotFoundError();
+  return {
+    hideHistory: Boolean(user.privacySettings?.hideHistory),
+    hideFromSearch: Boolean(user.privacySettings?.hideFromSearch),
+  };
+}
+
+export async function updateUserPrivacySettings(
+  userId: string,
+  settings: { hideHistory?: boolean; hideFromSearch?: boolean },
+) {
+  const user = await UserModel.findById(userId);
+  if (!user) throw new ProfileNotFoundError();
+
+  const current = user.privacySettings || { hideHistory: false, hideFromSearch: false };
+  if (settings.hideHistory !== undefined) current.hideHistory = settings.hideHistory;
+  if (settings.hideFromSearch !== undefined) current.hideFromSearch = settings.hideFromSearch;
+
+  user.privacySettings = current;
+  await user.save();
+
+  return {
+    hideHistory: current.hideHistory,
+    hideFromSearch: current.hideFromSearch,
+  };
+}

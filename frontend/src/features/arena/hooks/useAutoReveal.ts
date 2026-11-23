@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { localStorageManager, registerStorageKey } from "@/shared/lib/localStorage";
 import {
   buildRevealChoiceTransaction,
   clearCommitmentForRound,
@@ -50,16 +51,11 @@ function isRetryableRevealError(error: unknown): boolean {
 
 function acquireLease(key: string): boolean {
   const now = Date.now();
-  const raw = localStorage.getItem(key);
-  if (raw) {
-    try {
-      const lease = JSON.parse(raw) as { expiresAt?: number };
-      if (typeof lease.expiresAt === "number" && lease.expiresAt > now) return false;
-    } catch {
-      // Replace corrupt coordination state.
-    }
-  }
-  localStorage.setItem(key, JSON.stringify({ expiresAt: now + LEASE_MS }));
+  const storageKey = registerStorageKey(key, "user", (value): value is { expiresAt: number } =>
+    value !== null && typeof value === "object" && typeof (value as { expiresAt?: unknown }).expiresAt === "number");
+  const lease = localStorageManager.getItem<{ expiresAt: number } | null>(storageKey, null);
+  if (lease && lease.expiresAt > now) return false;
+  localStorageManager.setItem(storageKey, { expiresAt: now + LEASE_MS });
   return true;
 }
 

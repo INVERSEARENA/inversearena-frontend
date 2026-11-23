@@ -26,6 +26,8 @@
  * @module
  */
 
+import { localStorageManager, StorageKey } from "../localStorage";
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface AnchorConfig {
@@ -260,8 +262,6 @@ export function closeDepositPopup(): void {
 
 // ── Pending Deposit Persistence ─────────────────────────────────────────────────
 
-const PENDING_DEPOSIT_KEY = "sep24_pending_deposit";
-
 interface PendingDeposit {
   transactionId: string;
   assetCode: string;
@@ -274,28 +274,23 @@ interface PendingDeposit {
  * Persist a pending deposit so it can be resumed across page reloads.
  */
 export function savePendingDeposit(deposit: PendingDeposit): void {
-  localStorage.setItem(PENDING_DEPOSIT_KEY, JSON.stringify(deposit));
+  localStorageManager.setItem(StorageKey.PENDING_DEPOSIT, deposit);
 }
 
 /**
  * Load a pending deposit from local storage (for resume on reload).
  */
 export function loadPendingDeposit(): PendingDeposit | null {
-  const raw = localStorage.getItem(PENDING_DEPOSIT_KEY);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as PendingDeposit;
-  } catch {
-    localStorage.removeItem(PENDING_DEPOSIT_KEY);
-    return null;
-  }
+  const deposit = localStorageManager.getItem<PendingDeposit | null>(StorageKey.PENDING_DEPOSIT, null);
+  if (!deposit || typeof deposit.transactionId !== "string" || typeof deposit.walletAddress !== "string") return null;
+  return deposit;
 }
 
 /**
  * Clear the pending deposit from local storage.
  */
 export function clearPendingDeposit(): void {
-  localStorage.removeItem(PENDING_DEPOSIT_KEY);
+  localStorageManager.removeItem(StorageKey.PENDING_DEPOSIT);
 }
 
 // ── Full Flow ─────────────────────────────────────────────────────────────────

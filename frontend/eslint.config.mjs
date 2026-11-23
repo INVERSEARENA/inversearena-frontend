@@ -66,6 +66,16 @@ const eslintConfig = defineConfig([
           ],
         },
       ],
+      "no-restricted-globals": [
+        "error",
+        { name: "localStorage", message: "Use localStorageManager from '@/shared/lib/localStorage'." },
+        { name: "sessionStorage", message: "Use sessionStorageManager from '@/shared/lib/localStorage'." },
+      ],
+      "no-restricted-properties": [
+        "error",
+        { object: "window", property: "localStorage", message: "Use localStorageManager from '@/shared/lib/localStorage'." },
+        { object: "window", property: "sessionStorage", message: "Use sessionStorageManager from '@/shared/lib/localStorage'." },
+      ],
     },
   },
   {
@@ -80,6 +90,13 @@ const eslintConfig = defineConfig([
             "Direct fetch() is forbidden in features. Use apiClient from '@/shared/lib/api/client' instead.",
         },
       ],
+    },
+  },
+  {
+    files: ["src/shared/lib/localStorage.ts"],
+    rules: {
+      "no-restricted-globals": "off",
+      "no-restricted-properties": "off",
     },
   },
 ]);

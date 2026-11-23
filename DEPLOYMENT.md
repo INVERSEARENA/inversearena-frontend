@@ -12,17 +12,17 @@ End-to-end reference for building, deploying, and running the InverseArena stack
 
 | Tool | Purpose | Install |
 |------|---------|---------|
-| **Node 20+** | Backend + frontend | [nodejs.org](https://nodejs.org) |
-| **Rust stable** | Soroban contract builds | `rustup update stable` |
-| **wasm32 target** | Cross-compile contracts | `rustup target add wasm32-unknown-unknown` |
-| **Stellar CLI** | Build / deploy contracts | `cargo install --locked stellar-cli` |
+| **Node 20.20.2** | Backend + frontend | [nodejs.org](https://nodejs.org) |
+| **Rust 1.82.0** | Soroban contract builds | `rustup toolchain install 1.82.0` |
+| **WASM targets** | Cross-compile contracts | `rustup target add wasm32-unknown-unknown wasm32v1-none --toolchain 1.82.0` |
+| **Stellar CLI 22.6.0** | Build / deploy contracts | `cargo install --locked stellar-cli@22.6.0` |
 | **PostgreSQL** | Backend DB | docker or local install |
 
 Verify:
 
 ```bash
-node --version        # v20+
-stellar --version
+node --version        # v20.20.2
+stellar --version        # 22.6.0
 rustc --version
 ```
 
@@ -53,14 +53,14 @@ Contract addresses are written to `contract/deployed.json`. Copy them into your 
 
 ### 4. Configure environment
 
-Copy the relevant IDs from `contract/deployed.json` into:
+Copy the relevant IDs from `contract/deployment-manifest.json` into generated env files:
 
 ```
-frontend/.env.local
-backend/.env
+backend/.env        # MONGODB_URI, PORT=3001, ...
+frontend/.env.local # NEXT_PUBLIC_API_BASE_URL=http://localhost:3001, ...
 ```
 
-See `contract/DEPLOY.md` for the full env var reference.
+`make dev` / `scripts/dev-stack.sh` writes these files with corrected ports and env keys. See `contract/DEPLOY.md` for the full env var reference.
 
 ### 5. Start the stack
 

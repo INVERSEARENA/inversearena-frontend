@@ -280,8 +280,16 @@ export class ArenaBackfillWorker {
 
     await this.prisma.arena.upsert({
       where: { id: arena.arenaAddress },
-      create: { id: arena.arenaAddress, metadata },
-      update: {},
+      create: {
+        id: arena.arenaAddress,
+        status: (arena.status as string) || "ACTIVE",
+        createdBy: arena.host ?? null,
+        metadata,
+      },
+      update: {
+        status: (arena.status as string) || "ACTIVE",
+        createdBy: arena.host ?? null,
+      },
     });
   }
 }

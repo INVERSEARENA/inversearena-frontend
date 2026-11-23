@@ -28,10 +28,7 @@ export class ArenaQueryService {
     const where: any = {};
 
     if (filter !== "all") {
-      where.metadata = {
-        path: ["status"],
-        equals: filter === "active" ? "ACTIVE" : filter === "pending" ? "PENDING" : "CLOSED",
-      };
+      where.status = filter === "active" ? "ACTIVE" : filter === "pending" ? "PENDING" : "CLOSED";
     }
 
     let skip: number | undefined = undefined;

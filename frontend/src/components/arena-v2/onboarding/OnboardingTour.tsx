@@ -4,9 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, m as motion } from "motion/react";
 import { TourStep } from "./TourStep";
 import { UIHighlight } from "./UIHighlight";
+import { localStorageManager, StorageKey } from "@/shared/lib/localStorage";
 
-const TOUR_STORAGE_KEY = "inverse.arena.onboarding-complete";
-const LEGACY_TOUR_STORAGE_KEY = "inverse.arena-v2.onboarding-complete";
 
 type OnboardingStep = {
   title: string;
@@ -51,17 +50,17 @@ export function OnboardingTour() {
       return null;
     }
 
-    const legacyCompleted = window.localStorage.getItem(LEGACY_TOUR_STORAGE_KEY) === "true";
-    const completed = window.localStorage.getItem(TOUR_STORAGE_KEY) === "true" || legacyCompleted;
-    if (legacyCompleted && !window.localStorage.getItem(TOUR_STORAGE_KEY)) {
-      window.localStorage.setItem(TOUR_STORAGE_KEY, "true");
+    const legacyCompleted = localStorageManager.getItem<boolean>(StorageKey.LEGACY_ONBOARDING_TOUR, false);
+    const completed = localStorageManager.getItem<boolean>(StorageKey.ONBOARDING_TOUR, false) || legacyCompleted;
+    if (legacyCompleted && !localStorageManager.getItem<boolean>(StorageKey.ONBOARDING_TOUR, false)) {
+      localStorageManager.setItem(StorageKey.ONBOARDING_TOUR, true);
     }
     return !completed;
   });
   const [stepIndex, setStepIndex] = useState(0);
 
   const closeAndPersist = () => {
-    window.localStorage.setItem(TOUR_STORAGE_KEY, "true");
+    localStorageManager.setItem(StorageKey.ONBOARDING_TOUR, true);
     setIsOpen(false);
   };
 

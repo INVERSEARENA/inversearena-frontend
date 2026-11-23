@@ -168,12 +168,17 @@ cd inversearena-frontend
 make dev         # quickstart + contracts + seed + backend + frontend
 make dev-reset   # clean slate (wipe volumes, manifests, build artifacts)
 make dev-seed    # re-seed open/active/finished/cancelled arenas
+make dev-doctor  # validate config without starting services
 ```
 
 `make dev` brings up a **local Stellar standalone network** (`stellar/quickstart`),
 Postgres, Redis, and Mongo; builds and deploys the Soroban contracts; writes
 `contract/deployment-manifest.json` plus the `.env` files the backend and
 frontend auto-load; seeds arenas in every lifecycle state; and starts both apps.
+
+Devcontainer quickstart: open in VS Code and Reopen in Container (`.devcontainer/`, see `docs/DEVCONTAINER.md`).
+Pinned versions: Node 20.20.2, npm 10.9.9, pnpm 10.11.1, Rust 1.82.0 (CI extras 1.96.0, nightly-2026-10-01), Stellar CLI 22.6.0, pre-commit 4.7.0.
+Fast checks: `make check-fast`, `make check-toolchain`, `make dev-doctor`. Pre-commit is opt-in via `INSTALL_PRE_COMMIT=1`.
 
 **Manual setup** (if you prefer running against testnet or your own services):
 
@@ -309,10 +314,10 @@ Inverse Arena is designed for production-grade custody:
 
 Pull requests are welcome. Before contributing:
 
-1. Read [CONTRIBUTING.md](CONTRIBUTING.md) — especially the snapshot testing rules for Soroban contract types.
+1. Read [CONTRIBUTING.md](CONTRIBUTING.md) — especially snapshot testing rules, PR workflow, and triage automation.
 2. For smart contract contributions, see [docs/CONTRIBUTING_CONTRACTS.md](docs/CONTRIBUTING_CONTRACTS.md) — covers environment setup, build commands, coding conventions, and the PR checklist.
-2. Run all relevant tests and ensure they pass.
-3. Keep PRs focused — one concern per pull request.
+3. Run relevant tests/checks (`make check-fast`, `make pr-triage-test` where applicable) and ensure they pass.
+4. Keep PRs focused — one concern per pull request.
 
 ---
 

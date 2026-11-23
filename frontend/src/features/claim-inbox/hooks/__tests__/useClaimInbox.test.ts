@@ -99,7 +99,8 @@ describe("useClaimInbox", () => {
 
     await waitFor(() => expect(result.current.loading).toBe(false));
     const [, init] = mockFetch.mock.calls[0];
-    expect((init as RequestInit).headers).toEqual({ Authorization: "Bearer token" });
+    const headers = new Headers((init as RequestInit).headers);
+    expect(headers.get("Authorization")).toBe("Bearer token");
   });
 
   it("surfaces a contract mismatch instead of rendering undefined balances", async () => {

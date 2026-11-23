@@ -14,8 +14,10 @@
 
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/shared/lib/api/client";
+import { queryKeys } from "@/shared/lib/query/queryClient";
 
 export type StakingFreshness = "verified" | "stale" | "unavailable";
 
@@ -79,33 +81,29 @@ async function fetchPosition(): Promise<StakingPosition> {
 }
 
 export function useStakingPosition(): UseStakingPositionReturn {
-  const [position, setPosition] = useState<StakingPosition | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [errored, setErrored] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const query = useQuery({
+    queryKey: queryKeys.staking.position(),
+    queryFn: fetchPosition,
+  });
 
   const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    setErrored(false);
-    try {
-      setPosition(await fetchPosition());
-    } catch (err) {
-      setErrored(true);
-      setError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    await query.refetch();
+  }, [query]);
 
   const state = useMemo<StakingPositionState>(
-    () => (errored ? "error" : deriveStakingState(position)),
-    [errored, position],
+    () => (query.isError ? "error" : deriveStakingState(query.data ?? null)),
+    [query.isError, query.data],
   );
 
-  return { position, state, loading, error, refresh };
+  return {
+    position: query.data ?? null,
+    state,
+    loading: query.isLoading,
+    error: query.error
+      ? query.error instanceof Error
+        ? query.error.message
+        : "Unknown error"
+      : null,
+    refresh,
+  };
 }

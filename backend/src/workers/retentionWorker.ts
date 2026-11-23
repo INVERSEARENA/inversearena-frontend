@@ -15,6 +15,7 @@ import {
   retentionEphemeralDeletedTotal,
   retentionHotPartitions,
 } from "../utils/metrics";
+import { RETENTION_POLICIES, retentionPolicyDays, type RetentionPolicy } from "./retentionPolicies";
 
 /** Cold schema aged monthly partitions are moved into (#1622). */
 export const ARCHIVE_SCHEMA = "archive";
@@ -32,16 +33,11 @@ export interface ManagedPartitionedTable {
  * identifiers Prisma manages via @@map, and are the only table names ever
  * interpolated into the worker's raw DDL — everything else is parameterised.
  */
-export const MANAGED_PARTITIONED_TABLES: readonly ManagedPartitionedTable[] = [
-  {
-    table: "elimination_logs",
-    archiveAfterMonths: (config) => config.eliminationLogsArchiveAfterMonths,
-  },
-  {
-    table: "transactions",
-    archiveAfterMonths: (config) => config.transactionsArchiveAfterMonths,
-  },
-];
+export const MANAGED_PARTITIONED_TABLES: readonly ManagedPartitionedTable[] =
+  RETENTION_POLICIES.filter((policy) => policy.strategy === "partition").map((policy) => ({
+    table: policy.model,
+    archiveAfterMonths: (config) => retentionPolicyDays(policy, config) / 30,
+  }));
 
 /** Monthly partition name convention shared with the migration. */
 const PARTITION_NAME_PATTERN = /^(.+)_p(\d{4})_(\d{2})$/;
@@ -134,6 +130,7 @@ export interface RetentionRunResult {
   createdPartitions: Array<{ table: string; name: string }>;
   archivedPartitions: Array<{ table: string; name: string }>;
   ephemeralDeleted: EphemeralCounts;
+  genericDeleted: Record<string, number>;
   /** Expected operational conditions (e.g. a partition bound overlapping the
    * default partition) — reported, but not a failed run. */
   warnings: string[];
@@ -198,6 +195,7 @@ export class RetentionWorker {
         createdPartitions: [],
         archivedPartitions: [],
         ephemeralDeleted: ZERO_COUNTS(),
+        genericDeleted: {},
         warnings: [],
         errors: [],
       };
@@ -213,6 +211,7 @@ export class RetentionWorker {
     const archivedPartitions: RetentionRunResult["archivedPartitions"] = [];
     const warnings: string[] = [];
     const errors: string[] = [];
+    const genericDeleted: Record<string, number> = {};
 
     try {
       for (const managed of MANAGED_PARTITIONED_TABLES) {
@@ -225,6 +224,15 @@ export class RetentionWorker {
           await this.archiveAgedPartitions(managed, { dryRun, mode, now, archivedPartitions, warnings });
         } catch (error) {
           errors.push(`${managed.table}: archive pass failed: ${String(error)}`);
+        }
+      }
+
+      for (const policy of RETENTION_POLICIES.filter((entry) => entry.strategy === "delete")) {
+        try {
+          genericDeleted[policy.model] = await this.applyModelPolicy(policy, { dryRun, now });
+          retentionEphemeralDeletedTotal.inc({ collection: policy.model, mode }, genericDeleted[policy.model]);
+        } catch (error) {
+          errors.push(`${policy.model}: retention policy failed: ${String(error)}`);
         }
       }
 
@@ -259,6 +267,7 @@ export class RetentionWorker {
           createdPartitions: createdPartitions.length,
           archivedPartitions: archivedPartitions.length,
           ephemeralDeleted,
+          genericDeleted,
           warnings: warnings.length,
           errors: errors.length,
           durationMs,
@@ -273,12 +282,38 @@ export class RetentionWorker {
         createdPartitions,
         archivedPartitions,
         ephemeralDeleted,
+        genericDeleted,
         warnings,
         errors,
       };
     } finally {
       this.isRunning = false;
     }
+  }
+
+  /** Execute one model policy using stable id batches. Dynamic model/field
+   * identifiers come only from the checked-in policy registry. */
+  private async applyModelPolicy(policy: RetentionPolicy, options: { dryRun: boolean; now: Date }): Promise<number> {
+    const delegate = (this.prisma as unknown as Record<string, {
+      count(args: unknown): Promise<number>;
+      findMany(args: unknown): Promise<Array<{ id: string }>>;
+      deleteMany(args: unknown): Promise<{ count: number }>;
+    }>)[policy.model];
+    if (!delegate) throw new Error(`Unknown Prisma model delegate: ${policy.model}`);
+    const cutoff = new Date(options.now.getTime() - retentionPolicyDays(policy, this.config) * 24 * 60 * 60 * 1000);
+    const where: Record<string, unknown> = { ...(policy.where ?? {}), [policy.ageColumn]: { lt: cutoff } };
+    if (policy.legalHoldColumn) where[policy.legalHoldColumn] = false;
+    if (options.dryRun) return delegate.count({ where });
+
+    let affected = 0;
+    while (true) {
+      const rows = await delegate.findMany({ where, orderBy: { [policy.ageColumn]: "asc" }, take: policy.batchSize, select: { id: true } });
+      if (rows.length === 0) break;
+      const result = await delegate.deleteMany({ where: { ...where, id: { in: rows.map((row) => row.id) }, ...(policy.legalHoldColumn ? { [policy.legalHoldColumn]: false } : {}) } });
+      affected += result.count;
+      if (result.count === 0) break;
+    }
+    return affected;
   }
 
   /** Child partitions currently attached to a managed parent. */

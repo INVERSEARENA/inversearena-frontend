@@ -7,6 +7,7 @@ import { WalletStatus } from "../model/types";
 import { SignedXdrSchema } from "@/shared/lib/security-validation";
 import { isStellarConfigured, stellarConfig } from "@/shared/config/stellarConfig";
 import { normalizeSignature } from "@/shared/lib/session/challenge";
+import { localStorageManager, StorageKey } from "@/shared/lib/localStorage";
 
 // Define an interface for the wallet hook's return type
 export interface WalletHook {
@@ -29,7 +30,7 @@ export interface WalletHook {
 const STELLAR_PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
 
 // Key used to persist intentional disconnect so wallet extensions can't phantom-reconnect.
-export const WALLET_DISCONNECTED_KEY = 'inversearena:wallet:disconnected';
+export const WALLET_DISCONNECTED_KEY = StorageKey.WALLET_DISCONNECTED;
 
 const KIT_MODULES = () => [new xBullModule(), new FreighterModule(), new AlbedoModule()];
 
@@ -95,7 +96,7 @@ export const useStellarWallet = (network: Networks): WalletHook => {
     // skip initializing the kit entirely so it never attempts to restore the
     // last session. connectWallet() will initialize it lazily on demand.
     const suppressAutoReconnect =
-      typeof window !== 'undefined' && localStorage.getItem(WALLET_DISCONNECTED_KEY) === 'true';
+      localStorageManager.getItem<boolean>(WALLET_DISCONNECTED_KEY, false);
 
     if (suppressAutoReconnect) {
       kitInitializedRef.current = false;
@@ -121,7 +122,7 @@ export const useStellarWallet = (network: Networks): WalletHook => {
       setError(null);
       // Clear intentional-disconnect flag so the session is treated as fresh
       if (typeof window !== 'undefined') {
-        localStorage.removeItem(WALLET_DISCONNECTED_KEY);
+        localStorageManager.removeItem(WALLET_DISCONNECTED_KEY);
       }
       // The mount effect skips StellarWalletsKit.init() when auto-reconnect
       // was suppressed; initialize it now that the user explicitly connected.
@@ -253,7 +254,7 @@ export const useStellarWallet = (network: Networks): WalletHook => {
     setWalletNetworkName(null);
     // Persist intentional disconnect so extensions cannot phantom-reconnect on reload
     if (typeof window !== 'undefined') {
-      localStorage.setItem(WALLET_DISCONNECTED_KEY, 'true');
+      localStorageManager.setItem(WALLET_DISCONNECTED_KEY, true);
     }
   }, []);
 

@@ -1,0 +1,163 @@
+name: PR triage
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Do not write comments or labels"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+  pull_request:
+    paths:
+      - "scripts/pr-triage/**"
+      - ".github/workflows/pr-triage.yml"
+      - ".github/pr-triage.json"
+
+permissions: {}
+
+concurrency:
+  group: pr-triage-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  body:
+    name: body
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.20.2"
+      - name: PR triage / body
+        uses: actions/github-script@v9
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_UPDATED_AT: ${{ github.event.pull_request.updated_at }}
+          PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          DRY_RUN: "false"
+        with:
+          script: |
+            const fs = require('fs');
+            const { loadConfig } = await import('${{ github.workspace }}/scripts/pr-triage/config.mjs');
+            const { checkBody } = await import('${{ github.workspace }}/scripts/pr-triage/check-body.mjs');
+            const { renderBodyComment, upsertComment } = await import('${{ github.workspace }}/scripts/pr-triage/render-comments.mjs');
+            const config = loadConfig(fs.readFileSync('.github/pr-triage.json', 'utf8'));
+            const result = checkBody({
+              body: process.env.PR_BODY || '',
+              author: process.env.PR_AUTHOR || '',
+              createdAt: process.env.PR_CREATED_AT || '',
+              config,
+            });
+            const marker = '<!-- pr-triage:body -->';
+            const body = renderBodyComment(result);
+            const dryRun = process.env.DRY_RUN === 'true' || config.dryRun;
+            if (!dryRun) {
+              await upsertComment({ github, context, issueNumber: Number(process.env.PR_NUMBER), marker, body });
+            }
+            const name = 'PR triage / body';
+            const head_sha = context.payload.pull_request.head.sha;
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name,
+              head_sha,
+              status: 'completed',
+              conclusion: result.ok ? 'success' : 'failure',
+              output: {
+                title: result.ok ? 'PR body checks passed' : 'PR body checks failed',
+                summary: result.ok ? 'Linked issue and checklist requirements satisfied.' : result.errors.map(e => `- ${e}`).join('\n'),
+              },
+            });
+            if (!result.ok) core.setFailed(result.errors.join('; '));
+
+  duplicate-stale:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.20.2"
+      - name: Duplicate and stale triage
+        uses: actions/github-script@v9
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        with:
+          script: |
+            const fs = require('fs');
+            const { loadConfig } = await import('${{ github.workspace }}/scripts/pr-triage/config.mjs');
+            const { detectDuplicates } = await import('${{ github.workspace }}/scripts/pr-triage/detect-duplicates.mjs');
+            const { detectStale } = await import('${{ github.workspace }}/scripts/pr-triage/detect-stale.mjs');
+            const { renderDuplicateComment, renderStaleComment, upsertComment } = await import('${{ github.workspace }}/scripts/pr-triage/render-comments.mjs');
+            const config = loadConfig(fs.readFileSync('.github/pr-triage.json', 'utf8'));
+            const dryRun = process.env.DRY_RUN === 'true' || config.dryRun;
+            const prs = await github.paginate(github.rest.pulls.list, {
+              owner: context.repo.owner, repo: context.repo.repo, state: 'open', per_page: 100,
+            });
+            const limited = prs.slice(0, config.maxPrsScanned).map(pr => ({
+              number: pr.number,
+              title: pr.title || '',
+              body: pr.body || '',
+              author: pr.user?.login || '',
+              updatedAt: pr.updated_at,
+              createdAt: pr.created_at,
+              url: pr.html_url,
+              draft: pr.draft,
+              labels: (pr.labels || []).map(l => l.name),
+            }));
+            const dupes = detectDuplicates(limited, config);
+            for (const d of dupes) {
+              const marker = `<!-- pr-triage:duplicate:${d.issueKey} -->`;
+              const body = renderDuplicateComment(d);
+              if (!dryRun) {
+                for (const pr of d.prs) {
+                  await upsertComment({ github, context, issueNumber: pr.number, marker, body });
+                  try {
+                    await github.rest.issues.addLabels({ owner: context.repo.owner, repo: context.repo.repo, issue_number: pr.number, labels: [config.duplicateLabel] });
+                  } catch (e) {}
+                }
+              }
+            }
+            const stale = detectStale(limited, config, new Date());
+            for (const s of stale) {
+              const marker = '<!-- pr-triage:stale -->';
+              const body = renderStaleComment(s, config);
+              if (!dryRun) {
+                await upsertComment({ github, context, issueNumber: s.number, marker, body });
+              }
+            }
+
+  self-test:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.20.2"
+      - run: node --test scripts/pr-triage/*.test.mjs

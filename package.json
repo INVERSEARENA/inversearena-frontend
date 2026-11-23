@@ -1,0 +1,8 @@
+{
+  "name": "inversearena-frontend-root",
+  "private": true,
+  "packageManager": "pnpm@10.11.1",
+  "engines": {
+    "node": "20.20.2"
+  }
+}

@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchWatchlist, watchArena, unwatchArena } from "../api/watchlistClient";
+import { queryKeys } from "@/shared/lib/query/queryClient";
 
 export interface UseWatchlistReturn {
   watchedArenaIds: string[];
@@ -9,73 +11,66 @@ export interface UseWatchlistReturn {
   toggle: (arenaId: string) => Promise<void>;
 }
 
-/**
- * Arena watchlist synced to the authenticated profile (#1402). Toggling
- * updates local state optimistically, then reconciles with the server's
- * response (which reflects the idempotent server-side operation) rather
- * than trusting the optimistic guess — so a toggle that raced with
- * another device's change still ends up showing the server's true state.
- */
 export function useWatchlist(token: string | null): UseWatchlistReturn {
-  const [watchedArenaIds, setWatchedArenaIds] = useState<string[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const [mutationError, setMutationError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!token) {
-      setWatchedArenaIds([]);
-      return;
-    }
+  const query = useQuery({
+    queryKey: queryKeys.watchlist.all(token),
+    queryFn: async () => {
+      if (!token) return [];
+      return await fetchWatchlist(token);
+    },
+    enabled: Boolean(token),
+  });
 
-    let active = true;
-    setIsLoading(true);
-    void fetchWatchlist(token)
-      .then((ids) => {
-        if (active) setWatchedArenaIds(ids);
-      })
-      .catch((err: unknown) => {
-        if (active) setError(err instanceof Error ? err.message : "Could not load watchlist.");
-      })
-      .finally(() => {
-        if (active) setIsLoading(false);
-      });
+  const watchedArenaIds = query.data ?? [];
 
-    return () => {
-      active = false;
-    };
-  }, [token]);
-
-  const isWatched = useCallback((arenaId: string) => watchedArenaIds.includes(arenaId), [watchedArenaIds]);
+  const isWatched = useCallback(
+    (arenaId: string) => watchedArenaIds.includes(arenaId),
+    [watchedArenaIds],
+  );
 
   const toggle = useCallback(
     async (arenaId: string) => {
       if (!token) {
-        setError("Sign in to manage your watchlist.");
+        setMutationError("Sign in to manage your watchlist.");
         return;
       }
 
+      setMutationError(null);
       const currentlyWatched = watchedArenaIds.includes(arenaId);
-      setError(null);
-      // Optimistic update, reconciled below with the server's actual result.
-      setWatchedArenaIds((prev) =>
-        currentlyWatched ? prev.filter((id) => id !== arenaId) : [...prev, arenaId],
-      );
+      const optimistic = currentlyWatched
+        ? watchedArenaIds.filter((id) => id !== arenaId)
+        : [...watchedArenaIds, arenaId];
+
+      queryClient.setQueryData(queryKeys.watchlist.all(token), optimistic);
 
       try {
         const result = currentlyWatched
           ? await unwatchArena(arenaId, token)
           : await watchArena(arenaId, token);
-        setWatchedArenaIds(result);
+        queryClient.setQueryData(queryKeys.watchlist.all(token), result);
       } catch (err) {
-        // Roll back the optimistic change on failure.
-        setWatchedArenaIds((prev) =>
-          currentlyWatched ? [...prev, arenaId] : prev.filter((id) => id !== arenaId),
-        );
-        setError(err instanceof Error ? err.message : "Could not update your watchlist.");
+        // Roll back
+        queryClient.setQueryData(queryKeys.watchlist.all(token), watchedArenaIds);
+        setMutationError(err instanceof Error ? err.message : "Could not update your watchlist.");
       }
     },
-    [token, watchedArenaIds],
+    [token, watchedArenaIds, queryClient],
   );
 
-  return { watchedArenaIds, isLoading, error, isWatched, toggle };
+  return {
+    watchedArenaIds,
+    isLoading: query.isLoading,
+    error:
+      mutationError ??
+      (query.error
+        ? query.error instanceof Error
+          ? query.error.message
+          : "Could not load watchlist."
+        : null),
+    isWatched,
+    toggle,
+  };
 }

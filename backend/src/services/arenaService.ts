@@ -260,6 +260,8 @@ export class ArenaService {
           data: {
             id: arenaId,
             rematchOf,
+            status: "ACTIVE",
+            createdBy: createdBy ?? null,
             metadata,
           },
         });

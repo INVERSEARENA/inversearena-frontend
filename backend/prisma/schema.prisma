@@ -40,6 +40,8 @@ model Arena {
   metadata  Json? // Stores generic arena settings (e.g. entry fee, limits)
   // Arena id this arena is a rematch of (#1572). Null for original arenas.
   rematchOf String?  @map("rematch_of")
+  status    String   @default("ACTIVE")
+  createdBy String?  @map("created_by")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -51,6 +53,10 @@ model Arena {
 
   @@index([createdAt(sort: Desc), id(sort: Desc)]) // Keyset pagination index (#1520)
   @@index([rematchOf])
+  @@index([status])
+  @@index([createdBy])
+  @@index([status, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([createdBy, createdAt(sort: Desc), id(sort: Desc)])
   @@map("arenas")
 }
 

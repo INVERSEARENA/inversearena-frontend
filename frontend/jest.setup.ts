@@ -28,3 +28,32 @@ if (!global.crypto?.subtle) {
   // commit-reveal's in-browser SHA-256 hashing (#1137).
   Object.defineProperty(global, "crypto", { value: webcrypto, configurable: true });
 }
+
+if (typeof Response === "undefined") {
+  class MockResponse {
+    readonly status: number;
+    readonly ok: boolean;
+    readonly headers: Headers;
+    private readonly _body: string;
+
+    constructor(body?: string | null, init?: ResponseInit) {
+      this._body = typeof body === "string" ? body : "";
+      this.status = init?.status ?? 200;
+      this.ok = this.status >= 200 && this.status < 300;
+      this.headers = new Headers(init?.headers);
+    }
+
+    async json() {
+      return this._body ? JSON.parse(this._body) : null;
+    }
+
+    async text() {
+      return this._body;
+    }
+  }
+
+  // @ts-expect-error MockResponse polyfill for jsdom environment
+  global.Response = MockResponse;
+  // @ts-expect-error MockResponse polyfill for jsdom environment
+  window.Response = MockResponse;
+}

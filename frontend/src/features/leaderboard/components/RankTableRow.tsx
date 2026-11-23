@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Survivor } from "../model/types";
 import { formatAgentId, formatCurrency } from "../model/format";
 import { RankBadge } from "./RankBadge";
@@ -34,9 +35,12 @@ export function RankTableRow({ survivor, onChallenge, isHighlighted = false }: R
       </td>
 
       <td className="px-4 py-5">
-        <span className="font-mono text-sm tracking-wider text-neon-pink">
+        <Link
+          href={`/p/${survivor.agentId}`}
+          className="font-mono text-sm tracking-wider text-neon-pink hover:underline"
+        >
           {formatAgentId(survivor.agentId)}
-        </span>
+        </Link>
       </td>
 
       <td className="px-4 py-5">

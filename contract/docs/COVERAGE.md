@@ -85,3 +85,9 @@ The `coverage` job in Contract CI:
 Change `NIGHTLY` in the workflow and the commands above together. Coverage
 numbers can shift slightly between compiler versions. If a crate falls below
 its threshold only because of the bump, say so in the PR and adjust it.
+
+## Mutation testing
+
+Coverage only shows which lines ran. For whether the assertions actually detect
+behavior changes in settlement and state-machine code, see
+[Mutation testing](MUTATION_TESTING.md).

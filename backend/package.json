@@ -17,6 +17,7 @@
     "migrate": "prisma migrate deploy",
     "migrate:dev": "prisma migrate dev",
     "ttl:plan": "tsx src/scripts/ttlKeeperPlan.ts",
+    "retention:docs": "tsx scripts/render-retention-policy.ts",
     "simulate": "tsx scripts/simulate-game.ts",
     "bench:arena-polling": "tsx scripts/benchmark-arena-publish.ts",
     "bench:edge-cache": "tsx scripts/load-test-edge-cache.ts",
