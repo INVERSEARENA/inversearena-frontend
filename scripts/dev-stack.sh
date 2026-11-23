@@ -189,12 +189,12 @@ EOF
 
   if [ -d backend/node_modules ]; then
     log "applying Prisma migrations…"
-    (cd backend && DATABASE_URL="$DATABASE_URL" npx prisma migrate deploy) || warn "migrate deploy failed"
+    (cd backend && DATABASE_URL="$DATABASE_URL" pnpm --filter inversearena-backend exec prisma migrate deploy) || warn "migrate deploy failed"
 
     log "seeding arenas (open / active / finished / cancelled)…"
-    (cd backend && npx tsx ../scripts/seed-arenas.ts) || warn "seed failed"
+    (cd backend && pnpm --filter inversearena-scripts exec tsx ../scripts/seed-arenas.ts) || warn "seed failed"
   else
-    warn "backend/node_modules missing — run 'cd backend && npm install' then re-run."
+    warn "backend/node_modules missing — run 'pnpm install' at repo root then re-run."
   fi
 
   log "stack is ready."
@@ -204,8 +204,8 @@ EOF
   log "Starting backend + frontend (Ctrl-C to stop)…"
 
   trap '$COMPOSE stop' EXIT
-  (cd backend && npm run dev) &
-  (cd frontend && pnpm dev) &
+  (pnpm --filter inversearena-backend run dev) &
+  (pnpm --filter inversearena-frontend run dev) &
   wait
 }
 

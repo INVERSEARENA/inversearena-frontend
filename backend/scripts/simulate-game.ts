@@ -26,7 +26,7 @@ import {
   Operation,
   Asset,
   Horizon,
-  SorobanRpc,
+  rpc,
   xdr,
   Address,
   nativeToScVal,
@@ -197,7 +197,7 @@ async function runSimulation(options: {
   console.log("");
 
   const horizon = new Horizon.Server(config.horizonUrl);
-  const soroban = new SorobanRpc.Server(config.sorobanRpcUrl);
+  const soroban = new rpc.Server(config.sorobanRpcUrl);
 
   // Create simulated players
   console.log("Creating simulated player accounts...");

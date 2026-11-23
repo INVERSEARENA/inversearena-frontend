@@ -1,12 +1,5 @@
-import {
-  Address,
-  Transaction,
-  TransactionBuilder,
-  scValToNative,
-  xdr,
-} from "@stellar/stellar-sdk";
-// @ts-ignore
-import { rpc } from "@stellar/stellar-sdk";
+import { Address, TransactionBuilder, rpc, scValToNative, xdr } from "@stellar/stellar-sdk";
+import type { Transaction } from "@stellar/stellar-sdk";
 const { Api, Server } = rpc;
 import { z } from "zod";
 

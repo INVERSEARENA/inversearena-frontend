@@ -22,18 +22,17 @@ dev-seed: ## Re-seed open/active/finished/cancelled arenas
 ## ── Convenience shortcuts ──────────────────────────────────────────────────
 
 test: ## Run all tests (backend + frontend)
-	cd backend && npm run test:ci
-	cd frontend && pnpm test --passWithNoTests
+	pnpm --filter @inversearena/rate-limit run build
+	pnpm -r --filter inversearena-backend --filter inversearena-frontend --filter @inversearena/rate-limit run test
 
 build: ## Build frontend and backend for production
-	cd backend && npm run build
-	cd frontend && pnpm build
+	pnpm --filter inversearena-backend... --filter inversearena-frontend... run build
 
 migrate: ## Apply pending Prisma migrations (development)
-	cd backend && npm run migrate:dev
+	pnpm --filter inversearena-backend run migrate:dev
 
 migrate-prod: ## Apply migrations in production (no seed)
-	cd backend && npx prisma migrate deploy
+	pnpm --filter inversearena-backend exec prisma migrate deploy
 
 infra: ## Start PostgreSQL + Redis via Docker Compose
 	docker-compose up -d
@@ -43,7 +42,7 @@ monitoring: ## Start Prometheus + Grafana monitoring stack
 
 clean: ## Remove build artifacts and node_modules
 	rm -rf backend/dist frontend/.next
-	rm -rf backend/node_modules frontend/node_modules
+	rm -rf node_modules backend/node_modules frontend/node_modules packages/*/node_modules tools/*/node_modules scripts/node_modules docs-portal/node_modules
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' Makefile | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -113,13 +112,13 @@ contracts-mutants: ## Mutation-test critical contract guards (#1798)
 ## ── Granular targets (kept for backwards compatibility) ────────────────────
 
 backend-dev: ## Start backend in watch mode
-	cd backend && npm run dev
+	pnpm --filter inversearena-backend run dev
 
 backend-test: ## Run backend test suite
-	cd backend && npm test
+	pnpm --filter inversearena-backend run test
 
 frontend-dev: ## Start Next.js dev server
-	cd frontend && pnpm dev
+	pnpm --filter inversearena-frontend run dev
 
 ## ── Supply chain (#1457) ───────────────────────────────────────────────────
 
@@ -128,7 +127,7 @@ deps-gate-test: ## Run the dependency threat gate's own tests
 
 deps-gate: ## Audit all lockfiles and apply the dependency threat gate locally
 	mkdir -p audit
-	-cd backend && npm audit --package-lock-only --json > ../audit/backend.json
-	-cd frontend && pnpm audit --json > ../audit/frontend.json
+	-pnpm audit --filter inversearena-backend --json > audit/backend.json
+	-pnpm audit --filter inversearena-frontend --json > audit/frontend.json
 	-cd contract && cargo audit --json > ../audit/contract.json
 	node scripts/dependency-gate/gate.mjs --npm backend=audit/backend.json --pnpm frontend=audit/frontend.json --cargo contract=audit/contract.json --exceptions .github/dependency-exceptions.json

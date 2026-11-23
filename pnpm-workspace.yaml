@@ -1,0 +1,27 @@
+packages:
+  - frontend
+  - backend
+  - packages/*
+  - tools/*
+  - scripts
+  - docs-portal
+
+# Build scripts pnpm 10 blocks by default; allow only the packages that
+# genuinely need them (Prisma engines/client codegen, esbuild/tsx binaries,
+# mongodb-memory-server binary download, native optional helpers).
+onlyBuiltDependencies:
+  - "@prisma/client"
+  - "@prisma/engines"
+  - prisma
+  - esbuild
+  - mongodb-memory-server
+  - unrs-resolver
+  - msgpackr-extract
+  - fsevents
+
+# Moved from frontend/package.json "overrides" — pnpm only honours overrides
+# declared at the workspace root.
+overrides:
+  axios: ^1.13.5
+  minimatch: ^10.2.2
+  preact: ^10.28.4

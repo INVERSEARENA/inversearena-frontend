@@ -69,7 +69,7 @@ jobs:
         with:
           node-version: "20.x"
           cache: "npm"
-          cache-dependency-path: backend/package-lock.json
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install backend dependencies
         working-directory: ./backend
@@ -124,7 +124,7 @@ jobs:
           SSE_MAX_CONNECTIONS_PER_ARENA: "1100"
           LOAD_TEST_BYPASS_KEY: ${{ secrets.LOAD_TEST_BYPASS_KEY || 'k6-load-test-local-ci-key-32chars' }}
         run: |
-          npm run build
+          pnpm run build
           node dist/server.js &
           # Wait for the server to be ready.
           for i in $(seq 1 30); do

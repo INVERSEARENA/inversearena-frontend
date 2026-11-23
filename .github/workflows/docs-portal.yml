@@ -39,13 +39,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
       - uses: actions/setup-node@v4
         with:
           node-version: "20.20.2"
+          cache: "pnpm"
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install backend dependencies
-        working-directory: backend
-        run: npm ci
+        run: pnpm install --frozen-lockfile --filter inversearena-backend...
 
       - name: Check OpenAPI artifact
         run: node docs-portal/scripts/generate-openapi.mjs --check

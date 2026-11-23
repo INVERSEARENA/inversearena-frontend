@@ -69,11 +69,11 @@ jobs:
         with:
           node-version: "20.x"
           cache: "pnpm"
-          cache-dependency-path: frontend/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Check contract error mappings are generated from the specs (#1597)
         run: |
-          pnpm --dir frontend install --no-frozen-lockfile --ignore-scripts
+          pnpm install --frozen-lockfile --filter inversearena-frontend...
           node contract/scripts/generate-contract-errors.mjs --check
 
       - name: Run contract tests

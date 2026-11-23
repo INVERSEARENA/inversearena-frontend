@@ -158,6 +158,7 @@ export class SybilDetectionWorker {
 
     for (let i = 0; i < participants.length; i++) {
       const p = participants[i];
+      if (!p) continue;
       const signals: SybilSignal[] = [];
 
       // Host-funded check
@@ -175,6 +176,7 @@ export class SybilDetectionWorker {
       // Pairwise signals against other participants
       for (let j = i + 1; j < participants.length; j++) {
         const q = participants[j];
+        if (!q) continue;
 
         // Common funder
         if (findCommonFunder(p.walletAddress, q.walletAddress, fundingEdges)) {

@@ -8,7 +8,7 @@
     "setup-testnet": "tsx setup-testnet.ts"
   },
   "dependencies": {
-    "@stellar/stellar-sdk": "^13.1.0",
+    "@stellar/stellar-sdk": "^14.6.1",
     "dotenv": "^16.4.5"
   },
   "devDependencies": {

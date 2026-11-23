@@ -86,6 +86,8 @@ export type StellarConfig = {
   roundConfirmPollMs: number;
   roundConfirmMaxPolls: number;
   assetIssuers: Record<string, string>;
+  supportedProtocolMin: number;
+  supportedProtocolMax: number;
 };
 
 export function getStellarConfig(
@@ -108,5 +110,7 @@ export function getStellarConfig(
     roundConfirmPollMs: parsed.ROUND_CONFIRM_POLL_MS,
     roundConfirmMaxPolls: parsed.ROUND_CONFIRM_MAX_POLLS,
     assetIssuers: parseAssetIssuers(env.ASSET_ISSUERS),
+    supportedProtocolMin: Number(env.SUPPORTED_RPC_PROTOCOL_MIN ?? "20"),
+    supportedProtocolMax: Number(env.SUPPORTED_RPC_PROTOCOL_MAX ?? "30"),
   };
 }
