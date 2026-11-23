@@ -9,6 +9,7 @@
  * JoinPanel.
  */
 
+import Link from "next/link";
 import type { ArenaParticipant } from "../hooks/useLobbyData";
 
 function shortAddress(address: string): string {
@@ -70,9 +71,12 @@ export function PlayerRoster({
                 key={p.id}
                 className="grid grid-cols-[1.4fr_0.7fr_0.7fr_0.7fr] items-center px-4 py-4 text-sm"
               >
-                <span className="font-mono text-white">
+                <Link
+                  href={`/p/${p.walletAddress}`}
+                  className="font-mono text-white hover:text-neon-pink hover:underline"
+                >
                   {shortAddress(p.walletAddress)}
-                </span>
+                </Link>
                 <span
                   className={
                     p.choice === null

@@ -10,6 +10,11 @@ export interface AliasHistoryEntry {
 
 // ── User document ─────────────────────────────────────────────────────────────
 
+export interface UserPrivacySettings {
+  hideHistory: boolean;
+  hideFromSearch: boolean;
+}
+
 export interface UserDocument extends Document {
   walletAddress: string;
   displayName?: string;
@@ -23,6 +28,8 @@ export interface UserDocument extends Document {
    * dropped) by the caller when reading arena details, not by this model.
    */
   watchedArenaIds: string[];
+  privacySettings?: UserPrivacySettings;
+  isBanned?: boolean;
   joinedAt: Date;
   lastLoginAt: Date;
 }
@@ -42,6 +49,11 @@ const UserSchema = new Schema<UserDocument>(
     displayName:   { type: String, default: undefined },
     aliasHistory:  { type: [AliasHistoryEntrySchema], default: [] },
     watchedArenaIds: { type: [String], default: [] },
+    privacySettings: {
+      hideHistory: { type: Boolean, default: false },
+      hideFromSearch: { type: Boolean, default: false },
+    },
+    isBanned:      { type: Boolean, default: false },
     joinedAt:      { type: Date, required: true },
     lastLoginAt:   { type: Date, required: true },
   },
