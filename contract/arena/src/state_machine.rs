@@ -85,6 +85,16 @@ mod tests {
     use super::*;
     use crate::types::GameState::*;
 
+    const STATES: [GameState; 5] = [Open, Active, Finished, Cancelled, Settled];
+    const LEGAL: [(GameState, GameState); 6] = [
+        (Open, Active),
+        (Open, Cancelled),
+        (Active, Open),
+        (Active, Finished),
+        (Active, Cancelled),
+        (Finished, Settled),
+    ];
+
     #[test]
     fn phase_splits_open_and_active_states() {
         assert_eq!(phase(&Open, 0, 0, 0), ArenaPhase::Lobby);
@@ -97,53 +107,87 @@ mod tests {
     }
 
     #[test]
-    fn legal_transitions() {
-        // Every transition `lib.rs` actually performs must be accepted.
-        assert!(can_transition(&Open, &Active));
-        assert!(can_transition(&Open, &Cancelled));
-        assert!(can_transition(&Active, &Open));
-        assert!(can_transition(&Active, &Finished));
-        assert!(can_transition(&Active, &Cancelled));
-        assert!(can_transition(&Finished, &Settled));
-    }
-
-    #[test]
-    fn illegal_transitions() {
-        // Skipping intermediate states is not allowed.
-        assert!(!can_transition(&Open, &Finished));
-        assert!(!can_transition(&Open, &Settled));
-        assert!(!can_transition(&Active, &Settled));
-        // Finished transitions: only Settled is allowed (start_round rejects it).
-        assert!(!can_transition(&Finished, &Active));
-        assert!(!can_transition(&Finished, &Cancelled));
-        assert!(!can_transition(&Finished, &Open));
-        // Terminal states never transition out.
-        assert!(!can_transition(&Cancelled, &Open));
-        assert!(!can_transition(&Cancelled, &Active));
-        assert!(!can_transition(&Settled, &Open));
-        assert!(!can_transition(&Settled, &Active));
-        // No self-loops.
-        assert!(!can_transition(&Open, &Open));
-        assert!(!can_transition(&Active, &Active));
-    }
-
-    #[test]
-    fn ensure_state_matches_and_rejects() {
-        assert!(ensure_state(&Open, &Open, ArenaError::InvalidGameState).is_ok());
+    fn phase_boundaries_are_exact() {
+        assert_eq!(phase(&Active, 1, 100, 98), ArenaPhase::Commit);
+        assert_eq!(phase(&Active, 1, 100, 99), ArenaPhase::Commit);
+        assert_eq!(phase(&Active, 1, 100, 100), ArenaPhase::Reveal);
+        assert_eq!(phase(&Active, 1, 100, 101), ArenaPhase::Reveal);
+        assert_eq!(phase(&Active, 0, 100, 100), ArenaPhase::Reveal);
         assert_eq!(
-            ensure_state(&Active, &Open, ArenaError::InvalidGameState),
-            Err(ArenaError::InvalidGameState),
+            phase(&Active, 1, u64::MAX, u64::MAX - 1),
+            ArenaPhase::Commit
+        );
+        assert_eq!(phase(&Active, 1, u64::MAX, u64::MAX), ArenaPhase::Reveal);
+    }
+
+    #[test]
+    fn transition_matrix_matches_the_documented_edges() {
+        for from in &STATES {
+            for to in &STATES {
+                let expected = LEGAL
+                    .iter()
+                    .any(|(legal_from, legal_to)| legal_from == from && legal_to == to);
+                assert_eq!(
+                    can_transition(from, to),
+                    expected,
+                    "transition {from:?} -> {to:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_states_have_no_outgoing_transitions() {
+        for terminal in [&Cancelled, &Settled] {
+            for to in &STATES {
+                assert!(
+                    !can_transition(terminal, to),
+                    "transition {terminal:?} -> {to:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_state_transitions_to_itself() {
+        for state in &STATES {
+            assert!(!can_transition(state, state), "self-loop {state:?}");
+        }
+    }
+
+    #[test]
+    fn ensure_state_returns_the_exact_error_for_every_mismatch() {
+        for current in &STATES {
+            for expected in &STATES {
+                let result = ensure_state(current, expected, ArenaError::InvalidGameState);
+                if current == expected {
+                    assert!(result.is_ok());
+                } else {
+                    assert_eq!(result, Err(ArenaError::InvalidGameState));
+                }
+            }
+        }
+        assert_eq!(
+            ensure_state(&Active, &Open, ArenaError::GameNotFinished),
+            Err(ArenaError::GameNotFinished),
         );
     }
 
     #[test]
-    fn ensure_transition_guards() {
-        assert!(ensure_transition(&Open, &Active, ArenaError::InvalidGameState).is_ok());
-        // Finished → Settled is legal (claim); Finished → Cancelled is not.
-        assert!(ensure_transition(&Finished, &Settled, ArenaError::InvalidGameState).is_ok());
+    fn ensure_transition_returns_the_exact_error_for_every_illegal_edge() {
+        for from in &STATES {
+            for to in &STATES {
+                let result = ensure_transition(from, to, ArenaError::InvalidGameState);
+                if can_transition(from, to) {
+                    assert!(result.is_ok());
+                } else {
+                    assert_eq!(result, Err(ArenaError::InvalidGameState));
+                }
+            }
+        }
         assert_eq!(
-            ensure_transition(&Finished, &Cancelled, ArenaError::InvalidGameState),
-            Err(ArenaError::InvalidGameState),
+            ensure_transition(&Open, &Finished, ArenaError::GameNotFinished),
+            Err(ArenaError::GameNotFinished),
         );
     }
 }

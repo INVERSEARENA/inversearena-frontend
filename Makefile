@@ -1,7 +1,9 @@
 .PHONY: dev dev-reset dev-seed test build migrate migrate-prod infra monitoring clean help \
         contracts-build contracts-deploy contracts-init-factory contracts-abi-check \
         contracts-coverage contracts-cost-bench \
-        backend-dev backend-test frontend-dev deps-gate deps-gate-test
+        backend-dev backend-test frontend-dev deps-gate deps-gate-test \
+        check-toolchain check-fast dev-doctor pr-triage-test \
+        docs-generate docs-check docs-build docs-links contracts-mutants
 
 NETWORK ?= testnet
 SOURCE  ?= deployer
@@ -46,6 +48,34 @@ clean: ## Remove build artifacts and node_modules
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' Makefile | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
+check-toolchain: ## Run toolchain/devcontainer config tests
+	node --test scripts/toolchain-config.test.mjs
+
+check-fast: ## Run fast CI-mirror checks (skip missing deps)
+	bash scripts/check-fast.sh all
+
+dev-doctor: ## Validate local dev stack config without starting services
+	bash scripts/dev-stack.sh --check
+
+pr-triage-test: ## Run PR triage unit tests
+	node --test scripts/pr-triage/*.test.mjs
+
+docs-generate: ## Generate OpenAPI and contract documentation artifacts
+	node docs-portal/scripts/generate-openapi.mjs
+	node docs-portal/scripts/generate-contract-docs.mjs
+
+docs-check: ## Validate documentation portal sources and generators
+	node --test docs-portal/scripts/*.test.mjs
+	node docs-portal/scripts/generate-openapi.mjs --check
+	node docs-portal/scripts/generate-contract-docs.mjs --check
+	node docs-portal/scripts/check-links.mjs
+
+docs-build: docs-check ## Build the static documentation portal
+	node docs-portal/scripts/build.mjs
+
+docs-links: ## Check documentation links only
+	node docs-portal/scripts/check-links.mjs
+
 ## ── Contract targets ───────────────────────────────────────────────────────
 
 contracts-build: ## Build + optimise all Soroban contracts
@@ -72,6 +102,13 @@ contracts-coverage: ## Per-crate line/branch coverage + thresholds (#1651)
 
 contracts-cost-bench: ## Per-entry-point resource costs vs baseline (#1649)
 	node contract/scripts/cost-bench.mjs
+
+MUTATION_TOOLCHAIN ?= 1.96.0
+
+contracts-mutants: ## Mutation-test critical contract guards (#1798)
+	cd contract && RUSTUP_TOOLCHAIN=$(MUTATION_TOOLCHAIN) cargo build --workspace --target wasm32v1-none --release
+	cd contract && RUSTUP_TOOLCHAIN=$(MUTATION_TOOLCHAIN) cargo mutants --in-place --no-shuffle
+	node contract/scripts/mutations.mjs
 
 ## ── Granular targets (kept for backwards compatibility) ────────────────────
 
