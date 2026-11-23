@@ -119,6 +119,7 @@ impl FactoryContract {
 
         FactoryStorage::save_admin(&env, &admin);
         FactoryStorage::save_min_stake(&env, min_stake);
+        FactoryStorage::save_storage_version(&env, storage::CURRENT_STORAGE_VERSION);
         env.events()
             .publish((symbol_short!("INIT"),), (admin, min_stake));
         Ok(())
@@ -128,6 +129,13 @@ impl FactoryContract {
     pub fn version(_env: Env) -> u32 {
         CONTRACT_VERSION
     }
+    pub fn storage_version(env: Env) -> u32 { FactoryStorage::load_storage_version(&env) }
+    pub fn migrate(env: Env, caller: Address, max_steps: u32) -> Result<u32, FactoryError> {
+        caller.require_auth();
+        let admin = FactoryStorage::load_admin(&env)?;
+        if caller != admin { return Err(FactoryError::Unauthorized); }
+        Ok(FactoryStorage::migrate(&env, max_steps))
+    }
 
     /// Upgrade the factory contract's code to `new_wasm_hash`.
     ///
@@ -135,6 +143,7 @@ impl FactoryContract {
     /// whitelist, pool sequence, and creator stakes — so bug fixes and new
     /// features can ship without redeploying and losing that state.
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), FactoryError> {
+        FactoryStorage::require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         env.events().publish((symbol_short!("UPGRADE"),), ());
@@ -142,6 +151,7 @@ impl FactoryContract {
     }
 
     pub fn set_arena_wasm_hash(env: Env, wasm_hash: BytesN<32>) -> Result<(), FactoryError> {
+        FactoryStorage::require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         FactoryStorage::save_arena_wasm_hash(&env, &wasm_hash);
         env.events().publish((symbol_short!("WASM_UP"),), wasm_hash);
@@ -149,6 +159,7 @@ impl FactoryContract {
     }
 
     pub fn add_to_whitelist(env: Env, host: Address) -> Result<(), FactoryError> {
+        FactoryStorage::require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         FactoryStorage::set_whitelisted(&env, &host, true);
         env.events().publish((symbol_short!("WL_ADD"),), host);
@@ -156,6 +167,7 @@ impl FactoryContract {
     }
 
     pub fn remove_from_whitelist(env: Env, host: Address) -> Result<(), FactoryError> {
+        FactoryStorage::require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         FactoryStorage::set_whitelisted(&env, &host, false);
         env.events().publish((symbol_short!("WL_REM"),), host);
@@ -179,6 +191,7 @@ impl FactoryContract {
     /// - `FactoryError::InvalidVault` if `vault` does not answer `config()`
     ///   (not a contract, not an RWA adapter, or not initialised).
     pub fn add_approved_vault(env: Env, vault: Address) -> Result<(), FactoryError> {
+        FactoryStorage::require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         let vault_config = Self::read_vault_config(&env, &vault)?;
         FactoryStorage::set_approved_vault(&env, &vault, true);
@@ -204,6 +217,7 @@ impl FactoryContract {
     /// path would refuse. The entry is marked `Disabled` so clients stop
     /// offering it for new arenas.
     pub fn remove_approved_vault(env: Env, vault: Address) -> Result<(), FactoryError> {
+        FactoryStorage::require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         FactoryStorage::set_approved_vault(&env, &vault, false);
         FactoryStorage::remove_approved_vault_token(&env, &vault);
@@ -229,6 +243,7 @@ impl FactoryContract {
     }
 
     pub fn add_approved_oracle(env: Env, oracle: Address) -> Result<(), FactoryError> {
+        FactoryStorage::require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         FactoryStorage::set_approved_oracle(&env, &oracle, true);
         Self::set_lifecycle(
@@ -245,6 +260,7 @@ impl FactoryContract {
     /// Emergency removal of an approved oracle (#1688) — unconditional, like
     /// `remove_approved_vault`.
     pub fn remove_approved_oracle(env: Env, oracle: Address) -> Result<(), FactoryError> {
+        FactoryStorage::require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         FactoryStorage::set_approved_oracle(&env, &oracle, false);
         Self::set_lifecycle(
@@ -267,6 +283,7 @@ impl FactoryContract {
     }
 
     pub fn add_supported_token(env: Env, token: Address) -> Result<(), FactoryError> {
+        FactoryStorage::require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         FactoryStorage::set_supported_token(&env, &token, true);
         Self::set_lifecycle(
@@ -283,6 +300,7 @@ impl FactoryContract {
     /// Emergency removal of a supported token (#1688) — unconditional, like
     /// `remove_approved_vault`.
     pub fn remove_supported_token(env: Env, token: Address) -> Result<(), FactoryError> {
+        FactoryStorage::require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         FactoryStorage::set_supported_token(&env, &token, false);
         Self::set_lifecycle(
@@ -541,6 +559,7 @@ impl FactoryContract {
     }
 
     pub fn set_max_active_pools(env: Env, max: u32) -> Result<(), FactoryError> {
+        FactoryStorage::require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         FactoryStorage::save_max_active_pools(&env, max);
         env.events().publish((symbol_short!("MXPLCFG"),), max);
@@ -562,6 +581,7 @@ impl FactoryContract {
 
     /// Pause the factory, blocking new pool creation.
     pub fn pause(env: Env) -> Result<(), FactoryError> {
+        FactoryStorage::require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         FactoryStorage::set_paused(&env, true);
         env.events().publish((symbol_short!("PAUSED"),), ());
@@ -570,6 +590,7 @@ impl FactoryContract {
 
     /// Unpause the factory, resuming normal operations.
     pub fn unpause(env: Env) -> Result<(), FactoryError> {
+        FactoryStorage::require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         FactoryStorage::set_paused(&env, false);
         env.events().publish((symbol_short!("UNPAUS"),), ());
@@ -588,6 +609,7 @@ impl FactoryContract {
     /// # Events
     /// Emits `GPAUSE` with `(paused, reason)`.
     pub fn set_global_pause(env: Env, paused: bool, reason: Symbol) -> Result<(), FactoryError> {
+        FactoryStorage::require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         FactoryStorage::set_globally_paused(&env, paused);
         env.events()
@@ -656,6 +678,7 @@ impl FactoryContract {
         config: PoolConfig,
         metadata_hash: BytesN<32>,
     ) -> Result<Address, FactoryError> {
+        FactoryStorage::require_current_storage_version(&env)?;
         if FactoryStorage::is_paused(&env) {
             return Err(FactoryError::ContractPaused);
         }
@@ -816,6 +839,7 @@ impl FactoryContract {
     /// recorded amount is transferred from the factory back to the creator and
     /// the stake record is cleared so it cannot be reclaimed twice.
     pub fn reclaim_creator_stake(env: Env, arena: Address) -> Result<(), FactoryError> {
+        FactoryStorage::require_current_storage_version(&env)?;
         let record =
             FactoryStorage::load_creator_stake(&env, &arena).ok_or(FactoryError::ArenaNotFound)?;
 
@@ -1147,6 +1171,7 @@ impl FactoryContract {
     }
 
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), FactoryError> {
+        FactoryStorage::require_current_storage_version(&env)?;
         let admin = FactoryStorage::load_admin(&env)?;
         admin.require_auth();
         FactoryStorage::save_pending_admin(&env, &new_admin);
@@ -1156,6 +1181,7 @@ impl FactoryContract {
     }
 
     pub fn accept_admin(env: Env) -> Result<(), FactoryError> {
+        FactoryStorage::require_current_storage_version(&env)?;
         let pending_admin =
             FactoryStorage::load_pending_admin(&env).ok_or(FactoryError::NoPendingAdmin)?;
         pending_admin.require_auth();

@@ -23,6 +23,7 @@ import { initialArenaProjection, type ArenaProjectionState } from "./projection/
 import { replayArenaProjection, type ArenaReplayOptions } from "./projection/arenaProjectionReplay";
 import { env } from "../config/env";
 import { RematchService } from "./rematchService";
+import { getConfiguredNetwork } from "../config/network";
 
 const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
 const TX_HASH_REGEX = /^[0-9a-f]{64}$/i;
@@ -202,8 +203,7 @@ export class ArenaService {
       if (!CONTRACT_ID_REGEX.test(rematchOf)) {
         throw new Error("rematchOf is not a valid Soroban contract ID");
       }
-      const source = await this.prisma.arena.findUnique({
-        where: { id: rematchOf },
+      const source = await this.prisma.arena.findFirst({ where: { id: rematchOf, network: getConfiguredNetwork() },
         select: { id: true },
       });
       if (!source) {
@@ -215,7 +215,7 @@ export class ArenaService {
     // a dropped response) must not hit a duplicate-key error. The same arena
     // with the same linkage returns the existing row; a different linkage is a
     // genuine conflict and must not be silently rewritten.
-    const existing = await this.prisma.arena.findUnique({ where: { id: arenaId } });
+    const existing = await this.prisma.arena.findFirst({ where: { id: arenaId, network: getConfiguredNetwork() },});
     if (existing) {
       if ((existing.rematchOf ?? null) !== rematchOf) {
         throw new Error(
@@ -278,7 +278,7 @@ export class ArenaService {
       const isUniqueViolation =
         error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
       if (!isUniqueViolation) throw error;
-      const raced = await this.prisma.arena.findUnique({ where: { id: arenaId } });
+      const raced = await this.prisma.arena.findFirst({ where: { id: arenaId, network: getConfiguredNetwork() },});
       if (!raced || (raced.rematchOf ?? null) !== rematchOf) {
         throw new Error(
           `Arena ${arenaId} already exists with a different rematch linkage`,
@@ -308,8 +308,7 @@ export class ArenaService {
   }
 
   async getSnapshot(arenaId: string): Promise<ArenaSnapshot> {
-    const arena = await this.prisma.arena.findUnique({
-      where: { id: arenaId },
+    const arena = await this.prisma.arena.findFirst({ where: { id: arenaId, network: getConfiguredNetwork() },
       include: {
         rounds: {
           orderBy: { roundNumber: "asc" },

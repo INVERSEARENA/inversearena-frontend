@@ -72,6 +72,8 @@ const KEY_QUORUM: soroban_sdk::Symbol = symbol_short!("QUORUM");
 const KEY_MAX_AGE: soroban_sdk::Symbol = symbol_short!("M_AGE");
 /// Outlier band (bps) around the median; `0` disables outlier rejection.
 const KEY_MAX_DEV: soroban_sdk::Symbol = symbol_short!("M_DEV");
+const KEY_STORAGE_VERSION: soroban_sdk::Symbol = symbol_short!("STOR_VER");
+const CURRENT_STORAGE_VERSION: u32 = 1;
 
 pub const DEFAULT_MAX_YIELD_BPS: u32 = 5_000;
 pub const MAX_MAX_RATE_BPS: u32 = 10_000;
@@ -121,6 +123,8 @@ pub enum OracleError {
     ReporterLimitReached = 9,
     /// `set_quorum` with `quorum == 0` or above `MAX_REPORTERS`.
     InvalidQuorum = 10,
+    MigrationPending = 11,
+    Unauthorized = 12,
 }
 
 /// Effective rate schedule, readable by frontends and keepers (#1570).
@@ -207,6 +211,13 @@ fn abs_diff(a: u32, b: u32) -> u32 {
     }
 }
 
+
+fn load_storage_version(env: &Env) -> u32 { env.storage().instance().get(&KEY_STORAGE_VERSION).unwrap_or(CURRENT_STORAGE_VERSION) }
+fn save_storage_version(env: &Env, v: u32) { env.storage().instance().set(&KEY_STORAGE_VERSION, &v); }
+fn require_current_storage_version(env: &Env) -> Result<(), OracleError> {
+    if load_storage_version(env) < CURRENT_STORAGE_VERSION { return Err(OracleError::MigrationPending); }
+    Ok(())
+}
 #[contractimpl]
 impl OracleContract {
     pub fn initialize(env: Env, admin: Address, initial_rate_bps: u32) -> Result<(), OracleError> {
@@ -239,6 +250,7 @@ impl OracleContract {
     /// currently effective rate. A pending update is overwritten by a newer
     /// one (last wins).
     pub fn set_yield_bps(env: Env, rate_bps: u32) -> Result<(), OracleError> {
+        require_current_storage_version(&env)?;
         let admin: Address = env
             .storage()
             .persistent()
@@ -308,6 +320,7 @@ impl OracleContract {
     /// Admin-configurable per-update bound, itself subject to the activation
     /// delay when one is configured (last wins).
     pub fn set_max_delta_bps(env: Env, max_delta_bps: u32) -> Result<(), OracleError> {
+        require_current_storage_version(&env)?;
         let admin: Address = env
             .storage()
             .persistent()
@@ -344,6 +357,7 @@ impl OracleContract {
     /// Admin-configurable activation delay within the hard bound, itself
     /// subject to the current delay when one is configured (last wins).
     pub fn set_activation_delay(env: Env, delay_secs: u64) -> Result<(), OracleError> {
+        require_current_storage_version(&env)?;
         let admin: Address = env
             .storage()
             .persistent()
@@ -435,6 +449,7 @@ impl OracleContract {
     }
 
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), OracleError> {
+        require_current_storage_version(&env)?;
         let admin: Address = env
             .storage()
             .persistent()
@@ -448,6 +463,7 @@ impl OracleContract {
     }
 
     pub fn accept_admin(env: Env) -> Result<(), OracleError> {
+        require_current_storage_version(&env)?;
         let pending_admin: Address = env
             .storage()
             .persistent()
@@ -467,6 +483,7 @@ impl OracleContract {
     }
 
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), OracleError> {
+        require_current_storage_version(&env)?;
         let admin: Address = env
             .storage()
             .persistent()
@@ -484,6 +501,7 @@ impl OracleContract {
     /// their outstanding submission, so rotation during an active round can
     /// never leave a ghost vote in the median.
     pub fn add_reporter(env: Env, reporter: Address) -> Result<(), OracleError> {
+        require_current_storage_version(&env)?;
         let admin: Address = env
             .storage()
             .persistent()
@@ -513,6 +531,7 @@ impl OracleContract {
     /// at the last finalized value and `get_oracle_status` reports
     /// `stale == true` until quorum recovers.
     pub fn remove_reporter(env: Env, reporter: Address) -> Result<(), OracleError> {
+        require_current_storage_version(&env)?;
         let admin: Address = env
             .storage()
             .persistent()
@@ -556,6 +575,7 @@ impl OracleContract {
     /// allowed (the oracle simply stays stale until enough reporters are
     /// added back), which keeps rotation ordering flexible.
     pub fn set_quorum(env: Env, quorum: u32) -> Result<(), OracleError> {
+        require_current_storage_version(&env)?;
         let admin: Address = env
             .storage()
             .persistent()
@@ -588,6 +608,7 @@ impl OracleContract {
     /// from the pre-filter median by more than this are excluded from the
     /// finalized value and evented (`out_rej`). `0` disables rejection.
     pub fn set_max_deviation_bps(env: Env, max_deviation_bps: u32) -> Result<(), OracleError> {
+        require_current_storage_version(&env)?;
         let admin: Address = env
             .storage()
             .persistent()
@@ -609,6 +630,7 @@ impl OracleContract {
     /// rate, any pending scheduled admin rate is superseded, and
     /// `median_set` + `rate_obs` are emitted.
     pub fn submit_rate(env: Env, reporter: Address, rate_bps: u32) -> Result<(), OracleError> {
+        require_current_storage_version(&env)?;
         reporter.require_auth();
         let reporters: Vec<Address> = env
             .storage()

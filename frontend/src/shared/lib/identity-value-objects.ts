@@ -270,7 +270,7 @@ export function deriveNetworkIdentity(passphrase: NetworkPassphrase): NetworkIde
  * so that a contract upgrade automatically busts any cached value that was
  * derived under the old revision.
  */
-export type DeploymentRevision = Branded<number, "DeploymentRevision">;
+export type DeploymentRevision = Branded<string, "DeploymentRevision">;
 
 /**
  * Parse and validate a deployment revision number.
@@ -284,7 +284,7 @@ export function parseDeploymentRevision(raw: number): DeploymentRevision {
       "must be a positive integer",
     );
   }
-  return raw as DeploymentRevision;
+  return String(raw) as DeploymentRevision;
 }
 
 // ─── Network-bound ContractId ─────────────────────────────────────────────────

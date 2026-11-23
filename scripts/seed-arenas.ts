@@ -101,7 +101,7 @@ async function getPool() {
     return new Pool({ connectionString: DATABASE_URL });
   } catch (err) {
     console.error(
-      "[seed] Failed to load `pg`. Run `npm install` in backend/ first.",
+      "[seed] Failed to load `pg`. Run `pnpm install` at repo root first.",
     );
     throw err;
   }

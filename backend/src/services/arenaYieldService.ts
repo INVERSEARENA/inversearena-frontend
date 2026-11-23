@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import { getAssetMetadata } from "../types/asset";
+import { getConfiguredNetwork } from "../config/network";
 
 /**
  * Per-arena yield time-series (#1568).
@@ -127,7 +128,7 @@ export class ArenaYieldService {
     const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
     const offset = options.cursor ? decodeCursor(options.cursor) : 0;
 
-    const arena = await this.prisma.arena.findUnique({ where: { id: arenaId } });
+    const arena = await this.prisma.arena.findFirst({ where: { id: arenaId, network: getConfiguredNetwork() },});
     if (!arena) {
       throw new Error(`Arena with ID ${arenaId} not found`);
     }

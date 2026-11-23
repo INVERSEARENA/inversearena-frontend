@@ -19,6 +19,7 @@ import {
   getLobbyReservationRateLimitConfig,
 } from "../middleware/rateLimit";
 import { env } from "../config/env";
+import { getConfiguredNetwork } from "../config/network";
 
 const RESERVATION_TTL_SECONDS = Math.max(
   1,
@@ -55,8 +56,7 @@ export function createLobbyReservationRouter(authMiddleware: RequestHandler): Ro
 
       const { id: arenaId } = ArenaIdParamsSchema.parse(req.params);
 
-      const arena = await prisma.arena.findUnique({
-        where: { id: arenaId },
+      const arena = await prisma.arena.findFirst({ where: { id: arenaId, network: getConfiguredNetwork() },
         select: { id: true },
       });
       if (!arena) {

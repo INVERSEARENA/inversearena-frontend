@@ -8,7 +8,8 @@ export interface TransactionIntentDocument extends Omit<TransactionIntentRecord,
 const TransactionIntentSchema = new Schema<TransactionIntentDocument>(
   {
     _id: { type: String, required: true },
-    idempotencyKey: { type: String, required: true, unique: true },
+    network: { type: String, required: true, default: process.env.STELLAR_NETWORK_PASSPHRASE || "Test SDF Network ; September 2015", index: true },
+    idempotencyKey: { type: String, required: true },
     kind: {
       type: String,
       enum: [
@@ -50,8 +51,9 @@ const TransactionIntentSchema = new Schema<TransactionIntentDocument>(
   }
 );
 
-TransactionIntentSchema.index({ ownerWallet: 1, status: 1 });
-TransactionIntentSchema.index({ expiresAt: 1 });
+TransactionIntentSchema.index({ network: 1, idempotencyKey: 1 }, { unique: true });
+TransactionIntentSchema.index({ network: 1, ownerWallet: 1, status: 1 });
+TransactionIntentSchema.index({ network: 1, expiresAt: 1 });
 
 export const TransactionIntentModel = model<TransactionIntentDocument>(
   "TransactionIntent",

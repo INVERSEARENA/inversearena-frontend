@@ -34,6 +34,7 @@ const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
 /// entrypoints so the keeper can negotiate TTL-health support via
 /// `contractCapability.ts` rather than probing for the methods blindly.
 const CONTRACT_VERSION: u32 = 2;
+const CURRENT_STORAGE_VERSION: u32 = 1;
 
 /// Minimum deposit accepted when the pool holds no shares, in token base units.
 ///
@@ -73,6 +74,7 @@ const MIN_INITIAL_STAKE: i128 = 10;
 #[contracttype]
 pub enum DataKey {
     Position(Address),
+    StorageVersion,
 }
 
 #[cfg(test)]
@@ -83,6 +85,17 @@ pub struct StakingContract;
 
 /// Extend the TTL of a persistent key if it exists.
 /// Matches the pattern used by the arena contract.
+
+fn load_storage_version(env: &Env) -> u32 {
+    env.storage().persistent().get(&DataKey::StorageVersion).unwrap_or(CURRENT_STORAGE_VERSION)
+}
+fn save_storage_version(env: &Env, v: u32) {
+    env.storage().persistent().set(&DataKey::StorageVersion, &v);
+}
+fn require_current_storage_version(env: &Env) -> Result<(), StakingError> {
+    if load_storage_version(env) < CURRENT_STORAGE_VERSION { return Err(StakingError::MigrationPending); }
+    Ok(())
+}
 fn extend_persistent_ttl<K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>>(env: &Env, key: &K) {
     if env.storage().persistent().has(key) {
         env.storage().persistent().extend_ttl(
@@ -107,6 +120,7 @@ impl StakingContract {
 
         // #1009: Use persistent storage instead of instance storage.
         env.storage().persistent().set(&ADMIN_KEY, &admin);
+        save_storage_version(&env, CURRENT_STORAGE_VERSION);
         env.storage().persistent().set(&TOKEN_KEY, &token);
         env.storage().persistent().set(&TOTALS_KEY, &Totals {
             staked: 0,
@@ -139,6 +153,13 @@ impl StakingContract {
     pub fn version(_env: Env) -> u32 {
         CONTRACT_VERSION
     }
+    pub fn storage_version(env: Env) -> u32 { load_storage_version(&env) }
+    pub fn migrate(env: Env, caller: Address, _max_steps: u32) -> Result<u32, StakingError> {
+        caller.require_auth();
+        let admin: Address = env.storage().persistent().get(&ADMIN_KEY).ok_or(StakingError::NotInitialized)?;
+        if caller != admin { return Err(StakingError::Unauthorized); }
+        save_storage_version(&env, CURRENT_STORAGE_VERSION); Ok(CURRENT_STORAGE_VERSION)
+    }
 
     pub fn admin(env: Env) -> Address {
         extend_persistent_ttl(&env, &ADMIN_KEY);
@@ -157,6 +178,7 @@ impl StakingContract {
     }
 
     pub fn pause(env: Env) -> Result<(), StakingError> {
+        require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         env.storage().persistent().set(&PAUSED_KEY, &true);
         env.events().publish((symbol_short!("PAUSED"),), ());
@@ -164,6 +186,7 @@ impl StakingContract {
     }
 
     pub fn unpause(env: Env) -> Result<(), StakingError> {
+        require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         env.storage().persistent().set(&PAUSED_KEY, &false);
         env.events().publish((symbol_short!("UNPAUS"),), ());
@@ -176,6 +199,7 @@ impl StakingContract {
     }
 
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), StakingError> {
+        require_current_storage_version(&env)?;
         let admin = Self::require_admin(&env)?;
         extend_persistent_ttl(&env, &PENDING_ADMIN_KEY);
         env.storage()
@@ -187,6 +211,7 @@ impl StakingContract {
     }
 
     pub fn accept_admin(env: Env) -> Result<(), StakingError> {
+        require_current_storage_version(&env)?;
         extend_persistent_ttl(&env, &PENDING_ADMIN_KEY);
         let pending_admin: Address = env
             .storage()
@@ -264,6 +289,7 @@ impl StakingContract {
     /// - `StakingError::ZeroShares` if `amount` is too small relative to the
     ///   pool's current value to mint a single share.
     pub fn stake(env: Env, staker: Address, amount: i128) -> Result<i128, StakingError> {
+        require_current_storage_version(&env)?;
         staker.require_auth();
         Self::require_not_paused(&env)?;
         Self::require_initialized(&env)?;
@@ -338,6 +364,7 @@ impl StakingContract {
     ///
     /// #1011: Guards against division by zero when `total_shares` is 0.
     pub fn unstake(env: Env, staker: Address, shares: i128) -> Result<i128, StakingError> {
+        require_current_storage_version(&env)?;
         staker.require_auth();
         Self::require_not_paused(&env)?;
         Self::require_initialized(&env)?;
@@ -413,6 +440,7 @@ impl StakingContract {
     }
 
     pub fn distribute_rewards(env: Env, caller: Address, amount: i128) -> Result<(), StakingError> {
+        require_current_storage_version(&env)?;
         caller.require_auth();
         Self::require_not_paused(&env)?;
         Self::require_initialized(&env)?;
@@ -478,6 +506,7 @@ impl StakingContract {
     /// share accounting or token transfer logic can be fixed without
     /// redeploying and losing staker positions.
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), StakingError> {
+        require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         env.deployer()
             .update_current_contract_wasm(new_wasm_hash.clone());
@@ -530,6 +559,7 @@ impl StakingContract {
     /// the keeper determines what actually moved by re-reading
     /// `liveUntilLedgerSeq` over RPC after the transaction confirms.
     pub fn renew_storage(env: Env) -> Result<(), StakingError> {
+        require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         for key in Self::critical_global_keys(&env).iter() {
             if !env.storage().persistent().has(&key) {

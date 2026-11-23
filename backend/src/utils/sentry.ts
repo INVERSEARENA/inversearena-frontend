@@ -19,7 +19,7 @@ export const initSentry = () => {
                     env.JWT_SECRET,
                     env.ADMIN_API_KEY,
                 ].filter(Boolean) as string[];
-                return redactSecrets(event, { configuredSecrets });
+                return redactSecrets(event, { configuredSecrets }) as any;
             },
             environment: env.NODE_ENV || "development",
         });

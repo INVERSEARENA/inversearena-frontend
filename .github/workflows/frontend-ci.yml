@@ -5,13 +5,21 @@ on:
     branches: ["main"]
     paths:
       - "frontend/**"
+      - "packages/**"
       - "scripts/env-example*.ts"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "package.json"
       - ".github/workflows/frontend-ci.yml"
   pull_request:
     branches: ["main"]
     paths:
       - "frontend/**"
+      - "packages/**"
       - "scripts/env-example*.ts"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "package.json"
       - ".github/workflows/frontend-ci.yml"
 
 jobs:
@@ -32,11 +40,14 @@ jobs:
         with:
           node-version: "20.x"
           cache: "pnpm"
-          cache-dependency-path: frontend/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
 
       # --frozen-lockfile guards against lockfile drift between commits (#1642).
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Check Stellar SDK major alignment (#1840)
+        run: node scripts/check-sdk-alignment.mjs
 
       - name: Check .env.example matches the env schema (#1650)
         # tsx pinned to the version backend/ locks, so both checks render alike.
@@ -61,9 +72,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: frontend/.next/cache
-          key: ${{ runner.os }}-nextjs-${{ hashFiles('frontend/pnpm-lock.yaml') }}-${{ hashFiles('frontend/src/**') }}
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('frontend/src/**') }}
           restore-keys: |
-            ${{ runner.os }}-nextjs-${{ hashFiles('frontend/pnpm-lock.yaml') }}-
+            ${{ runner.os }}-nextjs-${{ hashFiles('pnpm-lock.yaml') }}-
             ${{ runner.os }}-nextjs-
 
       # Production build validates server/client boundaries and route config,

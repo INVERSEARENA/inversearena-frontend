@@ -34,6 +34,7 @@ import { getStellarConfig, type StellarConfig } from '../config/stellarConfig';
 import { Money } from '../types/money';
 import { contextLogger, maskWalletAddress } from '../utils/logger';
 import { computeEvidenceChecksum } from '../utils/evidenceChecksum';
+import { getConfiguredNetwork } from "../config/network";
 import {
   EVIDENCE_PACKAGE_SCHEMA_VERSION,
   type DisputeEvidencePackage,
@@ -144,7 +145,7 @@ export class DisputeEvidenceService {
     const log = contextLogger();
 
     try {
-      const arena = await this.prisma.arena.findUnique({ where: { id: arenaId } });
+      const arena = await this.prisma.arena.findFirst({ where: { id: arenaId, network: getConfiguredNetwork() },});
       if (!arena) {
         throw new EvidenceArenaNotFoundError(arenaId);
       }

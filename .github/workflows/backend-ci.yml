@@ -8,13 +8,21 @@ on:
     branches: ["main"]
     paths:
       - "backend/**"
+      - "packages/**"
       - "scripts/env-example*.ts"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "package.json"
       - ".github/workflows/backend-ci.yml"
   pull_request:
     branches: ["main"]
     paths:
       - "backend/**"
+      - "packages/**"
       - "scripts/env-example*.ts"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "package.json"
       - ".github/workflows/backend-ci.yml"
 
 jobs:
@@ -22,19 +30,21 @@ jobs:
   unit:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20.x"
-          cache: "npm"
-          cache-dependency-path: backend/package-lock.json
+          cache: "pnpm"
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install Dependencies
-        working-directory: ./backend
-        run: npm ci
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Verify redaction policy (#1531)
         run: node scripts/verify-redaction.mjs
@@ -42,22 +52,25 @@ jobs:
       - name: Lint env access (#1650)
         working-directory: ./backend
         run: |
-          npm run lint
+          pnpm run lint
           node --test scripts/check-env-access.test.mjs
+
+      - name: Check Stellar SDK major alignment (#1840)
+        run: node scripts/check-sdk-alignment.mjs
 
       - name: Check .env.example matches the env schema (#1650)
         working-directory: ./backend
         run: |
-          npx tsx --test ../scripts/env-example.test.ts
-          npx tsx ../scripts/env-example.ts backend --check
+          pnpm exec tsx --test ../scripts/env-example.test.ts
+          pnpm exec tsx ../scripts/env-example.ts backend --check
 
       - name: Unit tests (no services)
         working-directory: ./backend
-        run: npm run test:unit
+        run: pnpm run test:unit
 
       - name: node:test suites
         working-directory: ./backend
-        run: npm run test:node:validation && npm run test:node
+        run: pnpm run test:node:validation && pnpm run test:node
 
   # Integration tier (#1644): needs Postgres + Redis service containers.
   integration:
@@ -90,25 +103,27 @@ jobs:
           --health-retries 5
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20.x"
-          cache: "npm"
-          cache-dependency-path: backend/package-lock.json
+          cache: "pnpm"
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install Dependencies
-        working-directory: ./backend
-        run: npm ci
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Run Prisma Migrations
         working-directory: ./backend
         env:
           DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest
-        run: npx prisma migrate deploy
+        run: pnpm exec prisma migrate deploy
 
       - name: Integration tests
         working-directory: ./backend
@@ -119,4 +134,4 @@ jobs:
           ADMIN_API_KEY: test-admin-key
           PAYOUT_CONTRACT_ID: CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
           PAYOUT_SOURCE_ACCOUNT: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
-        run: npm run test:ci:integration
+        run: pnpm run test:ci:integration

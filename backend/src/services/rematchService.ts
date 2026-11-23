@@ -33,6 +33,7 @@ import {
 } from "./onChainReader";
 import { NotificationPreferencesService } from "./notificationPreferencesService";
 import { PushService } from "./pushService";
+import { getConfiguredNetwork } from "../config/network";
 
 /** Why a rematch cannot be created right now. */
 export type RematchBlockedReason =
@@ -195,8 +196,7 @@ export class RematchService {
     arenaId: string,
     userWallet?: string | null,
   ): Promise<RematchConfigResponse> {
-    const arena = await this.prisma.arena.findUnique({
-      where: { id: arenaId },
+    const arena = await this.prisma.arena.findFirst({ where: { id: arenaId, network: getConfiguredNetwork() },
       select: { id: true, metadata: true },
     });
     if (!arena) throw new RematchArenaNotFoundError(arenaId);

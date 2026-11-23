@@ -150,7 +150,7 @@ inversearena-frontend/
 ### Prerequisites
 
 - Node.js 20+
-- pnpm 9+ (`npm install -g pnpm`)
+- pnpm 10+ (workspace uses `pnpm@10.11.1`; `corepack enable` or `npm install -g pnpm@10.11.1`)
 - Docker (for the one-command local stack)
 - Stellar CLI (`cargo install --locked stellar-cli`) — only needed if you want
   to build/deploy the contracts yourself; `make dev` warns and skips without it

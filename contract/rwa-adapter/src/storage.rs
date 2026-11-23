@@ -7,6 +7,7 @@ const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
 
 #[soroban_sdk::contracttype]
 enum DataKey {
+    StorageVersion,
     Position(Address),
     YieldIndex,
     /// Principal a position has deposited and not yet withdrawn (#1633).
@@ -19,9 +20,18 @@ enum DataKey {
     _PrincipalTotal,
 }
 
+pub const CURRENT_STORAGE_VERSION: u32 = 1;
 pub struct RwaStorage;
 
 impl RwaStorage {
+    pub fn load_storage_version(env: &Env) -> u32 { env.storage().persistent().get(&DataKey::StorageVersion).unwrap_or(CURRENT_STORAGE_VERSION) }
+    pub fn save_storage_version(env: &Env, v: u32) { env.storage().persistent().set(&DataKey::StorageVersion, &v); }
+    pub fn require_current_storage_version(env: &Env) -> Result<(), RwaError> {
+        if Self::load_storage_version(env) < CURRENT_STORAGE_VERSION { return Err(RwaError::MigrationPending); }
+        Ok(())
+    }
+    pub fn migrate(env: &Env, _max_steps: u32) -> u32 { Self::save_storage_version(env, CURRENT_STORAGE_VERSION); CURRENT_STORAGE_VERSION }
+
     fn extend_ttl<K>(env: &Env, key: &K)
     where
         K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>,

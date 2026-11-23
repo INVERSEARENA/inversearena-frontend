@@ -13,6 +13,7 @@ import {
   creatorStateConflictsTotal,
 } from "../utils/metrics";
 import { encodeKeysetCursor, decodeCursorInput } from "../utils/keysetPagination";
+import { getConfiguredNetwork } from "../config/network";
 
 export type CreatorLifecycleState =
   | "waiting"
@@ -211,8 +212,7 @@ export class CreatorService {
     walletAddress: string,
     action: CreatorAction,
   ): Promise<{ valid: boolean; reason?: string; arena?: any }> {
-    const arena = await this.prisma.arena.findUnique({
-      where: { id: arenaId },
+    const arena = await this.prisma.arena.findFirst({ where: { id: arenaId, network: getConfiguredNetwork() },
       include: {
         pools: true,
         rounds: { orderBy: { roundNumber: "desc" }, take: 1 },

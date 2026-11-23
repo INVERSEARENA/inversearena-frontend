@@ -46,7 +46,7 @@ Titles come from the first H1, or from the filename when no H1 exists. Slugs are
 
 ## Generators
 
-`generate-openapi.mjs` creates a temporary ESM entry that imports `generateOpenApiDocument()` from `backend/src/openapi/registerPaths.ts` and runs it with `backend/node_modules/.bin/tsx`, falling back to `npx --no-install tsx`. No dependencies are installed by the portal. Backend dependencies must already be present (`npm ci` in `backend/`). The result is validated for OpenAPI 3.1, at least one path, and `components.securitySchemes.bearerAuth`. Use `--check` in CI to compare the generated document with the tracked artifact. If the artifact is missing, `--check` bootstraps it and asks for it to be committed.
+`generate-openapi.mjs` creates a temporary ESM entry that imports `generateOpenApiDocument()` from `backend/src/openapi/registerPaths.ts` and runs it with `backend/node_modules/.bin/tsx`, falling back to `npx --no-install tsx`. No dependencies are installed by the portal. Backend dependencies must already be present (`pnpm install --frozen-lockfile --filter inversearena-backend...` in `backend/`). The result is validated for OpenAPI 3.1, at least one path, and `components.securitySchemes.bearerAuth`. Use `--check` in CI to compare the generated document with the tracked artifact. If the artifact is missing, `--check` bootstraps it and asks for it to be committed.
 
 `generate-contract-docs.mjs` scans `.rs` files under `contract/*/src`, collecting `///` and `//!` doc comments directly preceding `pub fn`, `pub trait`, trait `fn`, and `impl` entries. The `cost-bench` crate is skipped. Pages are deterministic and sorted by crate, file, line, and name. Use `--check` to fail when tracked pages are missing, outdated, or unexpected.
 

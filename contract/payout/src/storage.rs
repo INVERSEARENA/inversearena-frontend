@@ -46,6 +46,8 @@ pub(crate) enum DataKey {
     /// #1632: total paid out on a given day (`timestamp / 86_400`). Temporary
     /// storage — a day's total is irrelevant once the day is over.
     Outflow(u64),
+    /// Storage layout version for explicit migrations.
+    StorageVersion,
 }
 
 // ~6 months in ledgers (assuming 5s per ledger)
@@ -116,9 +118,26 @@ impl TtlRepository<DataKey> for PayoutRepository<'_> {
     }
 }
 
+pub const CURRENT_STORAGE_VERSION: u32 = 1;
 pub struct PayoutStorage;
 
 impl PayoutStorage {
+    pub fn load_storage_version(env: &Env) -> u32 {
+        env.storage().persistent().get(&DataKey::StorageVersion).unwrap_or(CURRENT_STORAGE_VERSION)
+    }
+    pub fn save_storage_version(env: &Env, v: u32) {
+        env.storage().persistent().set(&DataKey::StorageVersion, &v);
+    }
+    pub fn require_current_storage_version(env: &Env) -> Result<(), PayoutError> {
+        if Self::load_storage_version(env) < CURRENT_STORAGE_VERSION { return Err(PayoutError::MigrationPending); }
+        Ok(())
+    }
+    pub fn migrate(env: &Env, _max_steps: u32) -> u32 {
+        let v = Self::load_storage_version(env);
+        if v < CURRENT_STORAGE_VERSION { Self::save_storage_version(env, CURRENT_STORAGE_VERSION); }
+        CURRENT_STORAGE_VERSION
+    }
+
     pub fn has_admin(env: &Env) -> bool {
         let repo = PayoutRepository::new(env);
         StorageRepository::<DataKey, Address>::has(&repo, &DataKey::Admin)

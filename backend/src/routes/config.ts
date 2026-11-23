@@ -37,7 +37,8 @@ async function getLedgerVersion(): Promise<{ version: number; timestamp: string 
 
   try {
     const stellarConfig = getStellarConfig();
-    const { Server } = await import("@stellar/stellar-sdk").then((m) => m.rpc);
+    const { rpc } = await import("@stellar/stellar-sdk");
+    const { Server } = rpc;
     const server = new Server(stellarConfig.sorobanRpcUrl, { allowHttp: false });
 
     const ledger = await server.getLatestLedger();

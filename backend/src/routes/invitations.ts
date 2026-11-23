@@ -6,6 +6,7 @@ import { apiError } from "../utils/apiError";
 import { InvitationService } from "../services/invitationService";
 import { randomUUID } from "crypto";
 import { STRING_LIMITS, boundedString } from "../validation/payloadLimits";
+import { getConfiguredNetwork } from "../config/network";
 
 export function createInvitationsRouter(authMiddleware: RequestHandler): Router {
   const router = Router();
@@ -32,8 +33,7 @@ export function createInvitationsRouter(authMiddleware: RequestHandler): Router 
       }
 
       // Verify arena exists and user is the creator
-      const arena = await prisma.arena.findUnique({
-        where: { id: arenaId },
+      const arena = await prisma.arena.findFirst({ where: { id: arenaId, network: getConfiguredNetwork() },
         select: { id: true, createdBy: true },
       });
 
@@ -134,8 +134,7 @@ export function createInvitationsRouter(authMiddleware: RequestHandler): Router 
       }
 
       // Verify arena exists and user is the creator
-      const arena = await prisma.arena.findUnique({
-        where: { id: arenaId },
+      const arena = await prisma.arena.findFirst({ where: { id: arenaId, network: getConfiguredNetwork() },
         select: { id: true, createdBy: true },
       });
 
@@ -181,8 +180,7 @@ export function createInvitationsRouter(authMiddleware: RequestHandler): Router 
       }
 
       // Verify arena exists and user is the creator
-      const arena = await prisma.arena.findUnique({
-        where: { id: arenaId },
+      const arena = await prisma.arena.findFirst({ where: { id: arenaId, network: getConfiguredNetwork() },
         select: { id: true, createdBy: true },
       });
 

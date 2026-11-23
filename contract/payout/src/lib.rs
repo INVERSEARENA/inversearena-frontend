@@ -87,6 +87,7 @@ impl PayoutContract {
         PayoutStorage::set_token(&env, &token);
         PayoutStorage::set_factory(&env, &factory);
         PayoutStorage::set_daily_cap(&env, daily_cap);
+        PayoutStorage::save_storage_version(&env, storage::CURRENT_STORAGE_VERSION);
         Ok(())
     }
 
@@ -95,11 +96,21 @@ impl PayoutContract {
         CONTRACT_VERSION
     }
 
+    pub fn storage_version(env: Env) -> u32 { PayoutStorage::load_storage_version(&env) }
+
+    pub fn migrate(env: Env, caller: Address, max_steps: u32) -> Result<u32, PayoutError> {
+        caller.require_auth();
+        let admin = PayoutStorage::get_admin(&env)?;
+        if caller != admin { return Err(PayoutError::Unauthorized); }
+        Ok(PayoutStorage::migrate(&env, max_steps))
+    }
+
     /// Upgrade this payout contract to `new_wasm_hash`.
     ///
     /// Only the configured admin may perform upgrades so payout history remains
     /// attached to the same contract instance.
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), PayoutError> {
+        PayoutStorage::require_current_storage_version(&env)?;
         let admin = PayoutStorage::get_admin(&env)?;
         admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
@@ -141,6 +152,7 @@ impl PayoutContract {
         winner: Address,
         amount: i128,
     ) -> Result<(), PayoutError> {
+        PayoutStorage::require_current_storage_version(&env)?;
         let admin = PayoutStorage::get_admin(&env)?;
         admin.require_auth();
 
@@ -177,6 +189,7 @@ impl PayoutContract {
         env: Env,
         payouts: Vec<(Address, Address, i128)>,
     ) -> Result<(), PayoutError> {
+        PayoutStorage::require_current_storage_version(&env)?;
         let admin = PayoutStorage::get_admin(&env)?;
         admin.require_auth();
 
@@ -249,6 +262,7 @@ impl PayoutContract {
     /// Emits `cap_set` with `cap` when applied immediately, or `cap_prop`
     /// with `(cap, eta)` when staged.
     pub fn propose_daily_cap(env: Env, cap: i128) -> Result<(), PayoutError> {
+        PayoutStorage::require_current_storage_version(&env)?;
         let admin = PayoutStorage::get_admin(&env)?;
         admin.require_auth();
         if cap <= 0 {
@@ -272,6 +286,7 @@ impl PayoutContract {
     /// - `PayoutError::NoPendingCap` if nothing is staged.
     /// - `PayoutError::CapTimelockPending` before the staged `eta`.
     pub fn apply_daily_cap(env: Env) -> Result<(), PayoutError> {
+        PayoutStorage::require_current_storage_version(&env)?;
         let admin = PayoutStorage::get_admin(&env)?;
         admin.require_auth();
         let pending = PayoutStorage::get_pending_cap(&env).ok_or(PayoutError::NoPendingCap)?;
@@ -319,6 +334,7 @@ impl PayoutContract {
     }
 
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), PayoutError> {
+        PayoutStorage::require_current_storage_version(&env)?;
         let admin = PayoutStorage::get_admin(&env)?;
         admin.require_auth();
         PayoutStorage::save_pending_admin(&env, &new_admin);
@@ -328,6 +344,7 @@ impl PayoutContract {
     }
 
     pub fn accept_admin(env: Env) -> Result<(), PayoutError> {
+        PayoutStorage::require_current_storage_version(&env)?;
         let pending_admin = PayoutStorage::load_pending_admin(&env)
             .ok_or(PayoutError::NoPendingAdmin)?;
         pending_admin.require_auth();

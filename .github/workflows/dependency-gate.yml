@@ -10,9 +10,14 @@ on:
     branches: ["main"]
     paths:
       - "frontend/package.json"
-      - "frontend/pnpm-lock.yaml"
       - "backend/package.json"
-      - "backend/package-lock.json"
+      - "packages/*/package.json"
+      - "tools/*/package.json"
+      - "scripts/package.json"
+      - "docs-portal/package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "package.json"
       - "contract/Cargo.toml"
       - "contract/Cargo.lock"
       - "contract/*/Cargo.toml"
@@ -58,6 +63,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20.x"
+          cache: "pnpm"
+          cache-dependency-path: pnpm-lock.yaml
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -86,8 +93,8 @@ jobs:
             rm -f "$out"
             echo "{\"event\":\"dependency_audit_report\",\"out\":\"$out\",\"ok\":false}"
           }
-          (cd backend && retry_report ../audit/backend.json npm audit --package-lock-only --json)
-          (cd frontend && retry_report ../audit/frontend.json pnpm audit --json)
+          (cd backend && retry_report ../audit/backend.json pnpm audit --dir .. --filter inversearena-backend --json)
+          (cd frontend && retry_report ../audit/frontend.json pnpm audit --dir .. --filter inversearena-frontend --json)
           (cd contract && retry_report ../audit/contract.json cargo audit --json)
 
       - name: Evaluate gate
