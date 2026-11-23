@@ -2,7 +2,14 @@
  * Soroban invoke operations and unsigned transaction assembly (#245).
  * Named “composer” here to avoid clashing with the SDK’s `TransactionBuilder` class.
  */
-import { Account, Contract, Transaction, TransactionBuilder, nativeToScVal } from "@stellar/stellar-sdk";
+import {
+  Account,
+  Contract,
+  Operation,
+  Transaction,
+  TransactionBuilder,
+  nativeToScVal,
+} from "@stellar/stellar-sdk";
 import {
   encodeAddress,
   encodeAmount,
@@ -13,8 +20,16 @@ import {
 import type { CreatePoolParamsValidated } from "@/shared/lib/stellar/stellar-transaction-schemas";
 import { stellarConfig } from "@/shared/config/stellarConfig";
 import type { ArenaCommandPlan } from "@/shared/lib/stellar/arena-command-plan";
+import { StellarPublicKeySchema } from "@/shared/lib/security-validation";
+import {
+  PathQuoteSchema,
+  sdkAssetFromDescriptor,
+  type PathQuote,
+} from "@/shared/lib/stellar/path-payment-quote";
 
 type SorobanOperation = ReturnType<Contract["call"]>;
+/** Anything `TransactionBuilder.addOperation` accepts (classic or Soroban). */
+export type ComposableOperation = Parameters<TransactionBuilder["addOperation"]>[0];
 
 // TODO(#1529): Bind prepared transactions to config revision and ledger bounds.
 // TODO(#1529): Reject stale preparations before wallet submission.
@@ -29,16 +44,62 @@ export function composeUnsignedTransaction(
     fee: string;
     networkPassphrase: string;
     timeout: number;
-    operation: SorobanOperation;
+    operation: ComposableOperation;
   },
 ): Transaction {
-  return new TransactionBuilder(account, {
+  return composeUnsignedTransactionWithOperations(account, {
+    ...options,
+    operations: [options.operation],
+  });
+}
+
+/**
+ * Multi-operation assembly (#1716). The signing policy decides which
+ * operation *sequences* are allowed; this helper only guarantees the caller's
+ * order is preserved on the wire.
+ */
+export function composeUnsignedTransactionWithOperations(
+  account: Account,
+  options: {
+    fee: string;
+    networkPassphrase: string;
+    timeout: number;
+    operations: readonly ComposableOperation[];
+  },
+): Transaction {
+  if (options.operations.length === 0) {
+    throw new Error("Cannot compose a transaction without operations");
+  }
+  let builder = new TransactionBuilder(account, {
     fee: options.fee,
     networkPassphrase: options.networkPassphrase,
-  })
-    .addOperation(options.operation)
-    .setTimeout(options.timeout)
-    .build();
+  }).setTimeout(options.timeout);
+  for (const operation of options.operations) {
+    builder = builder.addOperation(operation);
+  }
+  return builder.build();
+}
+
+/**
+ * Strict-receive path payment that delivers exactly `quote.destinationAmount`
+ * to the player's own account in the same transaction as `join_arena` (#1716).
+ * Crediting the signer first lets the contract's token transfer draw on the
+ * freshly received stake tokens without a second signature.
+ */
+export function buildPathPaymentStrictReceiveOperation(
+  destination: string,
+  quote: PathQuote,
+): ComposableOperation {
+  const parsed = PathQuoteSchema.parse(quote);
+  const validatedDestination = StellarPublicKeySchema.parse(destination);
+  return Operation.pathPaymentStrictReceive({
+    sendAsset: sdkAssetFromDescriptor(parsed.sourceAsset),
+    sendMax: parsed.sendMax,
+    destination: validatedDestination,
+    destAsset: sdkAssetFromDescriptor(parsed.destinationAsset),
+    destAmount: parsed.destinationAmount,
+    path: parsed.path.map(sdkAssetFromDescriptor),
+  });
 }
 
 export function roundSpeedToSeconds(
