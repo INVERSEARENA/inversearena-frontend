@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "database": "PostgreSQL 15",
+  "fixtures": [
+    {
+      "name": "arenas_keyset_traversal",
+      "table": "arenas",
+      "indexUsed": "arenas_created_at_id_idx",
+      "query": "SELECT * FROM \"arenas\" WHERE (\"created_at\" < $1 OR (\"created_at\" = $1 AND \"id\" < $2)) ORDER BY \"created_at\" DESC, \"id\" DESC LIMIT 26",
+      "plan": [
+        "Limit  (cost=0.28..12.45 rows=26 width=148)",
+        "  ->  Index Scan using arenas_created_at_id_idx on arenas  (cost=0.28..45.60 rows=98 width=148)",
+        "        Index Cond: ((created_at < '2026-10-16 12:00:00'::timestamp) OR ((created_at = '2026-10-16 12:00:00'::timestamp) AND (id < 'c1234'::text)))"
+      ]
+    },
+    {
+      "name": "rounds_keyset_traversal",
+      "table": "rounds",
+      "indexUsed": "rounds_arena_id_round_number_id_idx",
+      "query": "SELECT * FROM \"rounds\" WHERE \"arena_id\" = $1 AND (\"round_number\" > $2 OR (\"round_number\" = $2 AND \"id\" > $3)) ORDER BY \"round_number\" ASC, \"id\" ASC LIMIT 26",
+      "plan": [
+        "Limit  (cost=0.28..8.90 rows=26 width=236)",
+        "  ->  Index Scan using rounds_arena_id_round_number_id_idx on rounds  (cost=0.28..32.10 rows=85 width=236)",
+        "        Index Cond: ((arena_id = 'arena-uuid'::text) AND ((round_number > 2) OR ((round_number = 2) AND (id > 'r-002'::text))))"
+      ]
+    },
+    {
+      "name": "eliminations_keyset_traversal",
+      "table": "elimination_logs",
+      "indexUsed": "elimination_logs_round_id_eliminated_at_id_idx",
+      "query": "SELECT * FROM \"elimination_logs\" WHERE \"round_id\" = $1 AND (\"eliminated_at\" < $2 OR (\"eliminated_at\" = $2 AND \"id\" < $3)) ORDER BY \"eliminated_at\" DESC, \"id\" DESC LIMIT 26",
+      "plan": [
+        "Limit  (cost=0.28..10.50 rows=26 width=96)",
+        "  ->  Index Scan using elimination_logs_round_id_eliminated_at_id_idx on elimination_logs  (cost=0.28..38.20 rows=92 width=96)",
+        "        Index Cond: ((round_id = 'round-uuid'::text) AND ((eliminated_at < '2026-10-16 12:00:00'::timestamp) OR ((eliminated_at = '2026-10-16 12:00:00'::timestamp) AND (id < 'e-001'::text))))"
+      ]
+    }
+  ]
+}

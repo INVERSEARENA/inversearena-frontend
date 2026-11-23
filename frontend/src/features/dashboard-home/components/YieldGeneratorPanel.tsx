@@ -1,4 +1,4 @@
-import type { YieldData } from "../types";
+import type { YieldData } from "../model/types";
 
 interface YieldGeneratorPanelProps {
     data: YieldData;

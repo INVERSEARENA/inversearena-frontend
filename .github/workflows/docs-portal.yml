@@ -1,0 +1,78 @@
+name: Documentation Portal
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "*.md"
+      - "docs/**"
+      - "backend/docs/**"
+      - "frontend/docs/**"
+      - "contract/**"
+      - "backend/src/openapi/**"
+      - "docs-portal/**"
+      - ".github/workflows/docs-portal.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "*.md"
+      - "docs/**"
+      - "backend/docs/**"
+      - "frontend/docs/**"
+      - "contract/**"
+      - "backend/src/openapi/**"
+      - "docs-portal/**"
+      - ".github/workflows/docs-portal.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.20.2"
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Check OpenAPI artifact
+        run: node docs-portal/scripts/generate-openapi.mjs --check
+
+      - name: Check contract docs
+        run: node docs-portal/scripts/generate-contract-docs.mjs --check
+
+      - name: Check documentation links
+        run: node docs-portal/scripts/check-links.mjs
+
+      - name: Test documentation portal
+        run: node --test docs-portal/scripts/*.test.mjs
+
+      - name: Build documentation portal
+        run: node docs-portal/scripts/build.mjs
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs-portal/dist
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

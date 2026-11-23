@@ -1,0 +1,32 @@
+{
+  "name": "@inversearena/ops-cli",
+  "version": "0.1.0",
+  "description": "inverse-ops: operator CLI for inspecting and running Inverse Arena contract lifecycle operations",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "inverse-ops": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test test/encode.test.ts test/events.test.ts test/manifest.test.ts test/ops.test.ts test/safety.test.ts test/signer.test.ts test/smoke.test.ts",
+    "test:smoke": "npm run build && INVERSE_OPS_SMOKE=1 tsx --test test/smoke.test.ts"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^14.5.0",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "tsx": "4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

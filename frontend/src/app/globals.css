@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
+@keyframes ticker {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
 @theme {
   --color-neon-green: #37FF1C;
   --color-neon-pink: #FF0055;
@@ -28,14 +35,34 @@
 }
 
 :root {
+  --background: #FFFFFF;
+  --foreground: #09101D;
+  --grid-line: rgba(9, 16, 29, 0.03);
+  --card-bg: #F8F9FA;
+  --card-border: #E5E7EB;
+  --text-muted: #6B7280;
+  --navbar-bg: rgba(255, 255, 255, 0.95);
+  --sidebar-bg: #FFFFFF;
+  --sidebar-border: rgba(0, 0, 0, 0.1);
+}
+
+.dark {
   --background: #09101D;
   --foreground: #FFFFFF;
+  --grid-line: rgba(55, 255, 28, 0.06);
+  --card-bg: #0D1117;
+  --card-border: #1E232B;
+  --text-muted: #9CA3AF;
+  --navbar-bg: rgba(0, 0, 0, 0.95);
+  --sidebar-bg: #000000;
+  --sidebar-border: rgba(255, 255, 255, 0.1);
 }
 
 html {
   scroll-behavior: smooth;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 ::selection {
@@ -50,8 +77,8 @@ body {
 
   /* Grid with thin neon-green lines - slightly adjusted for better visibility */
   background-image:
-    linear-gradient(rgba(55, 255, 28, 0.06) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(55, 255, 28, 0.06) 1px, transparent 1px);
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
   background-size: 40px 40px;
   background-attachment: fixed;
 }
@@ -70,6 +97,36 @@ body {
   font-family: var(--font-pixel), monospace;
 }
 
+.pool-success-modal-scrollbar {
+  scrollbar-width: thin;
+  /* Firefox */
+  scrollbar-color: #00FF00 #131810;
+  /* thumb and track color */
+}
+
+.pool-success-modal-scrollbar::-webkit-scrollbar {
+  width: 4px;
+  /* Slim width */
+}
+
+.pool-success-modal-scrollbar::-webkit-scrollbar-track {
+  background: #131810;
+  /* Dark track to match background */
+}
+
+.pool-success-modal-scrollbar::-webkit-scrollbar-thumb {
+  background-color: #00FF00;
+  /* Green thumb */
+  border-radius: 0;
+  /* Sharp edges to match the design */
+  border: none;
+}
+
+.pool-success-modal-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: #00DD00;
+  /* Slightly lighter on hover */
+}
+
 /* ── Neubrutalist utilities (Waiting Room) ── */
 .neubrutalist-border {
   border: 3px solid #000000;
@@ -78,10 +135,12 @@ body {
 .neubrutalist-button {
   transition: transform 0.1s, box-shadow 0.1s;
 }
+
 .neubrutalist-button:hover {
   transform: translate(-2px, -2px);
   box-shadow: 4px 4px 0px #000000;
 }
+
 .neubrutalist-button:active {
   transform: translate(0px, 0px);
   box-shadow: 0px 0px 0px #000000;
@@ -96,10 +155,22 @@ body {
 .waiting-scrollbar::-webkit-scrollbar {
   width: 12px;
 }
+
 .waiting-scrollbar::-webkit-scrollbar-track {
   background: #000000;
 }
+
 .waiting-scrollbar::-webkit-scrollbar-thumb {
   background: #39FF14;
   border: 2px solid #000000;
+}
+
+/* ── Arena V2 ── */
+
+:root {
+  --arena-green: #00ff41;
+  --arena-pink: #ff3d6b;
+  --arena-bg: #0a0a0a;
+  --arena-border: #1a1a1a;
+  --arena-border-accent: #333;
 }

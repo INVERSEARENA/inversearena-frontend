@@ -1,0 +1,293 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { buildSubmitCommitmentTransaction, submitSignedTransaction } from "@/shared/lib/stellar/stellar-transactions";
+import { useAutoReveal } from "@/features/arena/hooks/useAutoReveal";
+import {
+  evaluateSigningRequest,
+  // Imported as a value, not a type: these call sites narrow policy
+  // rejections with `instanceof SigningPolicyError`, which a type-only import
+  // erases to `any` and silently turns into a dead branch.
+  SigningPolicyError,
+  type DecodedEnvelope,
+} from "@/shared/lib/security/policy";
+import type { WalletHook } from "@/features/wallet/hooks/useStellarWallet";
+
+type Choice = "Heads" | "Tails" | "Option3";
+
+interface ChoiceSubmissionProps {
+  arenaId: string;
+  roundNumber: number;
+  deadline: string;
+  revealDeadline?: string;
+  phase?: "commit" | "reveal" | "resolved";
+  arenaStatus: string;
+  optionCount?: 2 | 3;
+  wallet: Pick<
+    WalletHook,
+    "publicKey" | "isConnected" | "connectWallet" | "signTransaction" | "status"
+  >;
+}
+
+type SubmissionPhase = "idle" | "signing" | "submitting" | "submitted" | "error";
+
+function formatRemaining(seconds: number): string {
+  // Special case: no deadline set
+  if (seconds === Number.MAX_SAFE_INTEGER) return "No deadline";
+  if (seconds <= 0) return "00:00";
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+}
+
+function choiceStyles(choice: Choice, selected: Choice | null): string {
+  const active = selected === choice;
+  const base =
+    "flex min-h-32 flex-1 flex-col justify-between border-4 px-5 py-6 text-left transition duration-200";
+  if (choice === "Heads") {
+    return `${base} ${
+      active
+        ? "border-[#3CFF1A] bg-[#07140b] shadow-[0_0_0_1px_#3CFF1A,0_0_24px_rgba(60,255,26,0.18)]"
+        : "border-white/10 bg-[#08101a] hover:border-[#3CFF1A]/60 hover:bg-[#0b1724]"
+    }`;
+  }
+
+  if (choice === "Tails") return `${base} ${
+    active
+      ? "border-[#FF0A54] bg-[#16070d] shadow-[0_0_0_1px_#FF0A54,0_0_24px_rgba(255,10,84,0.18)]"
+      : "border-white/10 bg-[#08101a] hover:border-[#FF0A54]/60 hover:bg-[#0b1724]"
+  }`;
+  return `${base} ${active ? "border-cyan-300 bg-cyan-950 shadow-[0_0_0_1px_#67e8f9]" : "border-white/10 bg-[#08101a] hover:border-cyan-300/60 hover:bg-[#0b1724]"}`;
+}
+
+export function ChoiceSubmission({
+  arenaId,
+  roundNumber,
+  deadline,
+  revealDeadline = "",
+  phase: arenaPhase = "commit",
+  arenaStatus,
+  optionCount = 2,
+  wallet,
+}: ChoiceSubmissionProps) {
+  const { publicKey, isConnected, connectWallet, signTransaction, status: walletStatus } = wallet;
+  const [selectedChoice, setSelectedChoice] = useState<Choice | null>(null);
+  const [submissionPhase, setPhase] = useState<SubmissionPhase>("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [secondsRemaining, setSecondsRemaining] = useState(0);
+
+  // deadline === "" means no deadline (null from server); treat as always open
+  const deadlineMs = useMemo(() => (deadline ? Date.parse(deadline) : null), [deadline]);
+  const isDeadlineReached = deadlineMs !== null && secondsRemaining <= 0;
+  const isArenaOpen = arenaStatus.toUpperCase() === "OPEN";
+  const isLocked = submissionPhase === "signing" || submissionPhase === "submitting" || submissionPhase === "submitted";
+  const autoReveal = useAutoReveal({
+    arenaId,
+    roundNumber,
+    phase: arenaPhase,
+    revealDeadline: revealDeadline ? Date.parse(revealDeadline) : null,
+    publicKey,
+    signTransaction,
+    enabled: Boolean(revealDeadline),
+  });
+
+  useEffect(() => {
+    const tick = () => {
+      // No deadline means never reached
+      if (deadlineMs === null) {
+        setSecondsRemaining(Number.MAX_SAFE_INTEGER);
+        return;
+      }
+
+      if (Number.isNaN(deadlineMs)) {
+        setSecondsRemaining(0);
+        return;
+      }
+
+      const delta = Math.max(0, Math.floor((deadlineMs - Date.now()) / 1000));
+      setSecondsRemaining(delta);
+    };
+
+    tick();
+    const interval = window.setInterval(tick, 1000);
+    return () => window.clearInterval(interval);
+  }, [deadlineMs]);
+
+  const handleSubmit = async (choice: Choice) => {
+    if (!isArenaOpen || isDeadlineReached || isLocked) return;
+
+    setSelectedChoice(choice);
+    setPhase("signing");
+    setError(null);
+
+    try {
+      const address = publicKey ?? (await connectWallet());
+      if (!address) {
+        throw new Error("Connect a wallet before submitting your choice.");
+      }
+
+      const unsignedTx = await buildSubmitCommitmentTransaction(
+        address,
+        arenaId,
+        choice,
+        roundNumber,
+      );
+
+      // Validate XDR against the signing policy before prompting the wallet.
+      // This distinct error is catchable so the UI can show a policy-rejection
+      // message rather than a wallet-rejection one.
+      let decoded: DecodedEnvelope;
+      try {
+        decoded = evaluateSigningRequest(unsignedTx.toXDR(), "COMMIT");
+      } catch (error) {
+        if (error instanceof SigningPolicyError) {
+          setError(error.message);
+          setPhase("error");
+          return;
+        }
+        throw error; // unexpected error
+      }
+
+      // Render confirmation UI details from the decoded envelope (not the raw XDR).
+      setError(null);
+
+      const signedTxXdr = await signTransaction(unsignedTx.toXDR());
+      await submitSignedTransaction(signedTxXdr);
+      setPhase("submitted");
+    } catch (submissionError) {
+      setPhase("error");
+      setError(
+        submissionError instanceof Error
+          ? submissionError.message
+          : "Failed to submit choice",
+      );
+    }
+  };
+
+  const canInteract = isArenaOpen && !isDeadlineReached && !isLocked;
+
+  return (
+    <section className="rounded-[28px] border border-white/10 bg-[#07111d] p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:p-5 shadow-[0_24px_80px_rgba(0,0,0,0.35)] sm:p-6">
+      <div className="flex flex-col gap-3 border-b border-white/10 pb-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/45">
+            Choice Submission
+          </p>
+          <h2 className="mt-1 text-2xl font-black uppercase tracking-tight text-white sm:text-3xl">
+            Round {roundNumber}
+          </h2>
+        </div>
+
+        <div className="rounded-full border border-white/10 bg-black/30 px-4 py-2 text-right">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/45">
+            Submission deadline
+          </p>
+          <p className="font-mono text-xl font-semibold tabular-nums text-white">
+            {formatRemaining(secondsRemaining)}
+          </p>
+        </div>
+      </div>
+
+      <div className={`mt-5 grid grid-cols-1 gap-4 ${optionCount === 3 ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
+        <button
+          type="button"
+          onClick={() => void handleSubmit("Heads")}
+          disabled={!canInteract}
+          aria-label="Submit Heads choice"
+          className={choiceStyles("Heads", selectedChoice)}
+        >
+          <span className="text-[11px] font-semibold uppercase tracking-[0.28em] text-white/40">
+            Heads
+          </span>
+          <span className="text-4xl font-black uppercase tracking-tight text-white sm:text-5xl">
+            HEADS
+          </span>
+          <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#3CFF1A]">
+            Higher risk, lower crowd
+          </span>
+        </button>
+        {optionCount === 3 && (
+          <button type="button" onClick={() => void handleSubmit("Option3")} disabled={!canInteract}
+            aria-label="Submit Option 3 choice" className={choiceStyles("Option3", selectedChoice)}>
+            <span className="text-[11px] font-semibold uppercase tracking-[0.28em] text-white/40">Option 3</span>
+            <span className="text-4xl font-black uppercase tracking-tight text-white sm:text-5xl">OPTION 3</span>
+            <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-cyan-300">A third path to the minority</span>
+          </button>
+        )}
+
+        <button
+          type="button"
+          onClick={() => void handleSubmit("Tails")}
+          disabled={!canInteract}
+          aria-label="Submit Tails choice"
+          className={choiceStyles("Tails", selectedChoice)}
+        >
+          <span className="text-[11px] font-semibold uppercase tracking-[0.28em] text-white/40">
+            Tails
+          </span>
+          <span className="text-4xl font-black uppercase tracking-tight text-white sm:text-5xl">
+            TAILS
+          </span>
+          <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#FF0A54]">
+            Safer path, tighter crowd
+          </span>
+        </button>
+      </div>
+
+      <div className="mt-4 flex flex-col gap-3 border-t border-white/10 pt-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="space-y-1">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-white/45">
+            Wallet status
+          </p>
+          <p className="text-sm text-white/80">
+            {isConnected && publicKey
+              ? `${publicKey.slice(0, 8)}...${publicKey.slice(-4)}`
+              : walletStatus === "connecting"
+                ? "Connecting wallet..."
+                : "Wallet not connected"}
+          </p>
+        </div>
+
+        <div className="text-right">
+          {autoReveal.phase === "confirmed" ? (
+            <p className="text-sm font-semibold text-[#3CFF1A]">Reveal confirmed</p>
+          ) : autoReveal.phase === "signing" ? (
+            <p className="text-sm font-semibold text-white/80">Reveal awaiting wallet signature</p>
+          ) : autoReveal.phase === "submitted" ? (
+            <p className="text-sm font-semibold text-white/80">Reveal submitted, confirming...</p>
+          ) : autoReveal.phase === "failed" ? (
+            <p role="alert" className="text-sm font-semibold text-[#FF0A54]">{autoReveal.error}</p>
+          ) : arenaPhase === "reveal" ? (
+            <p className="text-sm font-semibold text-white/80">Reveal window open</p>
+          ) : submissionPhase === "submitted" ? (
+            <p className="text-sm font-semibold text-[#3CFF1A]">
+              Choice submitted: {selectedChoice}
+            </p>
+          ) : submissionPhase === "error" ? (
+            <div className="space-y-1">
+              <p className="text-sm font-semibold text-[#FF0A54]">{error}</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setError(null);
+                  setPhase("idle");
+                }}
+                className="text-[11px] font-semibold uppercase tracking-[0.22em] text-white/60 underline underline-offset-4"
+              >
+                Retry
+              </button>
+            </div>
+          ) : (
+            <p className="text-sm text-white/55">
+              {isDeadlineReached
+                ? "Submission window closed"
+                : isArenaOpen
+                  ? "Choose a side to lock in your round"
+                  : "Arena is not open"}
+            </p>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}

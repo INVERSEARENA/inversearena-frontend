@@ -3,51 +3,305 @@ import cors from "cors";
 import helmet from "helmet";
 import { createApiRouter } from "./routes";
 import { createAdminRouter } from "./routes/admin";
+import { createTreasuryRouter } from "./routes/treasury";
+import { refreshTreasuryMetrics } from "./services/treasury/treasuryMetrics";
+import { createWalletRoleRouter } from "./routes/walletRole";
+import { createMaintenanceStatusRouter } from "./routes/maintenance";
+import { createStatusRouter } from "./routes/status";
+import { StatusAggregatorService } from "./services/statusAggregatorService";
+import { createApiKeyRouter } from "./routes/apiKeys";
+import { ApiKeyService } from "./services/apiKeyService";
+import { createDataExportRouter } from "./routes/dataExport";
+import { DataExportService } from "./services/dataExportService";
 import { errorHandler } from "./middleware/errorHandler";
-import { ApiKeyAuthProvider, requireAdmin, requireAuth } from "./middleware/auth";
+import { requestLogger } from "./middleware/logger";
+import { requestContextMiddleware } from "./middleware/requestContext";
+import { metricsMiddleware } from "./middleware/metrics";
+import { queryBudgetMiddleware } from "./middleware/queryBudgetMiddleware";
+import { maintenanceGuard } from "./middleware/maintenance";
+import { privateNoStore } from "./middleware/cachePolicy";
+import {
+  ApiKeyAuthProvider,
+  requireAdmin,
+  requireAuth,
+} from "./middleware/auth";
+import { MaintenanceService } from "./services/maintenanceService";
 import { PayoutsController } from "./controllers/payouts.controller";
 import { WorkerController } from "./controllers/worker.controller";
 import { AdminController } from "./controllers/admin.controller";
 import { AuthController } from "./controllers/auth.controller";
+import { UsersController } from "./controllers/users.controller";
+import { LeaderboardController } from "./controllers/leaderboard.controller";
+import { TransactionsController } from "./controllers/transactions.controller";
+import { TransactionIntentsController } from "./controllers/transactionIntents.controller";
+import { RoundController } from "./controllers/round.controller";
+import { WebhookSubscriptionController } from "./controllers/webhookSubscription.controller";
+import {
+  refreshArenaMetrics,
+  refreshQueueMetrics,
+  register,
+} from "./utils/metrics";
+import { redis } from "./cache/redisClient";
+import { createLoadTestBypassMiddleware } from "./middleware/loadTestBypass";
+import type { QueueSnapshotSource } from "./queues/txQueue";
 import type { PaymentService } from "./services/paymentService";
 import type { PaymentWorker } from "./workers/paymentWorker";
+import type { ArenaBackfillWorker } from "./workers/arenaBackfillWorker";
+import type { RetentionWorker } from "./workers/retentionWorker";
 import type { TransactionRepository } from "./repositories/transactionRepository";
+import type { TransactionIntentService } from "./services/transactionIntentService";
 import type { AdminService } from "./services/adminService";
 import type { AuthService } from "./services/authService";
+import type { RoundService } from "./services/roundService";
+import type { RoundProofBundleService } from "./services/roundProofBundleService";
+import { LandingStatsService } from "./services/landingStatsService";
+import { RevalidationService } from "./services/revalidationService";
+import { WebhookService } from "./services/webhooks/webhookService";
+import { prisma } from "./db/prisma";
+import { env } from "./config/env";
 
 export interface AppDependencies {
   paymentService: PaymentService;
   paymentWorker: PaymentWorker;
+  arenaBackfillWorker: ArenaBackfillWorker;
+  retentionWorker: RetentionWorker;
   transactions: TransactionRepository;
   adminService: AdminService;
   authService: AuthService;
+  roundService: RoundService;
+  queueSnapshotSource?: QueueSnapshotSource;
+  queueCapacity?: number;
+  roundProofBundleService: RoundProofBundleService;
+  transactionIntentService: TransactionIntentService;
+  landingStatsService?: LandingStatsService;
+  revalidationService?: RevalidationService;
 }
 
 export function createApp(deps: AppDependencies): express.Application {
   const app = express();
 
-  app.use(helmet());
-  app.use(cors());
+  // Configure Helmet with security headers
+  app.use(
+    helmet({
+      // HSTS: Force HTTPS for 1 year, including subdomains
+      hsts: {
+        maxAge: 31536000, // 1 year in seconds
+        includeSubDomains: true,
+        preload: true,
+      },
+      // Referrer Policy: Balance privacy and analytics
+      referrerPolicy: {
+        policy: "strict-origin-when-cross-origin",
+      },
+      // Cross-Origin Opener Policy: Improve isolation
+      crossOriginOpenerPolicy: {
+        policy: "same-origin",
+      },
+      // Cross-Origin Resource Policy: Allow frontend to load from API
+      crossOriginResourcePolicy: {
+        policy: "cross-origin",
+      },
+      // Content Security Policy: Disabled (handled by Next.js frontend)
+      contentSecurityPolicy: false,
+      // Permitted Cross-Domain Policies: Disable Adobe Flash/PDF policies
+      permittedCrossDomainPolicies: {
+        permittedPolicies: "none",
+      },
+    }),
+  );
+  const allowedOrigins = (env.ALLOWED_ORIGINS || "").split(",").filter(Boolean);
+  app.use(
+    cors({
+      origin: allowedOrigins.length > 0 ? allowedOrigins : undefined,
+      credentials: true,
+    }),
+  );
+  // Oracle webhook (#1127): enforce a strict body size cap before the default
+  // JSON parser buffers the payload. Mounted ahead of the global parser so
+  // oversized webhook bodies are rejected with 413 at the network layer
+  // instead of being accumulated in memory.
+  // `verify` stashes the exact bytes express-body-parser read off the wire
+  // onto req.rawBody, before JSON.parse touches them — verifyWebhookSignature
+  // HMACs that instead of JSON.stringify(req.body), since re-serializing an
+  // already-parsed object is not guaranteed to reproduce the sender's exact
+  // byte sequence (number formatting, key order, whitespace).
+  app.use(
+    "/api/oracle",
+    express.json({
+      limit: "4kb",
+      verify: (req, _res, buf) => {
+        (req as express.Request).rawBody = Buffer.from(buf);
+      },
+    }),
+  );
+  // On-chain configuration-change webhook (#1626): same raw-body capture as
+  // the oracle webhook so its HMAC is verified over the exact wire bytes.
+  app.use(
+    "/api/webhooks",
+    express.json({
+      limit: "16kb",
+      verify: (req, _res, buf) => {
+        (req as express.Request).rawBody = Buffer.from(buf);
+      },
+    }),
+  );
   app.use(express.json());
+  app.use(requestLogger);
+  app.use(requestContextMiddleware);
+  app.use(metricsMiddleware);
+  app.use(queryBudgetMiddleware);
+  // Load-test rate-limit bypass: no-op unless LOAD_TEST_BYPASS_KEY is set.
+  app.use(createLoadTestBypassMiddleware());
+
+  // #1626: default response policy. Every response is non-cacheable in a
+  // shared or private cache unless a route explicitly opts in with
+  // `publicCache(...)`. This is what keeps personalized/authenticated reads
+  // out of a CDN that may be configured to ignore cookies. Applied before the
+  // routers so it runs first; a public handler overwrites the header.
+  app.use(privateNoStore());
+
+  const maintenanceService = new MaintenanceService();
+  app.use(maintenanceGuard(maintenanceService));
 
   app.get("/health", (_req, res) => {
     res.json({ status: "ok" });
   });
 
-  const payoutsController = new PayoutsController(deps.paymentService, deps.transactions);
-  const workerController = new WorkerController(deps.paymentWorker);
+  app.get("/ready", async (_req, res) => {
+    try {
+      const [dbResult, redisResult] = await Promise.all([
+        prisma.$queryRaw`SELECT 1`,
+        redis.ping(),
+      ]);
+
+      const breakerStats = deps.paymentService.getSorobanBreakerStats();
+
+      res.status(200).json({
+        status: "ready",
+        database: dbResult,
+        redis: redisResult,
+        sorobanCircuitBreaker: breakerStats,
+      });
+    } catch (error) {
+      res.status(503).json({
+        status: "not_ready",
+        error:
+          error instanceof Error ? error.message : "Readiness check failed",
+      });
+    }
+  });
+
+  app.get("/metrics", async (_req, res) => {
+    const refreshes: Promise<unknown>[] = [
+      refreshArenaMetrics(prisma),
+      refreshTreasuryMetrics(prisma),
+    ];
+    if (deps.queueSnapshotSource) {
+      const queueOptions =
+        deps.queueCapacity === undefined
+          ? {}
+          : { capacity: deps.queueCapacity };
+      refreshes.push(
+        refreshQueueMetrics(deps.queueSnapshotSource, queueOptions),
+      );
+    }
+    await Promise.allSettled(refreshes);
+    res.set("Content-Type", register.contentType);
+    res.send(await register.metrics());
+  });
+
+  const payoutsController = new PayoutsController(
+    deps.paymentService,
+    deps.transactions,
+  );
+  const workerController = new WorkerController(
+    deps.paymentWorker,
+    deps.arenaBackfillWorker,
+    deps.retentionWorker,
+  );
   const adminController = new AdminController(
     deps.adminService,
     deps.paymentService,
-    deps.transactions
+    deps.transactions,
+    maintenanceService,
   );
   const authController = new AuthController(deps.authService);
+  const usersController = new UsersController(prisma);
+  const leaderboardController = new LeaderboardController(prisma);
+  const transactionsController = new TransactionsController(deps.transactions);
+  const transactionIntentsController = new TransactionIntentsController(
+    deps.transactionIntentService,
+  );
+  const roundController = new RoundController(deps.roundService);
+  const webhookService = new WebhookService(prisma);
+  const webhookController = new WebhookSubscriptionController(webhookService);
 
   const adminAuthMiddleware = requireAdmin(new ApiKeyAuthProvider());
   const userAuthMiddleware = requireAuth(deps.authService);
 
-  app.use("/api", createApiRouter(payoutsController, workerController, authController, userAuthMiddleware));
-  app.use("/api/admin", createAdminRouter(adminController, adminAuthMiddleware));
+  const landingStatsService =
+    deps.landingStatsService ?? new LandingStatsService(prisma);
+  const revalidationService =
+    deps.revalidationService ??
+    new RevalidationService({
+      frontendOrigin:
+        env.FRONTEND_ORIGIN ??
+        env.PUBLIC_WEB_ORIGIN ??
+        "https://app.inversearena.com",
+      secret: env.REVALIDATION_WEBHOOK_SECRET,
+    });
+
+  app.use(
+    "/api",
+    createApiRouter(
+      payoutsController,
+      workerController,
+      authController,
+      usersController,
+      leaderboardController,
+      transactionsController,
+      transactionIntentsController,
+      adminAuthMiddleware,
+      userAuthMiddleware,
+      deps.authService,
+      deps.roundProofBundleService,
+      deps.transactions,
+      landingStatsService,
+      revalidationService,
+      prisma,
+    ),
+  );
+  app.use("/api/admin", createWalletRoleRouter());
+  app.use(
+    "/api/admin",
+    createAdminRouter(
+      adminController,
+      roundController,
+      webhookController,
+      adminAuthMiddleware,
+    ),
+  );
+  app.use("/api/admin", createTreasuryRouter(adminAuthMiddleware, prisma));
+  app.use("/api", createMaintenanceStatusRouter(maintenanceService));
+
+  // #1738: Public status page backed by health checks and maintenance windows
+  const statusAggregator = new StatusAggregatorService({
+    prisma,
+    maintenanceService,
+    paymentService: deps.paymentService,
+  });
+  app.use("/api", createStatusRouter(statusAggregator));
+
+  // #1737: Scoped API key management (self-service, JWT-authenticated)
+  const apiKeyService = new ApiKeyService();
+  app.use("/api/users", createApiKeyRouter(apiKeyService, userAuthMiddleware));
+
+  // #1739: Data export and right-to-erasure
+  const dataExportService = new DataExportService(prisma);
+  app.use(
+    "/api/users",
+    createDataExportRouter(dataExportService, userAuthMiddleware),
+  );
 
   app.use(errorHandler);
 

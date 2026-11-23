@@ -1,11 +1,26 @@
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
 import { asyncHandler } from "../middleware/validate";
+import { auditLogMiddleware } from "../middleware/auditLog";
 import type { WorkerController } from "../controllers/worker.controller";
 
-export function createWorkerRouter(controller: WorkerController): Router {
+export function createWorkerRouter(
+  controller: WorkerController,
+  adminAuthMiddleware: RequestHandler,
+): Router {
   const router = Router();
 
-  router.post("/run", asyncHandler(controller.runBatch));
+  router.use(auditLogMiddleware());
+  router.post("/run", adminAuthMiddleware, asyncHandler(controller.runBatch));
+  router.post(
+    "/arena-backfill/run",
+    adminAuthMiddleware,
+    asyncHandler(controller.runArenaBackfill),
+  );
+  router.post(
+    "/retention/run",
+    adminAuthMiddleware,
+    asyncHandler(controller.runRetention),
+  );
 
   return router;
 }

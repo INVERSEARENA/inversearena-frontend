@@ -1,27 +1,187 @@
 # Backend Payout Execution
 
-This folder contains the Soroban payout execution layer for winner distributions.
+This folder contains the Soroban payout execution layer for winner distributions and the round state machine for game logic.
 
-## Feature flags and env
+---
+
+## Features
+
+### 🎮 Round State Machine
+
+Deterministic, auditable round resolution with:
+
+- State transitions: `OPEN` → `CLOSED` → `RESOLVED` → `SETTLED`
+- Transactional integrity with automatic rollback
+- Prometheus metrics for monitoring
+- Admin-only resolution endpoint
+
+See [QUICKSTART_ROUNDS.md](./QUICKSTART_ROUNDS.md) for usage.
+
+### 💰 Payout Execution
+
+Soroban-based winner distribution system.
+
+### 📊 Metrics & Monitoring
+
+Prometheus-compatible metrics at `/metrics`:
+
+- HTTP request rates and latencies
+- Worker queue backlog, oldest age, throughput, retries, saturation, and latency
+- Transaction confirmation rates
+- Round resolution metrics
+
+See [docs/METRICS.md](./docs/METRICS.md) for details.
+
+### Edge Caching & Revalidation
+
+Public read endpoints (landing stats, protocol config, arena list/stats) carry a
+shared-cache `Cache-Control` with `stale-while-revalidate` so a CDN can serve
+anonymous traffic without reaching the origin. Personalized/authenticated
+responses are `no-store` by default, and an on-chain configuration change fires
+a signed webhook that revalidates the frontend's ISR caches.
+
+See [docs/EDGE_CACHE_POLICY.md](./docs/EDGE_CACHE_POLICY.md) for the per-endpoint
+policy table, the revalidation flow, and load-test evidence
+(`npm run bench:edge-cache`).
+
+---
+
+## Quick Start
+
+### Setup
+
+```bash
+npm install
+npm run migrate:dev
+npm run dev
+```
+
+### Run Tests
+
+```bash
+npx tsx tests/round.integration.test.ts
+npx tsx tests/payment.integration.test.ts
+npx tsx tests/metrics.test.ts
+```
+
+### View Metrics
+
+```bash
+curl http://localhost:3001/metrics
+```
+
+### Start Monitoring
+
+```bash
+docker-compose -f docker-compose.monitoring.yml up -d
+```
+
+- **Prometheus**: http://localhost:9090
+- **Grafana**: http://localhost:3000 (admin/admin)
+
+---
+
+## Environment Configuration
+
+For a full reference of every environment variable (including defaults and required/optional status), see **[docs/ENVIRONMENT.md](../docs/ENVIRONMENT.md)**.
 
 Set these values in deployment secrets (never commit private keys):
 
-- `PAYOUTS_LIVE_EXECUTION` (`true`/`false`): submit transactions to Soroban when `true`.
-- `PAYOUTS_SIGN_WITH_HOT_KEY` (`true`/`false`): enable hot-key signing in service.
-- `PAYOUT_HOT_SIGNER_SECRET`: optional hot signer secret (only for controlled environments).
-- `PAYOUTS_MAX_GAS_STROOPS`: max accepted prepared transaction fee.
-- `PAYOUTS_MAX_ATTEMPTS`: max worker submit retries before marking failed.
-- `PAYOUTS_CONFIRM_POLL_MS`: confirmation polling interval.
-- `PAYOUTS_CONFIRM_MAX_POLLS`: max confirmation polls.
-- `PAYOUT_CONTRACT_ID`: Soroban payout contract.
-- `PAYOUT_METHOD_NAME`: contract method (default `distribute_winnings`).
-- `PAYOUT_SOURCE_ACCOUNT`: payout source account.
-- `STELLAR_NETWORK_PASSPHRASE`: network passphrase.
-- `SOROBAN_RPC_URL`: Soroban RPC endpoint.
+### Round System
 
-## Key management approach
+- `DATABASE_URL`: PostgreSQL connection string for Prisma
 
-- Preferred production mode: `PAYOUTS_SIGN_WITH_HOT_KEY=false`.
-- Build unsigned XDR server-side, then sign in an external KMS/HSM signer.
-- Return signed XDR to `queueSignedTransaction` for worker submission.
-- If hot signing is enabled, keep `PAYOUT_HOT_SIGNER_SECRET` in secret manager only.
+### Payout System
+
+- `PAYOUTS_LIVE_EXECUTION` (`true`/`false`): Submit transactions to Soroban when `true`
+- `PAYOUTS_SIGN_WITH_HOT_KEY` (`true`/`false`): Enable hot-key signing in service
+- `PAYOUT_HOT_SIGNER_SECRET`: Optional hot signer secret (only for controlled environments)
+- `PAYOUTS_MAX_GAS_STROOPS`: Max accepted prepared transaction fee
+- `PAYOUTS_MAX_ATTEMPTS`: Max worker submit retries before marking failed
+- `PAYOUTS_CONFIRM_POLL_MS`: Confirmation polling interval
+- `PAYOUTS_CONFIRM_MAX_POLLS`: Max confirmation polls
+- `TX_WORKER_CONCURRENCY`: Confirmation worker concurrency and autoscaling capacity signal (default `1`)
+- `PAYOUT_CONTRACT_ID`: Soroban payout contract
+- `PAYOUT_METHOD_NAME`: Contract method (default `distribute_winnings`)
+- `PAYOUT_SOURCE_ACCOUNT`: Payout source account
+- `STELLAR_NETWORK_PASSPHRASE`: Network passphrase
+- `SOROBAN_RPC_URL`: Soroban RPC endpoint
+
+---
+
+## Key Management Approach
+
+- **Preferred production mode**: `PAYOUTS_SIGN_WITH_HOT_KEY=false`
+- Build unsigned XDR server-side, then sign in an external KMS/HSM signer
+- Return signed XDR to `queueSignedTransaction` for worker submission
+- If hot signing is enabled, keep `PAYOUT_HOT_SIGNER_SECRET` in secret manager only
+
+---
+
+## API Documentation
+
+- **OpenAPI spec**: `GET /api/docs.json` (OpenAPI 3.1, generated from Zod schemas)
+- **Swagger UI**: `GET /api/docs`
+
+## Rate Limiting
+
+Redis-backed limits (`rate-limiter-flexible`) apply to:
+
+- `POST /api/auth/nonce`
+- `POST /api/auth/verify` (IP + wallet dual scope)
+- `POST /api/auth/refresh`
+- `POST /api/pools`
+- `GET /api/arenas/:id/stream` requires authentication and caps active streams
+  per IP and per arena. Configure the process-local caps with
+  `SSE_MAX_CONNECTIONS_PER_IP` and `SSE_MAX_CONNECTIONS_PER_ARENA`.
+
+Violations return HTTP `429` with a `Retry-After` header. Configure via `RATE_LIMIT_*` env vars (see `.env.example`).
+
+## API Endpoints
+
+### Arena Participants
+
+**GET /api/arenas/:id/participants**
+
+Returns a paginated list of participants in a specific arena with their status (active/eliminated).
+
+**Query Parameters:**
+- `limit` (optional): Number of items per page (1-100, default: 25)
+- `cursor` (optional): Opaque pagination cursor from previous response
+
+**Response:**
+```json
+{
+  "items": [
+    {
+      "walletAddress": "GABC...",
+      "status": "active",
+      "joinedAt": "2026-05-29T10:30:00.000Z"
+    }
+  ],
+  "cursor": "eyJvZmZzZXQiOjI1fQ",
+  "hasMore": true
+}
+```
+
+**Status Codes:**
+- `200`: Success
+- `404`: Arena not found
+
+**Cache:** 5 seconds
+
+---
+
+## Documentation
+
+- **[Metrics & Monitoring](./docs/METRICS.md)** - Prometheus metrics guide
+- **[Round State Machine](./docs/ROUND_STATE_MACHINE.md)** - Architecture details
+- **[Payout Execution](./docs/PAYOUT_EXECUTION.md)** - Payment system guide
+- **[Quick Start Guide](./docs/QUICKSTART_ROUNDS.md)** - Getting started
+- **[Implementation Summary](./docs/IMPLEMENTATION_SUMMARY.md)** - Feature overview
+- **[Arena Stats API](./docs/ARENA_STATS_API.md)** - `GET /api/arenas/:id/stats` response schema, including degraded mode
+- **[Degraded-Mode Arena Reads](./docs/DEGRADED_ARENA_READS.md)** - #1408 design note
+- **[Admin Maintenance Windows](./docs/MAINTENANCE_WINDOWS.md)** - #1399 design note
+- **[Authenticated Device Sessions](./docs/DEVICE_SESSIONS.md)** - #1410 design note
+- **[Settlement Manifest & Receipts](./docs/SETTLEMENT_RECEIPTS.md)** - #1407 design note
+- **[Partitioning & Retention Runbook](./docs/PARTITION_RETENTION_RUNBOOK.md)** - #1622 monthly partitioning of `elimination_logs`/`transactions`, retention worker, archive restore

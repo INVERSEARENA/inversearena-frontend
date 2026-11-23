@@ -1,0 +1,5011 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "InverseArena API",
+    "version": "0.1.0",
+    "description": "REST API for wallet auth, arenas, pools, leaderboard, payouts, and admin round resolution."
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Wallet JWT access token from POST /api/auth/verify"
+      },
+      "adminApiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Admin-Api-Key",
+        "description": "Admin API key for privileged routes"
+      },
+      "apiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Api-Key",
+        "description": "Scoped API key for third-party read access (#1737)"
+      }
+    },
+    "schemas": {},
+    "parameters": {}
+  },
+  "paths": {
+    "/api/auth/nonce": {
+      "post": {
+        "summary": "Request a sign-in nonce",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "walletAddress": {
+                    "type": "string",
+                    "pattern": "^G[A-Z2-7]{55}$",
+                    "example": "GCKFBEIYZNPXL3XGD2UAZATF4ZEMCOKINAXKIOX6YRCKRBFA6LVKODML"
+                  }
+                },
+                "required": [
+                  "walletAddress"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Nonce issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "nonce": {
+                      "type": "string",
+                      "example": "Sign this message to authenticate: abc123"
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "example": "2026-05-31T12:00:00.000Z"
+                    }
+                  },
+                  "required": [
+                    "nonce",
+                    "expiresAt"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/verify": {
+      "post": {
+        "summary": "Verify wallet signature and issue tokens",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "walletAddress": {
+                    "type": "string",
+                    "pattern": "^G[A-Z2-7]{55}$",
+                    "example": "GCKFBEIYZNPXL3XGD2UAZATF4ZEMCOKINAXKIOX6YRCKRBFA6LVKODML"
+                  },
+                  "signature": {
+                    "type": "string",
+                    "minLength": 1,
+                    "example": "base64-ed25519-signature"
+                  },
+                  "signedChallengeXdr": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "walletAddress"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "accessToken": {
+                      "type": "string",
+                      "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                    },
+                    "refreshToken": {
+                      "type": "string",
+                      "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                    }
+                  },
+                  "required": [
+                    "accessToken",
+                    "refreshToken"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid signature or expired nonce",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/refresh": {
+      "post": {
+        "summary": "Refresh access token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "refreshToken": {
+                    "type": "string",
+                    "minLength": 1,
+                    "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  }
+                },
+                "required": [
+                  "refreshToken"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "New token pair",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "accessToken": {
+                      "type": "string",
+                      "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                    },
+                    "refreshToken": {
+                      "type": "string",
+                      "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                    }
+                  },
+                  "required": [
+                    "accessToken",
+                    "refreshToken"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or revoked refresh token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "summary": "Current authenticated user",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User profile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "walletAddress": {
+                      "type": "string"
+                    },
+                    "displayName": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "joinedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "lastLoginAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "walletAddress",
+                    "displayName",
+                    "joinedAt",
+                    "lastLoginAt"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/arenas/{id}/stats": {
+      "get": {
+        "summary": "Arena aggregate stats",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "example": "550e8400-e29b-41d4-a716-446655440000"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Arena stats",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "arenaId": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "totalPools": {
+                      "type": "integer"
+                    },
+                    "totalStake": {
+                      "type": "number"
+                    },
+                    "participantCount": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "arenaId",
+                    "totalPools",
+                    "totalStake",
+                    "participantCount"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/arenas/{id}/participants": {
+      "get": {
+        "summary": "Paginated arena participants",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "example": "550e8400-e29b-41d4-a716-446655440000"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Participant page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "walletAddress": {
+                            "type": "string"
+                          },
+                          "stakeAmount": {
+                            "type": "number"
+                          },
+                          "joinedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "walletAddress",
+                          "stakeAmount",
+                          "joinedAt"
+                        ]
+                      }
+                    },
+                    "cursor": {
+                      "type": "integer"
+                    },
+                    "hasMore": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "cursor",
+                    "hasMore"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/arenas/{id}/yield": {
+      "get": {
+        "summary": "Per-round yield time-series for an arena",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "example": "550e8400-e29b-41d4-a716-446655440000"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 100
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ordered yield snapshots (round, timestamp, rate, accrued, cumulative); amounts are decimal strings in the arena stake asset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "arenaId": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "asset": {
+                      "type": "string"
+                    },
+                    "assetDecimals": {
+                      "type": "integer"
+                    },
+                    "points": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "round": {
+                            "type": "integer"
+                          },
+                          "timestamp": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "rateBps": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "accrued": {
+                            "type": "string"
+                          },
+                          "cumulative": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "round",
+                          "timestamp",
+                          "rateBps",
+                          "accrued",
+                          "cumulative"
+                        ]
+                      }
+                    },
+                    "nextCursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "hasMore": {
+                      "type": "boolean"
+                    },
+                    "finished": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "arenaId",
+                    "asset",
+                    "assetDecimals",
+                    "points",
+                    "nextCursor",
+                    "hasMore",
+                    "finished"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Arena not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/leaderboard": {
+      "get": {
+        "summary": "Global leaderboard",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Leaderboard page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "players": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "rank": {
+                            "type": "integer"
+                          },
+                          "walletAddress": {
+                            "type": "string"
+                          },
+                          "survivalStreak": {
+                            "type": "number"
+                          },
+                          "totalYield": {
+                            "type": "number"
+                          },
+                          "arenasWon": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "rank",
+                          "walletAddress",
+                          "survivalStreak",
+                          "totalYield",
+                          "arenasWon"
+                        ]
+                      }
+                    },
+                    "nextCursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "players",
+                    "nextCursor"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/payouts": {
+      "post": {
+        "summary": "Create a payout transaction (admin)",
+        "security": [
+          {
+            "adminApiKey": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "payoutId": {
+                    "type": "string",
+                    "example": "payout-round-42-winner"
+                  },
+                  "destinationAccount": {
+                    "type": "string",
+                    "example": "GCKFBEIYZNPXL3XGD2UAZATF4ZEMCOKINAXKIOX6YRCKRBFA6LVKODML"
+                  },
+                  "amount": {
+                    "type": "string",
+                    "example": "10.5"
+                  },
+                  "asset": {
+                    "type": "string",
+                    "enum": [
+                      "XLM",
+                      "USDC"
+                    ],
+                    "example": "XLM"
+                  },
+                  "idempotencyKey": {
+                    "type": "string",
+                    "example": "idem:payout:round-42:001"
+                  }
+                },
+                "required": [
+                  "payoutId",
+                  "destinationAccount",
+                  "amount",
+                  "asset",
+                  "idempotencyKey"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Payout created or queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "payoutId": {
+                      "type": "string"
+                    },
+                    "unsignedXdr": {
+                      "type": "string"
+                    },
+                    "signedXdr": {
+                      "type": "string"
+                    },
+                    "txHash": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "status"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — admin API key required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/payouts/{id}": {
+      "get": {
+        "summary": "Get payout transaction by id",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Transaction record",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "payoutId": {
+                      "type": "string"
+                    },
+                    "unsignedXdr": {
+                      "type": "string"
+                    },
+                    "signedXdr": {
+                      "type": "string"
+                    },
+                    "txHash": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "status"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/transactions/{id}": {
+      "get": {
+        "summary": "Get transaction by id",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Transaction record",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "payoutId": {
+                      "type": "string"
+                    },
+                    "unsignedXdr": {
+                      "type": "string"
+                    },
+                    "signedXdr": {
+                      "type": "string"
+                    },
+                    "txHash": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "status"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/rounds/resolve": {
+      "post": {
+        "summary": "Resolve a round (admin)",
+        "security": [
+          {
+            "adminApiKey": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "roundId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "playerChoices": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "userId": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "choice": {
+                          "type": "string",
+                          "enum": [
+                            "heads",
+                            "tails",
+                            "option3"
+                          ]
+                        },
+                        "stake": {
+                          "type": "object",
+                          "properties": {
+                            "atomicAmount": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^\\d+$"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0
+                                }
+                              ]
+                            },
+                            "assetCode": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "assetIssuer": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "atomicAmount",
+                            "assetCode"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "userId",
+                        "choice",
+                        "stake"
+                      ]
+                    },
+                    "minItems": 1,
+                    "maxItems": 500
+                  },
+                  "allActivePlayerIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "minItems": 1,
+                    "maxItems": 500
+                  },
+                  "oracleYield": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "randomSeed": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "arenaContractId": {
+                    "type": "string",
+                    "pattern": "^C[A-Z2-7]{55}$"
+                  }
+                },
+                "required": [
+                  "roundId",
+                  "playerChoices",
+                  "allActivePlayerIds",
+                  "oracleYield",
+                  "arenaContractId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Round resolved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "roundId": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "resolution": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    }
+                  },
+                  "required": [
+                    "roundId",
+                    "state"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/payouts/{id}/sign": {
+      "post": {
+        "summary": "Queue a signed payout XDR (admin)",
+        "security": [
+          {
+            "adminApiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "signedXdr": {
+                    "type": "string",
+                    "minLength": 20,
+                    "maxLength": 200000
+                  }
+                },
+                "required": [
+                  "signedXdr"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Signed transaction queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "payoutId": {
+                      "type": "string"
+                    },
+                    "unsignedXdr": {
+                      "type": "string"
+                    },
+                    "signedXdr": {
+                      "type": "string"
+                    },
+                    "txHash": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "status"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — admin API key required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Transaction not found or not owned by requester",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/oracle/yield": {
+      "post": {
+        "summary": "Update current yield data (webhook)",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "protocol": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "currentAPY": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "baseRate": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "surgeMultiplier": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 10
+                  },
+                  "asset": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 16
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Yield data updated"
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/me/claim-inbox": {
+      "get": {
+        "summary": "Wallet-scoped claim and refund inbox",
+        "description": "One item per arena, aggregating payout records, cancellation recovery and on-chain arena state. Ownership comes from the bearer token; there is no wallet parameter. A failed on-chain read yields state `unavailable`, never an empty result and never a zeroed amount.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Inbox page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "version": {
+                      "type": "number",
+                      "enum": [
+                        1
+                      ]
+                    },
+                    "walletAddress": {
+                      "type": "string"
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "arenaId": {
+                            "type": "string"
+                          },
+                          "arenaName": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "winnings",
+                              "refund",
+                              "mixed"
+                            ]
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "actionable",
+                              "pending",
+                              "completed",
+                              "blocked",
+                              "unavailable"
+                            ]
+                          },
+                          "reason": {
+                            "type": "string",
+                            "enum": [
+                              "claim_ready",
+                              "refund_ready",
+                              "payout_submitted",
+                              "refund_submitted",
+                              "payout_confirmed",
+                              "refund_confirmed",
+                              "payout_failed",
+                              "zero_survivor_cancellation",
+                              "arena_not_finished",
+                              "rpc_unavailable",
+                              "ledger_lag",
+                              "account_not_found",
+                              "issuer_unconfigured",
+                              "not_owned",
+                              "unknown"
+                            ]
+                          },
+                          "message": {
+                            "type": "string"
+                          },
+                          "components": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "winnings",
+                                    "refund"
+                                  ]
+                                },
+                                "asset": {
+                                  "type": "object",
+                                  "properties": {
+                                    "code": {
+                                      "type": "string"
+                                    },
+                                    "issuer": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "decimals": {
+                                      "type": "number",
+                                      "enum": [
+                                        7
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "code",
+                                    "issuer",
+                                    "decimals"
+                                  ]
+                                },
+                                "amountStroops": {
+                                  "type": "string",
+                                  "pattern": "^\\d+$"
+                                },
+                                "payoutId": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "status": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ],
+                                  "enum": [
+                                    "built",
+                                    "queued",
+                                    "awaiting_signature",
+                                    "submitted",
+                                    "confirmed",
+                                    "failed",
+                                    "dead",
+                                    "unknown"
+                                  ]
+                                },
+                                "txHash": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "confirmedAt": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "attempts": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "refundDestination": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "asset",
+                                "amountStroops",
+                                "payoutId",
+                                "status",
+                                "txHash",
+                                "confirmedAt",
+                                "attempts",
+                                "refundDestination"
+                              ]
+                            }
+                          },
+                          "totalsByAsset": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "code": {
+                                  "type": "string"
+                                },
+                                "issuer": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "amountStroops": {
+                                  "type": "string",
+                                  "pattern": "^\\d+$"
+                                }
+                              },
+                              "required": [
+                                "code",
+                                "issuer",
+                                "amountStroops"
+                              ]
+                            }
+                          },
+                          "freshness": {
+                            "type": "object",
+                            "properties": {
+                              "recordUpdatedAt": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "recordAgeSeconds": {
+                                "type": [
+                                  "integer",
+                                  "null"
+                                ]
+                              },
+                              "stale": {
+                                "type": "boolean"
+                              },
+                              "ledgerSequence": {
+                                "type": [
+                                  "integer",
+                                  "null"
+                                ]
+                              },
+                              "verifiedAt": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "recordUpdatedAt",
+                              "recordAgeSeconds",
+                              "stale",
+                              "ledgerSequence",
+                              "verifiedAt"
+                            ]
+                          },
+                          "action": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "claim",
+                                  "refund",
+                                  "retry",
+                                  "view_history"
+                                ]
+                              },
+                              "label": {
+                                "type": "string"
+                              },
+                              "endpoint": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "label",
+                              "endpoint"
+                            ]
+                          },
+                          "sortKey": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "arenaId",
+                          "arenaName",
+                          "kind",
+                          "state",
+                          "reason",
+                          "message",
+                          "components",
+                          "totalsByAsset",
+                          "freshness",
+                          "action",
+                          "sortKey"
+                        ]
+                      }
+                    },
+                    "summary": {
+                      "type": "object",
+                      "properties": {
+                        "actionable": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "pending": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "completed": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "blocked": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "unavailable": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "total": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "actionable",
+                        "pending",
+                        "completed",
+                        "blocked",
+                        "unavailable",
+                        "total"
+                      ]
+                    },
+                    "cursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "hasMore": {
+                      "type": "boolean"
+                    },
+                    "verificationComplete": {
+                      "type": "boolean"
+                    },
+                    "scanLatencyMs": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "sources": {
+                      "type": "object",
+                      "properties": {
+                        "payouts": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "cancellationRecovery": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "payouts",
+                        "cancellationRecovery"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "version",
+                    "walletAddress",
+                    "items",
+                    "summary",
+                    "cursor",
+                    "hasMore",
+                    "verificationComplete",
+                    "scanLatencyMs",
+                    "sources"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/creator/templates": {
+      "get": {
+        "summary": "List the authenticated creator's arena configuration templates",
+        "description": "Every template carries its field-level remediation: what is stale against the current protocol bounds, registry lifecycle and deployment capabilities.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "includeArchived",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The creator's templates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "schemaVersion": {
+                            "type": "integer"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "active",
+                              "archived"
+                            ]
+                          },
+                          "payload": {
+                            "type": "object",
+                            "properties": {
+                              "stakeAmountMinor": {
+                                "type": "string"
+                              },
+                              "assetDecimals": {
+                                "type": "integer"
+                              },
+                              "asset": {
+                                "type": "string"
+                              },
+                              "capacity": {
+                                "type": "integer"
+                              },
+                              "roundSpeed": {
+                                "type": "string"
+                              },
+                              "roundDurationSeconds": {
+                                "type": "integer"
+                              },
+                              "startDeadlineSeconds": {
+                                "type": "integer"
+                              },
+                              "yieldVault": {
+                                "type": "string"
+                              },
+                              "oracle": {
+                                "type": "string"
+                              },
+                              "metadata": {
+                                "type": "object",
+                                "additionalProperties": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "required": [
+                              "stakeAmountMinor",
+                              "assetDecimals",
+                              "asset",
+                              "capacity",
+                              "roundSpeed",
+                              "roundDurationSeconds"
+                            ]
+                          },
+                          "revision": {
+                            "type": "integer"
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "updatedAt": {
+                            "type": "string"
+                          },
+                          "remediation": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "field": {
+                                  "type": "string"
+                                },
+                                "code": {
+                                  "type": "string"
+                                },
+                                "message": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "field",
+                                "code",
+                                "message"
+                              ]
+                            }
+                          },
+                          "incompatible": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "schemaVersion",
+                          "status",
+                          "payload",
+                          "revision",
+                          "createdAt",
+                          "updatedAt",
+                          "remediation",
+                          "incompatible"
+                        ]
+                      }
+                    },
+                    "totalCount": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "totalCount"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Template not found (also returned for another wallet's template)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Save an arena configuration template",
+        "description": "The payload is canonical: the stake amount is in the asset's minor units and the asset and integrations are contract ids. It is validated against the current protocol rules before it is stored; a payload that does not satisfy them is refused with field-level remediation.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "stakeAmountMinor": {
+                        "type": "string"
+                      },
+                      "assetDecimals": {
+                        "type": "integer"
+                      },
+                      "asset": {
+                        "type": "string"
+                      },
+                      "capacity": {
+                        "type": "integer"
+                      },
+                      "roundSpeed": {
+                        "type": "string"
+                      },
+                      "roundDurationSeconds": {
+                        "type": "integer"
+                      },
+                      "startDeadlineSeconds": {
+                        "type": "integer"
+                      },
+                      "yieldVault": {
+                        "type": "string"
+                      },
+                      "oracle": {
+                        "type": "string"
+                      },
+                      "metadata": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": [
+                      "stakeAmountMinor",
+                      "assetDecimals",
+                      "asset",
+                      "capacity",
+                      "roundSpeed",
+                      "roundDurationSeconds"
+                    ]
+                  },
+                  "schemaVersion": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "name",
+                  "payload"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The saved template",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "schemaVersion": {
+                      "type": "integer"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "archived"
+                      ]
+                    },
+                    "payload": {
+                      "type": "object",
+                      "properties": {
+                        "stakeAmountMinor": {
+                          "type": "string"
+                        },
+                        "assetDecimals": {
+                          "type": "integer"
+                        },
+                        "asset": {
+                          "type": "string"
+                        },
+                        "capacity": {
+                          "type": "integer"
+                        },
+                        "roundSpeed": {
+                          "type": "string"
+                        },
+                        "roundDurationSeconds": {
+                          "type": "integer"
+                        },
+                        "startDeadlineSeconds": {
+                          "type": "integer"
+                        },
+                        "yieldVault": {
+                          "type": "string"
+                        },
+                        "oracle": {
+                          "type": "string"
+                        },
+                        "metadata": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "stakeAmountMinor",
+                        "assetDecimals",
+                        "asset",
+                        "capacity",
+                        "roundSpeed",
+                        "roundDurationSeconds"
+                      ]
+                    },
+                    "revision": {
+                      "type": "integer"
+                    },
+                    "createdAt": {
+                      "type": "string"
+                    },
+                    "updatedAt": {
+                      "type": "string"
+                    },
+                    "remediation": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "field": {
+                            "type": "string"
+                          },
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "field",
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "incompatible": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "schemaVersion",
+                    "status",
+                    "payload",
+                    "revision",
+                    "createdAt",
+                    "updatedAt",
+                    "remediation",
+                    "incompatible"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Template not found (also returned for another wallet's template)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A template with this name already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The template does not satisfy the current protocol rules",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/creator/templates/{id}": {
+      "get": {
+        "summary": "Read one of the creator's templates",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The template",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "schemaVersion": {
+                      "type": "integer"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "archived"
+                      ]
+                    },
+                    "payload": {
+                      "type": "object",
+                      "properties": {
+                        "stakeAmountMinor": {
+                          "type": "string"
+                        },
+                        "assetDecimals": {
+                          "type": "integer"
+                        },
+                        "asset": {
+                          "type": "string"
+                        },
+                        "capacity": {
+                          "type": "integer"
+                        },
+                        "roundSpeed": {
+                          "type": "string"
+                        },
+                        "roundDurationSeconds": {
+                          "type": "integer"
+                        },
+                        "startDeadlineSeconds": {
+                          "type": "integer"
+                        },
+                        "yieldVault": {
+                          "type": "string"
+                        },
+                        "oracle": {
+                          "type": "string"
+                        },
+                        "metadata": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "stakeAmountMinor",
+                        "assetDecimals",
+                        "asset",
+                        "capacity",
+                        "roundSpeed",
+                        "roundDurationSeconds"
+                      ]
+                    },
+                    "revision": {
+                      "type": "integer"
+                    },
+                    "createdAt": {
+                      "type": "string"
+                    },
+                    "updatedAt": {
+                      "type": "string"
+                    },
+                    "remediation": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "field": {
+                            "type": "string"
+                          },
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "field",
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "incompatible": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "schemaVersion",
+                    "status",
+                    "payload",
+                    "revision",
+                    "createdAt",
+                    "updatedAt",
+                    "remediation",
+                    "incompatible"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Template not found (also returned for another wallet's template)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Update one of the creator's templates",
+        "description": "`expectedRevision` must match the stored revision, so a concurrent edit is refused instead of overwritten.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "stakeAmountMinor": {
+                        "type": "string"
+                      },
+                      "assetDecimals": {
+                        "type": "integer"
+                      },
+                      "asset": {
+                        "type": "string"
+                      },
+                      "capacity": {
+                        "type": "integer"
+                      },
+                      "roundSpeed": {
+                        "type": "string"
+                      },
+                      "roundDurationSeconds": {
+                        "type": "integer"
+                      },
+                      "startDeadlineSeconds": {
+                        "type": "integer"
+                      },
+                      "yieldVault": {
+                        "type": "string"
+                      },
+                      "oracle": {
+                        "type": "string"
+                      },
+                      "metadata": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": [
+                      "stakeAmountMinor",
+                      "assetDecimals",
+                      "asset",
+                      "capacity",
+                      "roundSpeed",
+                      "roundDurationSeconds"
+                    ]
+                  },
+                  "expectedRevision": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0
+                  }
+                },
+                "required": [
+                  "expectedRevision"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated template",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "schemaVersion": {
+                      "type": "integer"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "archived"
+                      ]
+                    },
+                    "payload": {
+                      "type": "object",
+                      "properties": {
+                        "stakeAmountMinor": {
+                          "type": "string"
+                        },
+                        "assetDecimals": {
+                          "type": "integer"
+                        },
+                        "asset": {
+                          "type": "string"
+                        },
+                        "capacity": {
+                          "type": "integer"
+                        },
+                        "roundSpeed": {
+                          "type": "string"
+                        },
+                        "roundDurationSeconds": {
+                          "type": "integer"
+                        },
+                        "startDeadlineSeconds": {
+                          "type": "integer"
+                        },
+                        "yieldVault": {
+                          "type": "string"
+                        },
+                        "oracle": {
+                          "type": "string"
+                        },
+                        "metadata": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "stakeAmountMinor",
+                        "assetDecimals",
+                        "asset",
+                        "capacity",
+                        "roundSpeed",
+                        "roundDurationSeconds"
+                      ]
+                    },
+                    "revision": {
+                      "type": "integer"
+                    },
+                    "createdAt": {
+                      "type": "string"
+                    },
+                    "updatedAt": {
+                      "type": "string"
+                    },
+                    "remediation": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "field": {
+                            "type": "string"
+                          },
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "field",
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "incompatible": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "schemaVersion",
+                    "status",
+                    "payload",
+                    "revision",
+                    "createdAt",
+                    "updatedAt",
+                    "remediation",
+                    "incompatible"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Template not found (also returned for another wallet's template)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Revision conflict, or the name is taken",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete one of the creator's templates",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "Missing or invalid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Template not found (also returned for another wallet's template)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/creator/templates/{id}/clone": {
+      "post": {
+        "summary": "Clone one of the creator's templates",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The clone",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "schemaVersion": {
+                      "type": "integer"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "archived"
+                      ]
+                    },
+                    "payload": {
+                      "type": "object",
+                      "properties": {
+                        "stakeAmountMinor": {
+                          "type": "string"
+                        },
+                        "assetDecimals": {
+                          "type": "integer"
+                        },
+                        "asset": {
+                          "type": "string"
+                        },
+                        "capacity": {
+                          "type": "integer"
+                        },
+                        "roundSpeed": {
+                          "type": "string"
+                        },
+                        "roundDurationSeconds": {
+                          "type": "integer"
+                        },
+                        "startDeadlineSeconds": {
+                          "type": "integer"
+                        },
+                        "yieldVault": {
+                          "type": "string"
+                        },
+                        "oracle": {
+                          "type": "string"
+                        },
+                        "metadata": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "stakeAmountMinor",
+                        "assetDecimals",
+                        "asset",
+                        "capacity",
+                        "roundSpeed",
+                        "roundDurationSeconds"
+                      ]
+                    },
+                    "revision": {
+                      "type": "integer"
+                    },
+                    "createdAt": {
+                      "type": "string"
+                    },
+                    "updatedAt": {
+                      "type": "string"
+                    },
+                    "remediation": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "field": {
+                            "type": "string"
+                          },
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "field",
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "incompatible": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "schemaVersion",
+                    "status",
+                    "payload",
+                    "revision",
+                    "createdAt",
+                    "updatedAt",
+                    "remediation",
+                    "incompatible"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Template not found (also returned for another wallet's template)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A template with this name already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/creator/templates/{id}/archive": {
+      "post": {
+        "summary": "Archive or restore one of the creator's templates",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "archived": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "archived"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The template",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "schemaVersion": {
+                      "type": "integer"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "archived"
+                      ]
+                    },
+                    "payload": {
+                      "type": "object",
+                      "properties": {
+                        "stakeAmountMinor": {
+                          "type": "string"
+                        },
+                        "assetDecimals": {
+                          "type": "integer"
+                        },
+                        "asset": {
+                          "type": "string"
+                        },
+                        "capacity": {
+                          "type": "integer"
+                        },
+                        "roundSpeed": {
+                          "type": "string"
+                        },
+                        "roundDurationSeconds": {
+                          "type": "integer"
+                        },
+                        "startDeadlineSeconds": {
+                          "type": "integer"
+                        },
+                        "yieldVault": {
+                          "type": "string"
+                        },
+                        "oracle": {
+                          "type": "string"
+                        },
+                        "metadata": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "stakeAmountMinor",
+                        "assetDecimals",
+                        "asset",
+                        "capacity",
+                        "roundSpeed",
+                        "roundDurationSeconds"
+                      ]
+                    },
+                    "revision": {
+                      "type": "integer"
+                    },
+                    "createdAt": {
+                      "type": "string"
+                    },
+                    "updatedAt": {
+                      "type": "string"
+                    },
+                    "remediation": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "field": {
+                            "type": "string"
+                          },
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "field",
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "incompatible": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "schemaVersion",
+                    "status",
+                    "payload",
+                    "revision",
+                    "createdAt",
+                    "updatedAt",
+                    "remediation",
+                    "incompatible"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Template not found (also returned for another wallet's template)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/creator/templates/{id}/use": {
+      "post": {
+        "summary": "Prepare a template for the creation form",
+        "description": "Returns the payload to prefill the creation form, revalidated against the current rules. Applying it never bypasses the transaction preview or the balance and trustline checks.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The template and its remediation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "schemaVersion": {
+                      "type": "integer"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "archived"
+                      ]
+                    },
+                    "payload": {
+                      "type": "object",
+                      "properties": {
+                        "stakeAmountMinor": {
+                          "type": "string"
+                        },
+                        "assetDecimals": {
+                          "type": "integer"
+                        },
+                        "asset": {
+                          "type": "string"
+                        },
+                        "capacity": {
+                          "type": "integer"
+                        },
+                        "roundSpeed": {
+                          "type": "string"
+                        },
+                        "roundDurationSeconds": {
+                          "type": "integer"
+                        },
+                        "startDeadlineSeconds": {
+                          "type": "integer"
+                        },
+                        "yieldVault": {
+                          "type": "string"
+                        },
+                        "oracle": {
+                          "type": "string"
+                        },
+                        "metadata": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "stakeAmountMinor",
+                        "assetDecimals",
+                        "asset",
+                        "capacity",
+                        "roundSpeed",
+                        "roundDurationSeconds"
+                      ]
+                    },
+                    "revision": {
+                      "type": "integer"
+                    },
+                    "createdAt": {
+                      "type": "string"
+                    },
+                    "updatedAt": {
+                      "type": "string"
+                    },
+                    "remediation": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "field": {
+                            "type": "string"
+                          },
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "field",
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "incompatible": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "schemaVersion",
+                    "status",
+                    "payload",
+                    "revision",
+                    "createdAt",
+                    "updatedAt",
+                    "remediation",
+                    "incompatible"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Template not found (also returned for another wallet's template)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The template's schema version is not supported",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/status": {
+      "get": {
+        "summary": "Public system status page (#1738)",
+        "description": "Aggregates health signals from all subsystems (API, database, Redis, stream, keeper, RPC, oracle, maintenance) into a single public-facing response suitable for rendering a status page. Edge-cacheable.",
+        "responses": {
+          "200": {
+            "description": "System status summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "overallStatus": {
+                      "type": "string",
+                      "enum": [
+                        "operational",
+                        "degraded",
+                        "partial_outage",
+                        "major_outage",
+                        "maintenance"
+                      ]
+                    },
+                    "evaluatedAt": {
+                      "type": "string"
+                    },
+                    "components": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "component": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "operational",
+                              "degraded",
+                              "partial_outage",
+                              "major_outage",
+                              "maintenance"
+                            ]
+                          },
+                          "lastUpdated": {
+                            "type": "string"
+                          },
+                          "detail": {
+                            "type": "string"
+                          },
+                          "flapping": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "component",
+                          "label",
+                          "status",
+                          "lastUpdated"
+                        ]
+                      }
+                    },
+                    "activeMaintenance": {
+                      "type": "object",
+                      "properties": {
+                        "active": {
+                          "type": "boolean"
+                        },
+                        "reason": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "window": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "startLedgerSequence": {
+                              "type": "number"
+                            },
+                            "endLedgerSequence": {
+                              "type": [
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "reason": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "startLedgerSequence",
+                            "endLedgerSequence",
+                            "reason"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "active",
+                        "reason",
+                        "window"
+                      ]
+                    },
+                    "incidents": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "component": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          },
+                          "startedAt": {
+                            "type": "string"
+                          },
+                          "resolvedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "component",
+                          "status",
+                          "message",
+                          "startedAt",
+                          "resolvedAt"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "overallStatus",
+                    "evaluatedAt",
+                    "components",
+                    "activeMaintenance",
+                    "incidents"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/me/api-keys": {
+      "post": {
+        "summary": "Create a scoped API key (#1737)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "ownerLabel": {
+                    "type": "string"
+                  },
+                  "scopes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "quotaRequests": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100000
+                  },
+                  "quotaWindowSeconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 86400
+                  },
+                  "expiresAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "API key created (raw key shown only once)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "apiKey": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "keyPrefix": {
+                          "type": "string"
+                        },
+                        "owner": {
+                          "type": "string"
+                        },
+                        "ownerLabel": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "scopes": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "quotaRequests": {
+                          "type": "number"
+                        },
+                        "quotaWindowSeconds": {
+                          "type": "number"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "active",
+                            "revoked",
+                            "rotated"
+                          ]
+                        },
+                        "lastUsedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "usageCount": {
+                          "type": "number"
+                        },
+                        "expiresAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "keyPrefix",
+                        "owner",
+                        "ownerLabel",
+                        "scopes",
+                        "quotaRequests",
+                        "quotaWindowSeconds",
+                        "status",
+                        "lastUsedAt",
+                        "usageCount",
+                        "expiresAt",
+                        "createdAt"
+                      ]
+                    },
+                    "rawKey": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "apiKey",
+                    "rawKey"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List the caller's API keys (#1737)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "API keys (raw keys never returned)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "keys": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "keyPrefix": {
+                            "type": "string"
+                          },
+                          "owner": {
+                            "type": "string"
+                          },
+                          "ownerLabel": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "scopes": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "quotaRequests": {
+                            "type": "number"
+                          },
+                          "quotaWindowSeconds": {
+                            "type": "number"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "active",
+                              "revoked",
+                              "rotated"
+                            ]
+                          },
+                          "lastUsedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "usageCount": {
+                            "type": "number"
+                          },
+                          "expiresAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "keyPrefix",
+                          "owner",
+                          "ownerLabel",
+                          "scopes",
+                          "quotaRequests",
+                          "quotaWindowSeconds",
+                          "status",
+                          "lastUsedAt",
+                          "usageCount",
+                          "expiresAt",
+                          "createdAt"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "keys"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/me/api-keys/{id}": {
+      "delete": {
+        "summary": "Revoke an API key (#1737)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Key revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "keyPrefix": {
+                      "type": "string"
+                    },
+                    "owner": {
+                      "type": "string"
+                    },
+                    "ownerLabel": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "scopes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "quotaRequests": {
+                      "type": "number"
+                    },
+                    "quotaWindowSeconds": {
+                      "type": "number"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "revoked",
+                        "rotated"
+                      ]
+                    },
+                    "lastUsedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "usageCount": {
+                      "type": "number"
+                    },
+                    "expiresAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "keyPrefix",
+                    "owner",
+                    "ownerLabel",
+                    "scopes",
+                    "quotaRequests",
+                    "quotaWindowSeconds",
+                    "status",
+                    "lastUsedAt",
+                    "usageCount",
+                    "expiresAt",
+                    "createdAt"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Key not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/me/api-keys/{id}/rotate": {
+      "post": {
+        "summary": "Rotate an API key (#1737)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "New key issued (old key revoked)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "apiKey": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "keyPrefix": {
+                          "type": "string"
+                        },
+                        "owner": {
+                          "type": "string"
+                        },
+                        "ownerLabel": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "scopes": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "quotaRequests": {
+                          "type": "number"
+                        },
+                        "quotaWindowSeconds": {
+                          "type": "number"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "active",
+                            "revoked",
+                            "rotated"
+                          ]
+                        },
+                        "lastUsedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "usageCount": {
+                          "type": "number"
+                        },
+                        "expiresAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "keyPrefix",
+                        "owner",
+                        "ownerLabel",
+                        "scopes",
+                        "quotaRequests",
+                        "quotaWindowSeconds",
+                        "status",
+                        "lastUsedAt",
+                        "usageCount",
+                        "expiresAt",
+                        "createdAt"
+                      ]
+                    },
+                    "rawKey": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "apiKey",
+                    "rawKey"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Key not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Only active keys can be rotated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/me/data-export": {
+      "get": {
+        "summary": "Export all user-linked data (#1739)",
+        "description": "Returns a JSON archive of all off-chain personal data linked to the authenticated user: identity, aliases, watched arenas, notification preferences, push subscriptions, transactions, audit logs.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Data export archive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {}
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/me/retention": {
+      "get": {
+        "summary": "Show the data retention matrix (#1739)",
+        "description": "Returns the retention matrix explaining which data categories are erasable, which are retained (pseudonymized) for compliance, and which cannot be erased (on-chain data).",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Retention matrix",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/me/erasure": {
+      "post": {
+        "summary": "Submit a right-to-erasure request (#1739)",
+        "description": "Executes the erasure workflow: deletes erasable data, pseudonymizes retained rows, revokes sessions and push subscriptions. Returns 409 if blockers exist (pending payouts).",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "enum": [
+                      "user_request",
+                      "regulatory"
+                    ],
+                    "default": "user_request"
+                  },
+                  "confirm": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "confirm"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Erasure completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {}
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Erasure blocked (pending payouts) or already in progress",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/me/erasure/status": {
+      "get": {
+        "summary": "Check erasure request status (#1739)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Erasure request history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {}
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {}
+}

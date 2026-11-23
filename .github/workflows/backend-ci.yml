@@ -1,0 +1,122 @@
+name: Backend CI
+
+# TODO(#1506): Add seeded repetition and timing artifact collection.
+# TODO(#1506): Classify deterministic failures, flakes, and slow tests.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "backend/**"
+      - "scripts/env-example*.ts"
+      - ".github/workflows/backend-ci.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "backend/**"
+      - "scripts/env-example*.ts"
+      - ".github/workflows/backend-ci.yml"
+
+jobs:
+  # Fast tier (#1644): unit tests + node:test runners. No service containers.
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: "npm"
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install Dependencies
+        working-directory: ./backend
+        run: npm ci
+
+      - name: Verify redaction policy (#1531)
+        run: node scripts/verify-redaction.mjs
+
+      - name: Lint env access (#1650)
+        working-directory: ./backend
+        run: |
+          npm run lint
+          node --test scripts/check-env-access.test.mjs
+
+      - name: Check .env.example matches the env schema (#1650)
+        working-directory: ./backend
+        run: |
+          npx tsx --test ../scripts/env-example.test.ts
+          npx tsx ../scripts/env-example.ts backend --check
+
+      - name: Unit tests (no services)
+        working-directory: ./backend
+        run: npm run test:unit
+
+      - name: node:test suites
+        working-directory: ./backend
+        run: npm run test:node:validation && npm run test:node
+
+  # Integration tier (#1644): needs Postgres + Redis service containers.
+  integration:
+    runs-on: ubuntu-latest
+    needs: unit
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: inversearenatest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: "npm"
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install Dependencies
+        working-directory: ./backend
+        run: npm ci
+
+      - name: Run Prisma Migrations
+        working-directory: ./backend
+        env:
+          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest
+        run: npx prisma migrate deploy
+
+      - name: Integration tests
+        working-directory: ./backend
+        env:
+          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest
+          REDIS_URL: redis://localhost:6379
+          JWT_SECRET: super-secret-test-key-must-be-at-least-32-chars
+          ADMIN_API_KEY: test-admin-key
+          PAYOUT_CONTRACT_ID: CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          PAYOUT_SOURCE_ACCOUNT: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+        run: npm run test:ci:integration

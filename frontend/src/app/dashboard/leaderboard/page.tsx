@@ -1,59 +1,123 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { Suspense, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   LeaderboardTable,
   Pagination,
-  getPaginatedSurvivors,
-  getTotalPages,
+  useLeaderboard,
+  formatAgentId,
+  formatCurrency,
+  type Survivor,
 } from "@/features/leaderboard";
+import { WalletContext } from "@/features/wallet/components/WalletProvider";
+import { PoolCreationModal } from "@/components/modals/PoolCreationModal";
+import { Skeleton } from "@/components/ui/Skeleton";
 
-const ITEMS_PER_PAGE = 4;
+const INITIAL_PAGE_SIZE = 20;
+const TABLE_ITEMS_PER_PAGE = 7;
 
-const leaderboardStats = {
-  totalYield: "$450,230",
-  liveAgents: "1,204",
-};
+function readPageFromUrl(sp: URLSearchParams): number {
+  const raw = sp.get("page");
+  const n = raw == null ? NaN : Number.parseInt(raw, 10);
+  return Number.isSafeInteger(n) && n >= 1 ? n : 1;
+}
 
-const podium = [
-  {
-    rank: 2,
-    name: "AGENT_K...RP9I",
-    totalYield: "$1,240.50",
-    currency: "USDC",
-    highlight: false,
-  },
-  {
-    rank: 1,
-    name: "AGENT_G...X4Y2",
-    totalYield: "$1,500.00",
-    streak: "24 Rounds",
-    currency: "USDC",
-    highlight: true,
-  },
-  {
-    rank: 3,
-    name: "AGENT_M...L2W7",
-    totalYield: "$980.20",
-    currency: "USDC",
-    highlight: false,
-  },
-];
+function LeaderboardContent() {
+  const searchParams = useSearchParams();
+  // Pagination state lives in the URL query params so pages are shareable
+  // (#1567). Defaults to 1; invalid values fall back to 1.
+  const [currentPage, setCurrentPage] = useState(() => readPageFromUrl(searchParams));
+  const [isChallengeModalOpen, setIsChallengeModalOpen] = useState(false);
+  const [targetedSurvivor, setTargetedSurvivor] = useState<
+    { agentId: string; rank: number } | undefined
+  >();
+  const [displayedCount, setDisplayedCount] = useState(INITIAL_PAGE_SIZE);
 
-export default function LeaderboardPage() {
-  const [currentPage, setCurrentPage] = useState(1);
-
-  const totalPages = getTotalPages(ITEMS_PER_PAGE);
-  const paginatedSurvivors = getPaginatedSurvivors(currentPage, ITEMS_PER_PAGE);
+  // Keep local page in sync when the URL changes (back/forward navigation).
+  useEffect(() => {
+    setCurrentPage(readPageFromUrl(searchParams));
+  }, [searchParams]);
 
   const handlePageChange = useCallback((page: number) => {
     setCurrentPage(page);
+    // Shareable URL: reflect the table page without a navigation.
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (page <= 1) {
+        params.delete("page");
+      } else {
+        params.set("page", String(page));
+      }
+      const qs = params.toString();
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${qs ? `?${qs}` : ""}`,
+      );
+    }
   }, []);
 
-  const handleChallenge = useCallback((survivorId: string) => {
-    // TODO: connect to smart contract
-    console.log("Challenge initiated for survivor:", survivorId);
-  }, []);
+  // Connected wallet's own row is highlighted when it is on the loaded page.
+  // Read the context directly (nullable) so the page still renders outside
+  // a WalletProvider (e.g. unit tests).
+  const wallet = useContext(WalletContext);
+  const ownWallet = wallet?.publicKey ?? wallet?.address ?? null;
+
+  const { survivors, loading: isLoading, error, hasMore, fetchMore, refetch } =
+    useLeaderboard(INITIAL_PAGE_SIZE);
+
+  // Top 3 go to the podium; the rest fill the table
+  const podiumSurvivors = survivors.slice(0, 3);
+  const tableSurvivors = survivors.slice(3);
+
+  // Calculate how many table survivors to show based on pagination
+  const displayedTableSurvivors = useMemo(() => {
+    return tableSurvivors.slice(0, displayedCount);
+  }, [tableSurvivors, displayedCount]);
+
+  // Calculate visible pages for pagination UI
+  const totalPages = useMemo(() => {
+    return Math.ceil(displayedTableSurvivors.length / TABLE_ITEMS_PER_PAGE);
+  }, [displayedTableSurvivors]);
+
+  // Clamp the URL page when the loaded data shrinks (e.g. fresh refetch).
+  const safePage = totalPages > 0 ? Math.min(currentPage, totalPages) : 1;
+
+  const paginatedSurvivors = useMemo(() => {
+    const start = (safePage - 1) * TABLE_ITEMS_PER_PAGE;
+    return displayedTableSurvivors.slice(start, start + TABLE_ITEMS_PER_PAGE);
+  }, [safePage, displayedTableSurvivors]);
+
+  // Use `survivors` directly for the stat card; it only represents the
+  // currently-loaded page, so the cards are labeled as partial (#1338).
+
+  const handleChallenge = useCallback(
+    (survivorId: string) => {
+      const survivor = survivors.find((s) => s.id === survivorId);
+      if (survivor) {
+        setTargetedSurvivor({ agentId: survivor.agentId, rank: survivor.rank });
+        setIsChallengeModalOpen(true);
+      }
+    },
+    [survivors],
+  );
+
+  // Handle loading more data when reaching the end
+  const handleLoadMore = useCallback(async () => {
+    if (hasMore && !isLoading) {
+      await fetchMore();
+      setDisplayedCount((prev) => prev + INITIAL_PAGE_SIZE);
+      handlePageChange(1); // Reset to first page after loading more
+    }
+  }, [hasMore, isLoading, fetchMore, handlePageChange]);
+
+  // Build podium display order: rank 2, rank 1, rank 3 (visual layout)
+  const podiumOrdered = [
+    podiumSurvivors.find((s) => s.rank === 2),
+    podiumSurvivors.find((s) => s.rank === 1),
+    podiumSurvivors.find((s) => s.rank === 3),
+  ].filter(Boolean) as typeof podiumSurvivors;
 
   return (
     <div className="flex min-h-[calc(100vh-48px)] flex-col gap-8">
@@ -78,19 +142,27 @@ export default function LeaderboardPage() {
           <div className="grid w-full max-w-sm grid-cols-2 gap-4">
             <div className="border-[3px] border-[#0F1B2D] bg-black px-4 py-4 min-h-[88px]">
               <p className="text-[8px] font-mono uppercase tracking-[0.2em] text-zinc-500">
-                TOTAL YIELD
+                YIELD ON THIS PAGE
               </p>
-              <p className="mt-2 text-2xl font-semibold text-white">
-                {leaderboardStats.totalYield}
-              </p>
+              {isLoading ? (
+                <Skeleton className="h-8 w-24 mt-2" />
+              ) : (
+                <p className="mt-2 text-sm font-semibold text-zinc-400">
+                  {survivors.length.toLocaleString()} loaded · shown above
+                </p>
+              )}
             </div>
             <div className="border-[3px] border-[#37FF1C] bg-[#37FF1C] px-4 py-4 min-h-[88px]">
               <p className="text-[8px] font-mono uppercase tracking-[0.2em] text-black/80">
-                LIVE AGENTS
+                LOADED AGENTS
               </p>
-              <p className="mt-2 text-2xl font-semibold text-black">
-                {leaderboardStats.liveAgents}
-              </p>
+              {isLoading ? (
+                <Skeleton className="h-8 w-24 mt-2 bg-black/20" />
+              ) : (
+                <p className="mt-2 text-2xl font-semibold text-black">
+                  {survivors.length.toLocaleString()}
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -98,107 +170,176 @@ export default function LeaderboardPage() {
         <div className="relative z-10 mt-6 h-[4px] w-full bg-gradient-to-r from-transparent via-black/70 to-transparent" />
 
         <div className="relative z-10 mt-6 grid grid-cols-1 gap-5 lg:grid-cols-3 lg:items-end">
-          {podium.map((survivor) => (
-            <div
-              key={survivor.rank}
-              className={`relative flex flex-col justify-between border ${
-                survivor.highlight
-                  ? "border-[#37FF1C] bg-black shadow-[0_0_35px_rgba(55,255,28,0.25)] lg:min-h-[340px]"
-                  : "border-[#0F1B2D] bg-[#172235] lg:min-h-[270px]"
-              } px-5 py-5 md:px-6 md:py-6`}
-            >
-              <div className="relative min-h-[28px]">
-                {survivor.highlight ? (
-                  <div className="flex items-start justify-between">
-                    <span className="text-2xl font-bold text-[#37FF1C]">
+          {podiumOrdered.map((survivor: Survivor) => {
+            const isFirst = survivor.rank === 1;
+            return (
+              <div
+                key={survivor.rank}
+                className={`relative flex flex-col justify-between border ${
+                  isFirst
+                    ? "border-[#37FF1C] bg-black shadow-[0_0_35px_rgba(55,255,28,0.25)] lg:min-h-[340px]"
+                    : "border-[#0F1B2D] bg-[#172235] lg:min-h-[270px]"
+                } px-5 py-5 md:px-6 md:py-6`}
+              >
+                <div className="relative min-h-[28px]">
+                  {isFirst ? (
+                    <div className="flex items-start justify-between">
+                      <span className="text-2xl font-bold text-[#37FF1C]">
+                        #{survivor.rank}
+                      </span>
+                      <span className="relative bg-[#37FF1C] px-2.5 py-0.5 text-[8px] font-mono uppercase tracking-[0.2em] text-black">
+                        GRAND SURVIVOR
+                      </span>
+                      <span className="absolute -right-2 top-0 h-3 w-3 rotate-45 bg-[#37FF1C]" />
+                    </div>
+                  ) : (
+                    <span className="absolute right-4 top-0 text-3xl font-bold text-[#2B4B77]">
                       #{survivor.rank}
                     </span>
-                    <span className="relative bg-[#37FF1C] px-2.5 py-0.5 text-[8px] font-mono uppercase tracking-[0.2em] text-black">
-                      GRAND SURVIVOR
-                    </span>
-                    <span className="absolute -right-2 top-0 h-3 w-3 rotate-45 bg-[#37FF1C]" />
+                  )}
+                </div>
+
+                <div
+                  className={`${isFirst ? "mt-5" : "mt-10"} flex items-center gap-4`}
+                >
+                  {isLoading ? (
+                    <Skeleton
+                      className={`${isFirst ? "h-16 w-16" : "h-12 w-12"} shrink-0`}
+                    />
+                  ) : (
+                    <div
+                      className={`${
+                        isFirst ? "h-16 w-16" : "h-12 w-12"
+                      } shrink-0 border ${
+                        isFirst
+                          ? "border-[#37FF1C] bg-gradient-to-br from-[#0D2B12] via-[#0D1A12] to-black"
+                          : "border-[#1B2636] bg-gradient-to-br from-[#0C1727] via-[#0D1118] to-black"
+                      }`}
+                    />
+                  )}
+                  <div>
+                    {isLoading ? (
+                      <Skeleton className="h-6 w-24" />
+                    ) : (
+                      <p
+                        className={`${isFirst ? "text-lg italic" : "text-sm"} font-semibold text-white`}
+                      >
+                        {formatAgentId(survivor.agentId)}
+                      </p>
+                    )}
+                    <p className="mt-1 text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
+                      TOTAL YIELD
+                    </p>
                   </div>
+                </div>
+
+                {isFirst ? (
+                  <>
+                    <div className="mt-5 h-px w-full bg-white/10" />
+                    <div className="mt-4 grid grid-cols-2 gap-6">
+                      <div>
+                        <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
+                          YIELD GENERATED
+                        </p>
+                        {isLoading ? (
+                          <Skeleton className="h-6 w-20 mt-1" />
+                        ) : (
+                          <p className="mt-1 text-lg font-semibold text-[#37FF1C]">
+                            {formatCurrency(survivor.totalYield)}
+                          </p>
+                        )}
+                        <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
+                          USDC
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
+                          STREAK
+                        </p>
+                        {isLoading ? (
+                          <Skeleton className="h-6 w-20 mt-1" />
+                        ) : (
+                          <p className="mt-1 text-lg font-semibold text-white">
+                            {survivor.survivalStreak} Rounds
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </>
                 ) : (
-                  <span className="absolute right-4 top-0 text-3xl font-bold text-[#2B4B77]">
-                    #{survivor.rank}
-                  </span>
+                  <div className="mt-auto pt-6">
+                    {isLoading ? (
+                      <Skeleton className="h-6 w-24" />
+                    ) : (
+                      <p className="text-lg font-semibold text-[#37FF1C]">
+                        {formatCurrency(survivor.totalYield)}
+                      </p>
+                    )}
+                    <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
+                      USDC
+                    </p>
+                  </div>
                 )}
               </div>
-
-              <div className={`${survivor.highlight ? "mt-5" : "mt-10"} flex items-center gap-4`}>
-                <div
-                  className={`${
-                    survivor.highlight ? "h-16 w-16" : "h-12 w-12"
-                  } shrink-0 border ${
-                    survivor.highlight
-                      ? "border-[#37FF1C] bg-gradient-to-br from-[#0D2B12] via-[#0D1A12] to-black"
-                      : "border-[#1B2636] bg-gradient-to-br from-[#0C1727] via-[#0D1118] to-black"
-                  }`}
-                />
-                <div>
-                  <p
-                    className={`${survivor.highlight ? "text-lg italic" : "text-sm"} font-semibold text-white`}
-                  >
-                    {survivor.name}
-                  </p>
-                  <p className="mt-1 text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
-                    TOTAL YIELD
-                  </p>
-                </div>
-              </div>
-
-              {survivor.highlight ? (
-                <>
-                  <div className="mt-5 h-px w-full bg-white/10" />
-                  <div className="mt-4 grid grid-cols-2 gap-6">
-                    <div>
-                      <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
-                        YIELD GENERATED
-                      </p>
-                      <p className="mt-1 text-lg font-semibold text-[#37FF1C]">
-                        {survivor.totalYield}
-                      </p>
-                      <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
-                        {survivor.currency}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
-                        STREAK
-                      </p>
-                      <p className="mt-1 text-lg font-semibold text-white">
-                        {survivor.streak}
-                      </p>
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div className="mt-auto pt-6">
-                  <p className="text-lg font-semibold text-[#37FF1C]">
-                    {survivor.totalYield}
-                  </p>
-                  <p className="text-[8px] font-mono uppercase tracking-[0.25em] text-zinc-500">
-                    {survivor.currency}
-                  </p>
-                </div>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
+
+      {error && (
+        <div className="flex flex-col gap-2 px-2 sm:flex-row sm:items-center">
+          <p className="font-mono text-xs text-red-400" role="alert">{error}</p>
+          <button
+            type="button"
+            onClick={() => void refetch()}
+            className="w-fit border border-red-400/60 px-4 py-1.5 font-mono text-xs uppercase tracking-[0.2em] text-red-300 transition-colors hover:bg-red-400 hover:text-black"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* Rankings Table Section */}
       <LeaderboardTable
         survivors={paginatedSurvivors}
         onChallenge={handleChallenge}
+        isLoading={isLoading}
+        highlightWallet={ownWallet}
       />
 
-      {/* Pagination */}
-      <Pagination
-        currentPage={currentPage}
-        totalPages={totalPages}
-        onPageChange={handlePageChange}
+      {/* Pagination & Load More */}
+      {!isLoading && (
+        <div className="flex flex-col items-center gap-4">
+          <Pagination
+            currentPage={safePage}
+            totalPages={totalPages}
+            onPageChange={handlePageChange}
+          />
+          {hasMore && (
+            <button
+              onClick={handleLoadMore}
+              disabled={isLoading}
+              className="mt-2 border border-[#37FF1C] bg-transparent px-6 py-2 text-sm font-mono uppercase tracking-[0.2em] text-[#37FF1C] transition-colors hover:bg-[#37FF1C] hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Load More
+            </button>
+          )}
+        </div>
+      )}
+
+      <PoolCreationModal
+        isOpen={isChallengeModalOpen}
+        onClose={() => setIsChallengeModalOpen(false)}
+        {...(targetedSurvivor !== undefined && { challengedSurvivor: targetedSurvivor })}
       />
     </div>
+  );
+}
+
+export default function LeaderboardPage() {
+  return (
+    <Suspense>
+      <LeaderboardContent />
+    </Suspense>
   );
 }

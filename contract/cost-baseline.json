@@ -1,0 +1,200 @@
+{
+  "version": 1,
+  "toolchain": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "sorobanSdk": "22.0.11",
+  "thresholds": {
+    "instructions": 5,
+    "mem_bytes": 5,
+    "read_entries": 0,
+    "write_entries": 0,
+    "read_bytes": 5,
+    "write_bytes": 5,
+    "events_bytes": 10
+  },
+  "networkLimits": {
+    "instructions": 100000000,
+    "mem_bytes": 41943040
+  },
+  "benchmarks": {
+    "arena/claim_refund@10": {
+      "instructions": 15832080,
+      "mem_bytes": 5526376,
+      "read_entries": 8,
+      "write_entries": 5,
+      "read_bytes": 168196,
+      "write_bytes": 660,
+      "events_bytes": 380,
+      "fee_stroops": 1766183
+    },
+    "arena/claim@10": {
+      "instructions": 32589422,
+      "mem_bytes": 13443347,
+      "read_entries": 15,
+      "write_entries": 10,
+      "read_bytes": 222116,
+      "write_bytes": 2328,
+      "events_bytes": 984,
+      "fee_stroops": 2051562
+    },
+    "arena/claim@50": {
+      "instructions": 33607410,
+      "mem_bytes": 14194067,
+      "read_entries": 15,
+      "write_entries": 10,
+      "read_bytes": 222116,
+      "write_bytes": 2328,
+      "events_bytes": 984,
+      "fee_stroops": 2054107
+    },
+    "arena/claim@100": {
+      "instructions": 34841478,
+      "mem_bytes": 15135595,
+      "read_entries": 15,
+      "write_entries": 10,
+      "read_bytes": 222116,
+      "write_bytes": 2328,
+      "events_bytes": 984,
+      "fee_stroops": 2057192
+    },
+    "arena/join_arena@10": {
+      "instructions": 28367154,
+      "mem_bytes": 11067194,
+      "read_entries": 17,
+      "write_entries": 16,
+      "read_bytes": 223428,
+      "write_bytes": 3816,
+      "events_bytes": 764,
+      "fee_stroops": 3470512
+    },
+    "arena/join_arena@50": {
+      "instructions": 29300307,
+      "mem_bytes": 11655034,
+      "read_entries": 17,
+      "write_entries": 16,
+      "read_bytes": 226628,
+      "write_bytes": 7016,
+      "events_bytes": 764,
+      "fee_stroops": 3515927
+    },
+    "arena/join_arena@100": {
+      "instructions": 30406443,
+      "mem_bytes": 12373114,
+      "read_entries": 17,
+      "write_entries": 16,
+      "read_bytes": 226628,
+      "write_bytes": 7016,
+      "events_bytes": 764,
+      "fee_stroops": 3518693
+    },
+    "arena/resolve_round@10": {
+      "instructions": 66443095,
+      "mem_bytes": 22598861,
+      "read_entries": 24,
+      "write_entries": 51,
+      "read_bytes": 228004,
+      "write_bytes": 6572,
+      "events_bytes": 1996,
+      "fee_stroops": 3139281
+    },
+    "arena/resolve_round@50": {
+      "instructions": 154273978,
+      "mem_bytes": 37974881,
+      "read_entries": 24,
+      "write_entries": 211,
+      "read_bytes": 252964,
+      "write_bytes": 24812,
+      "events_bytes": 7916,
+      "fee_stroops": 6937421
+    },
+    "arena/resolve_round@100": {
+      "instructions": 336314653,
+      "mem_bytes": 80789310,
+      "read_entries": 25,
+      "write_entries": 412,
+      "read_bytes": 284380,
+      "write_bytes": 47612,
+      "events_bytes": 15316,
+      "fee_stroops": 11888606
+    },
+    "arena/reveal_choice@10": {
+      "instructions": 15814649,
+      "mem_bytes": 5486230,
+      "read_entries": 9,
+      "write_entries": 2,
+      "read_bytes": 167564,
+      "write_bytes": 240,
+      "events_bytes": 180,
+      "fee_stroops": 1720892
+    },
+    "arena/reveal_choice@50": {
+      "instructions": 16074971,
+      "mem_bytes": 5665750,
+      "read_entries": 9,
+      "write_entries": 2,
+      "read_bytes": 167564,
+      "write_bytes": 240,
+      "events_bytes": 180,
+      "fee_stroops": 1721543
+    },
+    "arena/reveal_choice@100": {
+      "instructions": 16401277,
+      "mem_bytes": 5890966,
+      "read_entries": 9,
+      "write_entries": 2,
+      "read_bytes": 167564,
+      "write_bytes": 240,
+      "events_bytes": 180,
+      "fee_stroops": 1722359
+    },
+    "arena/submit_commitment@10": {
+      "instructions": 15556473,
+      "mem_bytes": 5475547,
+      "read_entries": 8,
+      "write_entries": 2,
+      "read_bytes": 167380,
+      "write_bytes": 256,
+      "events_bytes": 152,
+      "fee_stroops": 1714392
+    },
+    "arena/submit_commitment@50": {
+      "instructions": 15795647,
+      "mem_bytes": 5638747,
+      "read_entries": 8,
+      "write_entries": 2,
+      "read_bytes": 167380,
+      "write_bytes": 256,
+      "events_bytes": 152,
+      "fee_stroops": 1714990
+    },
+    "arena/submit_commitment@100": {
+      "instructions": 16087120,
+      "mem_bytes": 5843563,
+      "read_entries": 8,
+      "write_entries": 2,
+      "read_bytes": 167380,
+      "write_bytes": 256,
+      "events_bytes": 152,
+      "fee_stroops": 1715718
+    },
+    "staking/stake@2": {
+      "instructions": 5064243,
+      "mem_bytes": 2057770,
+      "read_entries": 7,
+      "write_entries": 5,
+      "read_bytes": 37124,
+      "write_bytes": 992,
+      "events_bytes": 396,
+      "fee_stroops": 1510004
+    },
+    "staking/unstake@2": {
+      "instructions": 5085446,
+      "mem_bytes": 2057142,
+      "read_entries": 7,
+      "write_entries": 5,
+      "read_bytes": 37332,
+      "write_bytes": 992,
+      "events_bytes": 396,
+      "fee_stroops": 1495110
+    }
+  }
+}

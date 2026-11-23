@@ -1,0 +1,61 @@
+integration:
+  - changed-files:
+      - any-glob-to-any-file:
+          - backend/**
+
+contracts:
+  - changed-files:
+      - any-glob-to-any-file:
+          - contract/**
+
+smart-contract:
+  - changed-files:
+      - any-glob-to-any-file:
+          - contract/**
+
+soroban:
+  - changed-files:
+      - any-glob-to-any-file:
+          - contract/**
+
+frontend:
+  - changed-files:
+      - any-glob-to-any-file:
+          - frontend/**
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - docs/**
+          - '**/*.md'
+
+devx:
+  - changed-files:
+      - any-glob-to-any-file:
+          - tools/**
+          - scripts/**
+          - Makefile
+          - .devcontainer/**
+          - .node-version
+          - rust-toolchain.toml
+          - .pre-commit-config.yaml
+          - docker-compose*.yml
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/workflows/**
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '**/tests/**'
+          - '**/*.test.*'
+          - '**/*.spec.*'
+
+testing:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '**/tests/**'
+          - '**/*.test.*'
+          - '**/*.spec.*'

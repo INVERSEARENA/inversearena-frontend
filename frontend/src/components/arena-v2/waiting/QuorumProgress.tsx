@@ -1,6 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
+import { useTranslations } from "next-intl";
 
 interface QuorumProgressProps {
     arenaId?: number;
@@ -17,6 +18,7 @@ export function QuorumProgress({
     estimatedStart = "04:12:09",
     blockHeight = "49,210,123",
 }: QuorumProgressProps) {
+    const t = useTranslations("lobby");
     const percentage = Math.round((currentPlayers / requiredPlayers) * 100);
     const remaining = requiredPlayers - currentPlayers;
 
@@ -31,16 +33,15 @@ export function QuorumProgress({
             <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
                 <div className="space-y-1">
                     <h2 className="text-3xl sm:text-4xl lg:text-5xl font-black tracking-[-0.05em] uppercase font-display text-white">
-                        ARENA #{arenaId}: DEPLOYMENT PENDING
+                        {t("arenaPending", { arenaId })}
                     </h2>
                     <p className="text-primary text-lg lg:text-xl font-bold italic font-display">
-                        WAITING FOR MINIMUM QUORUM: {currentPlayers} / {requiredPlayers}{" "}
-                        PLAYERS READY
+                        {t("waitingQuorum", { currentPlayers, requiredPlayers })}
                     </p>
                 </div>
                 <div className="text-right shrink-0">
                     <span className="text-xs font-bold text-white/50 uppercase tracking-[0.2em] block">
-                        ESTIMATED START
+                        {t("estimatedStart")}
                     </span>
                     <p className="text-3xl font-black tabular-nums font-display text-white">
                         {estimatedStart}
@@ -52,7 +53,7 @@ export function QuorumProgress({
             <div className="space-y-2">
                 <div className="flex justify-between items-end">
                     <span className="text-sm font-black uppercase tracking-widest text-white font-display">
-                        PLAYER QUORUM STATUS
+                        {t("quorumStatus")}
                     </span>
                     <span className="text-4xl font-black text-primary italic tabular-nums font-display">
                         {percentage}%
@@ -68,10 +69,10 @@ export function QuorumProgress({
                 </div>
                 <div className="flex justify-between items-start">
                     <span className="text-sm font-bold text-primary font-display">
-                        {remaining} MORE PARTICIPANTS REQUIRED FOR TRIGGER
+                        {t("moreParticipants", { remaining })}
                     </span>
                     <span className="text-sm font-bold text-white/40 uppercase font-display">
-                        BLOCK_HEIGHT: {blockHeight}
+                        {t("blockHeight", { blockHeight })}
                     </span>
                 </div>
             </div>

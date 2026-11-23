@@ -1,11 +1,15 @@
 import { Schema, model, type Document } from "mongoose";
+import type { AuditActor, AuditResource } from "../../types/admin";
 
 export interface AuditLogDocument extends Document {
   adminId: string;
+  actor?: AuditActor;
   action: string;
   resourceType: string;
   resourceId: string;
-  status: "success" | "failed";
+  resource?: AuditResource;
+  correlationId?: string;
+  status: "success" | "failed" | "auth_failed";
   metadata?: Record<string, unknown>;
   errorMessage?: string;
   ipAddress?: string;
@@ -16,10 +20,19 @@ export interface AuditLogDocument extends Document {
 const AuditLogSchema = new Schema<AuditLogDocument>(
   {
     adminId: { type: String, required: true },
+    actor: {
+      type: new Schema({ type: { type: String, required: true }, id: { type: String, required: true } }, { _id: false }),
+      required: false,
+    },
     action: { type: String, required: true },
     resourceType: { type: String, required: true },
     resourceId: { type: String, required: true },
-    status: { type: String, enum: ["success", "failed"], required: true },
+    resource: {
+      type: new Schema({ type: { type: String, required: true }, id: { type: String, required: true } }, { _id: false }),
+      required: false,
+    },
+    correlationId: { type: String, index: true, default: undefined },
+    status: { type: String, enum: ["success", "failed", "auth_failed"], required: true },
     metadata: { type: Schema.Types.Mixed, default: undefined },
     errorMessage: { type: String, default: undefined },
     ipAddress: { type: String, default: undefined },
@@ -30,5 +43,8 @@ const AuditLogSchema = new Schema<AuditLogDocument>(
 
 AuditLogSchema.index({ adminId: 1, createdAt: -1 });
 AuditLogSchema.index({ resourceType: 1, resourceId: 1 });
+AuditLogSchema.index({ action: 1, createdAt: -1 });
+AuditLogSchema.index({ "actor.id": 1, action: 1, createdAt: -1 });
+AuditLogSchema.index({ "resource.type": 1, "resource.id": 1, createdAt: -1 });
 
 export const AuditLogModel = model<AuditLogDocument>("AuditLog", AuditLogSchema);

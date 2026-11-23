@@ -1,0 +1,10 @@
+[toolchain]
+# Pinned toolchain for reproducible WASM builds (issue #1638).
+# Both CI runs and local developer builds must use this exact version so that
+# two independent builds of the same commit produce bit-identical optimised
+# WASM files.  Changing this version changes every contract's output hash —
+# update the hash manifest in deployment-manifest.json and re-record expected
+# sha256 values in CI artifacts.
+channel = "1.82.0"
+targets = ["wasm32-unknown-unknown", "wasm32v1-none"]
+components = ["rustfmt", "clippy"]

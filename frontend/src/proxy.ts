@@ -1,8 +1,47 @@
 import { NextRequest, NextResponse } from "next/server";
-import { parseAllowedOrigins } from "@/shared-d/utils/security-validation";
+import { parseAllowedOrigins } from "@/shared/lib/security-validation";
+import { HSTS_HEADER_VALUE, generateNonce } from "@/shared/config/csp";
+import { isDevGalleryEnabled, isDevGalleryPath } from "@/shared/lib/dev-gallery";
+import { LOCALE_COOKIE, negotiateLocale } from "@/i18n/config";
+
+const DEFAULT_TESTNET_HORIZON_URL = "https://horizon-testnet.stellar.org";
+const DEFAULT_TESTNET_SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
+const DEFAULT_MAINNET_HORIZON_URL = "https://horizon.stellar.org";
+const DEFAULT_MAINNET_SOROBAN_RPC_URL = "https://mainnet.sorobanrpc.com";
+
+function toOrigin(url: string): string {
+  const candidate = url.trim();
+
+  try {
+    return new URL(candidate).origin;
+  } catch {
+    return candidate;
+  }
+}
+
+function getNetworkConnectSources(): string[] {
+  const isMainnet =
+    process.env.NEXT_PUBLIC_STELLAR_NETWORK?.toLowerCase() === "mainnet";
+  const horizonUrl =
+    process.env.NEXT_PUBLIC_HORIZON_URL ??
+    (isMainnet ? DEFAULT_MAINNET_HORIZON_URL : DEFAULT_TESTNET_HORIZON_URL);
+  const sorobanRpcUrl =
+    process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ??
+    (isMainnet ? DEFAULT_MAINNET_SOROBAN_RPC_URL : DEFAULT_TESTNET_SOROBAN_RPC_URL);
+  const horizonOrigin = toOrigin(horizonUrl);
+  const sorobanOrigin = toOrigin(sorobanRpcUrl);
+  return [horizonOrigin, sorobanOrigin];
+}
 
 function getAllowedOrigins(): string[] {
-  const configuredOrigins = parseAllowedOrigins(process.env.ALLOWED_ORIGINS);
+  let configuredOrigins: string[];
+  try {
+    configuredOrigins = parseAllowedOrigins(process.env.ALLOWED_ORIGINS);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid ALLOWED_ORIGINS configuration: ${message}`);
+  }
+
   const appOrigin = process.env.NEXT_PUBLIC_APP_ORIGIN;
   const defaults =
     process.env.NODE_ENV === "development"
@@ -18,37 +57,72 @@ function getAllowedOrigins(): string[] {
   );
 }
 
-function buildCsp(allowedOrigins: string[]) {
+function buildCsp(allowedOrigins: string[], nonce: string) {
   const isDev = process.env.NODE_ENV !== "production";
 
-  const connectSrc = [
-    "'self'",
-    ...allowedOrigins,
-    "https://horizon-testnet.stellar.org",
-    "https://soroban-testnet.stellar.org",
-    "https://api.coingecko.com",
-  ];
+  const connectSrc = Array.from(
+    new Set([
+      "'self'",
+      ...allowedOrigins,
+      ...getNetworkConnectSources(),
+      "https://api.coingecko.com",
+    ])
+  );
 
   if (isDev) {
     connectSrc.push("ws:", "wss:");
   }
 
-  const scriptSrc = ["'self'", "'unsafe-inline'"];
+  // #1296 — no 'unsafe-inline': an injected inline <script> must not run.
+  // 'self' is kept for pre-CSP3 browsers (which honour the nonce but ignore
+  // 'strict-dynamic'); 'strict-dynamic' lets the nonce'd framework bootstrap
+  // load the rest of the chunk graph. Next's dev runtime still needs
+  // 'unsafe-eval'.
+  const scriptSrc = ["'self'", `'nonce-${nonce}'`, "'strict-dynamic'"];
   if (isDev) {
     scriptSrc.push("'unsafe-eval'");
   }
 
+  // #1451 — style-src: nonce allows Next.js-injected <style nonce="…"> tags;
+  // 'unsafe-inline' is kept as a fallback for pre-CSP3 browsers that do not
+  // understand nonces. Fonts from googleapis are explicitly allowed.
+  const styleSrc = [
+    "'self'",
+    `'nonce-${nonce}'`,
+    "'unsafe-inline'",
+    "https://fonts.googleapis.com",
+  ];
+
+  // #1451 — img-src: restrict to explicitly trusted origins instead of the
+  // broad `https:` wildcard that previously allowed loading images from any
+  // HTTPS host. data: and blob: are kept for canvas exports and wallet QR codes.
+  const imgSrc = [
+    "'self'",
+    "data:",
+    "blob:",
+    "https://assets.coingecko.com",
+    "https://stellar.org",
+    "https://www.stellar.org",
+  ];
+
   const policies = [
     "default-src 'self'",
     `script-src ${scriptSrc.join(" ")}`,
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    `style-src ${styleSrc.join(" ")}`,
     "font-src 'self' https://fonts.gstatic.com data:",
-    "img-src 'self' data: blob: https:",
+    `img-src ${imgSrc.join(" ")}`,
     `connect-src ${connectSrc.join(" ")}`,
     "object-src 'none'",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
+    // #1451 — worker-src: Next.js service worker and webpack HMR workers must
+    // be loaded from the same origin; blob: is needed for dynamic workers
+    // created by the Stellar SDK and some wallet connectors.
+    "worker-src 'self' blob:",
+    // #1451 — manifest-src: restrict the web app manifest to same-origin to
+    // prevent a cross-origin manifest from altering the installed PWA identity.
+    "manifest-src 'self'",
   ];
 
   if (!isDev) {
@@ -58,7 +132,11 @@ function buildCsp(allowedOrigins: string[]) {
   return policies.join("; ");
 }
 
-function applySecurityHeaders(response: NextResponse, allowedOrigins: string[]) {
+function applySecurityHeaders(
+  response: NextResponse,
+  allowedOrigins: string[],
+  nonce: string
+) {
   response.headers.set("X-Content-Type-Options", "nosniff");
   response.headers.set("X-Frame-Options", "DENY");
   response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
@@ -68,7 +146,9 @@ function applySecurityHeaders(response: NextResponse, allowedOrigins: string[]) 
   );
   response.headers.set("Cross-Origin-Opener-Policy", "same-origin");
   response.headers.set("Cross-Origin-Resource-Policy", "same-origin");
-  response.headers.set("Content-Security-Policy", buildCsp(allowedOrigins));
+  // #1296 — instruct browsers to enforce HTTPS-only for this origin.
+  response.headers.set("Strict-Transport-Security", HSTS_HEADER_VALUE);
+  response.headers.set("Content-Security-Policy", buildCsp(allowedOrigins, nonce));
 }
 
 function applyCorsHeaders(
@@ -99,21 +179,51 @@ export function proxy(request: NextRequest) {
   const requestOrigin = request.headers.get("origin");
   const isApiRoute = request.nextUrl.pathname.startsWith("/api/");
 
+  // Fresh per-request CSP nonce (#1296). Exposed to the app on the forwarded
+  // request headers as `x-nonce`; the root layout reads it and hands it to
+  // next-themes so its inline anti-flash <script> is allowed without
+  // 'unsafe-inline'.
+  const nonce = generateNonce();
+
+  // Dev-gallery routes (#1645) are 404'd in production before they reach the
+  // app router, so demo pages never ship in the production route surface.
+  if (!isDevGalleryEnabled() && isDevGalleryPath(request.nextUrl.pathname)) {
+    const notFound = new NextResponse(null, { status: 404 });
+    applySecurityHeaders(notFound, allowedOrigins, nonce);
+    return notFound;
+  }
+
   if (isApiRoute && requestOrigin && !allowedOrigins.includes(requestOrigin)) {
     const forbidden = NextResponse.json(
       { error: "Origin not allowed by CORS policy" },
       { status: 403 }
     );
-    applySecurityHeaders(forbidden, allowedOrigins);
+    applySecurityHeaders(forbidden, allowedOrigins, nonce);
     return forbidden;
   }
+
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("x-nonce", nonce);
 
   const response =
     isApiRoute && request.method === "OPTIONS"
       ? new NextResponse(null, { status: 204 })
-      : NextResponse.next();
+      : NextResponse.next({ request: { headers: requestHeaders } });
 
-  applySecurityHeaders(response, allowedOrigins);
+  applySecurityHeaders(response, allowedOrigins, nonce);
+
+  // #1575: seed the locale cookie from Accept-Language on first visit so the
+  // server-rendered <html lang> and message catalog match the browser's
+  // preference. An explicit choice made by the switcher always wins — this
+  // only writes when the cookie is absent.
+  if (!isApiRoute && !request.cookies.has(LOCALE_COOKIE)) {
+    const detected = negotiateLocale(request.headers.get("accept-language"));
+    response.cookies.set(LOCALE_COOKIE, detected, {
+      path: "/",
+      maxAge: 60 * 60 * 24 * 365,
+      sameSite: "lax",
+    });
+  }
 
   if (isApiRoute) {
     applyCorsHeaders(response, requestOrigin, allowedOrigins);
@@ -125,4 +235,3 @@ export function proxy(request: NextRequest) {
 export const config = {
   matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };
-

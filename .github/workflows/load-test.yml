@@ -1,0 +1,212 @@
+name: Load Tests (k6)
+
+# Issue #1624 — k6 load-test suite for arena APIs and SSE streams.
+#
+# Triggered manually via workflow_dispatch so it never blocks a PR merge.
+# Pass `update_baseline: true` to overwrite the stored baseline artifact with
+# the results of this run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Backend API base URL (no trailing slash)"
+        required: false
+        default: "http://localhost:3001"
+      arena_id:
+        description: "Arena ID to use for SSE and state-read scenarios"
+        required: false
+        default: ""
+      sse_dwell_seconds:
+        description: "How long (s) each SSE VU holds its connection"
+        required: false
+        default: "15"
+      update_baseline:
+        description: "Overwrite the stored baseline with this run's results"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  load-test:
+    name: k6 load test suite
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: inversearenatest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: "npm"
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: ./backend
+        run: npm ci
+
+      - name: Apply Prisma migrations
+        working-directory: ./backend
+        env:
+          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest
+        run: npx prisma migrate deploy
+
+      - name: Seed test arena
+        id: seed
+        working-directory: ./backend
+        env:
+          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest
+          REDIS_URL: redis://localhost:6379
+          JWT_SECRET: k6-load-test-jwt-secret-must-be-at-least-32-chars
+          ADMIN_API_KEY: k6-load-test-admin-key
+          PAYOUT_CONTRACT_ID: CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          PAYOUT_SOURCE_ACCOUNT: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+        # Seed creates a test arena and prints its ID on the last line as:
+        #   ARENA_ID=<uuid>
+        # If the caller supplied an explicit ARENA_ID we use that instead.
+        run: |
+          SUPPLIED="${{ github.event.inputs.arena_id }}"
+          if [ -n "$SUPPLIED" ]; then
+            echo "arena_id=$SUPPLIED" >> "$GITHUB_OUTPUT"
+          else
+            SEED_OUTPUT=$(npx tsx prisma/seed.ts 2>&1)
+            echo "$SEED_OUTPUT"
+            ARENA_ID=$(echo "$SEED_OUTPUT" | grep '^ARENA_ID=' | tail -1 | cut -d= -f2)
+            if [ -z "$ARENA_ID" ]; then
+              echo "Seed did not emit ARENA_ID — using placeholder."
+              ARENA_ID="test-arena-placeholder"
+            fi
+            echo "arena_id=$ARENA_ID" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Start backend server
+        working-directory: ./backend
+        env:
+          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest
+          REDIS_URL: redis://localhost:6379
+          JWT_SECRET: k6-load-test-jwt-secret-must-be-at-least-32-chars
+          ADMIN_API_KEY: k6-load-test-admin-key
+          PAYOUT_CONTRACT_ID: CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          PAYOUT_SOURCE_ACCOUNT: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          NODE_ENV: production
+          PORT: "3001"
+          SSE_MAX_CONNECTIONS_PER_IP: "1100"
+          SSE_MAX_CONNECTIONS_PER_ARENA: "1100"
+          LOAD_TEST_BYPASS_KEY: ${{ secrets.LOAD_TEST_BYPASS_KEY || 'k6-load-test-local-ci-key-32chars' }}
+        run: |
+          npm run build
+          node dist/server.js &
+          # Wait for the server to be ready.
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3001/health > /dev/null 2>&1; then
+              echo "Backend is up."
+              break
+            fi
+            echo "Waiting for backend... ($i/30)"
+            sleep 2
+          done
+
+      - name: Install k6
+        run: |
+          curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update -qq
+          sudo apt-get install -y k6
+
+      - name: Download previous baseline artifact
+        id: download_baseline
+        uses: actions/download-artifact@v4
+        with:
+          name: k6-load-test-baseline
+          path: backend/tests/load/baselines
+        # Don't fail the job if no baseline has been stored yet.
+        continue-on-error: true
+
+      - name: Run k6 load tests
+        env:
+          BASE_URL: ${{ github.event.inputs.base_url || 'http://localhost:3001' }}
+          ARENA_ID: ${{ steps.seed.outputs.arena_id }}
+          BYPASS_RATE_LIMIT: "1"
+          LOAD_TEST_SECRET_KEY: ${{ secrets.LOAD_TEST_BYPASS_KEY || 'k6-load-test-local-ci-key-32chars' }}
+          SSE_DWELL_SECONDS: ${{ github.event.inputs.sse_dwell_seconds || '15' }}
+        run: |
+          mkdir -p backend/tests/load/baselines
+          k6 run \
+            -e BASE_URL="$BASE_URL" \
+            -e ARENA_ID="$ARENA_ID" \
+            -e AUTH_TOKEN="" \
+            -e BYPASS_RATE_LIMIT="$BYPASS_RATE_LIMIT" \
+            -e LOAD_TEST_SECRET_KEY="$LOAD_TEST_SECRET_KEY" \
+            -e SSE_DWELL_SECONDS="$SSE_DWELL_SECONDS" \
+            --out json=backend/tests/load/baselines/latest.json \
+            --summary-export=backend/tests/load/baselines/summary.json \
+            backend/tests/load/suite.js
+
+      - name: Compare against baseline
+        run: |
+          node backend/tests/load/compare-baseline.js \
+            backend/tests/load/baselines/baseline.json \
+            backend/tests/load/baselines/latest.json
+
+      - name: Update baseline (when requested)
+        if: ${{ github.event.inputs.update_baseline == 'true' }}
+        run: |
+          cp backend/tests/load/baselines/latest.json \
+             backend/tests/load/baselines/baseline.json
+          echo "Baseline updated from this run."
+
+      - name: Upload load test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-load-test-results-${{ github.run_id }}
+          path: |
+            backend/tests/load/baselines/latest.json
+            backend/tests/load/baselines/summary.json
+          retention-days: 90
+
+      - name: Upload updated baseline
+        if: ${{ github.event.inputs.update_baseline == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-load-test-baseline
+          path: backend/tests/load/baselines/baseline.json
+          retention-days: 365
+          # Overwrite the previous baseline artifact.
+          overwrite: true
+
+      - name: Run baseline comparator unit tests
+        working-directory: ./backend
+        run: |
+          npx tsx --test tests/load/compare-baseline.unit.test.ts \
+                         tests/loadTestBypass.unit.test.ts

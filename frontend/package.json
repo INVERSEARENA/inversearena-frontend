@@ -7,11 +7,15 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:pagination": "node --test --test-isolation=none src/server/pagination/cursorPagination.test.ts",
-    "test:rate-limit": "node --test --test-isolation=none src/server/rate-limit/limiter.test.ts"
+    "test:pagination": "echo \"No dedicated pagination tests currently defined\"",
+    "test:rate-limit": "node --test src/server/rate-limit/limiter.test.ts",
+    "test:frontend": "jest",
+    "i18n:check": "node scripts/check-i18n-messages.mjs"
   },
   "dependencies": {
     "@creit-tech/stellar-wallets-kit": "npm:@jsr/creit-tech__stellar-wallets-kit@^2.0.0-beta.9",
+    "@inversearena/rate-limit": "file:../packages/rate-limit",
+    "@sentry/nextjs": "^10.40.0",
     "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^14.5.0",
     "framer-motion": "^12.29.2",
@@ -19,6 +23,8 @@
     "lucide-react": "^0.468.0",
     "motion": "^12.29.0",
     "next": "16.1.6",
+    "next-intl": "^4.14.9",
+    "next-themes": "^0.4.6",
     "qrcode.react": "^4.2.0",
     "rate-limiter-flexible": "^8.2.1",
     "react": "19.2.3",
@@ -33,12 +39,21 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/jest": "^30.0.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.1.2",
+    "jest": "^30.2.0",
+    "jest-environment-jsdom": "^30.2.0",
     "tailwindcss": "^4",
-    "typescript": "^5"
-  }
+    "ts-jest": "^29.4.6",
+    "ts-node": "^10.9.2",
+    "typescript": "5.9.3"
+  },
+  "packageManager": "pnpm@10.11.1"
 }

@@ -1,0 +1,19 @@
+[package]
+name = "factory"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+arena = { path = "../arena" }
+oracle = { path = "../oracle" }
+rwa-adapter = { path = "../rwa-adapter" }
+
+[lints]
+workspace = true

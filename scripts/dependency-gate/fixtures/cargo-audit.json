@@ -1,0 +1,19 @@
+{
+  "database": { "advisory-count": 700 },
+  "lockfile": { "dependency-count": 250 },
+  "vulnerabilities": {
+    "found": true,
+    "count": 2,
+    "list": [
+      {
+        "advisory": { "id": "RUSTSEC-2022-0093", "package": "ed25519-dalek", "title": "Double Public Key Signing Function Oracle Attack", "url": "https://github.com/dalek-cryptography/ed25519-dalek/pull/205", "aliases": ["GHSA-w5vr-6qhr-36cc"], "cvss": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N", "informational": null },
+        "package": { "name": "ed25519-dalek", "version": "1.0.1" }
+      },
+      {
+        "advisory": { "id": "RUSTSEC-2024-0001", "package": "some-parser", "title": "Stack exhaustion", "url": "https://rustsec.org/advisories/RUSTSEC-2024-0001", "aliases": [], "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L", "informational": null },
+        "package": { "name": "some-parser", "version": "0.1.0" }
+      }
+    ]
+  },
+  "warnings": {}
+}

@@ -1,0 +1,237 @@
+import { Router } from "express";
+import { z } from "zod";
+import { asyncHandler } from "../middleware/validate";
+import { cacheMiddleware } from "../middleware/cache";
+import { CacheKeys, cacheTTL } from "../cache/cacheService";
+import { prisma } from "../db/prisma";
+import { createRateLimitMiddleware, getPoolsRateLimitConfig } from "../middleware/rateLimit";
+import type { RequestHandler } from "express";
+import { apiError } from "../utils/apiError";
+import { getAssetMetadata, formatAmount } from "../types/asset";
+import { lobbyReservationStore } from "../cache/lobbyReservationStore";
+import { decodeCursorInput, encodeKeysetCursor } from "../utils/keysetPagination";
+import { verifyMetadataHash } from "../utils/metadataHash";
+
+const PaginationSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+  cursor: z.string().optional(),
+});
+
+
+function formatEliminationLog(log: {
+  id: string;
+  userId: string;
+  reason: string | null;
+  eliminatedAt: Date;
+  round: { roundNumber: number };
+}) {
+  return {
+    id: log.id,
+    userId: log.userId,
+    roundNumber: log.round.roundNumber,
+    reason: log.reason,
+    eliminatedAt: log.eliminatedAt.toISOString(),
+  };
+}
+
+export function createPoolsRouter(authMiddleware: RequestHandler): Router {
+  const router = Router();
+
+  const poolsRateLimiter = createRateLimitMiddleware(getPoolsRateLimitConfig());
+
+  /**
+   * POST /api/pools
+   * Rate-limited pool creation endpoint.
+   * Validates stake amount against asset decimals and limits.
+   */
+  router.post(
+    "/",
+    authMiddleware,
+    poolsRateLimiter,
+    asyncHandler(async (req, res) => {
+      const PoolCreateSchema = z.object({
+        arenaId: z.string().length(56).regex(/^C[A-Z2-7]{55}$/),
+        stakeAmount: z.number().positive(),
+        assetCode: z.string().min(1).max(12).default("USDC"),
+      });
+      const { arenaId, stakeAmount, assetCode } = PoolCreateSchema.parse(req.body);
+
+      const arena = await prisma.arena.findUnique({
+        where: { id: arenaId },
+        select: { id: true, stakeToken: true },
+      });
+      if (!arena) {
+        throw apiError(404, "ARENA_NOT_FOUND", `Arena with ID ${arenaId} not found`);
+      }
+
+      const assetMetadata = getAssetMetadata(assetCode);
+
+      if (stakeAmount < assetMetadata.minimumAmount || stakeAmount > assetMetadata.maximumAmount) {
+        throw apiError(
+          400,
+          "INVALID_STAKE_AMOUNT",
+          `Stake amount must be between ${assetMetadata.minimumAmount} and ${assetMetadata.maximumAmount} ${assetCode}`
+        );
+      }
+
+      const pool = await prisma.pool.create({
+        data: { arenaId, stakeAmount },
+      });
+
+      // The stake is confirmed, so this player now counts as a real
+      // (confirmed) player rather than a reservation holder (#1406). Release
+      // is best-effort: a missing/already-expired reservation (e.g. the
+      // reservation endpoint was never called, or the TTL lapsed just
+      // before this request landed) must not block a successful join.
+      if (req.user?.id) {
+        await lobbyReservationStore
+          .releaseSlot(arenaId, req.user.id)
+          .catch(() => undefined);
+      }
+
+      const displayAmount = formatAmount(
+        (stakeAmount * Math.pow(10, assetMetadata.decimals)).toString(),
+        assetMetadata.decimals,
+        assetMetadata.displayDecimals
+      );
+
+      res.status(201).json({
+        ...pool,
+        assetMetadata: {
+          code: assetMetadata.code,
+          decimals: assetMetadata.decimals,
+          displayDecimals: assetMetadata.displayDecimals,
+          displayAmount,
+          minimumAmount: assetMetadata.minimumAmount,
+          maximumAmount: assetMetadata.maximumAmount,
+        },
+        requestId: require("crypto").randomUUID(),
+      });
+    }),
+  );
+
+  /**
+   * POST /api/pools/metadata/verify
+   *
+   * Verify a metadata document against the `metadata_hash` committed on-chain
+   * at pool creation (#1577). The caller supplies the hash read from
+   * `factory.get_arena`; a mismatch is rejected so the upload cannot replace
+   * the published name/description/rules/banner with different content.
+   */
+  router.post(
+    "/metadata/verify",
+    authMiddleware,
+    asyncHandler(async (req, res) => {
+      const MetadataVerifySchema = z.object({
+        metadata: z.record(z.unknown()),
+        metadataHash: z.string().regex(/^[0-9a-fA-F]{64}$/),
+      });
+      const { metadata, metadataHash } = MetadataVerifySchema.parse(req.body);
+
+      if (!verifyMetadataHash(metadata, metadataHash)) {
+        throw apiError(
+          422,
+          "METADATA_HASH_MISMATCH",
+          "Metadata does not match the hash committed on-chain",
+        );
+      }
+
+      res.json({ verified: true, metadataHash: metadataHash.toLowerCase() });
+    }),
+  );
+
+  /**
+   * GET /api/pools/:id/eliminations
+   *
+   * Returns paginated elimination history for the arena associated with this pool.
+   * The cache key includes pool id, limit, and cursor to avoid cross-page data leakage.
+   *
+   * Query params:
+   *  - limit  (1–100, default 25)
+   *  - cursor (opaque base64url string for next page)
+   *
+   * Response:
+   *  {
+   *    items: EliminationEntry[],
+   *    cursor: string | null,
+   *    hasMore: boolean
+   *  }
+   */
+  router.get(
+    "/:id/eliminations",
+    authMiddleware,
+    cacheMiddleware(
+      (req) =>
+        CacheKeys.pool.eliminations(
+          req.params.id ?? "",
+          (req.query.limit as string) ?? 25,
+          (req.query.cursor as string) ?? "0",
+        ),
+      cacheTTL.ARENA_STATS,
+    ),
+    asyncHandler(async (req, res) => {
+      const { id } = req.params;
+      if (!id) {
+        throw apiError(400, "MISSING_POOL_ID", "Pool ID is required");
+      }
+      const { limit, cursor } = PaginationSchema.parse(req.query);
+
+      const pool = await prisma.pool.findUnique({
+        where: { id },
+        select: { arenaId: true },
+      });
+
+      if (!pool) {
+        throw apiError(404, "POOL_NOT_FOUND", "Pool not found");
+      }
+
+      const decoded = decodeCursorInput(cursor);
+
+      let whereClause: any = { round: { arenaId: pool.arenaId } };
+      let skip: number | undefined = undefined;
+
+      if (decoded.mode === "keyset") {
+        const lastEliminatedAt = new Date(decoded.cursor.sortValues.eliminatedAt as string);
+        const lastId = decoded.cursor.id;
+        whereClause = {
+          round: { arenaId: pool.arenaId },
+          OR: [
+            { eliminatedAt: { lt: lastEliminatedAt } },
+            { eliminatedAt: lastEliminatedAt, id: { lt: lastId } },
+          ],
+        };
+      } else if (decoded.mode === "legacy") {
+        skip = decoded.offset;
+      }
+
+      const logs = await prisma.eliminationLog.findMany({
+        where: whereClause,
+        orderBy: [{ eliminatedAt: "desc" }, { id: "desc" }],
+        take: limit + 1,
+        ...(skip !== undefined ? { skip } : {}),
+        include: { round: { select: { roundNumber: true } } },
+      });
+
+      const hasMore = logs.length > limit;
+      const pageLogs = logs.slice(0, limit);
+      const items = pageLogs.map(formatEliminationLog);
+
+      let nextCursor: string | null = null;
+      if (hasMore && pageLogs.length > 0) {
+        const last = pageLogs[pageLogs.length - 1];
+        nextCursor = encodeKeysetCursor(
+          { eliminatedAt: last.eliminatedAt.toISOString() },
+          last.id,
+        );
+      }
+
+      res.json({
+        items,
+        cursor: nextCursor,
+        hasMore,
+      });
+    }),
+  );
+
+  return router;
+}

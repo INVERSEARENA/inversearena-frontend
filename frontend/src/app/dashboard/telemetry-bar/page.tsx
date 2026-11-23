@@ -7,7 +7,8 @@ import {
   ServerTelemetry,
   GlobalPoolData,
 } from "./types/telemetry-bar.types";
-import { CoinGeckoSimplePriceSchema } from "@/shared-d/utils/security-validation";
+import { CoinGeckoSimplePriceSchema } from "@/shared/lib/security-validation";
+import { UI_BEHAVIOR } from "@/shared/config/arenaConstants";
 
 const STATIC_SYSTEM_STATUS: SystemStatus = "operational";
 const STATIC_SERVER_TELEMETRY: ServerTelemetry = {
@@ -19,9 +20,13 @@ const COINGECKO_SIMPLE_PRICE_URL =
   process.env.NEXT_PUBLIC_COINGECKO_SIMPLE_PRICE_URL ||
   "https://api.coingecko.com/api/v3/simple/price?ids=cardano&vs_currencies=usd";
 
-const TelemetryPage: React.FC = () => {
+/**
+ * The live status/global-pool bar, reusable anywhere (e.g. pinned to the top
+ * of the dashboard home page). `TelemetryBar` already renders itself with
+ * `sticky top-0`; this component just owns the data fetching.
+ */
+export const GlobalTelemetryBar: React.FC = () => {
   const [globalPool, setGlobalPool] = useState<GlobalPoolData | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchCryptoPrice = async () => {
@@ -42,27 +47,17 @@ const TelemetryPage: React.FC = () => {
           value: totalPoolValue,
           symbol: "ADA",
         });
-        setError(null);
       } catch (err: unknown) {
         console.error("Failed to fetch real-time crypto price:", err);
-        setError("Failed to fetch Global Pool value.");
         setGlobalPool({ value: 0, symbol: "ADA" });
       }
     };
 
     void fetchCryptoPrice();
-    const intervalId = setInterval(fetchCryptoPrice, 60000);
+    const intervalId = setInterval(fetchCryptoPrice, UI_BEHAVIOR.TELEMETRY_POLL_INTERVAL_MS);
 
     return () => clearInterval(intervalId);
   }, []);
-
-  const handleNotifications = () => {
-    console.log("Notifications clicked");
-  };
-
-  const handleSettings = () => {
-    console.log("Settings clicked");
-  };
 
   if (!globalPool) {
     return (
@@ -76,18 +71,21 @@ const TelemetryPage: React.FC = () => {
   }
 
   return (
+    <TelemetryBar
+      systemStatus={STATIC_SYSTEM_STATUS}
+      serverTelemetry={STATIC_SERVER_TELEMETRY}
+      globalPool={globalPool}
+    />
+  );
+};
+
+const TelemetryPage: React.FC = () => {
+  return (
     <div className="w-full h-auto">
-      <TelemetryBar
-        systemStatus={STATIC_SYSTEM_STATUS}
-        serverTelemetry={STATIC_SERVER_TELEMETRY}
-        globalPool={globalPool}
-        onNotificationClick={handleNotifications}
-        onSettingsClick={handleSettings}
-      />
+      <GlobalTelemetryBar />
       <div className="p-8">
         <h1 className="text-2xl font-bold">Dashboard Content</h1>
         <p className="text-gray-400">This is the main content area below the telemetry bar.</p>
-        {error && <p className="text-red-500 mt-4">Error: {error}</p>}
       </div>
     </div>
   );

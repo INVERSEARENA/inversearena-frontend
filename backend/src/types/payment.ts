@@ -4,11 +4,19 @@ export type PaymentStatus =
   | "awaiting_signature"
   | "submitted"
   | "confirmed"
-  | "failed";
+  | "failed"
+  | "dead"
+  | "unknown";
 
 export interface TransactionRecord {
   id: string;
   payoutId: string;
+  /**
+   * Arena contract the payout is validated against on-chain (#1632): the
+   * payout contract pays only that arena's recorded winner, at most its
+   * recorded prize. Null for rows created before #1632.
+   */
+  arenaId?: string | null;
   idempotencyKey: string;
   sourceAccount: string;
   destinationAccount: string;
@@ -24,14 +32,39 @@ export interface TransactionRecord {
   createdAt: Date;
   updatedAt: Date;
   confirmedAt?: Date | null;
+  replacesTransactionId?: string | null;
+  replacedByTransactionId?: string | null;
+  /** Admin API key id or user id that created this payout (null for legacy rows). */
+  ownerId?: string | null;
+  /**
+   * Settlement breakdown (#1407), in display-unit XLM/USDC (not stroops),
+   * populated only for payouts created from a round settlement — see
+   * domain/roundResolution and domain/settlement calculations.
+   * Null/undefined for ad-hoc admin-created payouts, which never had this
+   * context computed.
+   */
+  principal?: number | null;
+  yieldAmount?: number | null;
+  platformFee?: number | null;
+  dust?: number | null;
+}
+
+export interface PayoutBreakdown {
+  principal: number;
+  yieldAmount: number;
+  platformFee: number;
+  dust: number;
 }
 
 export interface CreatePayoutRequest {
   payoutId: string;
+  /** Arena contract id the payout is for (#1632). */
+  arenaId: string;
   destinationAccount: string;
   amount: string;
   asset: "XLM" | "USDC";
   idempotencyKey: string;
+  breakdown?: PayoutBreakdown;
 }
 
 export interface BuildPayoutResult {

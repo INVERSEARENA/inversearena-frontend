@@ -8,7 +8,7 @@ import {
   useCallback,
 } from "react";
 import { createPortal } from "react-dom";
-import { AnimatePresence, motion, type Variants, type Transition } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion, type Variants, type Transition } from "motion/react";
 
 export type ModalSize = "sm" | "md" | "lg" | "full";
 export type ModalPosition = "center" | "bottom-sheet";
@@ -118,6 +118,36 @@ function useFocusTrap(isOpen: boolean) {
   return { containerRef, handleKeyDown };
 }
 
+let modalEscapeId = 0;
+const openModalEscapeIds: number[] = [];
+
+function useEscapeHandler(
+  isOpen: boolean,
+  closeOnEscape: boolean,
+  onClose: () => void
+) {
+  useEffect(() => {
+    if (!isOpen || !closeOnEscape) return;
+
+    const id = ++modalEscapeId;
+    openModalEscapeIds.push(id);
+
+    const handleEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      const topId = openModalEscapeIds[openModalEscapeIds.length - 1];
+      if (id !== topId) return;
+      onClose();
+    };
+
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("keydown", handleEscape);
+      const index = openModalEscapeIds.indexOf(id);
+      if (index !== -1) openModalEscapeIds.splice(index, 1);
+    };
+  }, [isOpen, closeOnEscape, onClose]);
+}
+
 function useBodyScrollLock(isOpen: boolean) {
   useEffect(() => {
     if (!isOpen) return;
@@ -138,6 +168,20 @@ function useBodyScrollLock(isOpen: boolean) {
   }, [isOpen]);
 }
 
+const reducedOverlayVariants: Variants = {
+  hidden: { opacity: 0 },
+  visible: { opacity: 1 },
+  exit: { opacity: 0 },
+};
+
+const reducedModalVariants: Variants = {
+  hidden: { opacity: 0 },
+  visible: { opacity: 1 },
+  exit: { opacity: 0 },
+};
+
+const instantTransition: Transition = { duration: 0 };
+
 export function Modal({
   isOpen,
   onClose,
@@ -152,22 +196,12 @@ export function Modal({
   className = "",
   overlayClassName = "",
 }: ModalProps) {
+  const shouldReduceMotion = useReducedMotion();
   const { containerRef, handleKeyDown } = useFocusTrap(isOpen);
 
   useBodyScrollLock(isOpen);
 
-  useEffect(() => {
-    if (!isOpen || !closeOnEscape) return;
-
-    const handleEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    };
-
-    document.addEventListener("keydown", handleEscape);
-    return () => document.removeEventListener("keydown", handleEscape);
-  }, [isOpen, closeOnEscape, onClose]);
+  useEscapeHandler(isOpen, closeOnEscape, onClose);
 
   const handleOverlayClick = useCallback(() => {
     if (closeOnOverlayClick) {
@@ -189,11 +223,11 @@ export function Modal({
       {isOpen && (
         <motion.div
           className={`fixed inset-0 z-50 flex p-4 ${positionStyles[position]} ${overlayClassName}`}
-          variants={overlayVariants}
+          variants={shouldReduceMotion ? reducedOverlayVariants : overlayVariants}
           initial="hidden"
           animate="visible"
           exit="exit"
-          transition={{ duration: 0.2 }}
+          transition={shouldReduceMotion ? instantTransition : { duration: 0.2 }}
           onClick={handleOverlayClick}
           aria-hidden="true"
         >
@@ -218,11 +252,11 @@ export function Modal({
               outline-none
               ${className}
             `}
-            variants={modalVariants[position]}
+            variants={shouldReduceMotion ? reducedModalVariants : modalVariants[position]}
             initial="hidden"
             animate="visible"
             exit="exit"
-            transition={transitionConfig}
+            transition={shouldReduceMotion ? instantTransition : transitionConfig}
             onClick={handleContentClick}
             onKeyDown={handleKeyDown}
           >

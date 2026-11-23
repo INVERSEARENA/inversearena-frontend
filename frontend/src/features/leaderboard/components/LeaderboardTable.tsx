@@ -1,13 +1,18 @@
 "use client";
 
-import { Survivor } from "../types";
+import { Survivor } from "../model/types";
 import { RankTableRow } from "./RankTableRow";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { Users } from "lucide-react";
 
 interface LeaderboardTableProps {
   survivors: Survivor[];
   onChallenge?: (survivorId: string) => void;
   isLoading?: boolean;
   className?: string;
+  /** Connected wallet address — matching row is highlighted (#1567). */
+  highlightWallet?: string | null;
 }
 
 // Rankings table for survivors (4th place onwards)
@@ -16,17 +21,36 @@ export function LeaderboardTable({
   onChallenge,
   isLoading = false,
   className = "",
+  highlightWallet = null,
 }: LeaderboardTableProps) {
   if (isLoading) {
     return (
-      <div className={`bg-card-bg border border-white/10 ${className}`}>
-        <div className="flex h-64 items-center justify-center">
-          <div className="flex flex-col items-center gap-3">
-            <div className="h-8 w-8 animate-spin rounded-full border-2 border-neon-green border-t-transparent" />
-            <span className="font-mono text-xs uppercase tracking-widest text-white/60">
-              Loading Rankings...
-            </span>
-          </div>
+      <div className={`bg-card-bg border border-white/10 overflow-hidden ${className}`}>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[700px]">
+            <thead>
+              <tr className="border-b border-white/10 bg-dark-bg/50 text-left">
+                <th className="py-4 pl-6 pr-4 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-white/50">Rank</th>
+                <th className="px-4 py-4 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-white/50">Agent ID</th>
+                <th className="px-4 py-4 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-white/50">Survival Streak</th>
+                <th className="px-4 py-4 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-white/50">Total Yield</th>
+                <th className="px-4 py-4 text-center font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-white/50">Arenas Won</th>
+                <th className="py-4 pl-4 pr-6 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-white/50">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...Array(5)].map((_, i) => (
+                <tr key={i} className="border-b border-white/5">
+                  <td className="py-5 pl-6 pr-4"><Skeleton className="h-8 w-8" /></td>
+                  <td className="px-4 py-5"><Skeleton className="h-4 w-32" /></td>
+                  <td className="px-4 py-5"><Skeleton className="h-8 w-24" /></td>
+                  <td className="px-4 py-5"><Skeleton className="h-5 w-20" /></td>
+                  <td className="px-4 py-5 flex justify-center"><Skeleton className="h-5 w-12" /></td>
+                  <td className="py-5 pl-4 pr-6"><Skeleton className="h-10 w-28" /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
     );
@@ -34,13 +58,14 @@ export function LeaderboardTable({
 
   if (survivors.length === 0) {
     return (
-      <div className={`bg-card-bg border border-white/10 ${className}`}>
-        <div className="flex h-64 items-center justify-center">
-          <span className="font-mono text-sm text-white/40">
-            No survivors found
-          </span>
-        </div>
-      </div>
+      <EmptyState
+        icon={Users}
+        title="No Survivors Found"
+        description="The arena is currently empty. Be the first to join and dominate the leaderboard!"
+        actionLabel="Join Your First Arena"
+        onAction={() => window.location.href = "/dashboard/games"}
+        className={className}
+      />
     );
   }
 
@@ -93,7 +118,11 @@ export function LeaderboardTable({
               <RankTableRow
                 key={survivor.id}
                 survivor={survivor}
-                onChallenge={onChallenge}
+                isHighlighted={
+                  highlightWallet != null &&
+                  survivor.agentId.toLowerCase() === highlightWallet.toLowerCase()
+                }
+                {...(onChallenge !== undefined && { onChallenge })}
               />
             ))}
           </tbody>
@@ -102,3 +131,4 @@ export function LeaderboardTable({
     </div>
   );
 }
+

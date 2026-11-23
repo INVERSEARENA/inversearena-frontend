@@ -1,0 +1,168 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`Footer matches snapshot 1`] = `
+<footer
+  class="bg-black pt-24 pb-16 px-6 border-t border-white/5"
+>
+  <div
+    class="max-w-6xl mx-auto"
+  >
+    <div
+      class="grid grid-cols-1 md:grid-cols-12 gap-12 mb-20"
+    >
+      <div
+        class="md:col-span-4"
+      >
+        <div
+          class="flex items-center gap-2 mb-8"
+        >
+          <div
+            class="w-6 h-6 border border-neon-green flex items-center justify-center p-1"
+          >
+            <div
+              class="w-full h-full bg-neon-green"
+            />
+          </div>
+          <div
+            class="text-xl tracking-tighter uppercase font-extralight"
+          >
+            <span
+              class="text-white"
+            >
+              INVERSE
+            </span>
+            <span
+              class="text-neon-green ml-1"
+            >
+              _ARENA
+            </span>
+          </div>
+        </div>
+        <p
+          class="text-[9px] text-zinc-600 font-mono leading-relaxed uppercase font-medium tracking-widest max-w-xs"
+        >
+          A DECENTRALIZED GAME THEORY PROTOCOL ON SOROBAN. WHERE STRATEGY MEETS SUSTAINABLE YIELD.
+        </p>
+      </div>
+      <div
+        class="md:col-span-2"
+      >
+        <h4
+          class="text-[9px] font-bold text-neon-green tracking-[0.2em] uppercase mb-8"
+        >
+          SYSTEM
+        </h4>
+        <ul
+          class="space-y-4 text-[9px] font-mono text-zinc-400 font-medium tracking-widest uppercase"
+        >
+          <li>
+            <a
+              class="hover:text-neon-green transition-colors"
+              href="#"
+            >
+              STATUS_LOG
+            </a>
+          </li>
+          <li>
+            <a
+              class="hover:text-neon-green transition-colors"
+              href="#"
+            >
+              YIELD_ORACLE
+            </a>
+          </li>
+          <li>
+            <a
+              class="hover:text-neon-green transition-colors"
+              href="#"
+            >
+              SECURITY_AUDIT
+            </a>
+          </li>
+        </ul>
+      </div>
+      <div
+        class="md:col-span-2"
+      >
+        <h4
+          class="text-[9px] font-bold text-neon-pink tracking-[0.2em] uppercase mb-8"
+        >
+          COMMUNITY
+        </h4>
+        <ul
+          class="space-y-4 text-[9px] font-mono text-zinc-400 font-medium tracking-widest uppercase"
+        >
+          <li>
+            <a
+              class="hover:text-neon-pink transition-colors"
+              href="#"
+            >
+              DISCORD
+            </a>
+          </li>
+          <li>
+            <a
+              class="hover:text-neon-pink transition-colors"
+              href="#"
+            >
+              X_TERMINAL
+            </a>
+          </li>
+          <li>
+            <a
+              class="hover:text-neon-pink transition-colors"
+              href="#"
+            >
+              GOVERNANCE
+            </a>
+          </li>
+        </ul>
+      </div>
+      <div
+        class="md:col-span-4"
+      >
+        <h4
+          class="text-[9px] font-bold text-white tracking-[0.2em] uppercase mb-8"
+        >
+          LEGAL
+        </h4>
+        <ul
+          class="space-y-4 text-[9px] font-mono text-zinc-700 font-medium tracking-widest uppercase"
+        >
+          <li>
+            <span>
+              © 2026 INVERSE_ARENA_PROTOCOL
+            </span>
+          </li>
+          <li>
+            <span>
+              SOROBAN_MAINNET_03
+            </span>
+          </li>
+        </ul>
+      </div>
+    </div>
+    <div
+      class="pt-10 border-t border-white/5 flex flex-col md:flex-row justify-between items-center gap-4"
+    >
+      <div
+        class="flex items-center gap-3"
+      >
+        <div
+          class="w-1.5 h-1.5 rounded-full bg-neon-green"
+        />
+        <span
+          class="text-[8px] font-mono text-zinc-700 uppercase tracking-[0.3em] font-medium"
+        >
+          NETWORK_STATUS: OPTIMAL
+        </span>
+      </div>
+      <div
+        class="text-[8px] font-mono text-zinc-800 uppercase tracking-[0.3em]"
+      >
+        built_with_soroban_and_stellar
+      </div>
+    </div>
+  </div>
+</footer>
+`;
