@@ -87,6 +87,12 @@ pub(crate) enum DataKey {
     /// self-funded joins. Kept in its own key so the persisted `PlayerState`
     /// XDR layout is unchanged. Refunds are paid to this address when present.
     Sponsor(Address),
+    /// Ledger timestamp at which the arena entered Open after a round.
+    LastTransitionAt,
+    /// Inter-round abandonment timeout snapshotted at initialization.
+    InterRoundTimeout,
+    /// Cumulative paused seconds applied to the current round deadlines.
+    PausedDeadlineSeconds,
 }
 
 pub struct ArenaRepository<'a> {

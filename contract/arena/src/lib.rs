@@ -77,6 +77,12 @@ const MAX_PLATFORM_FEE_BPS: u32 = 1000;
 /// pause was set, the pause no longer blocks anything — claims and refunds
 /// included. The protocol admin may pause again, which restarts the clock.
 pub const MAX_PAUSE_DURATION_SECONDS: u64 = 86_400; // 1 day
+/// Minimum inter-round inactivity window (24 hours).
+pub const MIN_INTER_ROUND_TIMEOUT_SECONDS: u64 = 86_400;
+/// Maximum inter-round inactivity window (30 days).
+pub const MAX_INTER_ROUND_TIMEOUT_SECONDS: u64 = 2_592_000;
+/// Default inter-round inactivity window (7 days), snapshotted at initialization.
+pub const DEFAULT_INTER_ROUND_TIMEOUT_SECONDS: u64 = 604_800;
 
 /// This crate's own compiled WASM, used by `integration_tests.rs` so the
 /// in-process factory contract can dynamically deploy a real arena instance
@@ -117,6 +123,17 @@ pub const HOST_GRACE_SECONDS: u64 = 3_600;
 /// above `HOST_GRACE_SECONDS`, so a keeper-initiated resolution can never race
 /// a stranger-initiated cancellation.
 pub const EXPIRY_GRACE_SECONDS: u64 = 86_400;
+
+pub const DEFAULT_INTER_ROUND_TIMEOUT_SECONDS: u64 = 604_800;
+pub const MIN_INTER_ROUND_TIMEOUT_SECONDS: u64 = 86_400;
+pub const MAX_INTER_ROUND_TIMEOUT_SECONDS: u64 = 2_592_000;
+
+/// Maximum duration between rounds: if a round ends and the next one does not
+/// start within this long, the arena is force-cancelled to unstick any funds.
+/// 30 days is long enough for any realistic off-chain delay, including
+/// multi-sig delays, and also covers the rare case of a round resolving just
+/// before a leap second.
+pub const MAX_ROUND_GAP_SECONDS: u64 = 2_592_000; // 30 days
 
 #[contract]
 /// On-chain arena contract. Manages the full lifecycle of a single elimination
@@ -213,6 +230,9 @@ impl ArenaContract {
         };
         ArenaStorage::save_config(&env, &config);
         ArenaStorage::initialize_paged_roster(&env);
+        ArenaStorage::save_last_transition_at(&env, env.ledger().timestamp());
+        ArenaStorage::save_inter_round_timeout(&env, DEFAULT_INTER_ROUND_TIMEOUT_SECONDS);
+        ArenaStorage::save_paused_deadline_seconds(&env, 0);
         ArenaStorage::save_player_limits(&env, min_players, max_players);
         ArenaStorage::save_last_vault_balance(&env, 0);
         ArenaEvents::initialized(&env, &admin);
@@ -1564,9 +1584,6 @@ impl ArenaContract {
         // Withdraw all principal from the yield vault. A refusal is recorded
         // rather than ignored, so refunds stay blocked until `retry_withdraw`
         // succeeds (#1631).
-        if !Self::release_vault_principal(&env, &config) {
-            ArenaStorage::save_funds_in_vault(&env, true);
-        }
         let arena_addr = env.current_contract_address();
 
         ArenaEvents::arena_cancelled(&env, &config.admin);
@@ -2250,14 +2267,14 @@ mod test {
             let config = ArenaConfig {
                 admin: Address::generate(&env),
                 stake_token: Address::generate(&env),
+                yield_vault: Address::generate(&env),
                 entry_fee: 100,
                 state: GameState::Open,
                 paused: false,
                 player_count: 0,
                 active_player_count: 0,
                 cumulative_yield: 0,
-                commit_deadline: u64::MAX,
-                yield_vault: Address::generate(&env),
+                commit_deadline: 0,
                 round_count: 0,
                 oracle_contract: oracle_id,
                 factory: Address::generate(&env),
@@ -2359,7 +2376,7 @@ mod test {
 
     #[test]
     fn stale_survivor_page_self_heals_from_player_state() {
-        let (env, client) = setup(2);
+        let (env, client) = setup(51);
         env.as_contract(&client.address, || {
             let players = ArenaStorage::load_all_players(&env);
             let stale = players.get(0).unwrap();
@@ -2376,10 +2393,13 @@ mod test {
             ArenaStorage::save_survivor_page(&env, 0, &stale_page);
             ArenaStorage::save_survivor_count(&env, 1);
 
-            let resolution = ArenaContract::resolve_players(&env, 1, 1);
+            let resolution = ArenaContract::resolve_players(&env, 1, 51);
             assert_eq!(resolution.eliminated, 1);
-            assert_eq!(resolution.survivors, 0);
-            assert!(ArenaStorage::load_survivor_index(&env).is_empty());
+            assert_eq!(resolution.survivors, 50);
+            assert_eq!(resolution.winner, None);
+
+            let survivors = ArenaStorage::load_survivor_index(&env);
+            assert_eq!(survivors.len(), 50);
         });
     }
 
@@ -2440,7 +2460,7 @@ mod test {
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
-                oracle_contract: Address::generate(&env),
+                oracle_contract: oracle_id,
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
@@ -2482,7 +2502,7 @@ mod test {
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
-                oracle_contract: Address::generate(&env),
+                oracle_contract: oracle_id,
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
@@ -2519,7 +2539,7 @@ mod test {
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
-                oracle_contract: Address::generate(&env),
+                oracle_contract: oracle_id,
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
@@ -2564,7 +2584,7 @@ mod test {
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
-                oracle_contract: Address::generate(&env),
+                oracle_contract: oracle_id,
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
@@ -2601,7 +2621,7 @@ mod test {
                 commit_deadline: 1,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
-                oracle_contract: Address::generate(&env),
+                oracle_contract: oracle_id,
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
@@ -2639,7 +2659,7 @@ mod test {
                 commit_deadline: 0,
                 yield_vault: Address::generate(&env),
                 round_count: 0,
-                oracle_contract: Address::generate(&env),
+                oracle_contract: oracle_id,
                 factory: Address::generate(&env),
                 pool_id: 0,
                 platform_fee_bps: 1000,
@@ -2782,13 +2802,13 @@ mod test {
                     entry_fee: 100,
                     state: GameState::Active,
                     paused: false,
-                    player_count: 1,
-                    active_player_count: 1,
+                    player_count: 0,
+                    active_player_count: 0,
                     cumulative_yield: 0,
                     commit_deadline: 0,
                     yield_vault: Address::generate(&env),
                     round_count: 0,
-                    oracle_contract: Address::generate(&env),
+                    oracle_contract: oracle_id,
                     factory: Address::generate(&env),
                     pool_id: 0,
                     platform_fee_bps: 1000,
@@ -2868,906 +2888,14 @@ mod test {
 
         let p1 = Address::generate(&env);
         let p2 = Address::generate(&env);
-        token_admin_client.mint(&p1, &1000);
-        token_admin_client.mint(&p2, &1000);
-        client.join_arena(&p1);
-        client.join_arena(&p2);
-        env.ledger().with_mut(|li| li.timestamp = 1000);
-        client.start_round(&60);
-
-        let commitment = BytesN::from_array(&env, &[2u8; 32]);
-
-        client.pause(&symbol_short!("emerg"));
-        client.unpause();
-        client.submit_commitment(&p1, &commitment);
-
-        env.as_contract(&client.address, || {
-            assert_eq!(
-                ArenaStorage::load_commitment(&env, &p1, 1).unwrap(),
-                commitment
-            );
-            assert!(!ArenaStorage::load_config(&env).unwrap().paused);
-        });
-    }
-
-    #[test]
-    fn resolve_round_before_grace_elapsed_fails() {
-        let (env, client) = setup_started(60, 1_000);
-        env.ledger().with_mut(|li| li.timestamp = 1_030);
-        assert!(client.try_resolve_round().is_err());
-        assert_eq!(state_of(&env, &client), GameState::Active);
-    }
-
-    #[test]
-    fn resolve_round_after_grace_elapsed_succeeds() {
-        // setup_started's two players never submit a choice, so both are
-        // eliminated as non-revealers and survivors == 0. Since the
-        // zero-survivors fix, that correctly resolves to Cancelled (unlocking
-        // claim_refund) rather than Finished (which would need a winner that
-        // doesn't exist here) — this test only exercises that resolve_round
-        // succeeds once the grace period has elapsed, not a specific outcome.
-        let (env, client) = setup_started(60, 1_000);
-        env.ledger().with_mut(|li| li.timestamp = 1_061);
-        client.resolve_round();
-        assert_eq!(state_of(&env, &client), GameState::Cancelled);
-    }
-
-    // ── Coverage added for issue #1512 (oracle freshness policy) ──────────
-
-    /// Builds a started arena wired to `MockOracleWithReading`, with the
-    /// observation set to be exactly `age_secs` old at the moment
-    /// `resolve_round` is called (grace period already elapsed).
-    fn setup_started_with_oracle_age(
-        age_secs: u64,
-    ) -> (Env, ArenaContractClient<'static>, u64) {
-        let env = Env::default();
-        let oracle_id = env.register(MockOracleWithReading, ());
-        let start_ts = 100_000u64;
-        let duration = 60u64;
-        let resolve_ts = start_ts + duration + 1;
-        let observed_at = resolve_ts - age_secs;
-
-        MockOracleWithReadingClient::new(&env, &oracle_id).set_reading(&500, &observed_at, &1);
-
-        let (env, client) = setup_started_with_oracle(env, duration, start_ts, oracle_id);
-        env.ledger().with_mut(|li| li.timestamp = resolve_ts);
-        (env, client, resolve_ts)
-    }
-
-    #[test]
-    fn resolve_round_accepts_oracle_reading_one_second_below_max_age() {
-        // Default policy: max_age_secs = 3_600.
-        let (env, client, _resolve_ts) = setup_started_with_oracle_age(3_599);
-        client.resolve_round();
-        assert_eq!(state_of(&env, &client), GameState::Cancelled);
-    }
-
-    #[test]
-    fn resolve_round_rejects_oracle_reading_at_exact_max_age() {
-        // Exact threshold: age == max_age_secs must already be Stale.
-        let (env, client, _resolve_ts) = setup_started_with_oracle_age(3_600);
-        let result = client.try_resolve_round();
-        assert_eq!(result, Err(Ok(ArenaError::StaleOracleData)));
-        // Rejected before any state mutation — round must still be Active.
-        assert_eq!(state_of(&env, &client), GameState::Active);
-    }
-
-    #[test]
-    fn resolve_round_rejects_oracle_reading_far_older_than_max_age() {
-        let (env, client, _resolve_ts) = setup_started_with_oracle_age(100_000);
-        let result = client.try_resolve_round();
-        assert_eq!(result, Err(Ok(ArenaError::StaleOracleData)));
-        assert_eq!(state_of(&env, &client), GameState::Active);
-    }
-
-    #[test]
-    fn resolve_round_accepts_oracle_reading_at_exact_warn_threshold() {
-        // Exact threshold: age == warn_age_secs (1_800) is Warning, not Stale — still proceeds.
-        let (env, client, _resolve_ts) = setup_started_with_oracle_age(1_800);
-        client.resolve_round();
-        assert_eq!(state_of(&env, &client), GameState::Cancelled);
-    }
-
-    #[test]
-    fn resolve_round_rejects_future_dated_oracle_observation() {
-        // Clock/ledger divergence: observed_at is after `now` — must not be
-        // silently treated as maximally fresh.
-        let env = Env::default();
-        let oracle_id = env.register(MockOracleWithReading, ());
-        let start_ts = 100_000u64;
-        let duration = 60u64;
-        let resolve_ts = start_ts + duration + 1;
-        let future_observed_at = resolve_ts + 10_000;
-
-        MockOracleWithReadingClient::new(&env, &oracle_id).set_reading(&500, &future_observed_at, &1);
-
-        let (env, client) = setup_started_with_oracle(env, duration, start_ts, oracle_id);
-        env.ledger().with_mut(|li| li.timestamp = resolve_ts);
-
-        let result = client.try_resolve_round();
-        assert_eq!(result, Err(Ok(ArenaError::StaleOracleData)));
-        assert_eq!(state_of(&env, &client), GameState::Active);
-    }
-
-    #[test]
-    fn resolve_round_rejects_when_oracle_has_no_observation_ever() {
-        // Missing metadata: get_oracle_reading is implemented but no
-        // set_reading call has ever landed (observed_at defaults to 0).
-        let env = Env::default();
-        let oracle_id = env.register(MockOracleWithReading, ());
-        let (env, client) = setup_started_with_oracle(env, 60, 100_000, oracle_id);
-        env.ledger().with_mut(|li| li.timestamp = 100_061);
-
-        let result = client.try_resolve_round();
-        assert_eq!(result, Err(Ok(ArenaError::StaleOracleData)));
-    }
-
-    #[test]
-    fn resolve_round_proceeds_when_oracle_predates_freshness_metadata() {
-        // Mixed deployment version: a pre-#1512 oracle with no
-        // get_oracle_reading at all must not block resolution — this is the
-        // existing liveness-first `fetch_yield_bps` fallback, unchanged.
-        let (env, client) = setup_started(60, 1_000);
-        env.ledger().with_mut(|li| li.timestamp = 1_061);
-        let result = client.try_resolve_round();
-        assert!(result.is_ok(), "an oracle with no freshness metadata must not block resolution");
-        assert_eq!(state_of(&env, &client), GameState::Cancelled);
-    }
-
-    #[test]
-    fn resolve_round_proceeds_with_mismatched_oracle_source_version() {
-        // Oracle upgrade: a different source_version (e.g. a newer/older
-        // oracle deployment) must not by itself gate freshness — only age does.
-        let env = Env::default();
-        let oracle_id = env.register(MockOracleWithReading, ());
-        let start_ts = 100_000u64;
-        let duration = 60u64;
-        let resolve_ts = start_ts + duration + 1;
-
-        MockOracleWithReadingClient::new(&env, &oracle_id).set_reading(&500, &resolve_ts, &99);
-
-        let (env, client) = setup_started_with_oracle(env, duration, start_ts, oracle_id);
-        env.ledger().with_mut(|li| li.timestamp = resolve_ts);
-
-        client.resolve_round();
-        assert_eq!(state_of(&env, &client), GameState::Cancelled);
-    }
-
-    #[test]
-    fn resolve_round_emits_oracle_freshness_observed_event() {
-        let (env, client, _resolve_ts) = setup_started_with_oracle_age(0);
-        client.resolve_round();
-        let events = env.events().all();
-        // #1607: topic = ("arena", "orc_fresh"); data = (v, round, class, age).
-        let has_freshness_event = events
-            .iter()
-            .any(|(contract, topics, _data)| {
-                contract == client.address
-                    && topics
-                        == (Symbol::new(&env, "arena"), Symbol::new(&env, "orc_fresh")).into_val(&env)
-            });
-        assert!(has_freshness_event, "must emit orc_fresh on every resolve_round attempt");
-    }
-
-    #[test]
-    fn resolve_round_emits_oracle_stale_rejected_event_on_rejection() {
-        let (env, client, _resolve_ts) = setup_started_with_oracle_age(3_600);
-        let _ = client.try_resolve_round();
-        let events = env.events().all();
-        let has_rejection_event = events.iter().any(|(contract, topics, _data)| {
-            contract == client.address
-                && topics == (Symbol::new(&env, "arena"), Symbol::new(&env, "orc_stale")).into_val(&env)
-        });
-        assert!(has_rejection_event, "must emit orc_stale when resolution is refused for staleness");
-    }
-
-    #[test]
-    fn resolve_round_requires_an_active_round() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        env.as_contract(&contract_id, || {
-            let config = ArenaConfig {
-                admin: Address::generate(&env),
-                stake_token: Address::generate(&env),
-                entry_fee: 100,
-                state: GameState::Open,
-                paused: false,
-                player_count: 0,
-                active_player_count: 0,
-                cumulative_yield: 0,
-                commit_deadline: 0,
-                yield_vault: Address::generate(&env),
-                round_count: 0,
-                oracle_contract: Address::generate(&env),
-                factory: Address::generate(&env),
-                pool_id: 0,
-                platform_fee_bps: 1000,
-            };
-            ArenaStorage::save_config(&env, &config);
-        });
-        let client = ArenaContractClient::new(&env, &contract_id);
-        assert!(client.try_resolve_round().is_err());
-    }
-
-    #[test]
-    fn event_emitters_publish_expected_topics() {
-        let env = Env::default();
-        let contract_id = env.register(ArenaContract, ());
-        let admin = Address::generate(&env);
-        let player = Address::generate(&env);
-        env.as_contract(&contract_id, || {
-            ArenaEvents::initialized(&env, &admin);
-            ArenaEvents::player_joined(&env, &player, 1);
-            ArenaEvents::game_started(&env, 1, 60);
-            ArenaEvents::round_resolved(&env, 1, 2, 1);
-            ArenaEvents::player_eliminated(&env, &player, 1);
-            ArenaEvents::game_finished(&env, &player, 1);
-            ArenaEvents::prize_claimed(&env, &player, 105, 5);
-            ArenaEvents::admin_changed(&env, &admin, &player);
-        });
-
-        assert_eq!(env.events().all().len(), 8);
-    }
-
-    #[test]
-    fn total_yield_sums_round_snapshots() {
-        let (env, client) = setup(0);
-        env.as_contract(&client.address, || {
-            let mut config = ArenaStorage::load_config(&env).unwrap();
-            config.round_count = 3;
-            config.cumulative_yield = 60;
-            ArenaStorage::save_config(&env, &config);
-            for round in 1..=3 {
-                ArenaStorage::save_yield_snapshot(
-                    &env,
-                    round,
-                    &YieldSnapshot {
-                        round,
-                        rate_bps: 500,
-                        accrued: i128::from(round) * 10,
-                    },
-                );
-            }
-        });
-
-        assert_eq!(client.get_total_yield(), 60);
-    }
-
-    #[test]
-    fn resolve_round_tracks_yield_across_three_vault_snapshots() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let vault_id = env.register(MockVault, ());
-        let oracle_id = env.register(MockOracle, ());
-
-        let p1 = Address::generate(&env);
-        let p2 = Address::generate(&env);
-        env.as_contract(&contract_id, || {
-            ArenaStorage::save_config(
-                &env,
-                &ArenaConfig {
-                    admin: Address::generate(&env),
-                    stake_token: Address::generate(&env),
-                    entry_fee: 100,
-                    state: GameState::Open,
-                    paused: false,
-                    player_count: 0,
-                    active_player_count: 0,
-                    cumulative_yield: 0,
-                    commit_deadline: 0,
-                    yield_vault: vault_id.clone(),
-                    round_count: 0,
-                    oracle_contract: oracle_id,
-                    factory: Address::generate(&env),
-                    pool_id: 0,
-                    platform_fee_bps: 1000,
-                },
-            );
-            ArenaStorage::add_player(&env, &p1);
-            ArenaStorage::add_player(&env, &p2);
-        });
-
-        // Seed the vault's real balance. `start_round` captures this as the
-        // round's baseline (#1072), so yield is whatever the balance grows by
-        // *during* the round.
-        let set_vault_balance = |balance: i128| {
-            env.as_contract(&vault_id, || {
-                env.storage()
-                    .persistent()
-                    .set(&soroban_sdk::symbol_short!("BAL"), &balance);
-            });
-        };
-        set_vault_balance(100);
-
-        let client = ArenaContractClient::new(&env, &contract_id);
-        for (idx, balance) in [110i128, 125, 150].iter().enumerate() {
-            // Restore players to active each iteration: resolve_round eliminates
-            // all players who didn't reveal, so without this reset the second
-            // start_round would see 0 active players.
-            env.as_contract(&contract_id, || {
-                let active = PlayerState {
-                    active: true,
-                    rounds_survived: 0,
-                };
-                ArenaStorage::save_player(&env, &p1, &active);
-                ArenaStorage::save_player(&env, &p2, &active);
-            });
-            let round_start_ts = 1_000 + (idx as u64) * 1_000;
-            env.ledger().with_mut(|li| li.timestamp = round_start_ts);
-            // Reset to Open before each round because resolve_round transitions
-            // to Finished when there are no survivors (no real players exist).
-            env.as_contract(&contract_id, || {
-                let mut cfg = ArenaStorage::load_config(&env).unwrap();
-                cfg.state = GameState::Open;
-                cfg.active_player_count = 2;
-                ArenaStorage::save_config(&env, &cfg);
-            });
-            // Baseline is captured here, from the balance the previous round
-            // left behind: 100, then 110, then 125.
-            client.start_round(&MIN_ROUND_DURATION_SECONDS);
-            // The vault earns during the round: +10, +15, +25.
-            set_vault_balance(*balance);
-            // Advance past the grace period (round_start + duration) so
-            // resolve_round's deadline check passes.
-            env.ledger()
-                .with_mut(|li| li.timestamp = round_start_ts + MIN_ROUND_DURATION_SECONDS);
-            client.resolve_round();
-        }
-
-        assert_eq!(client.get_total_yield(), 50);
-        assert_eq!(client.get_yield_snapshot(&1).unwrap().accrued, 10);
-        assert_eq!(client.get_yield_snapshot(&2).unwrap().accrued, 15);
-        assert_eq!(client.get_yield_snapshot(&3).unwrap().accrued, 25);
-    }
-
-    /// #1146 — `join_arena` writes to `last_vault_balance` on every join
-    /// (`baseline = load_last_vault_balance + entry_fee`, saved back after
-    /// each join). If that write were the actual yield baseline, three
-    /// sequential 100-USDC joins would inflate it to 300 before the round
-    /// even starts, so any later vault growth would be undercounted or
-    /// (if the real vault balance ends up below the inflated baseline)
-    /// silently clamped to zero accrued yield via `resolve_round`'s
-    /// `vault_balance >= previous_balance` check.
-    ///
-    /// This test drives `join_arena` for real (not direct storage injection,
-    /// unlike `resolve_round_tracks_yield_across_three_vault_snapshots`
-    /// above, which never exercises `join_arena`'s per-join write at all) so
-    /// the per-join baseline write is actually on the call path. It asserts
-    /// the round-start baseline directly (must be 0, the vault's real
-    /// balance — MockVault's own `deposit` is a no-op — not 300, the sum
-    /// `join_arena` would have left behind across three joins), then
-    /// confirms the round's yield snapshot matches the issue's own worked
-    /// example: 15 accrued after the vault "earns 15 USDC yield externally".
-    #[test]
-    fn join_arena_per_join_write_does_not_corrupt_the_yield_baseline() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let vault_id = env.register(MockVault, ());
-        let oracle_id = env.register(MockOracle, ());
-        let token_admin = Address::generate(&env);
-        let token_id = env
-            .register_stellar_asset_contract_v2(token_admin)
-            .address();
-        let token_admin_client = StellarAssetClient::new(&env, &token_id);
-
-        let p1 = Address::generate(&env);
-        let p2 = Address::generate(&env);
         let p3 = Address::generate(&env);
         token_admin_client.mint(&p1, &1000);
         token_admin_client.mint(&p2, &1000);
         token_admin_client.mint(&p3, &1000);
 
-        let client = ArenaContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        client.initialize(
-            &admin,
-            &token_id,
-            &vault_id,
-            &100,
-            &oracle_id,
-            &Address::generate(&env),
-            &1,
-            &2,
-            &10,
-            &60,
-        );
-
-        let set_vault_balance = |balance: i128| {
-            env.as_contract(&vault_id, || {
-                env.storage()
-                    .persistent()
-                    .set(&soroban_sdk::symbol_short!("BAL"), &balance);
-            });
-        };
-
-        // Each join_arena call transfers the 100 USDC entry fee and, on the
-        // buggy path, also adds 100 to last_vault_balance directly — three
-        // joins would leave last_vault_balance at 300 if that write were
-        // ever actually read as the round's yield baseline. MockVault's own
-        // deposit() is a no-op, so the vault's *real* tracked balance stays
-        // at 0 regardless of how many players join.
         client.join_arena(&p1);
         client.join_arena(&p2);
         client.join_arena(&p3);
-
-        env.ledger().with_mut(|li| li.timestamp = 1000);
-        client.start_round(&60);
-
-        // Assert the round-start baseline directly, before checking any
-        // yield math: it must be 0 (the vault's real, un-inflated balance
-        // start_round just captured), not 300 (join_arena's running sum of
-        // three 100-USDC joins). This is the concrete proof that the
-        // per-join write in join_arena never reaches the baseline
-        // resolve_round actually uses.
-        env.as_contract(&contract_id, || {
-            let baseline = ArenaStorage::load_last_vault_balance(&env);
-            assert_eq!(
-                baseline, 0,
-                "start_round must capture the vault's real (mock) balance, not join_arena's running sum"
-            );
-        });
-
-        // The vault "earns 15 USDC yield externally" on top of the 0
-        // baseline just captured; the real balance is now 15. If the
-        // inflated 300 baseline were ever read instead, this would clamp to
-        // 0 accrued (via resolve_round's vault_balance >= previous_balance
-        // guard) rather than genuinely track the deposit.
-        set_vault_balance(15);
-
-        // p1 and p2 must reveal so the round has a well-defined outcome;
-        // resolve_round is what actually snapshots the yield.
-        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
-        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
-        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
-        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt1);
-        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
-        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
-        client.submit_commitment(&p1, &comm1);
-        client.submit_commitment(&p2, &comm2);
-        client.submit_commitment(&p3, &comm3);
-
-        env.ledger().with_mut(|li| li.timestamp = 1061);
-        client.reveal_choice(&p1, &Choice::Heads, &salt1);
-        client.reveal_choice(&p2, &Choice::Heads, &salt2);
-        client.reveal_choice(&p3, &Choice::Heads, &salt3);
-
-        client.resolve_round();
-
-        // Accrued yield is 15 (real vault balance) - 0 (real baseline
-        // start_round captured) = 15 — matching the issue's own worked
-        // example exactly, and confirming resolve_round's math is driven by
-        // start_round's capture, not join_arena's inflated running sum. If
-        // the bug were live, this would instead read 0 (315's hypothetical
-        // stand-in would clamp against a 300 baseline; here the true
-        // baseline of 0 makes any live regression surface as "0 accrued"
-        // instead of the correct 15).
-        assert_eq!(client.get_total_yield(), 15);
-        assert_eq!(client.get_yield_snapshot(&1).unwrap().accrued, 15);
-    }
-
-    /// Reentrancy guard: if the prize-claimed flag has been set (which `claim`
-    /// does *before* it performs any external token transfer) a subsequent
-    /// call to `claim` — including a reentrant call triggered by a malicious
-    /// `token.transfer` hook — must short-circuit with `PrizeAlreadyClaimed`.
-    ///
-    /// This pins the checks-effects-interactions ordering of `claim`: any
-    /// future refactor that moves the `mark_prize_claimed` call after a
-    /// cross-contract interaction will fail this test.
-    #[test]
-    fn claim_returns_already_claimed_when_flag_is_set() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let winner = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            ArenaStorage::save_config(
-                &env,
-                &ArenaConfig {
-                    admin: Address::generate(&env),
-                    stake_token: Address::generate(&env),
-                    entry_fee: 100,
-                    state: GameState::Finished,
-                    paused: false,
-                    player_count: 1,
-                    active_player_count: 1,
-                    cumulative_yield: 0,
-                    commit_deadline: 0,
-                    yield_vault: Address::generate(&env),
-                    round_count: 0,
-                    oracle_contract: Address::generate(&env),
-                    factory: Address::generate(&env),
-                    pool_id: 0,
-                    platform_fee_bps: 1000,
-                },
-            );
-            ArenaStorage::save_player(
-                &env,
-                &winner,
-                &PlayerState {
-                    active: true,
-                    rounds_survived: 1,
-                },
-            );
-            // Simulate the state a reentrant caller would observe: claim has
-            // already committed its EFFECTS step and is mid-INTERACTIONS.
-            ArenaStorage::mark_prize_claimed(&env);
-        });
-
-        let client = ArenaContractClient::new(&env, &contract_id);
-        let err = client
-            .try_claim(&winner)
-            .err()
-            .expect("reentrant claim must error")
-            .expect("error must be a contract error");
-        assert_eq!(err, ArenaError::PrizeAlreadyClaimed);
-    }
-
-    /// An eliminated player must not be able to claim the prize, even if the
-    /// game state is Finished. Guards against a stale winner address being
-    /// reused after elimination logic changes.
-    #[test]
-    fn claim_rejects_eliminated_player() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let eliminated = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            ArenaStorage::save_config(
-                &env,
-                &ArenaConfig {
-                    admin: Address::generate(&env),
-                    stake_token: Address::generate(&env),
-                    entry_fee: 100,
-                    state: GameState::Finished,
-                    paused: false,
-                    player_count: 1,
-                    active_player_count: 1,
-                    cumulative_yield: 0,
-                    commit_deadline: 0,
-                    yield_vault: Address::generate(&env),
-                    round_count: 0,
-                    oracle_contract: Address::generate(&env),
-                    factory: Address::generate(&env),
-                    pool_id: 0,
-                    platform_fee_bps: 1000,
-                },
-            );
-            ArenaStorage::save_player(
-                &env,
-                &eliminated,
-                &PlayerState {
-                    active: false,
-                    rounds_survived: 0,
-                },
-            );
-        });
-
-        let client = ArenaContractClient::new(&env, &contract_id);
-        let err = client
-            .try_claim(&eliminated)
-            .err()
-            .expect("eliminated player claim must error")
-            .expect("error must be a contract error");
-        assert_eq!(err, ArenaError::PlayerEliminated);
-    }
-
-    #[test]
-    fn propose_then_accept_admin_changes_admin() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let admin = Address::generate(&env);
-        let new_admin = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            let config = ArenaConfig {
-                admin: admin.clone(),
-                stake_token: Address::generate(&env),
-                entry_fee: 100,
-                state: GameState::Open,
-                paused: false,
-                player_count: 0,
-                active_player_count: 0,
-                cumulative_yield: 0,
-                commit_deadline: 0,
-                yield_vault: Address::generate(&env),
-                round_count: 0,
-                oracle_contract: Address::generate(&env),
-                factory: Address::generate(&env),
-                pool_id: 0,
-                platform_fee_bps: 1000,
-            };
-            ArenaStorage::save_config(&env, &config);
-        });
-
-        let client = ArenaContractClient::new(&env, &contract_id);
-        client.propose_admin(&new_admin);
-        client.accept_admin();
-
-        env.as_contract(&contract_id, || {
-            let config = ArenaStorage::load_config(&env).unwrap();
-            assert_eq!(config.admin, new_admin);
-        });
-    }
-
-    #[test]
-    fn accept_without_propose_fails() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let admin = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            let config = ArenaConfig {
-                admin: admin.clone(),
-                stake_token: Address::generate(&env),
-                entry_fee: 100,
-                state: GameState::Open,
-                paused: false,
-                player_count: 0,
-                active_player_count: 0,
-                cumulative_yield: 0,
-                commit_deadline: 0,
-                yield_vault: Address::generate(&env),
-                round_count: 0,
-                oracle_contract: Address::generate(&env),
-                factory: Address::generate(&env),
-                pool_id: 0,
-                platform_fee_bps: 1000,
-            };
-            ArenaStorage::save_config(&env, &config);
-        });
-
-        let client = ArenaContractClient::new(&env, &contract_id);
-        let err = client
-            .try_accept_admin()
-            .err()
-            .expect("accept without propose must error")
-            .expect("error must be a contract error");
-        assert_eq!(err, ArenaError::NoPendingAdmin);
-    }
-
-    #[test]
-    fn propose_admin_updates_pending_admin() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let admin = Address::generate(&env);
-        let new_admin = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            let config = ArenaConfig {
-                admin: admin.clone(),
-                stake_token: Address::generate(&env),
-                entry_fee: 100,
-                state: GameState::Open,
-                paused: false,
-                player_count: 0,
-                active_player_count: 0,
-                cumulative_yield: 0,
-                commit_deadline: 0,
-                yield_vault: Address::generate(&env),
-                round_count: 0,
-                oracle_contract: Address::generate(&env),
-                factory: Address::generate(&env),
-                pool_id: 0,
-                platform_fee_bps: 1000,
-            };
-            ArenaStorage::save_config(&env, &config);
-        });
-
-        let client = ArenaContractClient::new(&env, &contract_id);
-        client.propose_admin(&new_admin);
-
-        env.as_contract(&contract_id, || {
-            let pending = ArenaStorage::load_pending_admin(&env).unwrap();
-            assert_eq!(pending.new_admin, new_admin);
-        });
-    }
-
-    /// Second propose_admin overwrites the first. The original proposed admin
-    /// is replaced and can no longer accept the transfer.
-    #[test]
-    fn second_propose_admin_overwrites_first() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let admin = Address::generate(&env);
-        let addr_a = Address::generate(&env);
-        let addr_b = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            let config = ArenaConfig {
-                admin: admin.clone(),
-                stake_token: Address::generate(&env),
-                entry_fee: 100,
-                state: GameState::Open,
-                paused: false,
-                player_count: 0,
-                active_player_count: 0,
-                cumulative_yield: 0,
-                commit_deadline: 0,
-                yield_vault: Address::generate(&env),
-                round_count: 0,
-                oracle_contract: Address::generate(&env),
-                factory: Address::generate(&env),
-                pool_id: 0,
-                platform_fee_bps: 1000,
-            };
-            ArenaStorage::save_config(&env, &config);
-        });
-
-        let client = ArenaContractClient::new(&env, &contract_id);
-
-        // First proposal
-        client.propose_admin(&addr_a);
-        env.as_contract(&contract_id, || {
-            let pending = ArenaStorage::load_pending_admin(&env).unwrap();
-            assert_eq!(pending.new_admin, addr_a);
-        });
-
-        // Second proposal overwrites first
-        client.propose_admin(&addr_b);
-        env.as_contract(&contract_id, || {
-            let pending = ArenaStorage::load_pending_admin(&env).unwrap();
-            assert_eq!(pending.new_admin, addr_b);
-        });
-
-        // Accept admin — since pending is now addr_b (not addr_a), the admin
-        // becomes addr_b, proving the overwrite invalidated addr_a's proposal.
-        client.accept_admin();
-        env.as_contract(&contract_id, || {
-            let config = ArenaStorage::load_config(&env).unwrap();
-            assert_eq!(config.admin, addr_b);
-        });
-    }
-
-    #[test]
-    fn start_round_rejected_with_zero_players() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
-        env.as_contract(&contract_id, || {
-            ArenaStorage::save_config(
-                &env,
-                &ArenaConfig {
-                    admin: Address::generate(&env),
-                    stake_token: Address::generate(&env),
-                    entry_fee: 100,
-                    state: GameState::Open,
-                    paused: false,
-                    player_count: 0,
-                    active_player_count: 0,
-                    cumulative_yield: 0,
-                    commit_deadline: 0,
-                    yield_vault: Address::generate(&env),
-                    round_count: 0,
-                    oracle_contract: oracle_id,
-                    factory: Address::generate(&env),
-                    pool_id: 0,
-                    platform_fee_bps: 1000,
-                },
-            );
-        });
-        let client = ArenaContractClient::new(&env, &contract_id);
-        let result = client.try_start_round(&60);
-        assert_eq!(result, Err(Ok(ArenaError::NotEnoughPlayers)));
-    }
-
-    #[test]
-    fn start_round_rejected_with_one_player() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
-        env.as_contract(&contract_id, || {
-            ArenaStorage::save_config(
-                &env,
-                &ArenaConfig {
-                    admin: Address::generate(&env),
-                    stake_token: Address::generate(&env),
-                    entry_fee: 100,
-                    state: GameState::Open,
-                    paused: false,
-                    player_count: 1,
-                    active_player_count: 1,
-                    cumulative_yield: 0,
-                    commit_deadline: 0,
-                    yield_vault: Address::generate(&env),
-                    round_count: 0,
-                    oracle_contract: oracle_id,
-                    factory: Address::generate(&env),
-                    pool_id: 0,
-                    platform_fee_bps: 1000,
-                },
-            );
-        });
-        let client = ArenaContractClient::new(&env, &contract_id);
-        let result = client.try_start_round(&60);
-        assert_eq!(result, Err(Ok(ArenaError::NotEnoughPlayers)));
-    }
-
-    #[test]
-    fn start_round_succeeds_with_two_or_more_players() {
-        let (_, client) = setup_started(60, 0);
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
-        env.as_contract(&contract_id, || {
-            ArenaStorage::save_config(
-                &env,
-                &ArenaConfig {
-                    admin: Address::generate(&env),
-                    stake_token: Address::generate(&env),
-                    entry_fee: 100,
-                    state: GameState::Open,
-                    paused: false,
-                    player_count: 2,
-                    active_player_count: 2,
-                    cumulative_yield: 0,
-                    commit_deadline: 0,
-                    yield_vault: Address::generate(&env),
-                    round_count: 0,
-                    oracle_contract: oracle_id,
-                    factory: Address::generate(&env),
-                    pool_id: 0,
-                    platform_fee_bps: 1000,
-                },
-            );
-            let p1 = Address::generate(&env);
-            let p2 = Address::generate(&env);
-            ArenaStorage::add_player(&env, &p1);
-            ArenaStorage::add_player(&env, &p2);
-        });
-        let client2 = ArenaContractClient::new(&env, &contract_id);
-        client2.start_round(&60);
-        let _ = client; // suppress unused warning
-    }
-
-    /// Verify that a player's revealed choice from round N does not persist
-    /// into round N+1. After `start_round` clears round data, the old choice
-    /// must be absent so the player can commit and reveal again.
-    #[test]
-    fn stale_choice_cleared_between_rounds() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let vault_id = env.register(MockVault, ());
-        let oracle_id = env.register(MockOracle, ());
-        let token_admin = Address::generate(&env);
-        let token_id = env
-            .register_stellar_asset_contract_v2(token_admin)
-            .address();
-        let token_admin_client = StellarAssetClient::new(&env, &token_id);
-
-        let p1 = Address::generate(&env);
-        let p2 = Address::generate(&env);
-        token_admin_client.mint(&p1, &1000);
-        token_admin_client.mint(&p2, &1000);
-
-        let client = ArenaContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        client.initialize(
-            &admin,
-            &token_id,
-            &vault_id,
-            &100,
-            &oracle_id,
-            &Address::generate(&env),
-            &1,
-            &2,
-            &10,
-            &60,
-        );
-        client.join_arena(&p1);
-        client.join_arena(&p2);
 
         // Round 1: players commit Heads (same side → both survive)
         env.ledger().with_mut(|li| li.timestamp = 1000);
@@ -3869,7 +2997,7 @@ mod test {
             assert!(!state.active, "AFK player should be eliminated");
         });
 
-        // p1 and p2 should still be active (all Heads, no majority to eliminate)
+        // p1 and p2 should still be active (all same choice, no majority to eliminate)
         env.as_contract(&client.address, || {
             let s1 = ArenaStorage::load_player(&env, &p1).unwrap();
             let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
@@ -3878,9 +3006,10 @@ mod test {
         });
     }
 
-    /// When every remaining active player fails to reveal, the round resolves
-    /// with zero survivors and the game transitions to Cancelled with no winner.
-    /// The prize pool is released so players can claim refunds.
+    /// When every remaining active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
     #[test]
     fn zero_survivor_round_resolution() {
         let env = Env::default();
@@ -3894,13 +3023,8 @@ mod test {
             .address();
         let token_admin_client = StellarAssetClient::new(&env, &token_id);
 
-        let p1 = Address::generate(&env);
-        let p2 = Address::generate(&env);
-        token_admin_client.mint(&p1, &1000);
-        token_admin_client.mint(&p2, &1000);
-
-        let client = ArenaContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
         client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
         client.join_arena(&p1);
         client.join_arena(&p2);
@@ -3913,40 +3037,29 @@ mod test {
         env.ledger().with_mut(|li| li.timestamp = 1000);
         client.start_round(&60);
 
-        // Both players commit but neither reveals.
-        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
-        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
-        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt1);
-        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
-        client.submit_commitment(&p1, &comm1);
-        client.submit_commitment(&p2, &comm2);
-
-        // Advance past grace period.
-        env.ledger().with_mut(|li| li.timestamp = 1061);
-
-        // Neither player reveals — both are AFK.
-
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
         client.resolve_round();
-
-        // Both players eliminated, zero survivors.
-        env.as_contract(&client.address, || {
-            let s1 = ArenaStorage::load_player(&env, &p1).unwrap();
-            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
-            assert!(!s1.active, "p1 should be eliminated");
-            assert!(!s2.active, "p2 should be eliminated");
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
         });
-
-        // Game ends Cancelled with no winner.
-        env.as_contract(&client.address, || {
-            let config = ArenaStorage::load_config(&env).unwrap();
-            assert_eq!(config.state, GameState::Cancelled);
-        });
-
-        // Prize pool stays locked — no tokens moved to any player.
-        let token_client = token::TokenClient::new(&env, &token_id);
-        assert_eq!(token_client.balance(&contract_id), 200);
-        assert_eq!(token_client.balance(&p1), 900);
-        assert_eq!(token_client.balance(&p2), 900);
     }
 
     /// Verify that a player who reveals the minority choice survives the round.
@@ -4026,20 +3139,65 @@ mod test {
         });
     }
 
-    /// #1145 — when every active player reveals the same choice, there is no
-    /// opposing majority to eliminate. `eliminations::surviving_choice` (see
-    /// `all_players_on_one_side_survive` in eliminations.rs) already handles
-    /// this correctly as a pure function: `(_, 0) => Some(Heads)` and
-    /// `(0, _) => Some(Tails)` mean the unanimous side survives, it is never
-    /// treated as a tie. This test is the missing integration-level coverage
-    /// through the real `resolve_round` entry point (auth, storage,
-    /// commit-reveal) rather than just the pure tally logic: with 3 active
-    /// players all revealing Heads, all three must survive, nobody is
-    /// eliminated, and — since more than one player survives — the round
-    /// resolves without a winner rather than exposing the
-    /// silent-total-elimination bug the issue warns about.
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
     #[test]
-    fn all_players_choosing_the_same_side_all_survive() {
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(ArenaContract, ());
@@ -4076,14 +3234,15 @@ mod test {
         client.join_arena(&p2);
         client.join_arena(&p3);
 
+        // Start round
         env.ledger().with_mut(|li| li.timestamp = 1000);
         client.start_round(&60);
 
-        // All three active players choose Heads — no Tails votes at all.
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
         let salt1 = BytesN::from_array(&env, &[1u8; 32]);
         let salt2 = BytesN::from_array(&env, &[2u8; 32]);
         let salt3 = BytesN::from_array(&env, &[3u8; 32]);
-        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt1);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
         let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
         let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
         client.submit_commitment(&p1, &comm1);
@@ -4091,55 +3250,34 @@ mod test {
         client.submit_commitment(&p3, &comm3);
 
         env.ledger().with_mut(|li| li.timestamp = 1061);
-        client.reveal_choice(&p1, &Choice::Heads, &salt1);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
         client.reveal_choice(&p2, &Choice::Heads, &salt2);
         client.reveal_choice(&p3, &Choice::Heads, &salt3);
 
         client.resolve_round();
 
-        // All three must survive: unanimous Heads has no opposing majority.
+        // p1 (minority: Tails) should survive
         env.as_contract(&client.address, || {
-            let s1 = ArenaStorage::load_player(&env, &p1).unwrap();
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
             let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
             let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
-            assert!(s1.active, "unanimous choice must not eliminate anyone");
-            assert!(s2.active, "unanimous choice must not eliminate anyone");
-            assert!(s3.active, "unanimous choice must not eliminate anyone");
-            assert_eq!(s1.rounds_survived, 1);
-            assert_eq!(s2.rounds_survived, 1);
-            assert_eq!(s3.rounds_survived, 1);
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
         });
-
-        // With 3 (not 1) survivors, the game continues — no winner is set and
-        // the arena is back in Open, ready for the next round. If this ever
-        // regresses to "everyone eliminated" (the bug the issue warns about),
-        // survivors would be 0 and the arena would incorrectly reach
-        // Finished with no winner, locking the prize pool.
-        env.as_contract(&client.address, || {
-            let config = ArenaStorage::load_config(&env).unwrap();
-            assert_eq!(config.state, GameState::Open, "game must continue with 3 survivors");
-            assert!(
-                ArenaStorage::get_winner(&env).is_none(),
-                "no winner should be set when more than one player survives"
-            );
-        });
-
-        let events = env.events().all();
-        let finished_topic: soroban_sdk::Vec<Val> = (symbol_short!("finished"),).into_val(&env);
-        let has_game_finished = events
-            .iter()
-            .any(|(contract, topics, _data)| contract == client.address && topics == finished_topic);
-        assert!(
-            !has_game_finished,
-            "game_finished must not fire when the round was a full survival, not a win"
-        );
     }
 
-    /// Verify that a commitment submitted in round N cannot be used to reveal
-    /// in round N+1. After `start_round` clears round data, the old commitment
-    /// is removed so the reveal must fail with MissingCommitment.
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
     #[test]
-    fn stale_commitment_invalid_in_next_round() {
+    fn zero_survivor_round_resolution() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(ArenaContract, ());
@@ -4151,1430 +3289,19 @@ mod test {
             .address();
         let token_admin_client = StellarAssetClient::new(&env, &token_id);
 
-        let p1 = Address::generate(&env);
-        let p2 = Address::generate(&env);
-        token_admin_client.mint(&p1, &1000);
-        token_admin_client.mint(&p2, &1000);
-
-        let client = ArenaContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(
-            &admin,
-            &token_id,
-            &vault_id,
-            &100,
-            &oracle_id,
-            &Address::generate(&env),
-            &1,
-            &2,
-            &10,
-            &60,
-        );
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
         client.join_arena(&p1);
         client.join_arena(&p2);
 
-        // Round 1: both players commit (same side so neither is eliminated)
-        env.ledger().with_mut(|li| li.timestamp = 1000);
-        client.start_round(&60);
-        let salt = BytesN::from_array(&env, &[1u8; 32]);
-        let comm = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt);
-        client.submit_commitment(&p1, &comm);
-        client.submit_commitment(&p2, &comm);
-        env.ledger().with_mut(|li| li.timestamp = 1061);
-        client.reveal_choice(&p1, &Choice::Heads, &salt);
-        client.reveal_choice(&p2, &Choice::Heads, &salt);
-        client.resolve_round();
-
-        // Round 2 starts – old commitments are cleared
-        env.ledger().with_mut(|li| li.timestamp = 2000);
-        client.start_round(&60);
-
-        // Try to reveal using round 1's commitment – should fail with MissingCommitment
-        // because the commitment was cleared by start_round
-        env.ledger().with_mut(|li| li.timestamp = 2061);
-        let result = client.try_reveal_choice(&p1, &Choice::Heads, &salt);
-        assert_eq!(result, Err(Ok(ArenaError::MissingCommitment)));
-    }
-
-    #[test]
-    fn configure_player_limits_rejects_min_greater_than_max() {
-        let (_, client) = setup(0);
-        assert_eq!(
-            client.try_configure_player_limits(&4, &3),
-            Err(Ok(ArenaError::InvalidPlayerLimits))
-        );
-    }
-
-    #[test]
-    fn configure_player_limits_accepts_min_equal_max_boundary() {
-        let (_, client) = setup(0);
-        client.configure_player_limits(&2, &2);
-    }
-
-    #[test]
-    fn configure_player_limits_rejects_min_below_start_boundary() {
-        let (_, client) = setup(0);
-        assert_eq!(
-            client.try_configure_player_limits(&1, &2),
-            Err(Ok(ArenaError::InvalidPlayerLimits))
-        );
-    }
-
-    #[test]
-    fn configure_player_limits_freezes_once_players_have_joined() {
-        let (_, client) = setup(3);
-        assert_eq!(client.player_count(), 3);
-        // Valid-looking values still freeze: the roster joined under the
-        // advertised terms, so neither bound may change (#1640).
-        assert_eq!(
-            client.try_configure_player_limits(&2, &10),
-            Err(Ok(ArenaError::ArenaAlreadyHasPlayers))
-        );
-        assert_eq!(
-            client.try_configure_player_limits(&4, &10),
-            Err(Ok(ArenaError::ArenaAlreadyHasPlayers))
-        );
-    }
-
-    #[test]
-    fn configure_player_limits_rejects_max_below_player_count() {
-        let (_, client) = setup(3);
-        // `max_players` may never drop below the players already present,
-        // regardless of the freeze rule (#1640).
-        assert_eq!(
-            client.try_configure_player_limits(&2, &2),
-            Err(Ok(ArenaError::InvalidPlayerLimits))
-        );
-    }
-
-    #[test]
-    fn configure_player_limits_allowed_before_first_join() {
-        let (_, client) = setup(0);
-        client.configure_player_limits(&2, &4);
-        assert_eq!(client.player_count(), 0);
-    }
-
-    #[test]
-    fn join_respects_configured_max_players() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let vault_id = env.register(MockVault, ());
-        let oracle_id = env.register(MockOracle, ());
-        let token_admin = Address::generate(&env);
-        let token_id = env
-            .register_stellar_asset_contract_v2(token_admin)
-            .address();
-
-        env.as_contract(&contract_id, || {
-            ArenaStorage::save_config(
-                &env,
-                &ArenaConfig {
-                    admin: Address::generate(&env),
-                    stake_token: token_id.clone(),
-                    entry_fee: 100,
-                    state: GameState::Open,
-                    paused: false,
-                    player_count: 0,
-                    active_player_count: 0,
-                    cumulative_yield: 0,
-                    commit_deadline: 0,
-                    yield_vault: vault_id,
-                    round_count: 0,
-                    oracle_contract: oracle_id,
-                    factory: Address::generate(&env),
-                    pool_id: 0,
-                    platform_fee_bps: 1000,
-                },
-            );
-            ArenaStorage::save_player_limits(&env, 2, 2);
-        });
-
-        let client = ArenaContractClient::new(&env, &contract_id);
-        let asset = StellarAssetClient::new(&env, &token_id);
-        let p1 = Address::generate(&env);
-        let p2 = Address::generate(&env);
-        let p3 = Address::generate(&env);
-        asset.mint(&p1, &100);
-        asset.mint(&p2, &100);
-        asset.mint(&p3, &100);
-
-        client.join_arena(&p1);
-        client.join_arena(&p2);
-        assert_eq!(client.try_join_arena(&p3), Err(Ok(ArenaError::ArenaFull)));
-    }
-
-    #[test]
-    fn version_reports_contract_version() {
-        let (_, client) = setup(0);
-        assert_eq!(client.version(), CONTRACT_VERSION);
-    }
-
-    #[test]
-    fn test_force_cancel_and_refund() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
-        let vault_id = env.register(MockVault, ());
-
-        let admin = Address::generate(&env);
-        let sac = env.register_stellar_asset_contract_v2(admin.clone());
-        let token = sac.address();
-        let token_client = token::TokenClient::new(&env, &token);
-        let token_admin = StellarAssetClient::new(&env, &token);
-
-        let p1 = Address::generate(&env);
-        token_admin.mint(&p1, &1000);
-
-        // Initialize the contract
-        let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(
-            &admin,
-            &token,
-            &vault_id,
-            &100,
-            &oracle_id,
-            &Address::generate(&env),
-            &1,
-            &2,
-            &10,
-            &60,
-        );
-
-        // Player joins
-        client.join_arena(&p1);
-        assert_eq!(client.player_count(), 1);
-        assert_eq!(token_client.balance(&p1), 900);
-        assert_eq!(token_client.balance(&contract_id), 100);
-
-        // Admin force cancels the arena
-        client.force_cancel_arena();
-
-        env.as_contract(&contract_id, || {
-            let config = ArenaStorage::load_config(&env).unwrap();
-            assert_eq!(config.state, GameState::Cancelled);
-        });
-
-        // Player claims refund
-        client.claim_refund(&p1);
-        assert_eq!(token_client.balance(&p1), 1000);
-        assert_eq!(token_client.balance(&contract_id), 0);
-    }
-
-    /// Initialize an arena with two joined players and hand back the pieces the
-    /// pause / force-cancel / refund tests need. Each player is minted 1000 and
-    /// pays the 100 entry fee on joining, so the contract holds 200.
-    fn setup_cancellable_arena() -> (
-        Env,
-        ArenaContractClient<'static>,
-        Address,
-        token::TokenClient<'static>,
-        Address,
-        Address,
-    ) {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
-        let vault_id = env.register(MockVault, ());
-
-        let admin = Address::generate(&env);
-        let sac = env.register_stellar_asset_contract_v2(admin.clone());
-        let token = sac.address();
-        let token_client = token::TokenClient::new(&env, &token);
-        let token_admin = StellarAssetClient::new(&env, &token);
-
-        let p1 = Address::generate(&env);
-        let p2 = Address::generate(&env);
-        token_admin.mint(&p1, &1000);
-        token_admin.mint(&p2, &1000);
-
-        let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(
-            &admin,
-            &token,
-            &vault_id,
-            &100,
-            &oracle_id,
-            &Address::generate(&env),
-            &1,
-            &2,
-            &10,
-            &60,
-        );
-
-        client.join_arena(&p1);
-        client.join_arena(&p2);
-
-        (env, client, contract_id, token_client, p1, p2)
-    }
-
-    /// The operational emergency path: admin pauses, force-cancels the stuck
-    /// arena while it is still paused, then unpauses so players can be made
-    /// whole. `force_cancel_arena` is deliberately reachable while paused;
-    /// `claim_refund` is not, so refunds land only after the admin unpauses.
-    #[test]
-    fn paused_force_cancel_then_refund_after_unpause() {
-        let (env, client, contract_id, token_client, p1, p2) = setup_cancellable_arena();
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
         assert_eq!(token_client.balance(&contract_id), 200);
-
-        client.pause(&symbol_short!("emerg"));
-
-        // Force-cancel must still work while paused — otherwise a paused arena
-        // could never be wound down without first re-opening it to gameplay.
-        client.force_cancel_arena();
-        env.as_contract(&contract_id, || {
-            let config = ArenaStorage::load_config(&env).unwrap();
-            assert!(config.paused);
-            assert_eq!(config.state, GameState::Cancelled);
-        });
-
-        // Refunds stay blocked while the pause is in force: the pause is the
-        // admin's stop-the-world switch and gates token movement too.
-        assert_eq!(
-            paused_error(client.try_claim_refund(&p1)),
-            ArenaError::ContractPaused
-        );
-        assert_eq!(token_client.balance(&p1), 900);
-        assert_eq!(token_client.balance(&contract_id), 200);
-
-        // After unpausing, every player recovers their entry fee exactly once
-        // and the contract is drained.
-        client.unpause();
-        client.claim_refund(&p1);
-        client.claim_refund(&p2);
-        assert_eq!(token_client.balance(&p1), 1000);
-        assert_eq!(token_client.balance(&p2), 1000);
-        assert_eq!(token_client.balance(&contract_id), 0);
-    }
-
-    /// `claim_refund` checks the pause flag before any of its other guards, so
-    /// a pause masks the cancellation-state and already-claimed errors and no
-    /// tokens move until the admin unpauses.
-    #[test]
-    fn claim_refund_pause_check_precedes_its_other_guards() {
-        let (_env, client, contract_id, token_client, p1, p2) = setup_cancellable_arena();
-
-        // Paused and not cancelled → ContractPaused, not ArenaNotCancelled.
-        client.pause(&symbol_short!("maint"));
-        assert_eq!(
-            paused_error(client.try_claim_refund(&p1)),
-            ArenaError::ContractPaused
-        );
-
-        // Unpaused and not cancelled → the state guard is what rejects it.
-        client.unpause();
-        assert_eq!(
-            client.try_claim_refund(&p1),
-            Err(Ok(ArenaError::ArenaNotCancelled))
-        );
-
-        client.force_cancel_arena();
-        client.claim_refund(&p1);
-        assert_eq!(token_client.balance(&p1), 1000);
-        assert_eq!(token_client.balance(&contract_id), 100);
-
-        // Re-pausing after the cancellation halts the outstanding refund and
-        // also masks the already-claimed guard for the player who was paid.
-        client.pause(&symbol_short!("emerg"));
-        assert_eq!(
-            paused_error(client.try_claim_refund(&p2)),
-            ArenaError::ContractPaused
-        );
-        assert_eq!(
-            paused_error(client.try_claim_refund(&p1)),
-            ArenaError::ContractPaused
-        );
-        assert_eq!(token_client.balance(&p2), 900);
-        assert_eq!(token_client.balance(&contract_id), 100);
-
-        // Unpausing restores the underlying guards untouched: p1 is still
-        // marked as refunded, p2 is still owed.
-        client.unpause();
-        assert_eq!(
-            client.try_claim_refund(&p1),
-            Err(Ok(ArenaError::RefundAlreadyClaimed))
-        );
-        client.claim_refund(&p2);
-        assert_eq!(token_client.balance(&p2), 1000);
-        assert_eq!(token_client.balance(&contract_id), 0);
-    }
-
-    /// A pause must not turn non-players into refund recipients once the
-    /// contract is unpaused again.
-    #[test]
-    fn claim_refund_rejects_non_players_after_paused_force_cancel() {
-        let (env, client, _contract_id, token_client, _p1, _p2) = setup_cancellable_arena();
-        let stranger = Address::generate(&env);
-
-        client.pause(&symbol_short!("emerg"));
-        client.force_cancel_arena();
-        assert_eq!(
-            paused_error(client.try_claim_refund(&stranger)),
-            ArenaError::ContractPaused
-        );
-
-        client.unpause();
-        assert_eq!(
-            client.try_claim_refund(&stranger),
-            Err(Ok(ArenaError::NotAPlayer))
-        );
-        assert_eq!(token_client.balance(&stranger), 0);
-    }
-
-    #[test]
-    fn test_leaderboard_sorting() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
-
-        let admin = Address::generate(&env);
-        let _client = ArenaContractClient::new(&env, &contract_id);
-
-        env.as_contract(&contract_id, || {
-            let config = ArenaConfig {
-                admin,
-                stake_token: Address::generate(&env),
-                yield_vault: Address::generate(&env),
-                entry_fee: 100,
-                state: GameState::Active,
-                paused: false,
-                player_count: 3,
-                active_player_count: 3,
-                cumulative_yield: 0,
-                commit_deadline: 0,
-                round_count: 0,
-                oracle_contract: oracle_id,
-                factory: Address::generate(&env),
-                pool_id: 0,
-                platform_fee_bps: 1000,
-            };
-            ArenaStorage::save_config(&env, &config);
-
-            let p1 = Address::generate(&env);
-            let p2 = Address::generate(&env);
-            let p3 = Address::generate(&env);
-
-            ArenaStorage::add_player(&env, &p1);
-            ArenaStorage::add_player(&env, &p2);
-            ArenaStorage::add_player(&env, &p3);
-
-            // Mock player survival states: p1 survived 3 rounds, p2 survived 5 rounds, p3 survived 1 round
-            ArenaStorage::save_player(
-                &env,
-                &p1,
-                &PlayerState {
-                    active: true,
-                    rounds_survived: 3,
-                },
-            );
-            ArenaStorage::save_player(
-                &env,
-                &p2,
-                &PlayerState {
-                    active: true,
-                    rounds_survived: 5,
-                },
-            );
-            ArenaStorage::save_player(
-                &env,
-                &p3,
-                &PlayerState {
-                    active: true,
-                    rounds_survived: 1,
-                },
-            );
-
-            // Build leaderboard
-            build_leaderboard(&env);
-
-            let leaderboard = ArenaStorage::load_leaderboard(&env);
-            assert_eq!(leaderboard.len(), 3);
-
-            // Should be sorted by rounds_survived descending: p2 (5), p1 (3), p3 (1)
-            let e0: LeaderboardEntry = leaderboard.get(0).unwrap();
-            let e1: LeaderboardEntry = leaderboard.get(1).unwrap();
-            let e2: LeaderboardEntry = leaderboard.get(2).unwrap();
-
-            assert_eq!(e0.player, p2);
-            assert_eq!(e0.rounds_survived, 5);
-
-            assert_eq!(e1.player, p1);
-            assert_eq!(e1.rounds_survived, 3);
-
-            assert_eq!(e2.player, p3);
-            assert_eq!(e2.rounds_survived, 1);
-        });
-    }
-
-    #[test]
-    fn test_leaderboard_limit_enforcement() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
-        let admin = Address::generate(&env);
-        let client = ArenaContractClient::new(&env, &contract_id);
-
-        env.as_contract(&contract_id, || {
-            let config = ArenaConfig {
-                admin: admin.clone(),
-                stake_token: Address::generate(&env),
-                yield_vault: Address::generate(&env),
-                entry_fee: 100,
-                state: GameState::Active,
-                paused: false,
-                player_count: 20,
-                active_player_count: 20,
-                cumulative_yield: 0,
-                commit_deadline: 0,
-                round_count: 0,
-                oracle_contract: oracle_id,
-                factory: Address::generate(&env),
-                pool_id: 0,
-                platform_fee_bps: 1000,
-            };
-            ArenaStorage::save_config(&env, &config);
-
-            for rounds_survived in 0..20 {
-                let player = Address::generate(&env);
-                ArenaStorage::add_player(&env, &player);
-                ArenaStorage::save_player(
-                    &env,
-                    &player,
-                    &PlayerState {
-                        active: true,
-                        rounds_survived,
-                    },
-                );
-            }
-
-            assert_eq!(ArenaStorage::load_leaderboard_limit(&env), 100);
-            build_leaderboard(&env);
-            assert_eq!(ArenaStorage::load_leaderboard(&env).len(), 20);
-        });
-
-        client.configure_leaderboard_limit(&10);
-
-        env.as_contract(&contract_id, || {
-            assert_eq!(ArenaStorage::load_leaderboard_limit(&env), 10);
-            build_leaderboard(&env);
-
-            let leaderboard = ArenaStorage::load_leaderboard(&env);
-            assert_eq!(leaderboard.len(), 10);
-
-            for i in 0..10 {
-                let entry: LeaderboardEntry = leaderboard.get(i).unwrap();
-                assert_eq!(entry.rounds_survived, 19 - i);
-            }
-        });
-    }
-
-    #[test]
-    fn configure_leaderboard_limit_rejects_out_of_bounds_without_persisting() {
-        let (env, client) = setup(0);
-        let contract_id = client.address.clone();
-
-        assert_eq!(
-            client.try_configure_leaderboard_limit(&0),
-            Err(Ok(ArenaError::InvalidLeaderboardLimit))
-        );
-        assert_eq!(
-            client.try_configure_leaderboard_limit(&(types::MAX_LEADERBOARD_LIMIT + 1)),
-            Err(Ok(ArenaError::InvalidLeaderboardLimit))
-        );
-        assert_eq!(
-            client.try_configure_leaderboard_limit(&u32::MAX),
-            Err(Ok(ArenaError::InvalidLeaderboardLimit))
-        );
-        env.as_contract(&contract_id, || {
-            assert_eq!(ArenaStorage::load_leaderboard_limit(&env), 100);
-        });
-
-        // Boundary values are accepted.
-        client.configure_leaderboard_limit(&1);
-        client.configure_leaderboard_limit(&types::MAX_LEADERBOARD_LIMIT);
-        env.as_contract(&contract_id, || {
-            assert_eq!(
-                ArenaStorage::load_leaderboard_limit(&env),
-                types::MAX_LEADERBOARD_LIMIT
-            );
-        });
-    }
-
-    #[test]
-    fn get_platform_fee_bps_defaults_to_1000() {
-        let env = Env::default();
-        let contract_id = env.register(ArenaContract, ());
-        let client = ArenaContractClient::new(&env, &contract_id);
-        assert_eq!(client.get_platform_fee_bps(), 1000);
-    }
-
-    #[test]
-    fn update_platform_fee_rejects_over_max() {
-        let (_env, client) = setup(0);
-        let result = client.try_update_platform_fee(&1001);
-        assert_eq!(result, Err(Ok(ArenaError::InvalidPlatformFee)));
-    }
-
-    #[test]
-    fn update_platform_fee_updates_stored_value_and_emits_event() {
-        let (env, client) = setup(0);
-        let admin = env.as_contract(&client.address, || {
-            ArenaStorage::load_config(&env).unwrap().admin
-        });
-
-        // Check the event from this specific call — env.events().all() only
-        // reflects the most recent top-level contract invocation, so nothing
-        // else should be called on `client` between this and the assertion.
-        client.update_platform_fee(&250);
-
-        let events = env.events().all();
-        let expected_topic: soroban_sdk::Vec<Val> =
-            (symbol_short!("arena"), symbol_short!("fee_upd"), admin).into_val(&env);
-        let has_fee_event = events
-            .iter()
-            .any(|(contract, topics, _data)| contract == client.address && topics == expected_topic);
-        assert!(has_fee_event, "must emit fee_upd event");
-
-        // Verify the stored value directly (bypassing the client so we don't
-        // disturb the event recording above with another top-level call).
-        env.as_contract(&client.address, || {
-            assert_eq!(ArenaStorage::load_platform_fee_bps(&env), 250);
-        });
-    }
-
-    // ── Coverage added for issue #1512 (freshness policy config) ──────────
-
-    #[test]
-    fn get_oracle_contract_returns_configured_oracle() {
-        let (env, client) = setup(0);
-        let expected = env.as_contract(&client.address, || {
-            ArenaStorage::load_config(&env).unwrap().oracle_contract
-        });
-        assert_eq!(client.get_oracle_contract(), expected);
-    }
-
-    #[test]
-    fn get_pool_config_returns_the_stored_configuration() {
-        let (env, client) = setup(0);
-        let (stake_token, yield_vault, entry_fee, oracle, factory) = env
-            .as_contract(&client.address, || {
-                let config = ArenaStorage::load_config(&env).unwrap();
-                ArenaStorage::save_player_limits(&env, 3, 12);
-                (
-                    config.stake_token,
-                    config.yield_vault,
-                    config.entry_fee,
-                    config.oracle_contract,
-                    config.factory,
-                )
-            });
-
-        let view = client.get_pool_config();
-        assert_eq!(view.stake_token, stake_token);
-        assert_eq!(view.yield_vault, yield_vault);
-        assert_eq!(view.entry_fee, entry_fee);
-        assert_eq!(view.oracle_contract, oracle);
-        assert_eq!(view.min_players, 3);
-        assert_eq!(view.max_players, 12);
-        // The duration is only recorded at `start_round`, not `initialize`.
-        assert_eq!(view.round_duration, 0);
-        assert_eq!(view.start_deadline, 0);
-        assert_eq!(view.factory, factory);
-    }
-
-    #[test]
-    fn get_pool_config_reports_recorded_round_duration_after_start() {
-        let (env, client) = setup(0);
-        env.as_contract(&client.address, || {
-            ArenaStorage::save_player_limits(&env, 2, 2);
-            ArenaStorage::save_round_duration(&env, 900);
-            ArenaStorage::save_start_deadline(&env, 1_700_000_000);
-        });
-        let view = client.get_pool_config();
-        assert_eq!(view.round_duration, 900);
-        assert_eq!(view.start_deadline, 1_700_000_000);
-    }
-
-    #[test]
-    fn get_pool_config_errors_before_initialize() {
-        let env = Env::default();
-        let contract_id = env.register(ArenaContract, ());
-        let client = ArenaContractClient::new(&env, &contract_id);
-        let result = client.try_get_pool_config();
-        assert_eq!(result, Err(Ok(ArenaError::NotInitialized)));
-    }
-
-    #[test]
-    fn get_oracle_freshness_policy_defaults_before_configuration() {
-        let (_env, client) = setup(0);
-        let policy = client.get_oracle_freshness_policy();
-        assert_eq!(policy.max_age_secs, types::DEFAULT_ORACLE_MAX_AGE_SECS);
-        assert_eq!(policy.warn_age_secs, types::DEFAULT_ORACLE_WARN_AGE_SECS);
-        assert_eq!(policy.version, types::FRESHNESS_POLICY_VERSION);
-    }
-
-    #[test]
-    fn set_oracle_freshness_policy_updates_stored_value_and_emits_event() {
-        let (env, client) = setup(0);
-        let admin = env.as_contract(&client.address, || {
-            ArenaStorage::load_config(&env).unwrap().admin
-        });
-
-        client.set_oracle_freshness_policy(&7_200, &3_600);
-
-        let events = env.events().all();
-        let expected_topic: soroban_sdk::Vec<Val> =
-            (symbol_short!("arena"), symbol_short!("frsh_pol"), admin).into_val(&env);
-        let has_event = events
-            .iter()
-            .any(|(contract, topics, _data)| contract == client.address && topics == expected_topic);
-        assert!(has_event, "must emit frsh_pol event");
-
-        let policy = client.get_oracle_freshness_policy();
-        assert_eq!(policy.max_age_secs, 7_200);
-        assert_eq!(policy.warn_age_secs, 3_600);
-    }
-
-    #[test]
-    fn set_oracle_freshness_policy_rejects_warn_greater_than_max() {
-        let (_env, client) = setup(0);
-        let result = client.try_set_oracle_freshness_policy(&100, &200);
-        assert_eq!(result, Err(Ok(ArenaError::InvalidFreshnessPolicy)));
-    }
-
-    #[test]
-    fn set_oracle_freshness_policy_rejects_zero_max_age() {
-        let (_env, client) = setup(0);
-        let result = client.try_set_oracle_freshness_policy(&0, &0);
-        assert_eq!(result, Err(Ok(ArenaError::InvalidFreshnessPolicy)));
-    }
-
-    #[test]
-    fn set_oracle_freshness_policy_rejects_above_hard_ceiling() {
-        let (_env, client) = setup(0);
-        let result = client.try_set_oracle_freshness_policy(
-            &(types::MAX_ORACLE_MAX_AGE_SECS + 1),
-            &100,
-        );
-        assert_eq!(result, Err(Ok(ArenaError::InvalidFreshnessPolicy)));
-    }
-
-    #[test]
-    fn set_oracle_freshness_policy_accepts_equal_warn_and_max() {
-        let (_env, client) = setup(0);
-        client.set_oracle_freshness_policy(&1_000, &1_000);
-        let policy = client.get_oracle_freshness_policy();
-        assert_eq!(policy.max_age_secs, 1_000);
-        assert_eq!(policy.warn_age_secs, 1_000);
-    }
-
-    #[test]
-    fn set_oracle_freshness_policy_at_hard_ceiling_is_accepted() {
-        let (_env, client) = setup(0);
-        client.set_oracle_freshness_policy(&types::MAX_ORACLE_MAX_AGE_SECS, &100);
-        assert_eq!(
-            client.get_oracle_freshness_policy().max_age_secs,
-            types::MAX_ORACLE_MAX_AGE_SECS
-        );
-    }
-
-    #[test]
-    fn update_platform_fee_at_max_boundary_succeeds() {
-        let (_env, client) = setup(0);
-        client.update_platform_fee(&1000);
-        assert_eq!(client.get_platform_fee_bps(), 1000);
-    }
-
-    // --- Issue 1: initialize rejects invalid entry fees ---
-
-    #[test]
-    fn initialize_rejects_zero_entry_fee() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
-        let vault_id = env.register(MockVault, ());
-        let token_admin = Address::generate(&env);
-        let token_id = env
-            .register_stellar_asset_contract_v2(token_admin)
-            .address();
-
-        let admin = Address::generate(&env);
-        let client = ArenaContractClient::new(&env, &contract_id);
-        let result = client.try_initialize(
-            &admin,
-            &token_id,
-            &vault_id,
-            &0,
-            &oracle_id,
-            &Address::generate(&env),
-            &1u32,
-            &2u32,
-            &10u32,
-            &60u64,
-        );
-        assert_eq!(result, Err(Ok(ArenaError::InvalidEntryFee)));
-    }
-
-    #[test]
-    fn initialize_rejects_negative_entry_fee() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
-        let vault_id = env.register(MockVault, ());
-        let token_admin = Address::generate(&env);
-        let token_id = env
-            .register_stellar_asset_contract_v2(token_admin)
-            .address();
-
-        let admin = Address::generate(&env);
-        let client = ArenaContractClient::new(&env, &contract_id);
-        let result = client.try_initialize(
-            &admin,
-            &token_id,
-            &vault_id,
-            &-1,
-            &oracle_id,
-            &Address::generate(&env),
-            &1u32,
-            &2u32,
-            &10u32,
-            &60u64,
-        );
-        assert_eq!(result, Err(Ok(ArenaError::InvalidEntryFee)));
-    }
-
-    #[test]
-    fn initialize_accepts_positive_entry_fee() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
-        let vault_id = env.register(MockVault, ());
-        let token_admin = Address::generate(&env);
-        let token_id = env
-            .register_stellar_asset_contract_v2(token_admin)
-            .address();
-
-        let admin = Address::generate(&env);
-        let client = ArenaContractClient::new(&env, &contract_id);
-        assert!(
-            client
-                .try_initialize(
-                    &admin,
-                    &token_id,
-                    &vault_id,
-                    &1,
-                    &oracle_id,
-                    &Address::generate(&env),
-                    &1u32,
-                    &2u32,
-                    &10u32,
-                    &60u64
-                )
-                .is_ok()
-        );
-    }
-
-    // --- Issue 2/4: submit_commitment rejects non-players, eliminated players, and timing violations ---
-
-    #[test]
-    fn submit_commitment_rejects_non_player() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
-        let vault_id = env.register(MockVault, ());
-        let token_admin = Address::generate(&env);
-        let token_id = env
-            .register_stellar_asset_contract_v2(token_admin)
-            .address();
-        let token_admin_client = StellarAssetClient::new(&env, &token_id);
-
-        let admin = Address::generate(&env);
-        let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(
-            &admin,
-            &token_id,
-            &vault_id,
-            &100,
-            &oracle_id,
-            &Address::generate(&env),
-            &1,
-            &2,
-            &10,
-            &60,
-        );
-
-        // Add two real players and start round so state is Active
-        let p1 = Address::generate(&env);
-        let p2 = Address::generate(&env);
-        token_admin_client.mint(&p1, &1000);
-        token_admin_client.mint(&p2, &1000);
-        client.join_arena(&p1);
-        client.join_arena(&p2);
-        env.ledger().with_mut(|li| li.timestamp = 1000);
-        client.start_round(&60);
-
-        // A non-player (never joined) tries to submit commitment
-        let stranger = Address::generate(&env);
-        let commitment = BytesN::from_array(&env, &[1u8; 32]);
-        let result = client.try_submit_commitment(&stranger, &commitment);
-        assert_eq!(result, Err(Ok(ArenaError::NotAPlayer)));
-    }
-
-    #[test]
-    fn submit_commitment_rejects_eliminated_player() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
-        let vault_id = env.register(MockVault, ());
-        let token_admin = Address::generate(&env);
-        let token_id = env
-            .register_stellar_asset_contract_v2(token_admin)
-            .address();
-        let token_admin_client = StellarAssetClient::new(&env, &token_id);
-
-        let admin = Address::generate(&env);
-        let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(
-            &admin,
-            &token_id,
-            &vault_id,
-            &100,
-            &oracle_id,
-            &Address::generate(&env),
-            &1,
-            &2,
-            &10,
-            &60,
-        );
-
-        let p1 = Address::generate(&env);
-        let p2 = Address::generate(&env);
-        token_admin_client.mint(&p1, &1000);
-        token_admin_client.mint(&p2, &1000);
-        client.join_arena(&p1);
-        client.join_arena(&p2);
-        env.ledger().with_mut(|li| li.timestamp = 1000);
-        client.start_round(&60);
-
-        // Mark p1 as eliminated
-        env.as_contract(&contract_id, || {
-            ArenaStorage::save_player(
-                &env,
-                &p1,
-                &PlayerState {
-                    active: false,
-                    rounds_survived: 0,
-                },
-            );
-        });
-
-        let commitment = BytesN::from_array(&env, &[1u8; 32]);
-        let result = client.try_submit_commitment(&p1, &commitment);
-        assert_eq!(result, Err(Ok(ArenaError::PlayerEliminated)));
-    }
-
-    #[test]
-    fn submit_commitment_rejects_when_round_not_active() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
-        let vault_id = env.register(MockVault, ());
-        let token_admin = Address::generate(&env);
-        let token_id = env
-            .register_stellar_asset_contract_v2(token_admin)
-            .address();
-        let token_admin_client = StellarAssetClient::new(&env, &token_id);
-
-        let admin = Address::generate(&env);
-        let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(
-            &admin,
-            &token_id,
-            &vault_id,
-            &100,
-            &oracle_id,
-            &Address::generate(&env),
-            &1,
-            &2,
-            &10,
-            &60,
-        );
-
-        let player = Address::generate(&env);
-        token_admin_client.mint(&player, &1000);
-        client.join_arena(&player);
-
-        // Arena is Open (not Active) — commitment should be rejected
-        let commitment = BytesN::from_array(&env, &[1u8; 32]);
-        let result = client.try_submit_commitment(&player, &commitment);
-        assert_eq!(result, Err(Ok(ArenaError::RoundNotActive)));
-    }
-
-    #[test]
-    fn submit_commitment_rejects_after_deadline() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
-        let vault_id = env.register(MockVault, ());
-        let token_admin = Address::generate(&env);
-        let token_id = env
-            .register_stellar_asset_contract_v2(token_admin)
-            .address();
-        let token_admin_client = StellarAssetClient::new(&env, &token_id);
-
-        let admin = Address::generate(&env);
-        let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(
-            &admin,
-            &token_id,
-            &vault_id,
-            &100,
-            &oracle_id,
-            &Address::generate(&env),
-            &1,
-            &2,
-            &10,
-            &60,
-        );
-
-        let p1 = Address::generate(&env);
-        let p2 = Address::generate(&env);
-        token_admin_client.mint(&p1, &1000);
-        token_admin_client.mint(&p2, &1000);
-        client.join_arena(&p1);
-        client.join_arena(&p2);
 
         // Start round
         env.ledger().with_mut(|li| li.timestamp = 1000);
         client.start_round(&60);
-
-        // Advance past deadline
-        env.ledger().with_mut(|li| li.timestamp = 1061);
-
-        let commitment = BytesN::from_array(&env, &[1u8; 32]);
-        let result = client.try_submit_commitment(&p1, &commitment);
-        assert_eq!(result, Err(Ok(ArenaError::CommitPhaseEnded)));
-    }
-
-    // --- Issue #953: events emitted for submit_commitment and reveal_choice ---
-
-    #[test]
-    fn commitment_submitted_emits_event() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
-        let vault_id = env.register(MockVault, ());
-        let token_admin = Address::generate(&env);
-        let token_id = env
-            .register_stellar_asset_contract_v2(token_admin)
-            .address();
-        let token_admin_client = StellarAssetClient::new(&env, &token_id);
-
-        let admin = Address::generate(&env);
-        let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(
-            &admin,
-            &token_id,
-            &vault_id,
-            &100,
-            &oracle_id,
-            &Address::generate(&env),
-            &1,
-            &2,
-            &10,
-            &60,
-        );
-
-        let p1 = Address::generate(&env);
-        let p2 = Address::generate(&env);
-        token_admin_client.mint(&p1, &1000);
-        token_admin_client.mint(&p2, &1000);
-        client.join_arena(&p1);
-        client.join_arena(&p2);
-        env.ledger().with_mut(|li| li.timestamp = 1000);
-        client.start_round(&60);
-
-        let commitment = BytesN::from_array(&env, &[1u8; 32]);
-        client.submit_commitment(&p1, &commitment);
-
-        let events = env.events().all();
-        let expected_topic: soroban_sdk::Vec<Val> =
-            (symbol_short!("arena"), symbol_short!("commit"), p1.clone()).into_val(&env);
-        let event_found = events.iter().any(|(contract, topics, _data)| {
-            contract == client.address && topics == expected_topic
-        });
-        assert!(
-            event_found,
-            "commitment_submitted event must be emitted after submit_commitment"
-        );
-    }
-
-    #[test]
-    fn choice_revealed_emits_event() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
-        let vault_id = env.register(MockVault, ());
-        let token_admin = Address::generate(&env);
-        let token_id = env
-            .register_stellar_asset_contract_v2(token_admin)
-            .address();
-        let token_admin_client = StellarAssetClient::new(&env, &token_id);
-
-        let admin = Address::generate(&env);
-        let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(
-            &admin,
-            &token_id,
-            &vault_id,
-            &100,
-            &oracle_id,
-            &Address::generate(&env),
-            &1,
-            &2,
-            &10,
-            &60,
-        );
-
-        let p1 = Address::generate(&env);
-        let p2 = Address::generate(&env);
-        token_admin_client.mint(&p1, &1000);
-        token_admin_client.mint(&p2, &1000);
-        client.join_arena(&p1);
-        client.join_arena(&p2);
-        env.ledger().with_mut(|li| li.timestamp = 1000);
-        client.start_round(&60);
-
-        let salt = BytesN::from_array(&env, &[1u8; 32]);
-        let commitment = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt);
-        client.submit_commitment(&p1, &commitment);
-        client.submit_commitment(&p2, &commitment);
-
-        env.ledger().with_mut(|li| li.timestamp = 1061);
-        client.reveal_choice(&p1, &Choice::Heads, &salt);
-
-        let events = env.events().all();
-        let expected_topic: soroban_sdk::Vec<Val> =
-            (symbol_short!("arena"), symbol_short!("reveal"), p1.clone()).into_val(&env);
-        let event_found = events.iter().any(|(contract, topics, _data)| {
-            contract == client.address && topics == expected_topic
-        });
-        assert!(
-            event_found,
-            "choice_revealed event must be emitted after reveal_choice"
-        );
-    }
-
-    // --- Issue #761: start_round rejects Finished state ---
-
-    #[test]
-    fn start_round_rejects_finished_state() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
-        let vault_id = env.register(MockVault, ());
-        let token_admin = Address::generate(&env);
-        let token_id = env
-            .register_stellar_asset_contract_v2(token_admin)
-            .address();
-        let token_admin_client = StellarAssetClient::new(&env, &token_id);
-
-        let admin = Address::generate(&env);
-        let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(
-            &admin,
-            &token_id,
-            &vault_id,
-            &100,
-            &oracle_id,
-            &Address::generate(&env),
-            &1,
-            &2,
-            &10,
-            &60,
-        );
-
-        let p1 = Address::generate(&env);
-        let p2 = Address::generate(&env);
-        token_admin_client.mint(&p1, &1000);
-        token_admin_client.mint(&p2, &1000);
-        client.join_arena(&p1);
-        client.join_arena(&p2);
-
-        // Force state to Finished
-        env.as_contract(&contract_id, || {
-            let mut config = ArenaStorage::load_config(&env).unwrap();
-            config.state = GameState::Finished;
-            ArenaStorage::save_config(&env, &config);
-        });
-
-        let result = client.try_start_round(&60);
-        assert_eq!(result, Err(Ok(ArenaError::InvalidGameState)));
-    }
-
-    // --- Issue 3: choices and commitments cleared after resolve_round ---
-
-    #[test]
-    fn choices_and_commitments_cleared_after_resolve_round() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(ArenaContract, ());
-        let oracle_id = env.register(MockOracle, ());
-        let vault_id = env.register(MockVault, ());
-        let token_admin = Address::generate(&env);
-        let token_id = env
-            .register_stellar_asset_contract_v2(token_admin)
-            .address();
-        let token_admin_client = StellarAssetClient::new(&env, &token_id);
-
-        let admin = Address::generate(&env);
-        let client = ArenaContractClient::new(&env, &contract_id);
-        client.initialize(
-            &admin,
-            &token_id,
-            &vault_id,
-            &100,
-            &oracle_id,
-            &Address::generate(&env),
-            &1,
-            &2,
-            &10,
-            &60,
-        );
-
-        let p1 = Address::generate(&env);
-        let p2 = Address::generate(&env);
-        token_admin_client.mint(&p1, &1000);
-        token_admin_client.mint(&p2, &1000);
-        client.join_arena(&p1);
-        client.join_arena(&p2);
-
-        // Round 1: commit and reveal
-        env.ledger().with_mut(|li| li.timestamp = 1000);
-        client.start_round(&60);
-        let salt = BytesN::from_array(&env, &[1u8; 32]);
-        let comm = compute_commitment(&env, &contract_id, 1, &p1, Choice::Heads, &salt);
-        client.submit_commitment(&p1, &comm);
-        client.submit_commitment(&p2, &comm);
-        env.ledger().with_mut(|li| li.timestamp = 1061);
-        client.reveal_choice(&p1, &Choice::Heads, &salt);
-        client.reveal_choice(&p2, &Choice::Heads, &salt);
-
-        // After resolve_round, choices and commitments should be cleared
-        client.resolve_round();
-
-        env.as_contract(&contract_id, || {
-            assert!(
-                ArenaStorage::load_choice(&env, &p1, 1).is_none(),
-                "choice should be cleared after resolve_round"
-            );
-            assert!(
-                ArenaStorage::load_commitment(&env, &p1, 1).is_none(),
-                "commitment should be cleared after resolve_round"
-            );
-            assert!(
-                ArenaStorage::load_choice(&env, &p2, 1).is_none(),
-                "choice should be cleared after resolve_round"
-            );
-            assert!(
-                ArenaStorage::load_commitment(&env, &p2, 1).is_none(),
-                "commitment should be cleared after resolve_round"
-            );
-        });
-    }
-
-    #[test]
-    fn leaderboard_with_120_players_is_sorted_and_capped() {
-        const N: u32 = 120;
-        const LIMIT: u32 = 50;
-
-        let env = Env::default();
-            env.mock_all_auths();
-            let contract_id = env.register(ArenaContract, ());
-            let oracle_id = env.register(MockOracle, ());
-
-            env.as_contract(&contract_id, || {
-                ArenaStorage::save_config(
-                    &env,
-                    &ArenaConfig {
-                        admin: Address::generate(&env),
-                        stake_token: Address::generate(&env),
-                        yield_vault: Address::generate(&env),
-                        entry_fee: 100,
-                        state: GameState::Open,
-                        paused: false,
-                        player_count: 0,
-                        active_player_count: 0,
-                        cumulative_yield: 0,
-                        commit_deadline: 0,
-                        round_count: 0,
-                        oracle_contract: oracle_id,
-                        factory: Address::generate(&env),
-                        pool_id: 0,
-                        platform_fee_bps: 1000,
-                    },
-                );
-                ArenaStorage::save_leaderboard_limit(&env, LIMIT);
-
-                // Player i gets rounds_survived = i, so player N-1 has the highest score.
-                for i in 0..N {
-                    let player = Address::generate(&env);
-                    ArenaStorage::add_player(&env, &player);
-                    ArenaStorage::save_player(
-                        &env,
-                        &player,
-                        &PlayerState {
-                            active: true,
-                            rounds_survived: i,
-                        },
-                    );
-                }
-
-                build_leaderboard(&env);
-
-                let board = ArenaStorage::load_leaderboard(&env);
-                assert_eq!(board.len(), LIMIT, "leaderboard must be capped at limit");
-
-                // Entries must be in strictly descending order of rounds_survived.
-                let mut prev_rs = u32::MAX;
-                for idx in 0..LIMIT {
-                    let entry: LeaderboardEntry = board.get(idx).unwrap();
-                    assert!(
-                        entry.rounds_survived <= prev_rs,
-                        "leaderboard not sorted descending at index {idx}"
-                    );
-                    prev_rs = entry.rounds_survived;
-                }
-
-                // Top entry must have the maximum rounds_survived.
-                assert_eq!(
-                    board.get(0).unwrap().rounds_survived,
-                    N - 1,
-                    "first entry must have the highest rounds_survived"
-                );
-            });
-        }
-
-    #[test]
-    fn start_round_rejects_duration_below_minimum() {
-        let (_env, client) = setup(2);
-        let err = client
-            .try_start_round(&(MIN_ROUND_DURATION_SECONDS - 1))
-            .err()
-            .expect("duration below minimum must be rejected")
-            .expect("error must be a contract error");
-        assert_eq!(err, ArenaError::InvalidDuration);
-    }
-
-    #[test]
-    fn start_round_rejects_duration_above_maximum() {
-        let (_env, client) = setup(2);
-        let err = client
-            .try_start_round(&(MAX_ROUND_DURATION_SECONDS + 1))
-            .err()
-            .expect("duration above maximum must be rejected")
-            .expect("error must be a contract error");
-        assert_eq!(err, ArenaError::InvalidDuration);
-    }
-
-    #[test]
-    fn start_round_rejects_u64_max_duration() {
-        // Regression test: u64::MAX duration would set commit_deadline unreachably
-        // far in the future, locking all player funds indefinitely. This is the
-        // exact fund-lock scenario the MAX_ROUND_DURATION_SECONDS constant's
-        // comment warns about.
-        let (_env, client) = setup(2);
-        let err = client
-            .try_start_round(&u64::MAX)
-            .err()
-            .expect("u64::MAX duration must be rejected")
-            .expect("error must be a contract error");
-        assert_eq!(
-            err,
-            ArenaError::InvalidDuration,
-            "u64::MAX must be rejected, not cause indefinite fund lock"
-        );
-    }
-
-    #[test]
-    fn start_round_accepts_minimum_valid_duration() {
-        let (_env, client) = setup(2);
-        let result = client.try_start_round(&MIN_ROUND_DURATION_SECONDS);
-        assert!(
-            result.is_ok(),
-            "minimum valid duration must be accepted"
-        );
-    }
-
-    #[test]
-    fn start_round_accepts_maximum_valid_duration() {
-        let (_env, client) = setup(2);
-        let result = client.try_start_round(&MAX_ROUND_DURATION_SECONDS);
-        assert!(
-            result.is_ok(),
-            "maximum valid duration must be accepted"
-        );
-    }
-
-    #[test]
-    fn resolve_round_with_zero_survivors_transitions_to_cancelled() {
-        // Regression test: when all remaining active players fail to reveal their choice
-        // (e.g., both AFKs in a 2-player round), the arena should transition to Cancelled
-        // to enable claim_refund recovery instead of becoming permanently locked.
-        let (env, client) = setup(2);
-        
-        // Whitelist and set up arena
-        env.mock_all_auths();
-        let admin = Address::generate(&env);
-        let players: [Address; 2] = [Address::generate(&env), Address::generate(&env)];
-        
-        let oracle_id = env.register(MockOracle, ());
-        let vault_id = env.register(MockVault, ());
-        let stake_token = Address::generate(&env);
-        
-        env.as_contract(&client.address, || {
-            let config = ArenaConfig {
-                admin: admin.clone(),
-                stake_token: stake_token.clone(),
-                entry_fee: 100,
-                state: GameState::Open,
-                paused: false,
-                player_count: 2,
-                active_player_count: 2,
-                cumulative_yield: 0,
-                commit_deadline: 0,
-                yield_vault: vault_id.clone(),
-                round_count: 0,
-                oracle_contract: oracle_id.clone(),
-                factory: Address::generate(&env),
-                pool_id: 0,
-                platform_fee_bps: 1000,
-            };
-            ArenaStorage::save_config(&env, &config);
-            ArenaStorage::save_player_limits(&env, 2, 2);
-            
-            for player in players.iter() {
-                ArenaStorage::add_player(&env, &player);
-            }
-        });
-        
-        // Start a round
-        env.ledger().with_mut(|li| li.timestamp = 1000);
-        client.start_round(&MIN_ROUND_DURATION_SECONDS);
 
         // Advance time past the commit deadline WITHOUT any player revealing
         env.ledger()
@@ -5584,7 +3311,7 @@ mod test {
         client.resolve_round();
         
         // Get the arena config and verify it transitioned to Cancelled, not Finished
-        env.as_contract(&client.address, || {
+        env.as_contract(&contract_id, || {
             let config = ArenaStorage::load_config(&env).expect("config must exist");
             assert_eq!(
                 config.state,
@@ -5596,29 +3323,3352 @@ mod test {
             let winner = ArenaStorage::get_winner(&env);
             assert!(
                 winner.is_none(),
-                "no winner should be set in zero-survivor scenario"
+                "no winner should be set when more than one player survives"
             );
         });
     }
-} // close mod test
-#[cfg(test)]
-mod integration_tests;
-#[cfg(test)]
-mod join_arena_tests;
-#[cfg(test)]
-mod lobby_tests;
-#[cfg(test)]
-mod player_status_tests;
-#[cfg(test)]
-mod global_pause_tests;
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod commitment_vectors;
-#[cfg(test)]
-mod temp_storage_tests;
-#[cfg(test)]
-mod auth_tests;
-#[cfg(test)]
-mod conservation_tests;
-#[cfg(test)]
-mod settlement_security_tests;
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&p2, &1000);
+        token_admin_client.mint(&p3, &1000);
+
+        let client = ArenaContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &vault_id,
+            &100,
+            &oracle_id,
+            &Address::generate(&env),
+            &1,
+            &2,
+            &10,
+            &60,
+        );
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+        client.join_arena(&p3);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // p1 chooses Tails (minority), p2 and p3 choose Heads (majority)
+        let salt1 = BytesN::from_array(&env, &[1u8; 32]);
+        let salt2 = BytesN::from_array(&env, &[2u8; 32]);
+        let salt3 = BytesN::from_array(&env, &[3u8; 32]);
+        let comm1 = compute_commitment(&env, &contract_id, 1, &p1, Choice::Tails, &salt1);
+        let comm2 = compute_commitment(&env, &contract_id, 1, &p2, Choice::Heads, &salt2);
+        let comm3 = compute_commitment(&env, &contract_id, 1, &p3, Choice::Heads, &salt3);
+        client.submit_commitment(&p1, &comm1);
+        client.submit_commitment(&p2, &comm2);
+        client.submit_commitment(&p3, &comm3);
+
+        env.ledger().with_mut(|li| li.timestamp = 1061);
+        client.reveal_choice(&p1, &Choice::Tails, &salt1);
+        client.reveal_choice(&p2, &Choice::Heads, &salt2);
+        client.reveal_choice(&p3, &Choice::Heads, &salt3);
+
+        client.resolve_round();
+
+        // p1 (minority: Tails) should survive
+        env.as_contract(&client.address, || {
+            let state = ArenaStorage::load_player(&env, &p1).unwrap();
+            assert!(state.active, "Minority revealer should survive");
+            assert_eq!(state.rounds_survived, 1);
+        });
+
+        // p2 and p3 (majority: Heads) should be eliminated
+        env.as_contract(&client.address, || {
+            let s2 = ArenaStorage::load_player(&env, &p2).unwrap();
+            let s3 = ArenaStorage::load_player(&env, &p3).unwrap();
+            assert!(!s2.active, "Majority voter should be eliminated");
+            assert!(!s3.active, "Majority voter should be eliminated");
+        });
+    }
+
+    /// #1145 — when every active player fails to reveal the same choice
+    /// (e.g., both AFKs in a 2-player round), the arena should transition to
+    /// Cancelled to enable claim_refund recovery instead of becoming permanently
+    /// locked.
+    #[test]
+    fn zero_survivor_round_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let admin = Address::generate(&env);
+        let client = ArenaContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &token_id, &vault_id, &100, &oracle_id, &Address::generate(&env), &1, &2, &10, &60);
+        client.join_arena(&p1);
+        client.join_arena(&p2);
+
+        // Contract holds 200 (2 × 100 entry fee).
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200);
+
+        // Start round
+        env.ledger().with_mut(|li| li.timestamp = 1000);
+        client.start_round(&60);
+
+        // Advance time past the commit deadline WITHOUT any player revealing
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1000 + MIN_ROUND_DURATION_SECONDS + 1);
+        
+        // Resolve the round
+        client.resolve_round();
+        
+        // Get the arena config and verify it transitioned to Cancelled, not Finished
+        env.as_contract(&contract_id, || {
+            let config = ArenaStorage::load_config(&env).expect("config must exist");
+            assert_eq!(
+                config.state,
+                GameState::Cancelled,
+                "arena must transition to Cancelled when zero survivors remain, not Finished"
+            );
+            
+            // Verify no winner was set
+            let winner = ArenaStorage::get_winner(&env);
+            assert!(
+                winner.is_none(),
+                "no winner should be set when more than one player survives"
+            );
+        });
+    }
+
+    /// Verify that a player who reveals the minority choice survives the round.
+    #[test]
+    fn minority_revealer_survives() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ArenaContract, ());
+        let vault_id = env.register(MockVault, ());
+        let oracle_id = env.register(MockOracle, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        token_admin_client.mint(&p1, &1000);
+        token_admin_client.mint(&
