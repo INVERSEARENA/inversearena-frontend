@@ -1,14 +1,16 @@
 /**
  * Utilities for the single-use withdrawal-success session guard (#1298).
  *
- * Before navigating to `/arena-v2/withdrawal-success`, the withdrawal flow
+ * Before navigating to `/arena/withdrawal-success`, the withdrawal flow
  * must call `markWithdrawalComplete()` to store a one-time token in
  * sessionStorage.  The success page calls `consumeWithdrawalToken()` which
  * returns `true` exactly once and immediately removes the token, preventing
  * the page from being rendered again on refresh or from a crafted URL.
  */
+import { registerStorageKey, sessionStorageManager } from "./localStorage";
 
 export const WITHDRAWAL_TOKEN_KEY = "ia_withdrawal_success_token";
+const storageKey = registerStorageKey(WITHDRAWAL_TOKEN_KEY, "device", (value): value is string => typeof value === "string");
 
 /**
  * Write a one-time token into sessionStorage before navigating to the
@@ -16,9 +18,7 @@ export const WITHDRAWAL_TOKEN_KEY = "ia_withdrawal_success_token";
  * on-chain transaction and then redirects.
  */
 export function markWithdrawalComplete(): void {
-  if (typeof sessionStorage !== "undefined") {
-    sessionStorage.setItem(WITHDRAWAL_TOKEN_KEY, "1");
-  }
+  sessionStorageManager.setString(storageKey, "1");
 }
 
 /**
@@ -29,11 +29,7 @@ export function markWithdrawalComplete(): void {
  *          (direct URL access / forged query params).
  */
 export function consumeWithdrawalToken(): boolean {
-  if (typeof sessionStorage === "undefined") {
-    // SSR environment — no session storage available; treat as invalid.
-    return false;
-  }
-  const present = sessionStorage.getItem(WITHDRAWAL_TOKEN_KEY) !== null;
-  sessionStorage.removeItem(WITHDRAWAL_TOKEN_KEY);
+  const present = sessionStorageManager.getString(storageKey) !== null;
+  sessionStorageManager.removeItem(storageKey);
   return present;
 }

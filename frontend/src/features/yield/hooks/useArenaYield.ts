@@ -1,7 +1,10 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useMemo, useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { z } from "zod";
+import { apiClient } from "@/shared/lib/api/client";
+import { queryKeys } from "@/shared/lib/query/queryClient";
 
 // ── Zod schemas for runtime validation ─────────────────────────────
 const yieldPointSchema = z.object({
@@ -25,9 +28,6 @@ const yieldResponseSchema = z.object({
 export type ArenaYieldPoint = z.infer<typeof yieldPointSchema>;
 export type ArenaYieldResponse = z.infer<typeof yieldResponseSchema>;
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
-
 export interface UseArenaYieldReturn {
   points: ArenaYieldPoint[];
   asset: string;
@@ -37,59 +37,36 @@ export interface UseArenaYieldReturn {
   refetch: () => Promise<void>;
 }
 
-// ── Hook: GET /api/arenas/:id/yield ────────────────────────────────
 export function useArenaYield(arenaId: string | null): UseArenaYieldReturn {
-  const [data, setData] = useState<ArenaYieldResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const fetchYield = useCallback(async () => {
-    if (!arenaId) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const token =
-        typeof window !== "undefined"
-          ? window.localStorage.getItem("access_token")
-          : null;
-      const headers: HeadersInit = token
-        ? { Authorization: `Bearer ${token}` }
-        : {};
-      const res = await fetch(
-        `${API_BASE}/api/arenas/${encodeURIComponent(arenaId)}/yield?limit=500`,
-        { headers },
+  const query = useQuery({
+    queryKey: queryKeys.arena.yield(arenaId),
+    queryFn: async () => {
+      if (!arenaId) return null;
+      const json = await apiClient.get<unknown>(
+        `/api/arenas/${encodeURIComponent(arenaId)}/yield`,
+        { params: { limit: "500" } },
       );
-      if (!res.ok) {
-        throw new Error(`Yield request failed: ${res.status}`);
-      }
-      const json = await res.json();
-      setData(yieldResponseSchema.parse(json));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load yield");
-      setData(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [arenaId]);
+      return yieldResponseSchema.parse(json);
+    },
+    enabled: Boolean(arenaId),
+  });
 
-  useEffect(() => {
-    if (arenaId) {
-      void fetchYield();
-    } else {
-      setData(null);
-      setError(null);
-      setLoading(false);
-    }
-  }, [arenaId, fetchYield]);
+  const refetch = useCallback(async () => {
+    await query.refetch();
+  }, [query]);
 
-  const points = useMemo(() => data?.points ?? [], [data]);
+  const points = useMemo(() => query.data?.points ?? [], [query.data]);
 
   return {
     points,
-    asset: data?.asset ?? "",
-    finished: data?.finished ?? false,
-    loading,
-    error,
-    refetch: fetchYield,
+    asset: query.data?.asset ?? "",
+    finished: query.data?.finished ?? false,
+    loading: query.isLoading,
+    error: query.error
+      ? query.error instanceof Error
+        ? query.error.message
+        : "Failed to load yield"
+      : null,
+    refetch,
   };
 }

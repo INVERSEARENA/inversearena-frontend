@@ -6,6 +6,8 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { WalletStatus } from "../model/types";
 import { SignedXdrSchema } from "@/shared/lib/security-validation";
 import { isStellarConfigured, stellarConfig } from "@/shared/config/stellarConfig";
+import { normalizeSignature } from "@/shared/lib/session/challenge";
+import { localStorageManager, StorageKey } from "@/shared/lib/localStorage";
 
 // Define an interface for the wallet hook's return type
 export interface WalletHook {
@@ -17,6 +19,8 @@ export interface WalletHook {
   walletNetworkName: string | null;
   connectWallet: () => Promise<string | null>;
   signTransaction: (xdr: string) => Promise<string>;
+  /** Signs the backend auth challenge as a raw message (base64 result). */
+  signMessage: (message: string) => Promise<string>;
   disconnectWallet: () => void;
   /** Re-checks the connected wallet's active network without a full reconnect. */
   recheckNetwork: () => Promise<void>;
@@ -26,7 +30,7 @@ export interface WalletHook {
 const STELLAR_PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
 
 // Key used to persist intentional disconnect so wallet extensions can't phantom-reconnect.
-export const WALLET_DISCONNECTED_KEY = 'inversearena:wallet:disconnected';
+export const WALLET_DISCONNECTED_KEY = StorageKey.WALLET_DISCONNECTED;
 
 const KIT_MODULES = () => [new xBullModule(), new FreighterModule(), new AlbedoModule()];
 
@@ -92,7 +96,7 @@ export const useStellarWallet = (network: Networks): WalletHook => {
     // skip initializing the kit entirely so it never attempts to restore the
     // last session. connectWallet() will initialize it lazily on demand.
     const suppressAutoReconnect =
-      typeof window !== 'undefined' && localStorage.getItem(WALLET_DISCONNECTED_KEY) === 'true';
+      localStorageManager.getItem<boolean>(WALLET_DISCONNECTED_KEY, false);
 
     if (suppressAutoReconnect) {
       kitInitializedRef.current = false;
@@ -118,7 +122,7 @@ export const useStellarWallet = (network: Networks): WalletHook => {
       setError(null);
       // Clear intentional-disconnect flag so the session is treated as fresh
       if (typeof window !== 'undefined') {
-        localStorage.removeItem(WALLET_DISCONNECTED_KEY);
+        localStorageManager.removeItem(WALLET_DISCONNECTED_KEY);
       }
       // The mount effect skips StellarWalletsKit.init() when auto-reconnect
       // was suppressed; initialize it now that the user explicitly connected.
@@ -176,6 +180,43 @@ export const useStellarWallet = (network: Networks): WalletHook => {
     if (networkMatches) setError(null);
   }, [isConnected, checkNetwork]);
 
+  /**
+   * Signs an arbitrary UTF-8 message (used for the backend auth nonce). The
+   * kit exposes `signMessage` on Freighter/xBull but not on every module, so
+   * absence is reported explicitly and the session flow falls back to a
+   * signed challenge transaction (see #1714).
+   */
+  const signMessage = useCallback(async (message: string) => {
+    const walletAddress = publicKey ?? (await StellarWalletsKit.getAddress()).address;
+    if (!walletAddress) {
+      throw new Error("Wallet is not connected");
+    }
+
+    const networkMatches = await checkNetwork();
+    if (!networkMatches) {
+      setStatus('network-mismatch');
+      throw new Error(
+        'Your wallet is connected to a different network than this app. Switch your wallet network and try again.',
+      );
+    }
+
+    const kit = StellarWalletsKit as unknown as {
+      signMessage?: (
+        value: string,
+        options: { address: string; networkPassphrase: string },
+      ) => Promise<unknown>;
+    };
+    if (typeof kit.signMessage !== 'function') {
+      throw new Error('Connected wallet cannot sign arbitrary messages');
+    }
+
+    const signed = await kit.signMessage(message, {
+      address: walletAddress,
+      networkPassphrase: stellarConfig.passphrase,
+    });
+    return normalizeSignature(signed);
+  }, [publicKey, checkNetwork]);
+
   const signTransaction = useCallback(async (xdr: string) => {
     const walletAddress = publicKey ?? (await StellarWalletsKit.getAddress()).address;
 
@@ -213,7 +254,7 @@ export const useStellarWallet = (network: Networks): WalletHook => {
     setWalletNetworkName(null);
     // Persist intentional disconnect so extensions cannot phantom-reconnect on reload
     if (typeof window !== 'undefined') {
-      localStorage.setItem(WALLET_DISCONNECTED_KEY, 'true');
+      localStorageManager.setItem(WALLET_DISCONNECTED_KEY, true);
     }
   }, []);
 
@@ -225,6 +266,7 @@ export const useStellarWallet = (network: Networks): WalletHook => {
     walletNetworkName,
     connectWallet,
     signTransaction,
+    signMessage,
     disconnectWallet,
     recheckNetwork,
   };

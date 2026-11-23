@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback } from 'react';
+import { localStorageManager, StorageKey } from '@/shared/lib/localStorage';
 
 export interface PasskeyWalletState {
   address: string | null;
@@ -9,16 +10,8 @@ export interface PasskeyWalletState {
   error: string | null;
 }
 
-const STORAGE_KEY = 'inversearena_passkey';
-
 function loadStored(): { address: string; keyId: string } | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as { address: string; keyId: string }) : null;
-  } catch {
-    return null;
-  }
+  return localStorageManager.getItem<{ address: string; keyId: string } | null>(StorageKey.PASSKEY, null);
 }
 
 /**
@@ -107,7 +100,7 @@ export function usePasskeyWallet() {
     const keyId = btoa(String.fromCharCode(...new Uint8Array(credential.rawId)));
     const address = deriveAddress(keyId);
 
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ address, keyId }));
+    localStorageManager.setItem(StorageKey.PASSKEY, { address, keyId });
     setState({ address, keyId, isRegistered: true, error: null });
     return { address, keyId };
   }, [isAvailable]);
@@ -119,7 +112,7 @@ export function usePasskeyWallet() {
   }, []);
 
   const disconnect = useCallback(() => {
-    localStorage.removeItem(STORAGE_KEY);
+    localStorageManager.removeItem(StorageKey.PASSKEY);
     setState({ address: null, keyId: null, isRegistered: false, error: null });
   }, []);
 

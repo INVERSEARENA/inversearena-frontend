@@ -32,7 +32,7 @@ export interface NotificationPreferences {
   roundNotifications: boolean;
   payoutNotifications: boolean;
   eliminationNotifications: boolean;
-  arenaAnnouncementNotifications: boolean;
+  digestNotifications?: boolean;
   email?: string;
   pushToken?: string;
 }
@@ -52,9 +52,9 @@ export interface DeliveryContext {
 export interface DeliveryRecord {
   id: string;
   userId: string;
-  type: DeliveryType;
-  channel: DeliveryChannel;
-  status: DeliveryStatus;
+  type: "round" | "payout" | "elimination" | "rematch" | "digest";
+  channel: "email" | "push" | "in_app";
+  status: "pending" | "sent" | "delivered" | "failed";
   dedupeKey: string;
   createdAt: Date;
   sentAt?: Date;
@@ -93,7 +93,7 @@ export class NotificationPreferencesService {
         roundNotifications: true,
         payoutNotifications: true,
         eliminationNotifications: true,
-        arenaAnnouncementNotifications: true,
+        digestNotifications: true,
       };
     }
 
@@ -107,7 +107,7 @@ export class NotificationPreferencesService {
       roundNotifications: prefs.roundNotifications,
       payoutNotifications: prefs.payoutNotifications,
       eliminationNotifications: prefs.eliminationNotifications,
-      arenaAnnouncementNotifications: prefs.arenaAnnouncementNotifications,
+      digestNotifications: (prefs as any).digestNotifications ?? true,
       ...(prefs.email != null ? { email: prefs.email } : {}),
       ...(prefs.pushToken != null ? { pushToken: prefs.pushToken } : {}),
     };
@@ -132,7 +132,7 @@ export class NotificationPreferencesService {
         roundNotifications: updates.roundNotifications ?? true,
         payoutNotifications: updates.payoutNotifications ?? true,
         eliminationNotifications: updates.eliminationNotifications ?? true,
-        arenaAnnouncementNotifications: updates.arenaAnnouncementNotifications ?? true,
+        digestNotifications: updates.digestNotifications ?? true,
         ...(updates.email !== undefined ? { email: updates.email } : {}),
         ...(updates.pushToken !== undefined ? { pushToken: updates.pushToken } : {}),
       },
@@ -145,9 +145,7 @@ export class NotificationPreferencesService {
         ...(updates.roundNotifications !== undefined && { roundNotifications: updates.roundNotifications }),
         ...(updates.payoutNotifications !== undefined && { payoutNotifications: updates.payoutNotifications }),
         ...(updates.eliminationNotifications !== undefined && { eliminationNotifications: updates.eliminationNotifications }),
-        ...(updates.arenaAnnouncementNotifications !== undefined && {
-          arenaAnnouncementNotifications: updates.arenaAnnouncementNotifications,
-        }),
+        ...(updates.digestNotifications !== undefined && { digestNotifications: updates.digestNotifications }),
         ...(updates.email !== undefined ? { email: updates.email } : {}),
         ...(updates.pushToken !== undefined ? { pushToken: updates.pushToken } : {}),
       },
@@ -289,11 +287,18 @@ export class NotificationPreferencesService {
         userId,
         dedupeKey,
         channel,
-        status: { in: ["sent", "delivered", "pending", "retrying", "dead_letter"] },
+        status: { in: ["pending", "failed", "sent", "delivered"] },
       },
+      orderBy: { createdAt: "desc" },
     });
 
     if (existing) {
+      if (existing.status === "failed") {
+        await this.prisma.notificationDelivery.update({
+          where: { id: existing.id },
+          data: { status: "pending", error: null, sentAt: null },
+        });
+      }
       return existing.id;
     }
 

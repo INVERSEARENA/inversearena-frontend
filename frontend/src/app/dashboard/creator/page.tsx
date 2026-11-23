@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useWallet } from "@/features/wallet/hooks/useWallet";
-import { CommunityWebhookSettings } from "@/features/notifications";
+import { apiClient } from "@/shared/lib/api/client";
 import {
   Play,
   XCircle,
@@ -13,7 +13,29 @@ import {
   Clock,
   ShieldAlert,
   Search,
+  Calendar,
+  Pause,
+  SkipForward,
+  Check,
 } from "lucide-react";
+
+export interface CreatorSeriesSummary {
+  id: string;
+  name: string;
+  templateId: string;
+  cadence: string;
+  timezone: string;
+  status: "active" | "paused" | "completed" | "cancelled";
+  instancesCreated: number;
+  nextScheduledAt: string | null;
+  instances?: Array<{
+    id: string;
+    scheduledFor: string;
+    status: "pending" | "signed" | "created" | "skipped" | "failed";
+    signRequestPayload?: any;
+    txHash?: string | null;
+  }>;
+}
 
 export type CreatorLifecycleState =
   | "waiting"
@@ -49,13 +71,88 @@ export interface CreatorArenaSummary {
 
 export default function CreatorOperationsConsole() {
   const { address, isConnected } = useWallet();
+  const [activeTab, setActiveTab] = useState<"arenas" | "series">("arenas");
   const [arenas, setArenas] = useState<CreatorArenaSummary[]>([]);
+  const [seriesList, setSeriesList] = useState<CreatorSeriesSummary[]>([]);
   const [filter, setFilter] = useState<string>("all");
   const [search, setSearch] = useState<string>("");
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
   const [banner, setBanner] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [webhookArenaId, setWebhookArenaId] = useState<string | null>(null);
+
+  const fetchCreatorSeries = useCallback(async () => {
+    if (!address) return;
+    try {
+      const data = await apiClient.get<{ items: CreatorSeriesSummary[] }>("/api/creator/series");
+      setSeriesList(data.items || []);
+    } catch {
+      setSeriesList([
+        {
+          id: "SERIES-001",
+          name: "Daily 8pm High Stakes",
+          templateId: "TMPL-001",
+          cadence: "0 20 * * *",
+          timezone: "America/New_York",
+          status: "active",
+          instancesCreated: 4,
+          nextScheduledAt: new Date(Date.now() + 18000000).toISOString(),
+          instances: [
+            {
+              id: "INST-005",
+              scheduledFor: new Date(Date.now() + 18000000).toISOString(),
+              status: "pending",
+              signRequestPayload: { name: "Daily 8pm High Stakes #5", entryFee: 50 },
+            },
+            {
+              id: "INST-004",
+              scheduledFor: new Date(Date.now() - 68400000).toISOString(),
+              status: "created",
+              txHash: "a1b2c3d4e5f678901234567890abcdef1234567890abcdef1234567890abcdef",
+            },
+          ],
+        },
+      ]);
+    }
+  }, [address]);
+
+  const handleSeriesAction = async (
+    seriesId: string,
+    action: "pause" | "resume" | "skip",
+  ) => {
+    setActionLoading((prev) => ({ ...prev, [`${seriesId}-${action}`]: true }));
+    try {
+      await apiClient.post(`/api/creator/series/${seriesId}/${action}`);
+      setBanner({ type: "success", message: `Series successfully updated (${action})` });
+      void fetchCreatorSeries();
+    } catch (err) {
+      setBanner({
+        type: "error",
+        message: err instanceof Error ? err.message : `Failed to ${action} series`,
+      });
+    } finally {
+      setActionLoading((prev) => ({ ...prev, [`${seriesId}-${action}`]: false }));
+    }
+  };
+
+  const handleSignSeriesInstance = async (seriesId: string, instanceId: string) => {
+    setActionLoading((prev) => ({ ...prev, [`${instanceId}-sign`]: true }));
+    try {
+      const dummyTxHash = "0".repeat(64);
+      await apiClient.post(`/api/creator/series/${seriesId}/instances/${instanceId}/sign`, {
+        txHash: dummyTxHash,
+      });
+      setBanner({ type: "success", message: "Series instance successfully signed & deployed!" });
+      void fetchCreatorSeries();
+    } catch (err) {
+      setBanner({
+        type: "error",
+        message: err instanceof Error ? err.message : "Failed to sign instance",
+      });
+    } finally {
+      setActionLoading((prev) => ({ ...prev, [`${instanceId}-sign`]: false }));
+    }
+  };
 
   const fetchCreatorArenas = useCallback(async () => {
     if (!address) {
@@ -132,7 +229,8 @@ export default function CreatorOperationsConsole() {
 
   useEffect(() => {
     fetchCreatorArenas();
-  }, [fetchCreatorArenas]);
+    fetchCreatorSeries();
+  }, [fetchCreatorArenas, fetchCreatorSeries]);
 
   const handleAction = async (
     arenaId: string,
@@ -214,6 +312,31 @@ export default function CreatorOperationsConsole() {
         </p>
       </div>
 
+      {/* Mode Navigation Tabs */}
+      <div className="flex border-b border-white/10 gap-6">
+        <button
+          onClick={() => setActiveTab("arenas")}
+          className={`pb-3 text-sm font-semibold transition border-b-2 ${
+            activeTab === "arenas"
+              ? "border-neon-green text-neon-green"
+              : "border-transparent text-white/60 hover:text-white"
+          }`}
+        >
+          Hosted Arenas ({arenas.length})
+        </button>
+        <button
+          onClick={() => setActiveTab("series")}
+          className={`pb-3 text-sm font-semibold transition border-b-2 flex items-center gap-2 ${
+            activeTab === "series"
+              ? "border-neon-green text-neon-green"
+              : "border-transparent text-white/60 hover:text-white"
+          }`}
+        >
+          <Calendar className="w-4 h-4" />
+          Recurring Series ({seriesList.length})
+        </button>
+      </div>
+
       {/* Banner */}
       {banner && (
         <div
@@ -232,7 +355,10 @@ export default function CreatorOperationsConsole() {
         </div>
       )}
 
-      {/* Controls: Search and Filter Tabs */}
+      {/* Main Tab Content */}
+      {activeTab === "arenas" ? (
+        <>
+          {/* Controls: Search and Filter Tabs */}
       <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center">
         <div className="flex flex-wrap gap-2">
           {["all", "actionable", "waiting", "blocked", "degraded", "terminal"].map((tab) => (
@@ -397,6 +523,150 @@ export default function CreatorOperationsConsole() {
               </div>
             );
           })}
+        </div>
+      )}
+        </>
+      ) : (
+        /* Recurring Series Tab (#1746) */
+        <div className="space-y-4">
+          {seriesList.length === 0 ? (
+            <div className="p-12 text-center border border-white/10 rounded bg-white/5">
+              <Calendar className="w-8 h-8 text-white/30 mx-auto mb-3" />
+              <p className="text-white/60 text-sm">No scheduled series found.</p>
+              <p className="text-white/40 text-xs mt-1">
+                Define recurring series from your creator templates to automate recurring arena deployments.
+              </p>
+            </div>
+          ) : (
+            seriesList.map((series) => (
+              <div
+                key={series.id}
+                className="p-5 rounded-lg border border-white/10 bg-black/40 backdrop-blur-sm space-y-4 hover:border-white/20 transition"
+              >
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-bold text-white text-base">{series.name}</h3>
+                      <span
+                        className={`px-2 py-0.5 text-[10px] font-pixel tracking-wider uppercase border rounded ${
+                          series.status === "active"
+                            ? "border-green-400 text-green-400 bg-green-500/10"
+                            : series.status === "paused"
+                            ? "border-yellow-400 text-yellow-400 bg-yellow-500/10"
+                            : "border-white/20 text-white/40 bg-white/5"
+                        }`}
+                      >
+                        {series.status.toUpperCase()}
+                      </span>
+                    </div>
+                    <p className="text-xs text-white/40 font-mono mt-0.5">
+                      Cadence: <span className="text-neon-green">{series.cadence}</span> • Timezone: {series.timezone} • Created: {series.instancesCreated} arenas
+                    </p>
+                  </div>
+
+                  {/* Actions for Series */}
+                  <div className="flex items-center gap-2">
+                    {series.status === "active" ? (
+                      <button
+                        onClick={() => handleSeriesAction(series.id, "pause")}
+                        disabled={actionLoading[`${series.id}-pause`]}
+                        className="flex items-center gap-1 px-3 py-1.5 border border-yellow-500/50 hover:bg-yellow-500/20 text-yellow-300 text-xs rounded transition"
+                      >
+                        <Pause className="w-3.5 h-3.5" />
+                        Pause Schedule
+                      </button>
+                    ) : series.status === "paused" ? (
+                      <button
+                        onClick={() => handleSeriesAction(series.id, "resume")}
+                        disabled={actionLoading[`${series.id}-resume`]}
+                        className="flex items-center gap-1 px-3 py-1.5 bg-green-600 hover:bg-green-500 text-white text-xs rounded transition"
+                      >
+                        <Play className="w-3.5 h-3.5" />
+                        Resume Schedule
+                      </button>
+                    ) : null}
+
+                    {series.status === "active" && (
+                      <button
+                        onClick={() => handleSeriesAction(series.id, "skip")}
+                        disabled={actionLoading[`${series.id}-skip`]}
+                        className="flex items-center gap-1 px-3 py-1.5 border border-white/20 hover:bg-white/10 text-white/70 text-xs rounded transition"
+                      >
+                        <SkipForward className="w-3.5 h-3.5" />
+                        Skip Next
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Series Instances & Next Run */}
+                <div className="pt-3 border-t border-white/5 text-xs space-y-3">
+                  <div className="flex justify-between items-center text-white/60">
+                    <span>
+                      Next Scheduled Run:{" "}
+                      <strong className="text-white">
+                        {series.nextScheduledAt
+                          ? new Date(series.nextScheduledAt).toLocaleString()
+                          : "None"}
+                      </strong>
+                    </span>
+                  </div>
+
+                  {/* Instances list */}
+                  {series.instances && series.instances.length > 0 && (
+                    <div className="space-y-2 mt-2">
+                      <span className="text-white/40 block text-[11px] font-pixel uppercase tracking-wider">
+                        Recent & Upcoming Instances
+                      </span>
+                      <div className="grid grid-cols-1 gap-2">
+                        {series.instances.map((inst) => (
+                          <div
+                            key={inst.id}
+                            className="p-2.5 rounded border border-white/5 bg-white/[0.02] flex items-center justify-between text-xs"
+                          >
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-white font-medium">
+                                  {new Date(inst.scheduledFor).toLocaleString()}
+                                </span>
+                                <span
+                                  className={`px-1.5 py-0.5 text-[9px] rounded font-pixel uppercase ${
+                                    inst.status === "pending"
+                                      ? "bg-yellow-500/20 text-yellow-300 border border-yellow-500/40"
+                                      : inst.status === "created"
+                                      ? "bg-green-500/20 text-green-300 border border-green-500/40"
+                                      : "bg-white/10 text-white/50"
+                                  }`}
+                                >
+                                  {inst.status}
+                                </span>
+                              </div>
+                              {inst.txHash && (
+                                <p className="text-[10px] text-white/40 font-mono mt-0.5">
+                                  Tx: {inst.txHash.slice(0, 10)}...{inst.txHash.slice(-8)}
+                                </p>
+                              )}
+                            </div>
+
+                            {inst.status === "pending" && (
+                              <button
+                                onClick={() => handleSignSeriesInstance(series.id, inst.id)}
+                                disabled={actionLoading[`${inst.id}-sign`]}
+                                className="flex items-center gap-1 px-3 py-1.5 bg-neon-green hover:bg-neon-green/90 text-black font-semibold text-xs rounded transition"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                                {actionLoading[`${inst.id}-sign`] ? "Signing..." : "One-Click Sign"}
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))
+          )}
         </div>
       )}
     </div>

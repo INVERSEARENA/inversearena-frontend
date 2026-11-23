@@ -50,6 +50,37 @@ const eslintConfig = defineConfig([
     ignores: ["src/test/**", "src/__mocks__/**", "**/__tests__/**", "**/*.test.{ts,tsx,js,jsx}"],
     rules: {
       "import/no-restricted-paths": ["error", { zones: boundaryZones }],
+      "no-restricted-globals": [
+        "error",
+        { name: "localStorage", message: "Use localStorageManager from '@/shared/lib/localStorage'." },
+        { name: "sessionStorage", message: "Use sessionStorageManager from '@/shared/lib/localStorage'." },
+      ],
+      "no-restricted-properties": [
+        "error",
+        { object: "window", property: "localStorage", message: "Use localStorageManager from '@/shared/lib/localStorage'." },
+        { object: "window", property: "sessionStorage", message: "Use sessionStorageManager from '@/shared/lib/localStorage'." },
+      ],
+    },
+  },
+  {
+    files: ["src/features/**/*.{ts,tsx}"],
+    ignores: ["src/test/**", "src/__mocks__/**", "**/__tests__/**", "**/*.test.{ts,tsx}"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "CallExpression[callee.name='fetch']",
+          message:
+            "Direct fetch() is forbidden in features. Use apiClient from '@/shared/lib/api/client' instead.",
+        },
+      ],
+    },
+  },
+  {
+    files: ["src/shared/lib/localStorage.ts"],
+    rules: {
+      "no-restricted-globals": "off",
+      "no-restricted-properties": "off",
     },
   },
 ]);

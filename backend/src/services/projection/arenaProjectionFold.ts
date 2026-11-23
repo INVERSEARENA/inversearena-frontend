@@ -41,6 +41,10 @@ export interface ArenaProjectionState {
   admin: string | null;
   /** Wallet addresses that have joined, in first-seen order. */
   players: string[];
+  /** #1715: player wallet → payer wallet that funded the seat. */
+  sponsors: Record<string, string>;
+  /** #1715: sponsored seat owners, in first-seen order. */
+  sponsoredPlayers: string[];
   /** Wallet addresses that have submitted a choice in the current round, in first-seen order. */
   choicesSubmitted: string[];
   /** Wallet addresses eliminated so far, in elimination order. */
@@ -68,6 +72,8 @@ export function initialArenaProjection(arenaId: string): ArenaProjectionState {
     gameState: "unknown",
     admin: null,
     players: [],
+    sponsors: {},
+    sponsoredPlayers: [],
     choicesSubmitted: [],
     eliminated: [],
     winner: null,
@@ -127,6 +133,41 @@ export function compactArenaProjectionState(
 export function hasValidProjectionHistoryAnchor(state: ArenaProjectionState): boolean {
   if (!state.historyAnchor) return true;
   return state.historyAnchor.projectionHash === digestProjection(state);
+}
+
+/**
+ * Fill in state introduced after a checkpoint was written (#1715).
+ *
+ * Sponsor fields are additive. A checkpoint saved before they existed has an
+ * anchor over the older canonical shape, so the migration recomputes the
+ * anchor for the defaulted shape rather than reporting spurious corruption.
+ */
+export function migrateArenaProjectionState(
+  state: ArenaProjectionState,
+): { state: ArenaProjectionState; migrated: boolean } {
+  const hasSponsorFields =
+    !!state.sponsors &&
+    typeof state.sponsors === "object" &&
+    !Array.isArray(state.sponsors) &&
+    Array.isArray(state.sponsoredPlayers);
+  if (hasSponsorFields) return { state, migrated: false };
+
+  const defaults: ArenaProjectionState = {
+    ...state,
+    sponsors: {},
+    sponsoredPlayers: [],
+  };
+  const anchor = defaults.historyAnchor;
+  const migrated: ArenaProjectionState = anchor
+    ? {
+        ...defaults,
+        historyAnchor: {
+          ...anchor,
+          projectionHash: digestProjection(defaults),
+        },
+      }
+    : defaults;
+  return { state: migrated, migrated: true };
 }
 
 function addStroops(a: string, b: string): string {
@@ -212,6 +253,19 @@ export function foldArenaProjectionEvent(
       return {
         ...advanced,
         players: appendUnique(advanced.players, event.player),
+        lastEventId: event.id,
+        appliedEventIds: [...advanced.appliedEventIds, event.id],
+      };
+
+    case "JOIN_S":
+      // #1715: the payer funds the fee and is the refund destination, while
+      // the player owns the seat. A later sponsored join may replace an older
+      // sponsor for the same wallet after that wallet left and rejoined.
+      return {
+        ...advanced,
+        players: appendUnique(advanced.players, event.player),
+        sponsors: { ...advanced.sponsors, [event.player]: event.payer },
+        sponsoredPlayers: appendUnique(advanced.sponsoredPlayers, event.player),
         lastEventId: event.id,
         appliedEventIds: [...advanced.appliedEventIds, event.id],
       };

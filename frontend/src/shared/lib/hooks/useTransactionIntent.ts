@@ -16,6 +16,7 @@ import { useCallback } from "react";
 import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 
 import { invalidateWalletBalances } from "@/shared/lib/stellar/balance-cache";
+import { registerStorageKey, sessionStorageManager } from "@/shared/lib/localStorage";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
 const SESSION_STORAGE_PREFIX = "inversearena:intent-key";
@@ -99,12 +100,13 @@ async function postJson<T>(path: string, body: unknown): Promise<T | null> {
  */
 function deriveIdempotencyKey(kind: IntentKind, actionKey: string, publicKey: string): string {
   const storageKey = `${SESSION_STORAGE_PREFIX}:${kind}:${actionKey}:${publicKey}`;
+  const key = registerStorageKey(storageKey, "device", (value): value is string => typeof value === "string");
   try {
-    const existing = sessionStorage.getItem(storageKey);
+    const existing = sessionStorageManager.getString(key);
     if (existing) return existing;
 
     const fresh = `${kind}:${publicKey.slice(0, 12)}:${crypto.randomUUID()}`;
-    sessionStorage.setItem(storageKey, fresh);
+    sessionStorageManager.setString(key, fresh);
     return fresh;
   } catch {
     // Private browsing / storage disabled — fall back to a key that is
@@ -116,7 +118,8 @@ function deriveIdempotencyKey(kind: IntentKind, actionKey: string, publicKey: st
 
 function clearIdempotencyKey(kind: IntentKind, actionKey: string, publicKey: string): void {
   try {
-    sessionStorage.removeItem(`${SESSION_STORAGE_PREFIX}:${kind}:${actionKey}:${publicKey}`);
+    const key = registerStorageKey(`${SESSION_STORAGE_PREFIX}:${kind}:${actionKey}:${publicKey}`, "device", (value): value is string => typeof value === "string");
+    sessionStorageManager.removeItem(key);
   } catch {
     // Nothing to clean up if storage was never reachable.
   }

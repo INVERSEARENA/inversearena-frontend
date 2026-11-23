@@ -14,9 +14,10 @@
 
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
+import { useCallback, useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiClient } from "@/shared/lib/api/client";
+import { queryKeys } from "@/shared/lib/query/queryClient";
 
 export type StakingFreshness = "verified" | "stale" | "unavailable";
 
@@ -52,12 +53,6 @@ export interface UseStakingPositionReturn {
   refresh: () => Promise<void>;
 }
 
-function authHeaders(): HeadersInit {
-  const token =
-    typeof window !== "undefined" ? window.localStorage.getItem("access_token") : null;
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 function isNonZero(value: string | null): boolean {
   return value !== null && /[1-9]/.test(value);
 }
@@ -75,14 +70,10 @@ export function deriveStakingState(position: StakingPosition | null): StakingPos
 }
 
 async function fetchPosition(): Promise<StakingPosition> {
-  const response = await fetch(`${API_BASE}/api/users/me/staking/positions`, {
-    headers: authHeaders(),
-    cache: "no-store",
-  });
-  if (!response.ok) {
-    throw new Error(`Staking position request failed (${response.status})`);
-  }
-  const body = (await response.json()) as { position?: StakingPosition };
+  const body = await apiClient.get<{ position?: StakingPosition }>(
+    "/api/users/me/staking/positions",
+    { cache: "no-store" },
+  );
   if (!body || typeof body !== "object" || !body.position) {
     throw new Error("Invalid staking position response");
   }
@@ -90,33 +81,29 @@ async function fetchPosition(): Promise<StakingPosition> {
 }
 
 export function useStakingPosition(): UseStakingPositionReturn {
-  const [position, setPosition] = useState<StakingPosition | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [errored, setErrored] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const query = useQuery({
+    queryKey: queryKeys.staking.position(),
+    queryFn: fetchPosition,
+  });
 
   const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    setErrored(false);
-    try {
-      setPosition(await fetchPosition());
-    } catch (err) {
-      setErrored(true);
-      setError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    await query.refetch();
+  }, [query]);
 
   const state = useMemo<StakingPositionState>(
-    () => (errored ? "error" : deriveStakingState(position)),
-    [errored, position],
+    () => (query.isError ? "error" : deriveStakingState(query.data ?? null)),
+    [query.isError, query.data],
   );
 
-  return { position, state, loading, error, refresh };
+  return {
+    position: query.data ?? null,
+    state,
+    loading: query.isLoading,
+    error: query.error
+      ? query.error instanceof Error
+        ? query.error.message
+        : "Unknown error"
+      : null,
+    refresh,
+  };
 }

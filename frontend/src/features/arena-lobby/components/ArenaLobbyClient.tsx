@@ -30,13 +30,16 @@ import { useRegistryLifecycle } from "@/features/pools/model/useRegistryLifecycl
 import { playerLifecycleNotice } from "@/shared/lib/stellar/registry-lifecycle";
 import { stellarConfig } from "@/shared/config/stellarConfig";
 import { displayAmountToStroops } from "@/shared/lib/stellar/stellar-asset-reader";
+import { formatFeeDisplay } from "@/shared/lib/stellar/stellar-fees";
 import { AssetTrustlinePrompt } from "@/components/modals/AssetTrustlinePrompt";
 import { useWallet } from "@/features/wallet";
 import { useLobbyData, type ArenaStats, type ArenaParticipant } from "../hooks/useLobbyData";
 import { useJoinFlow } from "../hooks/useJoinFlow";
+import { JoinFundingPanel } from "./JoinFundingPanel";
 import { LobbyHeader } from "./LobbyHeader";
 import { PlayerRoster } from "./PlayerRoster";
 import { JoinPanel } from "./JoinPanel";
+import { GiftSeatPanel } from "./GiftSeatPanel";
 
 interface ArenaLobbyClientProps {
   arenaId: string;
@@ -216,6 +219,45 @@ export function ArenaLobbyClient({ arenaId, initialStats, initialParticipants, i
               {reservationError}
             </p>
           )}
+          <JoinFundingPanel
+            sourceAssets={flow.sourceAssets}
+            selectedSourceCode={flow.selectedSourceCode}
+            onSelectSource={flow.selectSourceAsset}
+            quote={flow.pathQuote}
+            isQuoting={flow.isQuotingPath}
+            error={flow.pathQuoteError}
+            fundingMode={flow.fundingMode}
+            preferTwoStep={flow.preferTwoStep}
+            onToggleTwoStep={flow.setPreferTwoStep}
+            networkFeeStroops={flow.networkFeeStroops}
+            onRetry={() => void flow.refreshPathQuote().catch(() => undefined)}
+          />
+          {flow.sourceAssetGate.phase !== "ready" && flow.sourceAssetGate.phase !== "idle" && (
+            <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-4 text-sm text-white/70">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/40">
+                Source asset readiness
+              </p>
+              <p className="mt-2 text-left">{flow.sourceAssetGate.message}</p>
+              {flow.sourceAssetGate.phase === "remediation_offered" && (
+                <button
+                  type="button"
+                  onClick={() => flow.setShowTrustline(true)}
+                  className="mt-3 rounded-full border border-white/20 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white"
+                >
+                  Set up source trustline
+                </button>
+              )}
+              {flow.sourceAssetGate.canRetry && (
+                <button
+                  type="button"
+                  onClick={() => void flow.sourceAssetGate.check()}
+                  className="ml-2 mt-3 rounded-full border border-white/20 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white/70"
+                >
+                  Check again
+                </button>
+              )}
+            </div>
+          )}
           {assetGate.phase !== "ready" && assetGate.phase !== "idle" && (
             <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-4 text-sm text-white/70">
               <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/40">
@@ -256,13 +298,32 @@ export function ArenaLobbyClient({ arenaId, initialStats, initialParticipants, i
                   connectWallet: async () => { const a = await wallet.connect(); if (!a) throw new Error("No address"); return a; } }} />
             </div>
             <JoinPanel survivorCount={s.survivorCount} entryFee={s.entryFee} stakeToken={s.stakeToken} error={lobby.error} />
+            <GiftSeatPanel
+              flow={flow}
+              payerWallet={wallet.publicKey}
+              entryFee={lobby.stats.entryFee}
+              stakeToken={lobby.stats.stakeToken}
+              disabled={lobby.stats.status !== "open" || lobby.stats.currentRound > 0 || isParticipant}
+            />
           </div>
         </section>
       </main>
 
       <TransactionModal isOpen={flow.showJoinModal} onClose={flow.handleCloseJoinModal} title="Join Arena" description="Confirm your entry"
-        details={[{ label: "Arena", value: s.arenaName }, { label: "Entry Fee", value: `${s.entryFee} ${s.stakeToken}` }]}
-        confirmLabel="Sign & Join" onConfirm={flow.handleConfirmJoin} />
+        details={[
+          { label: "Arena", value: s.arenaName },
+          { label: "Entry Fee", value: `${s.entryFee} ${s.stakeToken}` },
+          ...(flow.pathQuote
+            ? [
+                { label: "Pay with", value: `${flow.pathQuote.sourceAmount} ${flow.pathQuote.sourceAsset.code}` },
+                { label: "Path", value: flow.pathQuote.path.map((asset) => asset.code).join(" → ") || "Direct" },
+                { label: "Slippage", value: `${Number((flow.pathQuote.slippageBps / 100).toFixed(2))}%` },
+                { label: "Max send", value: `${flow.pathQuote.sendMax} ${flow.pathQuote.sourceAsset.code}` },
+                { label: "Network fee", value: formatFeeDisplay(Number(flow.networkFeeStroops) / 10_000_000) },
+              ]
+            : []),
+        ]}
+        confirmLabel="Sign & Join" onConfirm={(progress) => flow.handleConfirmJoin(progress)} />
       <TransactionModal isOpen={flow.showLeaveModal} onClose={flow.closeLeaveModal} title="Leave Arena" description="Reclaim your entry fee."
         details={[{ label: "Arena", value: s.arenaName }, { label: "Refund", value: `${s.entryFee} ${s.stakeToken}` }]}
         confirmLabel="Sign & Leave" onConfirm={flow.handleConfirmLeave} />

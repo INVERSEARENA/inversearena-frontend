@@ -1,0 +1,11 @@
+* @INVERSEARENA/maintainers
+
+/contract/ @INVERSEARENA/maintainers
+/backend/ @INVERSEARENA/maintainers
+/frontend/ @INVERSEARENA/maintainers
+/tools/ @INVERSEARENA/maintainers
+/scripts/ @INVERSEARENA/maintainers
+/packages/ @INVERSEARENA/maintainers
+/docs/ @INVERSEARENA/maintainers
+*.md @INVERSEARENA/maintainers
+/.github/ @INVERSEARENA/maintainers

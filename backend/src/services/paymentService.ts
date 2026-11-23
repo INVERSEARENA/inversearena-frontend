@@ -1,12 +1,7 @@
 import {
-  Account,
   Address,
-  BASE_FEE,
-  Contract,
-  Keypair,
   Transaction,
   TransactionBuilder,
-  nativeToScVal,
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
@@ -29,6 +24,9 @@ import type {
   SubmitResult,
   TransactionRecord,
 } from "../types/payment";
+import { createConfiguredSigner, SorobanSubmitter, StellarPayoutBuilder, type PayoutBuilder, type Signer, type Submitter } from "./payoutExecution";
+
+export { toStroops } from "./payoutExecution";
 
 const PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
 const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
@@ -85,19 +83,6 @@ const CreatePayoutRequestSchema = z.object({
   return { ...request, arenaId };
 });
 
-export function toStroops(amount: string): string {
-  const [wholePart, fractionPart = ""] = amount.split(".");
-  const padded = (fractionPart + "0000000").slice(0, 7);
-  const combined = `${wholePart}${padded}`.replace(/^0+(?=\d)/, "");
-  if (!/^\d+$/.test(combined)) {
-    throw new Error("Amount contains invalid digits");
-  }
-  if (BigInt(combined) <= BigInt(0)) {
-    throw new Error("Amount must be greater than zero");
-  }
-  return combined;
-}
-
 function generateRecordId(): string {
   if (globalThis.crypto?.randomUUID) {
     return globalThis.crypto.randomUUID();
@@ -119,6 +104,9 @@ export interface PaymentServiceOptions {
    * `jobId` equal to `transactionId` so duplicate enqueues are idempotent.
    */
   txQueue?: Queue<ConfirmJobData>;
+  signer?: Signer;
+  payoutBuilder?: PayoutBuilder;
+  submitter?: Submitter;
 }
 
 /**
@@ -141,11 +129,14 @@ export class PayoutConflictError extends Error {
   }
 }
 
-export class PaymentService {
+export class PayoutOrchestrator {
   private readonly config: PaymentConfig;
   private readonly rpcServer: any;
   private readonly breaker: CircuitBreaker;
   private readonly txQueue: Queue<ConfirmJobData> | undefined;
+  private readonly signer: Signer;
+  private readonly payoutBuilder: PayoutBuilder;
+  private readonly submitter: Submitter;
 
   constructor(
     private readonly transactions: TransactionRepository,
@@ -155,6 +146,9 @@ export class PaymentService {
     this.rpcServer = options.rpcServer ?? new Server(this.config.sorobanRpcUrl);
     this.breaker = options.circuitBreaker ?? getSorobanBreaker();
     this.txQueue = options.txQueue;
+    this.signer = options.signer ?? createConfiguredSigner(this.config);
+    this.payoutBuilder = options.payoutBuilder ?? new StellarPayoutBuilder(this.config, this.rpcServer, this.breaker);
+    this.submitter = options.submitter ?? new SorobanSubmitter(this.rpcServer, this.breaker);
   }
 
   async getClaimReadiness(arenaId: string): Promise<{ version: 1; arenaId: string; ready: boolean; chainState: string; payoutStatus: string | null; reason: string }> {
@@ -210,7 +204,7 @@ export class PaymentService {
     }
 
     const nonce = await this.transactions.reserveNextNonce(this.config.sourceAccount);
-    const { preparedTransaction, amountStroops } = await this.buildPreparedTransaction(request);
+    const { preparedTransaction, amountStroops } = await this.payoutBuilder.build(request);
 
     const unsignedXdr = preparedTransaction.toXDR();
     const now = new Date();
@@ -219,13 +213,8 @@ export class PaymentService {
     let signedXdr: string | null = null;
 
     if (this.config.liveExecution) {
-      if (this.config.signWithHotKey && this.config.hotSignerSecret) {
-        preparedTransaction.sign(Keypair.fromSecret(this.config.hotSignerSecret));
-        signedXdr = preparedTransaction.toXDR();
-        status = "queued";
-      } else {
-        status = "awaiting_signature";
-      }
+      if (this.config.signWithHotKey) signedXdr = await this.signer.sign(unsignedXdr);
+      status = signedXdr ? "queued" : "awaiting_signature";
     }
 
     const transaction: TransactionRecord = {
@@ -321,9 +310,7 @@ export class PaymentService {
 
       let sendResult: Awaited<ReturnType<typeof this.rpcServer.sendTransaction>>;
       try {
-        sendResult = await this.breaker.fire(() =>
-          this.rpcServer.sendTransaction(signedTransaction)
-        );
+        sendResult = await this.submitter.submit(signedTransaction);
       } catch (err) {
         if (err instanceof CircuitOpenError) {
           return { transaction, submitted: false };
@@ -517,51 +504,7 @@ export class PaymentService {
     return transaction;
   }
 
-  private async buildPreparedTransaction(request: CreatePayoutRequest) {
-    const sourceAccount = await this.breaker.fire(() =>
-      this.rpcServer.getAccount(this.config.sourceAccount)
-    ) as Account;
-    const contract = new Contract(this.config.payoutContractId);
-    const amountStroops = toStroops(request.amount);
-
-    // Must match contract/payout/src/lib.rs distribute_winnings(arena: Address,
-    // winner: Address, amount: i128) exactly — 3 args, this order (#1632). The
-    // token is fixed by the contract at initialize time, and the on-chain
-    // idempotency key is derived from (arena, winner), so a retried request
-    // can never be paid twice. The reserved `nonce` stays an off-chain
-    // sequence for the record; `request.payoutId` an off-chain identifier.
-    const operation = contract.call(
-      this.config.payoutMethodName,
-      new Address(request.arenaId).toScVal(),
-      new Address(request.destinationAccount).toScVal(),
-      nativeToScVal(BigInt(amountStroops), { type: "i128" }),
-    );
-
-    const built = new TransactionBuilder(sourceAccount, {
-      fee: BASE_FEE,
-      networkPassphrase: this.config.networkPassphrase,
-    })
-      .addOperation(operation)
-      .setTimeout(60)
-      .build();
-
-    const preparedTransaction = await this.breaker.fire(() =>
-      this.rpcServer.prepareTransaction(built)
-    ) as Transaction;
-
-    const feeStroops = Number(preparedTransaction.fee);
-    if (!Number.isFinite(feeStroops) || feeStroops <= 0) {
-      throw new Error("Unable to determine prepared transaction fee");
-    }
-    if (feeStroops > this.config.maxGasStroops) {
-      throw new Error(
-        `Prepared transaction fee ${feeStroops} exceeds max gas ${this.config.maxGasStroops}`
-      );
-    }
-
-    return {
-      preparedTransaction,
-      amountStroops,
-    };
-  }
 }
+
+/** Backwards-compatible service name used by controllers and application wiring. */
+export class PaymentService extends PayoutOrchestrator {}

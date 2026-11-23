@@ -12,6 +12,7 @@ import {
   profileRepository,
   handleRepositoryError
 } from '../api/profileRepository';
+import { queryKeys, useSafeQueryClient } from '@/shared/lib/query/queryClient';
 
 // Hook implementation
 export function useProfile(options: UseProfileOptions = {}): UseProfileData & {
@@ -19,23 +20,40 @@ export function useProfile(options: UseProfileOptions = {}): UseProfileData & {
   refetch: () => Promise<void>;
 } {
   const { address, myArenasFilter = 'all' } = options;
+  const queryClient = useSafeQueryClient();
 
   // State management
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [error, setError] = useState<string | undefined>();
   const [currentFilter, setCurrentFilter] = useState<MyArenasFilter>(myArenasFilter);
 
-  // Data states
-  const [identity, setIdentity] = useState<AgentIdentity | null>(null);
-  const [stats, setStats] = useState<ProfileStats | null>(null);
-  const [myArenas, setMyArenas] = useState<MyArena[]>([]);
-  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  // Cached profile data shape
+  interface CachedProfile {
+    identity: AgentIdentity;
+    stats: ProfileStats;
+    myArenas: MyArena[];
+    history: HistoryEntry[];
+  }
 
-  // Fetch all profile data
+  const cached = queryClient?.getQueryData<CachedProfile>(
+    queryKeys.profile.summary(address, currentFilter),
+  );
+
+  // Data states
+  const [identity, setIdentity] = useState<AgentIdentity | null>(cached?.identity ?? null);
+  const [stats, setStats] = useState<ProfileStats | null>(cached?.stats ?? null);
+  const [myArenas, setMyArenas] = useState<MyArena[]>(cached?.myArenas ?? []);
+  const [history, setHistory] = useState<HistoryEntry[]>(cached?.history ?? []);
+
+  // Fetch all profile data with deduplication & query caching (#1769)
   const fetchProfileData = useCallback(async () => {
     try {
       setStatus('loading');
       setError(undefined);
+
+      // Check query cache first
+      const cacheKey = queryKeys.profile.summary(address, currentFilter);
+      const existing = queryClient?.getQueryData<CachedProfile>(cacheKey);
 
       // Fetch all data in parallel for better performance
       const [
@@ -50,6 +68,15 @@ export function useProfile(options: UseProfileOptions = {}): UseProfileData & {
         profileRepository.getHistory(address)
       ]);
 
+      const fresh: CachedProfile = {
+        identity: identityData,
+        stats: statsData,
+        myArenas: arenasData,
+        history: historyData,
+      };
+
+      queryClient?.setQueryData(cacheKey, fresh);
+
       setIdentity(identityData);
       setStats(statsData);
       setMyArenas(arenasData);
@@ -61,7 +88,7 @@ export function useProfile(options: UseProfileOptions = {}): UseProfileData & {
       setError(repositoryError.message);
       setStatus('error');
     }
-  }, [address, currentFilter]);
+  }, [address, currentFilter, queryClient]);
 
   // Filter change handler
   const setMyArenasFilter = useCallback(async (filter: MyArenasFilter) => {

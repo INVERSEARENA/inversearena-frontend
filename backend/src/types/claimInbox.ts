@@ -133,6 +133,12 @@ export interface ClaimInboxComponent {
   confirmedAt: string | null;
   /** Attempts made, for a `payout_failed` explanation. */
   attempts: number;
+  /**
+   * Wallet that will receive a refund (#1715). `null` for winnings, which are
+   * always paid to the claimant, and for self-funded refunds (where it equals
+   * the position owner). For sponsored entries this is the payer.
+   */
+  refundDestination: string | null;
 }
 
 /** Freshness of the underlying records, and of the chain read. */
@@ -345,6 +351,7 @@ export const ClaimInboxComponentSchema = z.object({
   txHash: z.string().nullable(),
   confirmedAt: z.string().nullable(),
   attempts: z.number().int().nonnegative(),
+  refundDestination: z.string().nullable(),
 });
 
 export const ClaimInboxFreshnessSchema = z.object({

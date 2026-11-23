@@ -38,14 +38,15 @@ contract/
 
 ### Prerequisites
 
-- Rust stable toolchain with `wasm32-unknown-unknown` target
-- Stellar CLI: `cargo install --locked stellar-cli`
+- Rust 1.82.0 (pinned by `rust-toolchain.toml` / `contract/rust-toolchain.toml`) with `wasm32-unknown-unknown` and `wasm32v1-none` targets
+- Stellar CLI 22.6.0: `cargo install --locked stellar-cli@22.6.0`
+- Node 20.20.2 for script-based checks
 
 ### Build
 
 ```bash
 cd contract
-cargo build --target wasm32-unknown-unknown --release
+cargo build --target wasm32v1-none --release
 ```
 
 ### Test
@@ -63,7 +64,11 @@ CI gates per-crate line and branch coverage (#1651) and per-entry-point resource
 ```bash
 make contracts-coverage     # from the repo root; see docs/COVERAGE.md
 make contracts-cost-bench   # see docs/COST_BENCHMARKS.md
+make contracts-mutants      # see docs/MUTATION_TESTING.md
 ```
+
+Scheduled mutation testing (#1798) guards state-machine and settlement paths.
+See `docs/MUTATION_TESTING.md` for setup, triage, and thresholds.
 
 ### ABI Snapshots
 

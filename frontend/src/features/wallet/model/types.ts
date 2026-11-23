@@ -30,6 +30,12 @@ export interface WalletContextType extends WalletState {
    */
   balanceError: string | null;
   signTransaction: (xdr: string) => Promise<string>;
+  /**
+   * Signs a raw authentication message; may reject on wallets that only sign
+   * XDR. Optional so existing wallet mocks stay valid — the session flow falls
+   * back to a signed challenge transaction when it is absent (#1714).
+   */
+  signMessage?: (message: string) => Promise<string>;
   refreshBalance: () => Promise<void>;
   /**
    * Set only when status is 'network-mismatch': the human-readable name of

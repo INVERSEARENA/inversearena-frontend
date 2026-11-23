@@ -1,34 +1,41 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiClient } from "@/shared/lib/api/client";
+import { queryKeys } from "@/shared/lib/query/queryClient";
 import type { PlayerAchievement } from "./achievement-types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
-
 export function usePlayerAchievements(address: string | undefined) {
-  const [achievements, setAchievements] = useState<PlayerAchievement[]>([]);
-  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
-  const [error, setError] = useState<string | undefined>();
   const [pendingToast, setPendingToast] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    if (!address) return;
-    setStatus("loading");
-    try {
-      const res = await fetch(`${API_BASE}/api/players/${address}/achievements`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: PlayerAchievement[] = await res.json();
-      setAchievements(data);
-      setStatus("success");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load achievements");
-      setStatus("error");
-    }
-  }, [address]);
+  const query = useQuery({
+    queryKey: queryKeys.profile.achievements(address),
+    queryFn: async () => {
+      return await apiClient.get<PlayerAchievement[]>(`/api/players/${address}/achievements`);
+    },
+    enabled: Boolean(address),
+  });
 
-  useEffect(() => { void load(); }, [load]);
+  const status: "idle" | "loading" | "success" | "error" =
+    !address ? "idle" : query.isLoading ? "loading" : query.isError ? "error" : "success";
 
   const dismissToast = useCallback(() => setPendingToast(null), []);
 
-  return { achievements, status, error, pendingToast, dismissToast, refetch: load };
+  const refetch = useCallback(async () => {
+    await query.refetch();
+  }, [query]);
+
+  return {
+    achievements: query.data ?? [],
+    status,
+    error: query.error
+      ? query.error instanceof Error
+        ? query.error.message
+        : "Failed to load achievements"
+      : undefined,
+    pendingToast,
+    dismissToast,
+    refetch,
+  };
 }

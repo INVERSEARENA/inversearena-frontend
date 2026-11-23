@@ -1,0 +1,85 @@
+name: Contract Mutation Testing
+
+on:
+  schedule:
+    - cron: "17 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: contract-mutants-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+          targets: "wasm32v1-none"
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contract -> target
+          shared-key: mutants
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants@27.1.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.20.2"
+
+      - name: Mutation script tests
+        run: node --test contract/scripts/mutations.test.mjs
+
+      - name: Build contract WASM
+        working-directory: ./contract
+        env:
+          RUSTUP_TOOLCHAIN: 1.96.0
+        run: cargo build --workspace --target wasm32v1-none --release
+
+      - name: Run cargo-mutants
+        working-directory: ./contract
+        env:
+          RUSTUP_TOOLCHAIN: 1.96.0
+        run: |
+          set +e
+          cargo mutants --in-place --no-shuffle
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
+            echo "cargo mutants hard-failed with exit code $status" >&2
+            exit "$status"
+          fi
+
+      - name: Enforce mutation thresholds
+        working-directory: ./contract
+        env:
+          RUSTUP_TOOLCHAIN: 1.96.0
+        run: node scripts/mutations.mjs
+
+      - name: Upload mutation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-mutants
+          path: |
+            contract/mutants.out/
+            contract/target/mutations/summary.md
+          if-no-files-found: warn

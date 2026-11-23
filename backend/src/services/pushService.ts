@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import { NotificationPreferencesService } from "./notificationPreferencesService";
 import { logger } from "../utils/logger";
 import { env } from "../config/env";
+import { NotificationDispatcher, NotificationScheduler, type NotificationChannel } from "./notificationChannels";
 
 /**
  * Web Push delivery for time-critical round phase alerts (#1571).
@@ -154,6 +155,8 @@ export class PushService {
   private readonly sender: Sender;
   private readonly vapid: { publicKey: string; privateKey: string; subject: string } | undefined;
   private readonly encryptionKey: Buffer | undefined;
+  private readonly dispatcher: NotificationDispatcher;
+  private readonly scheduler: NotificationScheduler;
 
   constructor(private prisma: PrismaClient, private prefs: NotificationPreferencesService, deps?: Partial<Pick<PushServiceDeps, "sender" | "vapid" | "encryptionKey">>) {
     this.sender =
@@ -162,6 +165,8 @@ export class PushService {
     this.vapid = deps?.vapid ?? vapidConfigFromEnv();
     this.encryptionKey =
       deps?.encryptionKey !== undefined ? deps.encryptionKey : encryptionKeyFromEnv();
+    this.dispatcher = new NotificationDispatcher(prefs);
+    this.scheduler = new NotificationScheduler(this.dispatcher);
   }
 
   private requireVapid() {
@@ -491,72 +496,35 @@ export class PushService {
     // every other alert is a round alert.
     const prefType = input.type === "rematch" ? "rematch" : "round";
 
-    for (const userId of new Set(input.userIds)) {
-      try {
-        const allowed = await this.prefs.shouldNotify(userId, prefType, "push");
-        if (!allowed) {
-          result.skipped += 1;
-          continue;
-        }
-        if (await this.prefs.hasDelivered(userId, dedupeKey, "push")) {
-          result.skipped += 1;
-          continue;
-        }
-        const deliveryId = await this.prefs.recordDelivery(userId, prefType, "push", dedupeKey);
-
-        const subscriptions = await this.prisma.pushSubscription.findMany({
-          where: { userId },
+    const channel: NotificationChannel<StoredPushSubscription, PushMessage> = {
+      name: "push",
+      validateSubscription: (subscription) => {
+        this.decryptField(subscription.p256dh);
+        this.decryptField(subscription.auth);
+      },
+      send: (subscription, message) => this.sendPush(subscription, message),
+      mapError: (error) => ({ retryable: true, message: error instanceof Error ? error.message : String(error) }),
+    };
+    const dispatch = await this.scheduler.fanout({
+      userIds: input.userIds,
+      preferenceType: prefType,
+      dedupeKey,
+      channel,
+      message: input.message,
+      store: {
+        list: async (targetUserId) => this.prisma.pushSubscription.findMany({
+          where: { userId: targetUserId },
           select: { id: true, userId: true, endpoint: true, p256dh: true, auth: true, userAgent: true },
-        });
-        if (subscriptions.length === 0) {
-          result.skipped += 1;
-          await this.prefs.markFailed(deliveryId, "no push subscriptions").catch(() => {});
-          continue;
-        }
-
-        let anySent = false;
-        for (const subscription of subscriptions) {
-          try {
-            const outcome = await this.sendPush(
-              subscription as StoredPushSubscription,
-              input.message,
-            );
-            if (outcome === "expired") {
-              result.expired += 1;
-              await this.prisma.pushSubscription
-                .deleteMany({ where: { userId, endpoint: subscription.endpoint } })
-                .catch(() => {});
-              continue;
-            }
-            anySent = true;
-            result.sent += 1;
-          } catch (err) {
-            result.failed += 1;
-            logger.warn(
-              {
-                subsystem: "push",
-                userId,
-                endpoint: subscription.endpoint,
-                err: err instanceof Error ? err.message : String(err),
-              },
-              "Push delivery failed",
-            );
-          }
-        }
-
-        if (anySent) {
-          await this.prefs.markSent(deliveryId).catch(() => {});
-        } else {
-          await this.prefs.markFailed(deliveryId, "all devices failed or expired").catch(() => {});
-        }
-      } catch (err) {
-        result.failed += 1;
-        logger.warn(
-          { subsystem: "push", userId, err: err instanceof Error ? err.message : String(err) },
-          "Push scheduling failed for user",
-        );
-      }
-    }
+        }) as Promise<StoredPushSubscription[]>,
+        removeExpired: async (targetUserId, subscription) => {
+          await this.prisma.pushSubscription.deleteMany({ where: { userId: targetUserId, endpoint: subscription.endpoint } });
+        },
+      },
+    });
+    result.sent = dispatch.sent;
+    result.failed = dispatch.failed;
+    result.expired = dispatch.expired;
+    result.skipped = dispatch.skipped;
 
     return result;
   }

@@ -149,3 +149,28 @@ that only coincidentally share a similar shape.
 
 See `backend/src/utils/metrics.ts` for the metric definitions and
 `backend/src/services/transactionIntentService.ts` for where they're recorded.
+
+## 8. Funded arena joins (#1716)
+
+A player who chooses a non-stake source asset can fund an arena entry with a
+strict-receive path payment. The bundled form is a single signed transaction:
+`pathPaymentStrictReceive` credits the signing player with the stake token,
+then `invokeHostFunction` calls `join_arena`. It is tracked with one intent,
+`join_path:<arenaId>`, whose API `kind` remains `join_arena` — the backend's
+closed intent-kind union is unchanged.
+
+When bundled signing is rejected by the frontend signing policy or the player
+explicitly opts out, the same logical join is tracked as two resumable intents,
+both still `kind: "join_arena"`:
+
+| Action key | Purpose | Signing policy |
+|---|---|---|
+| `join_funding:<arenaId>` | Path payment credits the player's stake-token balance | `PATH_PAYMENT` |
+| `join_arena:<arenaId>` | Spends the freshly funded balance to enter the arena | `JOIN` |
+
+The two-step flow uses the same state machine and idempotency rules as every
+other intent: a wallet rejection returns to `built`, an intents-API outage is
+non-fatal, and each step resumes against its own stable action key. The quote
+that feeds the funding transaction has its own 30-second TTL and is refreshed
+before either path is signed; see `docs/PATH_PAYMENT_ARENA_JOIN.md` for the
+quote contract and policy invariants.

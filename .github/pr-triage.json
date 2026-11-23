@@ -1,0 +1,15 @@
+{
+  "enforceAfter": "2026-01-01T00:00:00Z",
+  "botAllowlist": [
+    "renovate[bot]",
+    "dependabot[bot]",
+    "drips-wave",
+    "github-actions[bot]"
+  ],
+  "duplicateThreshold": 0.8,
+  "staleDays": 30,
+  "staleCommentDays": 7,
+  "duplicateLabel": "duplicate",
+  "maxPrsScanned": 200,
+  "dryRun": false
+}

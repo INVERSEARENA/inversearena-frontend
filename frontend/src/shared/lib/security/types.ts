@@ -21,6 +21,8 @@
  */
 export type ProtectedOpKey =
   | "JOIN"
+  | "JOIN_PATH"
+  | "PATH_PAYMENT"
   | "CREATE"
   | "COMMIT"
   | "REVEAL"
@@ -32,6 +34,8 @@ export type ProtectedOpKey =
 /** Every protected op, for exhaustive iteration in tests and UI copy. */
 export const PROTECTED_OP_KEYS: readonly ProtectedOpKey[] = [
   "JOIN",
+  "JOIN_PATH",
+  "PATH_PAYMENT",
   "CREATE",
   "COMMIT",
   "REVEAL",
@@ -44,6 +48,8 @@ export const PROTECTED_OP_KEYS: readonly ProtectedOpKey[] = [
 /** Human-readable label per protected op, for rejection messages and the UI. */
 export const opLabels: Record<ProtectedOpKey, string> = {
   JOIN: "join arena",
+  JOIN_PATH: "funded arena join",
+  PATH_PAYMENT: "path payment",
   CREATE: "create pool",
   COMMIT: "commit choice",
   REVEAL: "reveal choice",
@@ -119,6 +125,22 @@ export interface DecodedOperationSummary {
   assetIssuer: string | null;
   /** Requested trustline limit as a decimal amount string; `null` otherwise. */
   limit: string | null;
+  /** Present only on validated path-payment operations (#1716). */
+  pathPayment?: {
+    sendAssetCode: string;
+    sendAssetIssuer: string | null;
+    sendMax: string;
+    destination: string;
+    destAssetCode: string;
+    destAssetIssuer: string | null;
+    destAmount: string;
+    path: Array<{ code: string; issuer: string | null }>;
+  };
+  /** Present only on validated `invokeHostFunction` operations in funded joins. */
+  invocation?: {
+    functionName: string;
+    contractId: string;
+  };
 }
 
 /** Minimal decoded envelope — only the fields the confirmation UI needs. */

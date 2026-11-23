@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { apiClient, ApiError } from "@/shared/lib/api/client";
+import { localStorageManager, StorageKey } from "@/shared/lib/localStorage";
 
 export interface QuickPlayPreferences {
   asset: string;       // e.g. "XLM", "USDC"
@@ -25,20 +27,13 @@ const DEFAULT_PREFS: QuickPlayPreferences = {
   preferredSize: "any",
 };
 
-const PREFS_KEY = "inversearena.quickplay.prefs";
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
-
 function loadPrefs(): QuickPlayPreferences {
-  try {
-    const raw = localStorage.getItem(PREFS_KEY);
-    return raw ? { ...DEFAULT_PREFS, ...JSON.parse(raw) } : DEFAULT_PREFS;
-  } catch {
-    return DEFAULT_PREFS;
-  }
+  const saved = localStorageManager.getItem<Partial<QuickPlayPreferences> | null>(StorageKey.QUICK_PLAY_PREFS, null);
+  return saved ? { ...DEFAULT_PREFS, ...saved } : DEFAULT_PREFS;
 }
 
 function savePrefs(prefs: QuickPlayPreferences) {
-  try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* ignore */ }
+  localStorageManager.setItem(StorageKey.QUICK_PLAY_PREFS, prefs);
 }
 
 export function useQuickPlay(walletAddress: string | undefined) {
@@ -68,13 +63,15 @@ export function useQuickPlay(walletAddress: string | undefined) {
         size: prefs.preferredSize,
         player: walletAddress,
       });
-      const res = await fetch(`${API_BASE}/api/arenas/quick-play?${params}`);
-      if (res.status === 404) { setStatus("none"); setMatch(null); return; }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: QuickPlayMatch = await res.json();
+      const data = await apiClient.get<QuickPlayMatch>("/api/arenas/quick-play", { params });
       setMatch(data);
       setStatus("found");
     } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        setStatus("none");
+        setMatch(null);
+        return;
+      }
       setError(err instanceof Error ? err.message : "Could not find an arena.");
       setStatus("error");
     }

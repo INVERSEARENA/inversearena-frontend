@@ -4,6 +4,7 @@ import {
   buildArenaOperationFromPlan,
   buildClaimCallOperation,
   buildJoinCallOperation,
+  buildJoinForCallOperation,
   buildRevealChoiceOperation,
   buildSubmitCommitmentOperation,
   composeUnsignedTransaction,
@@ -58,6 +59,32 @@ describe("soroban-transaction-composer", () => {
     const invoked = invokedFunction(op);
     expect(invoked.functionName().toString()).toBe("join_arena");
     expect(invoked.args()).toHaveLength(1);
+  });
+
+  it("buildJoinForCallOperation invokes join_arena_for with payer and player addresses", () => {
+    const pool = new Contract(VALID_CONTRACT);
+    const recipient = "GDVEU3DD4KOFECV66VIHWEZOYX4ZKR3WV27L464SIIPOU2IUI3JCZA57";
+    const op = buildJoinForCallOperation(pool, VALID_PUBLIC_KEY, recipient);
+
+    const invoked = invokedFunction(op);
+    expect(invoked.functionName().toString()).toBe("join_arena_for");
+    expect(invoked.args()).toHaveLength(2);
+  });
+
+  it("adapts a sponsored join plan into a two-address SDK operation", () => {
+    const recipient = "GDVEU3DD4KOFECV66VIHWEZOYX4ZKR3WV27L464SIIPOU2IUI3JCZA57";
+    const plan = createArenaCommandPlan({
+      actor: VALID_PUBLIC_KEY,
+      contractId: VALID_CONTRACT,
+      call: { name: "join_arena_for", payer: VALID_PUBLIC_KEY, player: recipient },
+      preconditions: [],
+      capabilityRevision: 7,
+      expiresInSeconds: 30,
+    });
+
+    const invoked = invokedFunction(buildArenaOperationFromPlan(new Contract(VALID_CONTRACT), plan));
+    expect(invoked.functionName().toString()).toBe("join_arena_for");
+    expect(invoked.args()).toHaveLength(2);
   });
 
   it("buildClaimCallOperation invokes claim with the winner address", () => {
