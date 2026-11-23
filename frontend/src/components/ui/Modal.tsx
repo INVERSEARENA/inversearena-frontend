@@ -8,7 +8,7 @@ import {
   useCallback,
 } from "react";
 import { createPortal } from "react-dom";
-import { AnimatePresence, motion, useReducedMotion, type Variants, type Transition } from "motion/react";
+import { AnimatePresence, m as motion, useReducedMotion, type Variants, type Transition } from "motion/react";
 
 export type ModalSize = "sm" | "md" | "lg" | "full";
 export type ModalPosition = "center" | "bottom-sheet";

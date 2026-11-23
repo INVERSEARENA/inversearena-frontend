@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, m as motion } from "motion/react";
 import { TourStep } from "./TourStep";
 import { UIHighlight } from "./UIHighlight";
 

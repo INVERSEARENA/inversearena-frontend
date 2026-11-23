@@ -268,6 +268,13 @@ export const arenaStreamResyncsTotal = new Counter({
   registers: [register],
 });
 
+export const arenaStreamUpdateBytesTotal = new Counter({
+  name: 'inversearena_arena_stream_update_bytes_total',
+  help: 'JSON bytes published on the arena stream, by envelope kind (snapshot or delta) (#1767)',
+  labelNames: ['kind'],
+  registers: [register],
+});
+
 // #1433: Bounded concurrency & backpressure metrics for arena poller
 export const arenaPollerActivePollsGauge = new Gauge({
   name: 'inversearena_arena_poller_active_polls',

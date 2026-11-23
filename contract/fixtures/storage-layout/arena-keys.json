@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "contract": "arena",
+  "source": "contract/arena/src/storage.rs",
+  "keys": [
+    { "name": "config", "durability": "persistent", "encoding": "symbol", "symbol": "CONFIG" },
+    { "name": "winner", "durability": "persistent", "encoding": "enum-unit", "symbols": ["Winner"] },
+    { "name": "player", "durability": "persistent", "encoding": "enum-address", "symbols": ["Player"] },
+    { "name": "settlement", "durability": "persistent", "encoding": "enum-unit", "symbols": ["FundsInVault"] }
+  ]
+}

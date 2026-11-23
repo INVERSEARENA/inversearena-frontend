@@ -39,6 +39,7 @@ import {
 } from "../types/onChainRead";
 import { onChainReadOutcomesTotal } from "../utils/metrics";
 import { decodePlayerStatus, type OnChainPlayerStatus } from "./playerStatus";
+import { readArenaHotStateOrSimulate } from "./ledgerEntryReader";
 import { env } from "../config/env";
 
 let sourcePublicKey: string | null = null;
@@ -459,6 +460,27 @@ export async function getOnChainWinner(
   contractId: string,
 ): Promise<string | null> {
   const stellarRpcGateway = new StellarRpcGateway();
+  const ledgerSource = stellarRpcGateway as unknown as {
+    getLedgerEntries?: (keys: unknown[]) => Promise<{ entries: Array<{ key?: string; xdr: string }> }>;
+  };
+  if (typeof ledgerSource.getLedgerEntries === "function") {
+    try {
+      const winner = await readArenaHotStateOrSimulate(
+        ledgerSource as Parameters<typeof readArenaHotStateOrSimulate>[0],
+        contractId,
+        async () => undefined,
+        (values) => {
+          if (!("winner" in values)) return undefined;
+          const raw = values.winner;
+          if (raw === null || raw === undefined || raw === "") return null;
+          return String(raw);
+        },
+      );
+      if (winner !== undefined) return winner;
+    } catch {
+      // Decode, layout, or RPC trouble falls through to simulation (#1768).
+    }
+  }
   let result: unknown;
   try {
     result = await simulateViewCall(contractId, "get_winner", stellarRpcGateway);

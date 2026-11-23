@@ -50,6 +50,22 @@ const eslintConfig = defineConfig([
     ignores: ["src/test/**", "src/__mocks__/**", "**/__tests__/**", "**/*.test.{ts,tsx,js,jsx}"],
     rules: {
       "import/no-restricted-paths": ["error", { zones: boundaryZones }],
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "framer-motion",
+              message: "Use motion/react. The app keeps a single animation package (#1774).",
+            },
+            {
+              name: "motion/react",
+              importNames: ["motion"],
+              message: "Import m (inside LazyMotion) instead of motion so the full feature set is not bundled (#1774).",
+            },
+          ],
+        },
+      ],
     },
   },
   {

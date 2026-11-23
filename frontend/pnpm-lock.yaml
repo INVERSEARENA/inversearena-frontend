@@ -23,9 +23,6 @@ importers:
       '@stellar/stellar-sdk':
         specifier: ^14.5.0
         version: 14.5.0
-      framer-motion:
-        specifier: ^12.29.2
-        version: 12.34.3(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       ioredis:
         specifier: ^5.8.2
         version: 5.9.3

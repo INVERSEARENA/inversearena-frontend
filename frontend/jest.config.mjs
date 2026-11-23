@@ -13,6 +13,7 @@ const config = {
     testEnvironment: 'jest-environment-jsdom',
     moduleNameMapper: {
         '^@/(.*)$': '<rootDir>/src/$1',
+        '^motion/react$': '<rootDir>/src/__mocks__/motion-react.tsx',
         '^@creit-tech/stellar-wallets-kit$': '<rootDir>/src/__mocks__/stellar-wallets-kit.ts',
     },
     testMatch: ['**/__tests__/**/*.test.[jt]s?(x)'],

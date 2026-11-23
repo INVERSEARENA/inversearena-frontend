@@ -2,7 +2,7 @@
 
 import { useSearchParams, useRouter } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
-import { motion } from "framer-motion";
+import { m as motion } from "motion/react";
 import { SuccessHeader } from "@/components/arena-v2/withdrawal/SuccessHeader";
 import { UnlockedPadlock } from "@/components/arena-v2/withdrawal/UnlockedPadlock";
 import { WithdrawalDetails } from "@/components/arena-v2/withdrawal/WithdrawalDetails";

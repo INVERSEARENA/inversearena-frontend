@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
-import { motion } from "motion/react";
+import { m as motion } from "motion/react";
 import { Wallet } from "lucide-react";
 import type { YieldEvent } from "@/components/analysis/logs/YieldEventLog";
 import { ChartSkeleton } from "@/components/analysis/ChartSkeleton";

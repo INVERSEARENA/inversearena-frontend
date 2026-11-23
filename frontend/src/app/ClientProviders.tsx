@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { ReactNode } from "react";
+import { LazyMotion, domAnimation } from "motion/react";
 import { NotificationProvider } from "@/components/ui/NotificationProvider";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { MaintenanceBanner } from "@/components/maintenance/MaintenanceBanner";
@@ -15,12 +16,14 @@ const WalletProvider = dynamic(
 
 export function ClientProviders({ children }: { children: ReactNode }) {
     return (
-        <ErrorBoundary>
-            <NotificationProvider>
-                <WalletProvider>{children}</WalletProvider>
-                <MaintenanceBanner />
-                <CompatibilitySync />
-            </NotificationProvider>
-        </ErrorBoundary>
+        <LazyMotion features={domAnimation} strict>
+            <ErrorBoundary>
+                <NotificationProvider>
+                    <WalletProvider>{children}</WalletProvider>
+                    <MaintenanceBanner />
+                    <CompatibilitySync />
+                </NotificationProvider>
+            </ErrorBoundary>
+        </LazyMotion>
     );
 }

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 type ArenaStreamEventType =
   | "snapshot"
+  | "delta"
   | "round_resolved"
   | "player_eliminated"
   | "game_finished";
@@ -88,6 +89,7 @@ function isValidArenaStreamEvent(data: unknown): data is ArenaStreamEvent {
   // Check that type is one of the valid types
   const validTypes: ArenaStreamEventType[] = [
     "snapshot",
+    "delta",
     "round_resolved",
     "player_eliminated",
     "game_finished",
@@ -289,6 +291,28 @@ export function useArenaStream(arenaId: string): UseArenaStreamReturn {
       try {
         setLatestEvent(parsed);
 
+        if (parsed.type === "delta") {
+          const patch = (parsed.payload as { patch?: { replace?: Record<string, unknown> } }).patch;
+          const replace = patch?.replace;
+          if (!replace || typeof parsed.version !== "number") {
+            requestFullSnapshot();
+            return;
+          }
+          if (
+            appliedVersionRef.current === null ||
+            parsed.previousVersion !== appliedVersionRef.current
+          ) {
+            requestFullSnapshot();
+            return;
+          }
+          setSnapshot((current) => {
+            if (!current) return current;
+            return { ...current, ...replace } as ArenaStreamSnapshot;
+          });
+          appliedVersionRef.current = parsed.version;
+          return;
+        }
+
         if (parsed.type === "snapshot") {
           const nextSnapshot = parsed.payload as unknown as ArenaStreamSnapshot;
           setSnapshot(nextSnapshot);
@@ -397,6 +421,7 @@ export function useArenaStream(arenaId: string): UseArenaStreamReturn {
         };
 
         source.addEventListener("snapshot", handleEvent as EventListener);
+        source.addEventListener("delta", handleEvent as EventListener);
         source.addEventListener(
           "player_eliminated",
           handleEvent as EventListener,

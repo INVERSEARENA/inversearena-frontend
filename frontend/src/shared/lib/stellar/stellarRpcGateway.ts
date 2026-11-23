@@ -40,6 +40,14 @@ export class StellarRpcGateway {
   }
 
   /**
+   * Batched persistent/instance reads (#1768). Callers fall back to
+   * simulateTransaction when an entry is missing or does not decode.
+   */
+  async getLedgerEntries(keys: Parameters<rpc.Server["getLedgerEntries"]>[0][]) {
+    return this.rpcServer.getLedgerEntries(...keys);
+  }
+
+  /**
    * Simulate and assemble, as `rpc.Server.prepareTransaction` does, but throw
    * a `SimulationFailedError` that keeps the diagnostic events, so a contract
    * error can be attributed to the contract that raised it (#1597).
