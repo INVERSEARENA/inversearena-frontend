@@ -72,4 +72,5 @@ pub enum RwaError {
     NotAdmin = 10,
     /// Only the admin may fund the yield reserve (#1628).
     NotAuthorized = 11,
+    MigrationPending = 12,
 }

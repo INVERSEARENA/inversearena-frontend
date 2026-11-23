@@ -164,6 +164,7 @@ export class ArenaStatsService {
 
     return {
       arenaId,
+      network: getConfiguredNetwork(),
       arenaName,
       currentPot,
       playerCount,
