@@ -65,7 +65,9 @@ fn active_arena() -> Harness {
 
     let admin = Address::generate(&env);
     let token_admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
     let token = soroban_sdk::token::TokenClient::new(&env, &token_id);
     let mint = StellarAssetClient::new(&env, &token_id);
 
@@ -114,6 +116,88 @@ fn active_arena() -> Harness {
 
 fn set_time(env: &Env, timestamp: u64) {
     env.ledger().with_mut(|li| li.timestamp = timestamp);
+}
+
+struct FinishedHarness {
+    env: Env,
+    arena: ArenaContractClient<'static>,
+    arena_id: Address,
+    token: soroban_sdk::token::TokenClient<'static>,
+    vault: StuckVaultClient<'static>,
+    winner: Address,
+    outsider: Address,
+}
+
+fn finished_arena() -> FinishedHarness {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+    let token = soroban_sdk::token::TokenClient::new(&env, &token_id);
+    let mint = StellarAssetClient::new(&env, &token_id);
+    let winner = Address::generate(&env);
+    let outsider = Address::generate(&env);
+
+    let vault_id = env.register(StuckVault, ());
+    let vault = StuckVaultClient::new(&env, &vault_id);
+    vault.set_stuck(&false);
+
+    let arena_id = env.register(ArenaContract, ());
+    let arena = ArenaContractClient::new(&env, &arena_id);
+    mint.mint(&arena_id, &200);
+    env.as_contract(&arena_id, || {
+        ArenaStorage::save_config(
+            &env,
+            &ArenaConfig {
+                admin: admin.clone(),
+                stake_token: token_id.clone(),
+                entry_fee: 100,
+                state: GameState::Finished,
+                paused: false,
+                player_count: 2,
+                active_player_count: 1,
+                cumulative_yield: 0,
+                commit_deadline: 1060,
+                yield_vault: vault_id.clone(),
+                round_count: 1,
+                oracle_contract: Address::generate(&env),
+                factory: Address::generate(&env),
+                pool_id: 0,
+                platform_fee_bps: 1000,
+            },
+        );
+        ArenaStorage::set_winner(&env, &winner);
+        ArenaStorage::save_player(
+            &env,
+            &winner,
+            &PlayerState {
+                active: true,
+                rounds_survived: 1,
+            },
+        );
+        ArenaStorage::save_player(
+            &env,
+            &outsider,
+            &PlayerState {
+                active: false,
+                rounds_survived: 0,
+            },
+        );
+    });
+
+    FinishedHarness {
+        env,
+        arena,
+        arena_id,
+        token,
+        vault,
+        winner,
+        outsider,
+    }
 }
 
 // ── #1627: expiry must not open at the commit deadline ─────────────────────
@@ -219,4 +303,95 @@ fn retry_withdraw_rejected_while_arena_is_still_active() {
         h.arena.try_retry_withdraw(),
         Err(Ok(ArenaError::InvalidGameState)),
     );
+}
+
+#[test]
+fn expire_is_closed_one_second_before_the_grace_boundary() {
+    let h = active_arena();
+    set_time(&h.env, 1060 + EXPIRY_GRACE_SECONDS - 1);
+    assert_eq!(
+        h.arena.try_expire_arena(),
+        Err(Ok(ArenaError::DeadlineTooSoon)),
+    );
+}
+
+#[test]
+fn expire_cannot_be_replayed_after_cancellation() {
+    let h = active_arena();
+    set_time(&h.env, 1060 + EXPIRY_GRACE_SECONDS + 1);
+    assert!(h.arena.try_expire_arena().is_ok());
+    assert_eq!(
+        h.arena.try_expire_arena(),
+        Err(Ok(ArenaError::InvalidGameState)),
+    );
+    h.env.as_contract(&h.arena_id, || {
+        let config = ArenaStorage::load_config(&h.env).unwrap();
+        assert_eq!(config.state, GameState::Cancelled);
+    });
+}
+
+#[test]
+fn claim_rejects_wrong_winner_and_non_finished_state() {
+    let h = finished_arena();
+    assert_eq!(
+        h.arena.try_claim(&h.outsider),
+        Err(Ok(ArenaError::PlayerEliminated)),
+    );
+    h.env.as_contract(&h.arena_id, || {
+        let mut config = ArenaStorage::load_config(&h.env).unwrap();
+        config.state = GameState::Active;
+        ArenaStorage::save_config(&h.env, &config);
+    });
+    assert_eq!(
+        h.arena.try_claim(&h.winner),
+        Err(Ok(ArenaError::GameNotFinished)),
+    );
+    assert_eq!(h.token.balance(&h.arena_id), 200);
+    assert_eq!(h.token.balance(&h.winner), 0);
+}
+
+#[test]
+fn claim_replay_after_settlement_does_not_pay_twice() {
+    let h = finished_arena();
+    h.arena.claim(&h.winner);
+    assert_eq!(h.token.balance(&h.winner), 200);
+    assert_eq!(h.token.balance(&h.arena_id), 0);
+    assert_eq!(
+        h.arena.try_claim(&h.winner),
+        Err(Ok(ArenaError::GameNotFinished)),
+    );
+    h.env.as_contract(&h.arena_id, || {
+        let config = ArenaStorage::load_config(&h.env).unwrap();
+        assert_eq!(config.state, GameState::Settled);
+        assert!(ArenaStorage::prize_claimed(&h.env));
+    });
+    assert_eq!(h.token.balance(&h.winner), 200);
+}
+
+#[test]
+fn stuck_vault_blocks_prize_payout() {
+    let h = finished_arena();
+    h.vault.set_stuck(&true);
+    assert_eq!(
+        h.arena.try_claim(&h.winner),
+        Err(Ok(ArenaError::VaultWithdrawFailed)),
+    );
+    assert_eq!(h.token.balance(&h.winner), 0);
+    assert_eq!(h.token.balance(&h.arena_id), 200);
+}
+
+#[test]
+fn refund_is_rejected_after_finished_and_settled_states() {
+    let h = finished_arena();
+    assert_eq!(
+        h.arena.try_claim_refund(&h.winner),
+        Err(Ok(ArenaError::ArenaNotCancelled)),
+    );
+    h.arena.claim(&h.winner);
+    assert_eq!(
+        h.arena.try_claim_refund(&h.winner),
+        Err(Ok(ArenaError::ArenaNotCancelled)),
+    );
+    assert_eq!(h.token.balance(&h.winner), 200);
+    assert_eq!(h.token.balance(&h.arena_id), 0);
 }

@@ -12,6 +12,7 @@ contract/target/
 
 # Testing & caches
 coverage/
+contract/mutants.out*
 .eslintcache
 
 # IDE settings

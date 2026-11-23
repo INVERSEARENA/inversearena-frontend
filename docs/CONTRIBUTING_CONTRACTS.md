@@ -5,18 +5,21 @@ that power InverseArena.
 
 ## Prerequisites
 
-Before you begin, install the following tools:
+Use the pinned toolchain for reproducible builds:
 
-- **Rust** (stable toolchain) — https://rustup.rs
+- **Rust 1.82.0** (`rust-toolchain.toml` / `contract/rust-toolchain.toml`)
   ```bash
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  rustup target add wasm32-unknown-unknown
+  rustup toolchain install 1.82.0
+  rustup target add wasm32-unknown-unknown wasm32v1-none --toolchain 1.82.0
   ```
-- **Soroban CLI** — https://developers.stellar.org/docs/tools/developer-tools/cli/install-soroban-cli
+- **Stellar CLI 22.6.0**
   ```bash
-  cargo install --locked soroban-cli
+  cargo install --locked stellar-cli@22.6.0
   ```
-- **Stellar SDK** (optional, for integration scripts) — https://github.com/stellar/js-stellar-sdk
+- **Node 20.20.2 / npm 10.9.9 / pnpm 10.11.1** for workspace tooling
+
+The devcontainer (`.devcontainer/`) pins these versions.
 
 ## Setup
 
@@ -25,31 +28,31 @@ git clone https://github.com/INVERSEARENA/inversearena-frontend.git
 cd inversearena-frontend
 ```
 
-The contract lives in `contracts/arena/`. Its workspace is defined in the root `Cargo.toml`.
+Contracts live in `contract/`. The workspace is defined in `contract/Cargo.toml`.
 
 ## Build
 
 ```bash
 # Build the contract to a WASM blob
-cargo build --manifest-path contracts/arena/Cargo.toml --target wasm32-unknown-unknown --release
+cargo build --manifest-path contract/Cargo.toml --target wasm32v1-none --release
 
 # Or use the project Makefile shortcut
-make build-contract
+make contracts-build
 ```
 
-The compiled artifact is written to `target/wasm32-unknown-unknown/release/arena.wasm`.
+Compiled artifacts are written under `contract/target/wasm32v1-none/release/`.
 
 ## Run Tests
 
 ```bash
 # Run all contract unit tests
-cargo test --manifest-path contracts/arena/Cargo.toml
+cargo test --manifest-path contract/Cargo.toml --workspace
 
 # Run a single test by name
-cargo test --manifest-path contracts/arena/Cargo.toml -- test_full_game_two_players_one_round
+cargo test --manifest-path contract/Cargo.toml --workspace -- test_full_game_two_players_one_round
 
 # Run with output (useful for debugging)
-cargo test --manifest-path contracts/arena/Cargo.toml -- --nocapture
+cargo test --manifest-path contract/Cargo.toml --workspace -- --nocapture
 ```
 
 Tests use the Soroban SDK test utilities (`soroban_sdk::testutils`) and run entirely in-process —
@@ -85,7 +88,7 @@ Keep `lib.rs` thin — business logic belongs in focused helper modules, not inl
 
 ### Writing tests
 
-Add tests to `contracts/arena/src/test.rs`. Follow the existing pattern:
+Add tests near the contract implementation (for example `contract/arena/src/test.rs` or extracted test modules). Follow existing patterns:
 
 ```rust
 #[test]
@@ -124,7 +127,7 @@ fn my_new_test() {
 
 Before opening a PR, verify:
 
-- [ ] `cargo test --manifest-path contracts/arena/Cargo.toml` passes with no warnings
+- [ ] `cargo test --manifest-path contract/Cargo.toml --workspace` passes with no warnings
 - [ ] New public functions have a one-line doc comment explaining the happy path
 - [ ] New error variants are added to `errors.rs` and documented
 - [ ] Tests cover the happy path **and** at least one failure path for every new function

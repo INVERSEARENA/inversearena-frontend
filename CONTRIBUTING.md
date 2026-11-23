@@ -92,13 +92,55 @@ clone:
 make dev         # quickstart + contracts + seed + backend + frontend
 make dev-reset   # clean slate
 make dev-seed    # re-seed arenas only
+make dev-doctor  # validate dev stack config without starting services
 ```
 
 It writes `contract/deployment-manifest.json` (contract ids + network
 passphrase) and the `.env` / `.env.local` files the apps auto-load. Do not
 commit those generated files. Seed state lives in `scripts/.seed-state.json`.
 
-See `README.md` → *One-command local stack* for the full walkthrough and
-`docker-compose.dev.yml` for the service topology (note the offset ports:
-Postgres 5433, Redis 6380, Mongo 27018 — chosen so the stack can sit next to a
-system Postgres/Redis without clobbering it).
+The dev stack uses Docker Compose with offset ports: Postgres 5433, Redis 6380,
+Mongo 27018, Quickstart 8000. Generated env uses `MONGODB_URI`, `PORT=3001`, and
+`NEXT_PUBLIC_API_BASE_URL=http://localhost:3001`.
+
+For a reproducible toolchain, use the devcontainer (`.devcontainer/`, see
+`docs/DEVCONTAINER.md`). Pinned versions: Node 20.20.2, npm 10.9.9, pnpm 10.11.1,
+Rust 1.82.0 (CI extras 1.96.0, nightly-2026-10-01), Stellar CLI 22.6.0,
+pre-commit 4.7.0.
+
+Fast checks:
+
+```bash
+make check-toolchain
+make check-fast
+make pr-triage-test
+```
+
+Pre-commit hooks are optional; install with `INSTALL_PRE_COMMIT=1`.
+
+## PR workflow
+
+- Use `.github/PULL_REQUEST_TEMPLATE.md`; body checks require a linked issue and all checklist boxes checked.
+- Branch from `main`; one issue per branch/PR.
+- PRs are labeled by `.github/workflows/pr-labeler.yml` using `.github/labeler.yml`.
+- CODEOWNERS routes reviews by area to `@INVERSEARENA/maintainers`.
+- Duplicate/stale triage is advisory (comments/labels only), never auto-close.
+- Bot authors are exempt from body requirements: `renovate[bot]`, `dependabot[bot]`, `drips-wave`, `github-actions[bot]`.
+- Triage workflows use safe `pull_request_target` handling: no PR-head checkout in privileged jobs, no PR-provided code execution in privileged jobs.
+- Stale PR escalation mentions `@INVERSEARENA/maintainers`.
+
+| Path | Label(s) | Notes |
+| --- | --- | --- |
+| `backend/**` | `integration` | `backend` label does not exist upstream |
+| `contract/**` | `contracts`, `smart-contract`, `soroban` |  |
+| `frontend/**` | `frontend` |  |
+| `docs/**`, `**/*.md` | `documentation` |  |
+| `tools/**`, `scripts/**`, `Makefile`, dev tooling files | `devx` |  |
+| `.github/workflows/**` | `ci` |  |
+| `**/tests/**`, `**/*.test.*`, `**/*.spec.*` | `tests`, `testing` |  |
+
+## Documentation portal and mutation checks
+
+The static documentation portal is generated from existing Markdown, the backend OpenAPI document, and contract doc comments. Run `make docs-check` before submitting documentation changes and `make docs-build` to render the site. See `docs/DOCUMENTATION_PORTAL.md`.
+
+Changes to contract state machines or fund-moving paths must add guard tests that survive mutation testing. Run `make contracts-mutants` when `cargo-mutants` is available; see `contract/docs/MUTATION_TESTING.md`.
