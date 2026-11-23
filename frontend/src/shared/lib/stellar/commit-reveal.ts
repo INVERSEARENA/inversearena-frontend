@@ -21,13 +21,15 @@
  */
 
 import { Address } from "@stellar/stellar-sdk";
+import { localStorageManager, registerStorageKey } from "../localStorage";
 
 export type RoundChoice = "Heads" | "Tails" | "Option3";
 
 const STORAGE_PREFIX = "inversearena:commit-reveal";
 
 function storageKey(arenaId: string, round: number, publicKey: string): string {
-  return `${STORAGE_PREFIX}:${arenaId}:${round}:${publicKey}`;
+  return registerStorageKey(`${STORAGE_PREFIX}:${arenaId}:${round}:${publicKey}`, "user", (value): value is StoredCommitmentJson =>
+    value !== null && typeof value === "object" && typeof (value as StoredCommitmentJson).choice === "string" && typeof (value as StoredCommitmentJson).salt === "string");
 }
 
 function choiceToByte(choice: RoundChoice): number {
@@ -172,7 +174,7 @@ export function saveCommitment(
     choice: commitment.choice,
     salt: bytesToBase64(commitment.salt),
   };
-  localStorage.setItem(storageKey(arenaId, round, publicKey), JSON.stringify(json));
+  localStorageManager.setItem(storageKey(arenaId, round, publicKey), json);
   return commitment;
 }
 
@@ -182,11 +184,10 @@ export function saveCommitment(
  * reveal without this, since the salt has no other source.
  */
 export function loadCommitment(arenaId: string, round: number, publicKey: string): StoredCommitment | null {
-  const raw = localStorage.getItem(storageKey(arenaId, round, publicKey));
-  if (!raw) return null;
+  const parsed = localStorageManager.getItem<StoredCommitmentJson | null>(storageKey(arenaId, round, publicKey), null);
+  if (!parsed) return null;
 
   try {
-    const parsed = JSON.parse(raw) as StoredCommitmentJson;
     if (parsed.choice !== "Heads" && parsed.choice !== "Tails" && parsed.choice !== "Option3") return null;
     const salt = base64ToBytes(parsed.salt);
     if (salt.length !== 32) return null;
@@ -198,5 +199,5 @@ export function loadCommitment(arenaId: string, round: number, publicKey: string
 
 /** Remove the stored choice + salt for a round — call only once its reveal has actually confirmed. */
 export function clearCommitment(arenaId: string, round: number, publicKey: string): void {
-  localStorage.removeItem(storageKey(arenaId, round, publicKey));
+  localStorageManager.removeItem(storageKey(arenaId, round, publicKey));
 }

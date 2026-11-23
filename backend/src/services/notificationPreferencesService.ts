@@ -182,12 +182,18 @@ export class NotificationPreferencesService {
         userId,
         dedupeKey,
         channel,
-        status: { in: ["sent", "delivered"] },
+        status: { in: ["pending", "failed", "sent", "delivered"] },
       },
+      orderBy: { createdAt: "desc" },
     });
 
     if (existing) {
-      // Already delivered, return existing ID
+      if (existing.status === "failed") {
+        await this.prisma.notificationDelivery.update({
+          where: { id: existing.id },
+          data: { status: "pending", error: null, sentAt: null },
+        });
+      }
       return existing.id;
     }
 

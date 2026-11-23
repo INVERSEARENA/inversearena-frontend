@@ -1,3 +1,5 @@
+import { localStorageManager, registerStorageKey } from "./localStorage";
+
 /**
  * Cross-tab wallet mutation coordinator (#1492).
  *
@@ -155,29 +157,17 @@ export function buildMutationKey(
 
 /** Safe `localStorage.getItem` that returns `null` when storage is unavailable. */
 function lsGet(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
+  return localStorageManager.getString(registerStorageKey(key, "device", (value): value is string => typeof value === "string"));
 }
 
 /** Safe `localStorage.setItem`. */
 function lsSet(key: string, value: string): void {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    /* storage full or unavailable — best-effort */
-  }
+  localStorageManager.setString(registerStorageKey(key, "device", (item): item is string => typeof item === "string"), value);
 }
 
 /** Safe `localStorage.removeItem`. */
 function lsRemove(key: string): void {
-  try {
-    localStorage.removeItem(key);
-  } catch {
-    /* noop */
-  }
+  localStorageManager.removeItem(registerStorageKey(key, "device", (value): value is string => typeof value === "string"));
 }
 
 // ─── Coordinator ──────────────────────────────────────────────────────────────

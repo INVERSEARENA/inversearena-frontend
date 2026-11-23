@@ -1,6 +1,6 @@
 import type { Queue } from "bullmq";
 import type { PaymentStatus, TransactionRecord } from "../types/payment";
-import { PaymentService } from "../services/paymentService";
+import { PayoutOrchestrator } from "../services/paymentService";
 import type { TransactionRepository } from "../repositories/transactionRepository";
 import type { ConfirmJobData } from "../queues/txQueue";
 import { workerJobsPending, txsConfirmedTotal, payoutsDeadLetterTotal } from "../utils/metrics";
@@ -32,7 +32,7 @@ export class PaymentWorker {
 
   constructor(
     private readonly transactions: TransactionRepository,
-    private readonly paymentService: PaymentService,
+    private readonly paymentService: PayoutOrchestrator,
     private readonly txQueue?: Queue<ConfirmJobData>,
     retryOptions: PaymentWorkerRetryOptions = {}
   ) {

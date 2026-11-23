@@ -2,7 +2,7 @@ export { cache, cacheKeys, cacheTTL } from "./cache/cacheService";
 export { redis } from "./cache/redisClient";
 export { getPaymentConfig } from "./config/paymentConfig";
 export type { TransactionRepository } from "./repositories/transactionRepository";
-export { PaymentService } from "./services/paymentService";
+export { PaymentService, PayoutOrchestrator } from "./services/paymentService";
 export { PaymentWorker } from "./workers/paymentWorker";
 export {
   BullMqQueueSnapshotSource,
