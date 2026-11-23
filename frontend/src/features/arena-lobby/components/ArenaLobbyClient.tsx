@@ -39,6 +39,7 @@ import { JoinFundingPanel } from "./JoinFundingPanel";
 import { LobbyHeader } from "./LobbyHeader";
 import { PlayerRoster } from "./PlayerRoster";
 import { JoinPanel } from "./JoinPanel";
+import { GiftSeatPanel } from "./GiftSeatPanel";
 
 interface ArenaLobbyClientProps {
   arenaId: string;
@@ -297,6 +298,13 @@ export function ArenaLobbyClient({ arenaId, initialStats, initialParticipants, i
                   connectWallet: async () => { const a = await wallet.connect(); if (!a) throw new Error("No address"); return a; } }} />
             </div>
             <JoinPanel survivorCount={s.survivorCount} entryFee={s.entryFee} stakeToken={s.stakeToken} error={lobby.error} />
+            <GiftSeatPanel
+              flow={flow}
+              payerWallet={wallet.publicKey}
+              entryFee={lobby.stats.entryFee}
+              stakeToken={lobby.stats.stakeToken}
+              disabled={lobby.stats.status !== "open" || lobby.stats.currentRound > 0 || isParticipant}
+            />
           </div>
         </section>
       </main>

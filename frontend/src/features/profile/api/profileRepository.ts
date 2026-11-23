@@ -13,6 +13,7 @@ import {
   getLiveArenas,
   getRecentHistory
 } from './mockProfile';
+import { apiClient } from '@/shared/lib/api/client';
 
 // Simulated API delay for realistic loading states
 const simulateApiDelay = (ms: number = 800): Promise<void> => {
@@ -84,31 +85,13 @@ class MockProfileRepository implements ProfileRepository {
 
 // Real API repository implementation
 class ProfileApiRepository implements ProfileRepository {
-  private getAuthHeaders(): HeadersInit {
-    // In a browser environment, getting the token from localStorage
-    if (typeof window !== 'undefined') {
-      const token = localStorage.getItem('access_token');
-      if (token) {
-        return {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        };
-      }
-    }
-    return { 'Content-Type': 'application/json' };
-  }
-
   async getAgentIdentity(address?: string): Promise<AgentIdentity> {
     try {
-      const response = await fetch('/api/users/me', {
-        headers: this.getAuthHeaders(),
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const userData = await response.json();
+      const userData = await apiClient.get<{
+        id?: string;
+        currentRank?: number;
+        gamesPlayed?: number;
+      }>('/api/users/me');
 
       // Map backend UserProfile to frontend AgentIdentity
       return {
@@ -126,15 +109,11 @@ class ProfileApiRepository implements ProfileRepository {
 
   async getProfileStats(address?: string): Promise<ProfileStats> {
     try {
-      const response = await fetch('/api/users/me', {
-        headers: this.getAuthHeaders(),
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const userData = await response.json();
+      const userData = await apiClient.get<{
+        totalYieldEarned?: string;
+        gamesPlayed?: number;
+        gamesWon?: number;
+      }>('/api/users/me');
 
       return {
         totalStake: 0, // Pending backend support
@@ -163,23 +142,18 @@ class ProfileApiRepository implements ProfileRepository {
     // thread `cursor`/`hasMore` through once one exists — until then, one
     // page is strictly more real data than the mock this replaces.
     try {
-      const response = await fetch('/api/users/me/activity?limit=25', {
-        headers: this.getAuthHeaders(),
-      });
+      const data = await apiClient.get<{
+        items?: Array<{
+          id: string;
+          type: string;
+          timestamp: string;
+          arenaId: string;
+          roundNumber: number;
+          reason: string | null;
+        }>;
+      }>('/api/users/me/activity', { params: { limit: '25' } });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
-      const items: Array<{
-        id: string;
-        type: string;
-        timestamp: string;
-        arenaId: string;
-        roundNumber: number;
-        reason: string | null;
-      }> = data.items ?? [];
+      const items = data.items ?? [];
 
       return items.map((item) => ({
         id: item.id,

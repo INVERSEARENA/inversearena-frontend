@@ -1,7 +1,7 @@
 {
   "contract": "arena",
-  "contract_version": 7,
-  "schema_checksum": "arena-storage-v4-three-choice",
+  "contract_version": 8,
+  "schema_checksum": "arena-storage-v5-sponsored-entry",
   "ledger": {
     "sequence": 12345678,
     "protocol": 22,
@@ -34,6 +34,12 @@
     },
     {
       "name": "DataKey::OptionCount",
+      "storage_class": "persistent",
+      "key_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr",
+      "value_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr"
+    },
+    {
+      "name": "DataKey::Sponsor",
       "storage_class": "persistent",
       "key_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr",
       "value_xdr_hex": "review-via-storage_layout_canonical_types_roundtrip_xdr"

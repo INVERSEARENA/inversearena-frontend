@@ -52,6 +52,9 @@ const PUBLIC_EVENT_TYPE_BY_TOPIC: Partial<Record<ArenaProjectionEvent["topic"], 
   START: "arena_started",
   FINISH: "arena_finished",
   JOIN: "player_joined",
+  // #1715 stays a `player_joined` in the v1 public replay shape; the sponsor
+  // is available on the authenticated projection state instead.
+  JOIN_S: "player_joined",
   ELIM: "player_eliminated",
   CLAIMED: "prize_claimed",
   RWAYLD: "yield_received",
@@ -79,6 +82,7 @@ export function toPublicReplayEvent(event: ArenaProjectionEvent): PublicReplayEv
   let amountStroops: string | null = null;
   switch (event.topic) {
     case "JOIN":
+    case "JOIN_S":
     case "ELIM":
       subject = event.player;
       break;

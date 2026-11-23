@@ -22,7 +22,9 @@ use ::factory::types::{ArenaStatus, PoolConfig};
 use ::factory::{FactoryContract, FactoryContractClient};
 use ::oracle::{OracleContract, OracleContractClient};
 use ::rwa_adapter::{RwaAdapter, RwaAdapterClient};
-use auth::{Call, assert_exact_auth, assert_rejects_signer, call, mint, new_token, sign};
+use auth::{
+    Call, assert_exact_auth, assert_exact_auths, assert_rejects_signer, call, mint, new_token, sign,
+};
 use soroban_sdk::{
     Address, BytesN, Env, IntoVal, Symbol, Val, Vec,
     testutils::{Address as _, Ledger as _},
@@ -617,6 +619,35 @@ fn join_arena_requires_the_player_for_the_call_and_their_fee_transfer_only() {
     let invoke = || fx.client.try_join_arena(&player).is_ok();
     assert_rejects_signer(&fx.env, &fx.intruder, &tree, invoke);
     assert_exact_auth(&fx.env, &player, &tree, invoke);
+    let token = soroban_sdk::token::TokenClient::new(&fx.env, &fx.token);
+    assert_eq!(token.balance(&fx.vault), FEE, "the fee must reach the vault");
+}
+
+#[test]
+fn join_arena_for_requires_both_the_payer_and_the_player() {
+    let fx = fixture();
+    let payer = Address::generate(&fx.env);
+    let player = Address::generate(&fx.env);
+    mint(&fx.env, &fx.token, &fx.token_admin, &payer, FEE);
+
+    // Both signers authorize the top-level call. Only the payer additionally
+    // authorizes the SAC transfer; the arena pre-authorises the vault pull.
+    let top = fx.tree("join_arena_for", (payer.clone(), player.clone()));
+    let payer_tree = top.clone().with(call(
+        &fx.env,
+        &fx.token,
+        "transfer",
+        (payer.clone(), fx.arena.clone(), FEE),
+    ));
+
+    assert_rejects_signer(&fx.env, &fx.intruder, &payer_tree, || {
+        fx.client.try_join_arena_for(&payer, &player).is_ok()
+    });
+    assert_exact_auths(
+        &fx.env,
+        &[(&payer, &payer_tree), (&player, &top)],
+        || fx.client.try_join_arena_for(&payer, &player).is_ok(),
+    );
     let token = soroban_sdk::token::TokenClient::new(&fx.env, &fx.token);
     assert_eq!(token.balance(&fx.vault), FEE, "the fee must reach the vault");
 }

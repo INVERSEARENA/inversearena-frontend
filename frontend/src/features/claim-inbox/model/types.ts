@@ -81,6 +81,8 @@ export const claimInboxComponentSchema = z.object({
   txHash: z.string().nullable(),
   confirmedAt: z.string().nullable(),
   attempts: z.number().int().nonnegative(),
+  /** #1715: refund destination; `null` for winnings components. */
+  refundDestination: z.string().nullable(),
 });
 
 export const claimInboxItemSchema = z.object({

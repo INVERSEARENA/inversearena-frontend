@@ -11,10 +11,13 @@
 //!   arenas, the vault or the factory. Nothing leaks to an unknown address and
 //!   nothing appears from nowhere.
 //! - **No negative balances.**
-//! - **Each player paid at most once per entry** — for every (arena, player),
-//!   the number of payouts never exceeds the number of joins.
+//! - **Each seat paid for at most once** — for every (arena, wallet), the
+//!   number of payouts never exceeds the number of seats joined plus the
+//!   number of fees funded (#1715). A sponsored seat credits the player with
+//!   a join and the payer with a funding.
 //! - **Refunds are exact** — a refund (leave, ban, cancelled-arena claim)
-//!   returns exactly the entry fee.
+//!   returns exactly the entry fee to the refund destination: the player for
+//!   a self-funded entry, the payer for a sponsored one (#1715).
 //! - **Creator stake returned at most once**, and exactly the amount staked.
 //!
 //! After the sequence a deterministic drain drives every arena to a terminal
@@ -63,6 +66,8 @@ const PLAYER_FUNDS: i128 = FEE * 20;
 #[derive(Clone, Copy, Debug)]
 enum Action {
     Join { arena: usize, player: usize },
+    /// #1715: `payer` funds the fee, `player` owns the seat.
+    JoinSponsored { arena: usize, payer: usize, player: usize },
     Leave { arena: usize, player: usize },
     Ban { arena: usize, player: usize },
     StartRound { arena: usize },
@@ -85,10 +90,20 @@ enum Action {
 fn action() -> impl Strategy<Value = Action> {
     let arena = 0..ARENAS;
     let player = 0..PLAYERS;
+    let payer = 0..PLAYERS;
     prop_oneof![
         // Joins, commits and reveals are what move games forward, so they are
         // drawn more often than the exits.
         4 => (arena.clone(), player.clone()).prop_map(|(arena, player)| Action::Join { arena, player }),
+        // Derive a different payer index so every generated sponsored action
+        // exercises the two-authority path rather than degrading to a normal join.
+        2 => (arena.clone(), payer, player.clone()).prop_map(|(arena, payer, player)| {
+            Action::JoinSponsored {
+                arena,
+                payer: (payer + player + 1) % PLAYERS,
+                player,
+            }
+        }),
         3 => (arena.clone(), player.clone(), any::<bool>())
             .prop_map(|(arena, player, tails)| Action::Commit { arena, player, tails }),
         3 => (arena.clone(), player.clone()).prop_map(|(arena, player)| Action::Reveal { arena, player }),
@@ -128,8 +143,10 @@ struct World {
     /// Every token ever minted, by purpose.
     minted: i128,
     yield_funded: i128,
-    /// Per (arena, player): successful joins and payouts received.
+    /// Per (arena, player): seats joined, fees funded, and payouts received.
+    /// `funded` is keyed by payer (#1715); `joins` by the seat's player.
     joins: BTreeMap<(usize, usize), u32>,
+    funded: BTreeMap<(usize, usize), u32>,
     payouts: BTreeMap<(usize, usize), u32>,
     /// Per arena: creator stake returns observed.
     stake_returns: [u32; ARENAS],
@@ -178,6 +195,7 @@ impl World {
             minted: 0,
             yield_funded: 0,
             joins: BTreeMap::new(),
+            funded: BTreeMap::new(),
             payouts: BTreeMap::new(),
             stake_returns: [0; ARENAS],
             net: BTreeMap::new(),
@@ -283,18 +301,21 @@ impl World {
             *self.net.entry((arena, p)).or_default() += delta;
             if delta < 0 {
                 assert!(
-                    matches!(action, Action::Join { player, .. } if player == p),
+                    matches!(action, Action::Join { player, .. } if player == p)
+                        || matches!(action, Action::JoinSponsored { payer, .. } if payer == p),
                     "{action:?} took {delta} from player {p}"
                 );
                 assert_eq!(delta, -FEE, "a join must cost exactly the entry fee");
-                *self.joins.entry((arena, p)).or_default() += 1;
+                // The seat and funding counters are recorded in `execute`,
+                // where success is known even when the payer is not the seat.
             } else {
                 let paid = self.payouts.entry((arena, p)).or_default();
                 *paid += 1;
                 let joined = self.joins.get(&(arena, p)).copied().unwrap_or(0);
+                let funded = self.funded.get(&(arena, p)).copied().unwrap_or(0);
                 assert!(
-                    *paid <= joined,
-                    "player {p} was paid {paid} times by arena {arena} after joining {joined} times ({action:?})"
+                    *paid <= joined + funded,
+                    "wallet {p} was paid {paid} times by arena {arena} after joining {joined} seats and funding {funded} ({action:?})"
                 );
                 if !matches!(action, Action::Claim { .. }) {
                     assert_eq!(delta, FEE, "{action:?}: a refund must return exactly the entry fee");
@@ -314,11 +335,31 @@ impl World {
         self.check_conservation(&std::format!("after {action:?}"));
     }
 
+    /// Record a successful join: the seat belongs to `player`, the fee was
+    /// funded by `payer` (#1715).
+    fn record_join(&mut self, arena: usize, payer: usize, player: usize) {
+        *self.joins.entry((arena, player)).or_default() += 1;
+        *self.funded.entry((arena, payer)).or_default() += 1;
+    }
+
     /// Returns the arena the action targeted (if any) and whether it succeeded.
     fn execute(&mut self, action: Action) -> (Option<usize>, bool) {
         let ok = match action {
             Action::Join { arena, player } => {
-                self.arenas[arena].try_join_arena(&self.players[player]).is_ok()
+                let ok = self.arenas[arena].try_join_arena(&self.players[player]).is_ok();
+                if ok {
+                    self.record_join(arena, player, player);
+                }
+                ok
+            }
+            Action::JoinSponsored { arena, payer, player } => {
+                let ok = self.arenas[arena]
+                    .try_join_arena_for(&self.players[payer], &self.players[player])
+                    .is_ok();
+                if ok {
+                    self.record_join(arena, payer, player);
+                }
+                ok
             }
             Action::Leave { arena, player } => {
                 self.arenas[arena].try_leave_arena(&self.players[player]).is_ok()
@@ -390,6 +431,7 @@ impl World {
         };
         let arena = match action {
             Action::Join { arena, .. }
+            | Action::JoinSponsored { arena, .. }
             | Action::Leave { arena, .. }
             | Action::Ban { arena, .. }
             | Action::StartRound { arena }
@@ -543,6 +585,24 @@ fn regression_leave_rejoin_then_cancel() {
             Cancel { arena: 1 },
             ClaimRefund { arena: 1, player: 2 },
             ClaimRefund { arena: 1, player: 3 },
+        ],
+    );
+}
+
+/// Sponsored seats are refunded to the payer who funded them, not to the
+/// players occupying the seats (#1715).
+#[test]
+fn regression_sponsored_refunds_go_to_payer() {
+    use Action::*;
+    run(
+        0,
+        &[
+            JoinSponsored { arena: 0, payer: 0, player: 1 },
+            JoinSponsored { arena: 0, payer: 0, player: 2 },
+            Cancel { arena: 0 },
+            // The seat owners submit the claim; the fees land with wallet 0.
+            ClaimRefund { arena: 0, player: 1 },
+            ClaimRefund { arena: 0, player: 2 },
         ],
     );
 }

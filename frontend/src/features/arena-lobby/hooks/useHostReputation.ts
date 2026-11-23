@@ -1,10 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { apiClient } from "@/shared/lib/api/client";
 import type { HostReputation } from "./host-reputation-types";
 import { computeReputationScore, computeReputationTier, HOST_REPUTATION_VERSION } from "./host-reputation-types";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
 
 export function useHostReputation(hostAddress: string | undefined) {
   const [reputation, setReputation] = useState<HostReputation | null>(null);
@@ -18,9 +17,7 @@ export function useHostReputation(hostAddress: string | undefined) {
     const load = async () => {
       setStatus("loading");
       try {
-        const res = await fetch(`${API_BASE}/api/hosts/${hostAddress}/reputation`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
+        const json = await apiClient.get<HostReputation>(`/api/hosts/${hostAddress}/reputation`);
 
         // Recompute client-side score from breakdown so the UI stays consistent
         // even when the backend sends a stale cached score.

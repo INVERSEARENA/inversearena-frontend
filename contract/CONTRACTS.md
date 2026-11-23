@@ -36,10 +36,11 @@
 - `pub fn unban_player(env: Env, player: Address) -> Result<(), ArenaError>`
 - `pub fn is_player_banned(env: Env, player: Address) -> bool`
 - `pub fn join_arena(env: Env, player: Address) -> Result<(), ArenaError>`
+- `pub fn join_arena_for(env: Env, payer: Address, player: Address) -> Result<(), ArenaError>` — sponsored ("Gift a seat") entry (#1715); both addresses authorize, the payer funds the fee and owns refunds, the player owns the seat and prizes
 - `pub fn cancel_arena(env: Env) -> Result<(), ArenaError>`
 - `pub fn get_players(env: Env, page: u32) -> Vec<(Address, PlayerState)>`
 - `pub fn player_count(env: Env) -> u32`
-- `pub fn get_player_status(env: Env, player: Address) -> Result<PlayerStatus, ArenaError>` — every per-player fact for the current round in one read; `joined: false` for non-players (#1582)
+- `pub fn get_player_status(env: Env, player: Address) -> Result<PlayerStatus, ArenaError>` — every per-player fact for the current round in one read; `joined: false` for non-players (#1582). Includes `sponsor: Option<Address>` (#1715): `Some(payer)` for a sponsored entry, `None` for a self-funded one.
 - `pub fn get_settlement(env: Env) -> Result<Settlement, ArenaError>` — what the arena owes and to whom, for the payout contract (#1632)
 - `pub fn get_pool_config(env: Env) -> Result<PoolConfigView, ArenaError>` — full canonical pool config (`stake_token`, `yield_vault`, `entry_fee`, `oracle_contract`, `min_players`, `max_players`, `round_duration`, `start_deadline`) so off-chain rematch prefills read on-chain state instead of cached UI state; `round_duration`/`start_deadline` are `0` until the first round starts (#1572)
 - `pub fn start_round(env: Env, duration_seconds: u64) -> Result<(), ArenaError>`
@@ -62,6 +63,17 @@
 - `pub fn balance_of(env: Env, _user: Address) -> i128`
 - `pub fn deposit(_env: Env, _from: Address, _amount: i128)`
 - `pub fn withdraw_all(env: Env, user: Address) -> i128`
+
+### Sponsored entries (#1715)
+
+`join_arena_for(payer, player)` charges `entry_fee` to `payer` and registers
+`player` on the roster. The sponsor is stored under the separate persistent
+key `DataKey::Sponsor(player)` so the `PlayerState` XDR layout is unchanged.
+Every refund path (`leave_arena`, `ban_player`, `claim_refund`) resolves the
+destination through this key: a sponsored fee returns to the payer, a
+self-funded fee returns to the player. Prizes still go to the player. The
+entry emits `player_joined_sponsored(payer, player)` with the updated player
+count; see `docs/event-schema.md` for the topics and payload.
 
 ## Factory
 

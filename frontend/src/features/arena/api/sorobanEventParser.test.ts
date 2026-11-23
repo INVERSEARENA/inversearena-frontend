@@ -54,6 +54,42 @@ describe('SorobanEventParser', () => {
         }
     });
 
+    test('parses a normalized sponsored join with payer and player topics (#1715)', () => {
+        const payer = 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H';
+        const player = 'GDVEU3DD4KOFECV66VIHWEZOYX4ZKR3WV27L464SIIPOU2IUI3JCZA57';
+        const contractId = 'CAV6XGB...';
+
+        const rawEvent: RawContractEvent = {
+            type: 'contract',
+            id: 'event-sponsored-1',
+            contractId,
+            topic: [
+                nativeToScVal('arena', { type: 'symbol' }).toXDR('base64'),
+                nativeToScVal('join_spon', { type: 'symbol' }).toXDR('base64'),
+                nativeToScVal(payer, { type: 'address' }).toXDR('base64'),
+                nativeToScVal(player, { type: 'address' }).toXDR('base64'),
+            ],
+            value: {
+                xdr: xdr.ScVal.scvVec([
+                    nativeToScVal(1, { type: 'u32' }),
+                    nativeToScVal(7, { type: 'u32' }),
+                ]).toXDR('base64'),
+            },
+            ledgerCloseAt: '2026-02-23T18:00:00Z',
+        };
+
+        const parsed = parseArenaEvent(rawEvent);
+
+        assert.notStrictEqual(parsed, null);
+        if (parsed) {
+            assert.strictEqual(parsed.type, 'PlayerJoinedSponsored');
+            assert.strictEqual((parsed as any).payerWallet, payer);
+            assert.strictEqual((parsed as any).playerWallet, player);
+            assert.strictEqual((parsed as any).playerCount, 7);
+        }
+        assert.equal(typeof EVENT_DECODER_REGISTRY[1]?.join_spon, 'function');
+    });
+
     test('returns null for unknown events and warns', () => {
         const topics = [
             nativeToScVal('unknown_event', { type: 'symbol' }).toXDR('base64')

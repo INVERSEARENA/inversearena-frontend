@@ -1078,6 +1078,14 @@ export interface ArenaEventPage {
  * halt on one malformed event (see docs/projection-checkpoint-replay.md,
  * "Failure behavior").
  */
+type RawArenaEventTopic = rpc.Api.EventResponse["topic"][number];
+
+/** Decode one indexed topic, guarding against short or malformed events. */
+function decodeArenaEventTopic(topic: RawArenaEventTopic | undefined): unknown {
+  if (topic === undefined) return undefined;
+  return scValToNative(topic);
+}
+
 export function toArenaProjectionEvent(
   raw: rpc.Api.EventResponse,
 ): ArenaProjectionEvent {
@@ -1104,6 +1112,45 @@ export function toArenaProjectionEvent(
 
   const topicString = typeof topicValue === "string" ? topicValue : String(topicValue ?? "");
 
+  // #1715 is a normalized (#1607) event: topic[0] is the "arena" namespace,
+  // topic[1] the event name, topic[2]/[3] the indexed payer/player. The legacy
+  // projection topics below stay untouched; handling is scoped to this new
+  // event so old, uppercase-only logs keep decoding exactly as before.
+  if (topicString === "arena") {
+    try {
+      const eventName = String(decodeArenaEventTopic(raw.topic[1]) ?? "");
+      if (eventName === "join_spon") {
+        const payer = String(decodeArenaEventTopic(raw.topic[2]) ?? "");
+        const player = String(decodeArenaEventTopic(raw.topic[3]) ?? "");
+        if (!payer || !player) {
+          throw new Error("sponsored join is missing payer or player topic");
+        }
+        const value = scValToNative(raw.value);
+        const count = Number(Array.isArray(value) ? value[1] : value);
+        return {
+          ...base,
+          topic: "JOIN_S",
+          payer,
+          player,
+          playerCount: Number.isFinite(count) ? count : null,
+        };
+      }
+    } catch (error) {
+      return {
+        ...base,
+        topic: "UNKNOWN",
+        rawTopic: topicString,
+        reason: `Failed to decode sponsored join: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    return {
+      ...base,
+      topic: "UNKNOWN",
+      rawTopic: topicString,
+      reason: "Normalized arena events are not supported by this projection decoder",
+    };
+  }
+
   if (!isArenaEventTopic(topicString)) {
     return {
       ...base,
@@ -1127,6 +1174,15 @@ export function toArenaProjectionEvent(
         return { ...base, topic: "FINISH" };
       case "JOIN":
         return { ...base, topic: "JOIN", player: String(value) };
+      case "JOIN_S":
+        // Reached only if the normalized branch above was bypassed; the
+        // sponsored payload has no legacy single-address representation.
+        return {
+          ...base,
+          topic: "UNKNOWN",
+          rawTopic: topicString,
+          reason: "Sponsored joins require the normalized arena/join_spon topics",
+        };
       case "CHOICE":
         return { ...base, topic: "CHOICE", player: String(value) };
       case "ELIM":

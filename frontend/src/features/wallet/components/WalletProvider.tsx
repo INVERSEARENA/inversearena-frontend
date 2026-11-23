@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
+import { createContext, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Networks } from '@creit-tech/stellar-wallets-kit';
 
 import { WalletContextType } from '../model/types';
@@ -14,6 +14,8 @@ import { usePageVisibility } from '@/shared/lib/hooks/usePageVisibility';
 // the whole app. Every gate the provider renders — join, stake, claim — reports
 // through it, so there is one place to change or disable the destination.
 import '@/features/asset-readiness/api/install-asset-readiness-sink';
+import { loginWithWallet, revokeSessionForWalletChange } from '@/shared/lib/session/sessionClient';
+import { getSessionState } from '@/shared/lib/session/sessionStore';
 
 export const WalletContext = createContext<WalletContextType | null>(null);
 
@@ -36,6 +38,7 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
     connectWallet,
     disconnectWallet,
     signTransaction: signWithExtension,
+    signMessage: signMessageWithExtension,
     recheckNetwork: recheckExtensionNetwork,
   } = useStellarWallet(network);
   const passkey = usePasskeyWallet();
@@ -56,6 +59,12 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
   const error = passkeyActive ? null : extensionError;
   const walletNetworkName = passkeyActive ? null : extensionWalletNetworkName;
   const signTransaction = passkeyActive ? passkey.sign : signWithExtension;
+  // Passkeys sign XDR through the relayer; when the auth challenge reaches
+  // them they fall back to the signed challenge-transaction path.
+  const signMessage = useCallback(async (_message: string): Promise<string> => {
+    throw new Error('Passkey wallets sign challenge transactions instead of messages');
+  }, []);
+  const messageSigner = passkeyActive ? signMessage : signMessageWithExtension;
   const recheckNetwork = useCallback(async () => {
     if (passkeyActive) return;
     await recheckExtensionNetwork();
@@ -145,6 +154,56 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
     });
   }, [publicKey, loadBalance]);
 
+  // A backend session belongs to the wallet that signed in. Switching to a
+  // different address (or disconnecting) revokes it so no other account can
+  // inherit authenticated access. The initial null -> connected transition is
+  // not a switch and is deliberately ignored.
+  const previousWalletRef = useRef(publicKey);
+  useEffect(() => {
+    const previous = previousWalletRef.current;
+    previousWalletRef.current = publicKey;
+    if (previous && previous !== publicKey) {
+      revokeSessionForWalletChange();
+    }
+  }, [publicKey]);
+
+  // Establish a backend session as soon as a browser wallet connects. The ref
+  // keeps this to one challenge per address even when signer identity changes
+  // during network checks. Passkeys are excluded because their XDR signer goes
+  // through the relayer and cannot produce an auth proof yet.
+  const authenticatedWalletRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!publicKey) {
+      authenticatedWalletRef.current = null;
+      return;
+    }
+
+    const session = getSessionState();
+    if (session.walletAddress && session.walletAddress !== publicKey) {
+      revokeSessionForWalletChange();
+      authenticatedWalletRef.current = null;
+    }
+
+    if (passkeyActive || authenticatedWalletRef.current === publicKey) return;
+    if (session.status === 'authenticated' && session.walletAddress === publicKey) {
+      authenticatedWalletRef.current = publicKey;
+      return;
+    }
+
+    authenticatedWalletRef.current = publicKey;
+    void loginWithWallet(
+      {
+        walletAddress: publicKey,
+        signMessage: signMessageWithExtension,
+        signTransaction: signWithExtension,
+      },
+      network,
+    ).catch(() => {
+      // useSession() surfaces the error state; a rejected wallet prompt must
+      // not become an unhandled promise rejection on page load.
+    });
+  }, [publicKey, passkeyActive, signMessageWithExtension, signWithExtension, network]);
+
   const disconnect = useCallback(() => {
     if (passkeyActive) {
       passkey.disconnect();
@@ -167,6 +226,7 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
       connect: connectWallet,
       disconnect,
       signTransaction,
+      signMessage: messageSigner,
       refreshBalance,
       walletNetworkName,
       recheckNetwork,
@@ -183,6 +243,7 @@ export const WalletProvider = ({ children }: { children: ReactNode }) => {
       connectWallet,
       disconnect,
       signTransaction,
+      messageSigner,
       refreshBalance,
       walletNetworkName,
       recheckNetwork,

@@ -25,11 +25,13 @@ import { createLobbyReservationRouter } from "./lobbyReservation";
 import { createDashboardRouter } from "./dashboard";
 import { createCreatorRouter } from "./creator";
 import { createCreatorTemplatesRouter } from "./creatorTemplates";
+import { createCreatorSeriesRouter } from "./creatorSeries";
 import { createHostWhitelistRouter } from "./hostWhitelist";
 import { createJackpotsRouter } from "./jackpots";
 import { createArenaMessagesRouter } from "./arenaMessages";
 import { createFollowsRouter } from "./follows";
 import { createClansRouter } from "./clans";
+import { createReferralsRouter } from "./referrals";
 import type { PrismaClient } from "@prisma/client";
 import type { PayoutsController } from "../controllers/payouts.controller";
 import type { WorkerController } from "../controllers/worker.controller";
@@ -72,9 +74,18 @@ export function createApiRouter(
     router.use("/webhooks", createWebhooksRouter(revalidationService));
   }
   router.use("/auth", createAuthRouter(authController, requireAuth));
-  router.use("/users", createUsersRouter(usersController, requireAuth, transactions));
-  router.use("/payouts", createPayoutsRouter(payoutsController, authService, adminAuthMiddleware));
-  router.use("/worker", createWorkerRouter(workerController, adminAuthMiddleware));
+  router.use(
+    "/users",
+    createUsersRouter(usersController, requireAuth, transactions),
+  );
+  router.use(
+    "/payouts",
+    createPayoutsRouter(payoutsController, authService, adminAuthMiddleware),
+  );
+  router.use(
+    "/worker",
+    createWorkerRouter(workerController, adminAuthMiddleware),
+  );
   router.use(
     "/transactions",
     requireAuth,
@@ -94,7 +105,10 @@ export function createApiRouter(
   router.use("/arenas", createInvitationsRouter(requireAuth));
   router.use("/arenas", createLobbyReservationRouter(requireAuth));
   router.use("/pools", createPoolsRouter(requireAuth));
-  router.use("/rounds", createRoundProofBundleRouter(requireAuth, roundProofBundleService));
+  router.use(
+    "/rounds",
+    createRoundProofBundleRouter(requireAuth, roundProofBundleService),
+  );
   router.use("/users", createNotificationPreferencesRouter(requireAuth));
   router.use("/users", createPushSubscriptionsRouter(requireAuth));
   router.use("/users", createPortfolioExposureRouter(requireAuth));
@@ -105,13 +119,17 @@ export function createApiRouter(
   );
   router.use("/dashboard", createDashboardRouter(requireAuth));
   router.use("/creator/templates", createCreatorTemplatesRouter(requireAuth));
+  router.use("/creator/series", createCreatorSeriesRouter(requireAuth));
   router.use("/creator", createCreatorRouter(requireAuth));
   router.use("/jackpots", createJackpotsRouter(requireAuth));
   router.use("/users", createFollowsRouter(requireAuth));
   router.use("/arenas", createArenaMessagesRouter(requireAuth));
   router.use("/clans", createClansRouter(requireAuth));
+  router.use("/referrals", createReferralsRouter(requireAuth));
   if (prisma) {
-    router.use(createHostWhitelistRouter(prisma, requireAuth, adminAuthMiddleware));
+    router.use(
+      createHostWhitelistRouter(prisma, requireAuth, adminAuthMiddleware),
+    );
   }
 
   return router;

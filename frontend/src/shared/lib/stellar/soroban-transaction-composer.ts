@@ -196,6 +196,24 @@ export function buildJoinCallOperation(
 }
 
 /**
+ * Sponsored entry (#1715): matches `join_arena_for(payer, player)` in
+ * `contract/arena/src/lib.rs`. Both addresses are passed explicitly so the
+ * wallet signing the envelope can be the payer while the seat belongs to the
+ * recipient.
+ */
+export function buildJoinForCallOperation(
+  poolContract: Contract,
+  payerPublicKey: string,
+  playerPublicKey: string,
+): SorobanOperation {
+  return poolContract.call(
+    "join_arena_for",
+    encodeAddress(payerPublicKey),
+    encodeAddress(playerPublicKey),
+  );
+}
+
+/**
  * Leave an arena lobby before the first round with a full refund (#1580).
  * Matches `contract/arena/src/lib.rs`'s `leave_arena(player)`.
  */
@@ -274,6 +292,8 @@ export function buildArenaOperationFromPlan(
   switch (plan.call.name) {
     case "join_arena":
       return buildJoinCallOperation(poolContract, plan.actor);
+    case "join_arena_for":
+      return buildJoinForCallOperation(poolContract, plan.call.payer, plan.call.player);
     case "submit_commitment":
       return buildSubmitCommitmentOperation(
         poolContract,

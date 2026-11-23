@@ -158,6 +158,39 @@ Emitted once per successful `join()` call.
 
 ---
 
+### `join_spon` — Sponsored Player Joined (#1715)
+
+Emitted by `join_arena_for(payer, player)` for a "Gift a seat" entry. This is a
+new normalized event; it has no legacy uppercase topic. It follows the
+normative convention in this document:
+
+```text
+topic[0] = "arena"        (namespace Symbol)
+topic[1] = "join_spon"    (event-name Symbol, 9 chars)
+topic[2] = payer address  (indexed)
+topic[3] = player address (indexed)
+data     = (1, player_count: u32)
+```
+
+| Field         | XDR type | Description                                      |
+|---------------|----------|--------------------------------------------------|
+| topic[2]      | Address  | Account that funded the entry fee and owns refunds |
+| topic[3]      | Address  | Seat owner; receives any prizes                   |
+| data[1]       | u32      | Roster size after the join                       |
+
+**Refund policy:** the sponsor is persisted under `DataKey::Sponsor(player)`
+and surfaced as `PlayerStatus.sponsor`. `leave_arena`, `ban_player` and
+`claim_refund` return the fee to `topic[2]` (the payer); prizes are always paid
+to `topic[3]` (the player). A payer may fund more than one seat, and
+`payer == player` is allowed and behaves like a self-funded join with an
+explicit sponsored event.
+
+**Frontend/indexer action:** treat this as a `player_joined_sponsored` join —
+increment the live player count, add `topic[3]` to the lobby, and record
+`topic[2]` as the refund destination for that seat.
+
+---
+
 ### `CHOICE` — Choice Submitted
 
 Emitted when a player submits their round choice via `submit_choice()`.
@@ -221,6 +254,8 @@ const TOPIC_MAP: Record<string, string> = {
   START:   'game_started',
   FINISH:  'game_finished',
   JOIN:    'player_joined',
+  // #1715 is normalized: its name is topic[1], after the "arena" namespace.
+  join_spon: 'player_joined_sponsored',
   CHOICE:  'choice_submitted',
   ELIM:    'player_eliminated',
   CLAIMED: 'prize_claimed',

@@ -15,8 +15,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
+import { apiClient } from "@/shared/lib/api/client";
 
 export type StakingFreshness = "verified" | "stale" | "unavailable";
 
@@ -52,12 +51,6 @@ export interface UseStakingPositionReturn {
   refresh: () => Promise<void>;
 }
 
-function authHeaders(): HeadersInit {
-  const token =
-    typeof window !== "undefined" ? window.localStorage.getItem("access_token") : null;
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 function isNonZero(value: string | null): boolean {
   return value !== null && /[1-9]/.test(value);
 }
@@ -75,14 +68,10 @@ export function deriveStakingState(position: StakingPosition | null): StakingPos
 }
 
 async function fetchPosition(): Promise<StakingPosition> {
-  const response = await fetch(`${API_BASE}/api/users/me/staking/positions`, {
-    headers: authHeaders(),
-    cache: "no-store",
-  });
-  if (!response.ok) {
-    throw new Error(`Staking position request failed (${response.status})`);
-  }
-  const body = (await response.json()) as { position?: StakingPosition };
+  const body = await apiClient.get<{ position?: StakingPosition }>(
+    "/api/users/me/staking/positions",
+    { cache: "no-store" },
+  );
   if (!body || typeof body !== "object" || !body.position) {
     throw new Error("Invalid staking position response");
   }

@@ -28,6 +28,7 @@ function item(over: Partial<ClaimInboxItem> = {}): ClaimInboxItem {
         txHash: null,
         confirmedAt: null,
         attempts: 0,
+        refundDestination: null,
       },
     ],
     totalsByAsset: [{ code: "XLM", issuer: null, amountStroops: "25000000" }],

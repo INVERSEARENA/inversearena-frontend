@@ -74,6 +74,7 @@ describe("profileRepository.getHistory", () => {
 
   it("sends the stored access token as a Bearer header when present", async () => {
     window.localStorage.setItem("access_token", "test-token");
+    window.localStorage.setItem("refresh_token", "test-refresh-token");
     mockFetchOnce(true, { items: [], cursor: null, hasMore: false });
 
     await profileRepository.getHistory("GWALLET");
