@@ -2,6 +2,23 @@ import { ApiClient, ApiError } from "../client";
 import * as sessionStore from "../../session/sessionStore";
 import * as sessionClient from "../../session/sessionClient";
 
+jest.mock("../../session/sessionStore", () => {
+  const actual = jest.requireActual("../../session/sessionStore");
+  return {
+    ...actual,
+    getSessionTokens: jest.fn(),
+    isAccessTokenExpiringSoon: jest.fn(),
+  };
+});
+
+jest.mock("../../session/sessionClient", () => {
+  const actual = jest.requireActual("../../session/sessionClient");
+  return {
+    ...actual,
+    refreshSession: jest.fn(),
+  };
+});
+
 describe("ApiClient", () => {
   let client: ApiClient;
   let originalFetch: typeof global.fetch;

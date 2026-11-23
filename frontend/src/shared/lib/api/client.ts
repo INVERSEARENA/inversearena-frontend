@@ -215,8 +215,8 @@ export class ApiClient {
       return undefined as T;
     }
 
-    const contentType = response.headers.get("content-type");
-    if (contentType && contentType.includes("application/json")) {
+    const contentType = response.headers?.get?.("content-type");
+    if ((contentType && contentType.includes("application/json")) || (!contentType && typeof response.json === "function")) {
       return (await response.json()) as T;
     }
 
