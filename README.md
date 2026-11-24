@@ -28,7 +28,7 @@ While the game runs, entry fees are never idle. Funds are routed into **Real-Wor
 ---
 
 ## The Problem
-
+  
 | Problem | How Inverse Arena Solves It |
 |---|---|
 | GameFi economies rely on inflationary token emissions that collapse when growth slows | Prize pools are funded by real yield from US Treasury-backed RWAs — no token printing |
