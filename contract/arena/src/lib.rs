@@ -23,6 +23,7 @@ mod snapshot_test;
 mod storage_layout_fixture;
 mod state_machine;
 mod storage;
+pub mod schedule;
 pub mod types;
 
 use events::ArenaEvents;
@@ -31,7 +32,7 @@ use storage::ArenaStorage;
 use types::{
     ArenaConfig, ArenaError, ArenaStatus, Choice, EliminationReason, GameState, LeaderboardEntry,
     OracleFreshnessPolicy, PendingAdmin, PendingUpgrade, PlayerState, PlayerStatus, PoolConfigView,
-    RoundResult, Settlement, TransitionInitiator, YieldSnapshot,
+    RoundResult, RoundSchedule, Settlement, TransitionInitiator, YieldSnapshot,
 };
 
 #[soroban_sdk::contractclient(name = "FactoryClient")]
@@ -736,7 +737,8 @@ impl ArenaContract {
         if config.state != GameState::Active {
             return Err(ArenaError::RoundNotActive);
         }
-        if env.ledger().timestamp() >= config.commit_deadline {
+        let schedule = ArenaStorage::load_round_schedule(&env).ok_or(ArenaError::RoundNotActive)?;
+        if !schedule.can_commit(env.ledger().timestamp()) {
             return Err(ArenaError::CommitPhaseEnded);
         }
         let player_state =
@@ -792,7 +794,8 @@ impl ArenaContract {
         if ArenaStorage::load_choice(&env, &player, round).is_some() {
             return Err(ArenaError::ChoiceAlreadyRevealed);
         }
-        if env.ledger().timestamp() < config.commit_deadline {
+        let schedule = ArenaStorage::load_round_schedule(&env).ok_or(ArenaError::RoundNotActive)?;
+        if !schedule.can_reveal(env.ledger().timestamp()) {
             return Err(ArenaError::RoundNotActive);
         }
 
@@ -920,8 +923,13 @@ impl ArenaContract {
         if config.state != GameState::Active {
             return Err(ArenaError::InvalidGameState);
         }
-        let expiry_at = config.commit_deadline.saturating_add(EXPIRY_GRACE_SECONDS);
-        if env.ledger().timestamp() <= expiry_at {
+        let schedule = ArenaStorage::load_round_schedule(&env).unwrap_or_else(|| RoundSchedule {
+            started_at: 0,
+            commit_deadline: config.commit_deadline,
+            reveal_deadline: config.commit_deadline,
+            paused_total: 0,
+        });
+        if !schedule.is_expired(env.ledger().timestamp()) {
             return Err(ArenaError::DeadlineTooSoon);
         }
 
@@ -1155,9 +1163,11 @@ impl ArenaContract {
             .unwrap_or(0);
         ArenaStorage::save_last_vault_balance(&env, vault_balance);
 
-        config.commit_deadline = env.ledger().timestamp().saturating_add(duration_seconds);
+        let schedule = RoundSchedule::new(env.ledger().timestamp(), duration_seconds);
+        config.commit_deadline = schedule.commit_deadline;
         config.state = GameState::Active;
         ArenaStorage::save_config(&env, &config);
+        ArenaStorage::save_round_schedule(&env, &schedule);
         ArenaStorage::save_round_start(&env, env.ledger().timestamp());
         ArenaStorage::save_round_duration(&env, duration_seconds);
 
@@ -1243,14 +1253,13 @@ impl ArenaContract {
             return Err(ArenaError::RoundNotActive);
         }
 
-        let round_start =
-            ArenaStorage::load_round_start(&env).ok_or(ArenaError::RoundNotStarted)?;
-        let grace = ArenaStorage::load_round_duration(&env);
-        if env.ledger().timestamp() < round_start.saturating_add(grace) {
+        let schedule =
+            ArenaStorage::load_round_schedule(&env).ok_or(ArenaError::RoundNotStarted)?;
+        if !schedule.can_resolve(env.ledger().timestamp()) {
             return Err(ArenaError::GracePeriodNotElapsed);
         }
-        let keeper_initiated = env.ledger().timestamp()
-            >= round_start.saturating_add(grace).saturating_add(HOST_GRACE_SECONDS);
+        let keeper_initiated =
+            schedule.can_keeper_resolve(env.ledger().timestamp(), HOST_GRACE_SECONDS);
         if !keeper_initiated {
             config.admin.require_auth();
         }
@@ -1882,6 +1891,12 @@ impl ArenaContract {
     /// - `round`: 1-based round number.
     pub fn get_round_result(env: Env, round: u32) -> Option<RoundResult> {
         ArenaStorage::load_round_result(&env, round)
+    }
+
+    /// Read the consolidated schedule for the current round (#1836).
+    pub fn get_round_schedule(env: Env) -> Result<RoundSchedule, ArenaError> {
+        ArenaStorage::require_current_storage_version(&env)?;
+        ArenaStorage::load_round_schedule(&env).ok_or(ArenaError::RoundNotStarted)
     }
 
     /// Commitment preimage, bound to one arena, round, and player (#1630):

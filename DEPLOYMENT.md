@@ -36,7 +36,7 @@ npm install
 npx tsx setup-testnet.ts
 ```
 
-This creates four accounts (admin, payout source, two test players), funds them via Stellar Friendbot, and writes keys to `.env.test` in the repo root.
+This sets up four accounts—an admin, a payout source, and two test players—funds them through Stellar Friendbot, and stores their keys in the `.env.test` file at the repository root.
 
 > **WARNING:** Never commit `.env.test`. It contains private keys. It is already in `.gitignore`.
 
@@ -258,12 +258,9 @@ contract version each entrypoint needs.
 
 **Rollout order**
 
-1. Deploy the backend first. An old frontend ignores the endpoint.
-2. Upgrade contracts. Arenas still on an older version report the affected
-   capabilities as unsupported, so the new frontend disables only those actions
-   (reads keep working).
-3. Deploy the frontend last. Against a backend without the endpoint (404) it
-   allows every action, as before.
+1. **Deploy the backend first.** Existing frontend versions safely ignore the new endpoint.
+2. **Upgrade the contracts.** Arenas running older contract versions report the affected capabilities as unsupported. The new frontend disables only those actions, while read operations remain available.
+3. **Deploy the frontend last.** If the backend does not expose the endpoint (returns 404), the frontend preserves its existing behavior by allowing all actions.
 
 **Rollback**
 
@@ -287,3 +284,39 @@ contract version each entrypoint needs.
 | API 500s with no obvious cause | Grab the `X-Request-Id` response header and grep the backend logs / Sentry for that id. |
 | Arena stats look stale | Redis cache TTL not yet expired; stats are invalidated automatically on round resolution. |
 | `make deploy` fails funding accounts | Testnet friendbot rate-limited — wait and retry, or fund manually (see step 2). |
+
+---
+
+## BullMQ Queue Split & Payload Versioning Rolling Deployment (#1839)
+
+Issue #1839 separates the monolithic `tx-confirm` queue into three prioritised queues:
+1. `payout-confirm` (high priority, low concurrency, critical winner payouts)
+2. `tx-reconcile` (bulk background ledger reconciliation)
+3. `notify` (notification fan-out)
+
+### Rolling Deploy Procedure
+
+During a rolling deployment across multiple instances, old workers and new workers co-exist:
+
+1. **Deploy Phase 1 — Workers First**:
+   - Deploy backend instances running the updated workers (`txReconciler`, `paymentWorker`).
+   - The consumers understand both versioned payloads (`{ v: 1, ... }`) and legacy payloads (`{ transactionId: ... }`).
+   - The alias `TX_CONFIRM_QUEUE = PAYOUT_QUEUE` guarantees that jobs targeting the old queue name are consumed by the new payout workers.
+   - Any unparseable payload is routed to structured dead-letter logging (`deadLetterJob`) and does not crash worker loops.
+
+2. **Deploy Phase 2 — Producers**:
+   - Deploy backend API nodes producing jobs.
+   - Producers stamp `v: 1` on all new payloads using `defineJob(name, version, schema)`.
+   - New jobs are routed to `payout-confirm`, `tx-reconcile`, or `notify` with their respective priorities and retry configurations.
+
+3. **Deploy Phase 3 — Verification & Metric Checks**:
+   - Verify Prometheus metrics across the separated queues:
+     - `inversearena_queue_backlog{queue="payout-confirm"}`
+     - `inversearena_queue_backlog{queue="tx-reconcile"}`
+     - `inversearena_queue_backlog{queue="notify"}`
+     - `inversearena_worker_terminal_failures_total`
+   - Check that dead-letter counts remain zero or expected.
+
+4. **Rollback Strategy**:
+   - If rolling back to the previous release, old workers can process legacy unversioned payloads. New producers only add `v: 1` to standard fields, which old JSON readers safely ignore as extraneous fields.
+
