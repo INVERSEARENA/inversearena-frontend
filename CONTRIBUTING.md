@@ -2,10 +2,7 @@
 
 ## Smart Contract Code Review Checklist
 
-Every PR that touches a contract function which moves funds (transfers tokens,
-interacts with a vault, pays out prizes, etc.) must be reviewed against the
-checks-effects-interactions pattern. Reviewers should confirm each of the
-following before approving:
+Any PR that modifies a contract function involving the movement of funds, such as token transfers, vault interactions, or prize payouts, must be reviewed for compliance with the Checks-Effects-Interactions (CEI) pattern. Before approving the PR, reviewers must verify the following:
 
 - [ ] **Checks first.** All input validation, auth (`require_auth`), state
   preconditions (e.g. `GameState`), and "already done" guards
