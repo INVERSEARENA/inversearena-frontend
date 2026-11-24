@@ -1,5 +1,15 @@
-import { Queue, type JobType } from "bullmq";
+import { Queue, type Job, type JobType } from "bullmq";
+import {
+  context,
+  propagation,
+  SpanKind,
+  SpanStatusCode,
+  trace,
+  type Context,
+} from "@opentelemetry/api";
 import { env } from "../config/env";
+
+const bullmqTracer = trace.getTracer("inversearena-backend.bullmq");
 
 export const TX_CONFIRM_QUEUE = "tx-confirm";
 
@@ -11,6 +21,110 @@ export const TX_QUEUE_BACKLOG_STATES: JobType[] = [
 
 export interface ConfirmJobData {
   transactionId: string;
+  _traceContext?: Record<string, string>;
+}
+
+/**
+ * Injects the active OpenTelemetry trace context (W3C traceparent/tracestate)
+ * into BullMQ job data so worker consumer spans link to the producer trace.
+ */
+export function injectTraceContext<T extends Record<string, unknown>>(
+  data: T,
+): T & { _traceContext?: Record<string, string> } {
+  const carrier: Record<string, string> = {};
+  propagation.inject(context.active(), carrier);
+  if (Object.keys(carrier).length === 0) {
+    return data;
+  }
+  return { ...data, _traceContext: carrier };
+}
+
+/**
+ * Extracts a parent OpenTelemetry Context from BullMQ job data.
+ */
+export function extractTraceContext(carrier?: Record<string, string>): Context {
+  if (!carrier) return context.active();
+  return propagation.extract(context.active(), carrier);
+}
+
+export async function withBullMqProducerSpan<T>(
+  queueName: string,
+  jobName: string,
+  jobId: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  return bullmqTracer.startActiveSpan(
+    `bullmq.enqueue ${queueName}`,
+    {
+      kind: SpanKind.PRODUCER,
+      attributes: {
+        "messaging.system": "bullmq",
+        "messaging.destination.name": queueName,
+        "messaging.operation": "publish",
+        "bullmq.job.name": jobName,
+        "bullmq.job.id": jobId,
+      },
+    },
+    async (span) => {
+      try {
+        const result = await run();
+        span.setStatus({ code: SpanStatusCode.OK });
+        return result;
+      } catch (error) {
+        if (error instanceof Error) {
+          span.recordException(error);
+          span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
+        } else {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: String(error) });
+        }
+        throw error;
+      } finally {
+        span.end();
+      }
+    },
+  );
+}
+
+export async function withBullMqConsumerSpan<T>(
+  queueName: string,
+  job: Pick<Job<ConfirmJobData>, "id" | "name" | "data" | "attemptsMade">,
+  run: () => Promise<T>,
+): Promise<T> {
+  const parentContext = extractTraceContext(job.data?._traceContext);
+  return context.with(parentContext, () =>
+    bullmqTracer.startActiveSpan(
+      `bullmq.process ${queueName}`,
+      {
+        kind: SpanKind.CONSUMER,
+        attributes: {
+          "messaging.system": "bullmq",
+          "messaging.destination.name": queueName,
+          "messaging.operation": "process",
+          "bullmq.job.name": job.name ?? "confirm",
+          "bullmq.job.id": job.id ?? job.data.transactionId,
+          "bullmq.attempts_made": job.attemptsMade ?? 0,
+          "transaction.id": job.data.transactionId,
+        },
+      },
+      async (span) => {
+        try {
+          const result = await run();
+          span.setStatus({ code: SpanStatusCode.OK });
+          return result;
+        } catch (error) {
+          if (error instanceof Error) {
+            span.recordException(error);
+            span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
+          } else {
+            span.setStatus({ code: SpanStatusCode.ERROR, message: String(error) });
+          }
+          throw error;
+        } finally {
+          span.end();
+        }
+      },
+    ),
+  );
 }
 
 export interface QueueSnapshot {

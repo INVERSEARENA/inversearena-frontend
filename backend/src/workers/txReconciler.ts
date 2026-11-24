@@ -1,6 +1,10 @@
 import { DelayedError, Worker, type Job } from "bullmq";
 import type { PaymentService } from "../services/paymentService";
-import { TX_CONFIRM_QUEUE, type ConfirmJobData } from "../queues/txQueue";
+import {
+  TX_CONFIRM_QUEUE,
+  withBullMqConsumerSpan,
+  type ConfirmJobData,
+} from "../queues/txQueue";
 import { logger } from "../utils/logger";
 import type { TransactionStateMachine } from "../services/transactionStateMachine";
 import { TransactionState } from "../domain/transactionState";
@@ -40,29 +44,31 @@ export async function reconcileSubmittedTransaction(
   transactionStateMachine: TxReconcilerStateMachine,
   token?: string,
 ): Promise<void> {
-  // A confirmation read during rollback recovery could observe a ledger that
-  // is no longer canonical (#1490), so the job is deferred instead of
-  // confirming. moveToDelayed + DelayedError keeps the deferral from
-  // consuming one of the job's retry attempts.
-  await refreshLedgerIdentity();
-  if (getRollbackGuard().isQuarantined()) {
-    ledgerRollbackAffectedConsumersTotal.inc({ consumer: "tx-reconciler" });
-    logger.warn(
-      { event: "tx_reconciler_deferred", transactionId: job.data.transactionId },
-      "Transaction confirmation deferred during ledger rollback recovery",
-    );
-    if (token !== undefined && typeof job.moveToDelayed === "function") {
-      await job.moveToDelayed(Date.now() + ROLLBACK_RECOVERY_RETRY_DELAY_MS, token);
-      throw new DelayedError();
+  return withBullMqConsumerSpan(TX_CONFIRM_QUEUE, job, async () => {
+    // A confirmation read during rollback recovery could observe a ledger that
+    // is no longer canonical (#1490), so the job is deferred instead of
+    // confirming. moveToDelayed + DelayedError keeps the deferral from
+    // consuming one of the job's retry attempts.
+    await refreshLedgerIdentity();
+    if (getRollbackGuard().isQuarantined()) {
+      ledgerRollbackAffectedConsumersTotal.inc({ consumer: "tx-reconciler" });
+      logger.warn(
+        { event: "tx_reconciler_deferred", transactionId: job.data.transactionId },
+        "Transaction confirmation deferred during ledger rollback recovery",
+      );
+      if (token !== undefined && typeof job.moveToDelayed === "function") {
+        await job.moveToDelayed(Date.now() + ROLLBACK_RECOVERY_RETRY_DELAY_MS, token);
+        throw new DelayedError();
+      }
+      throw new Error("Ledger rollback recovery is active; confirmation deferred");
     }
-    throw new Error("Ledger rollback recovery is active; confirmation deferred");
-  }
 
-  const txStatus = await transactionStateMachine.confirmSubmitted(job.data.transactionId);
+    const txStatus = await transactionStateMachine.confirmSubmitted(job.data.transactionId);
 
-  if (txStatus === TransactionState.SUBMITTED) {
-    throw new Error(`Transaction ${job.data.transactionId} still pending on-chain`);
-  }
+    if (txStatus === TransactionState.SUBMITTED) {
+      throw new Error(`Transaction ${job.data.transactionId} still pending on-chain`);
+    }
+  });
 }
 
 export function observeTxJobActive(job: Job<ConfirmJobData>): void {

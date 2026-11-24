@@ -4,6 +4,7 @@ import * as Sentry from "@sentry/node";
 import { ProfilingIntegration } from "@sentry/profiling-node";
 import { redactSecrets } from "../../../frontend/src/shared/lib/security/redaction";
 import { env } from "../config/env";
+import { activeTraceContext } from "./logger";
 
 export const initSentry = () => {
     if (env.SENTRY_DSN) {
@@ -15,6 +16,14 @@ export const initSentry = () => {
             tracesSampleRate: 1.0,
             profilesSampleRate: 1.0,
             beforeSend: (event: any) => {
+                const traceCtx = activeTraceContext();
+                if (traceCtx) {
+                    event.tags = {
+                        traceId: traceCtx.traceId,
+                        spanId: traceCtx.spanId,
+                        ...event.tags,
+                    };
+                }
                 const configuredSecrets = [
                     env.JWT_SECRET,
                     env.ADMIN_API_KEY,
