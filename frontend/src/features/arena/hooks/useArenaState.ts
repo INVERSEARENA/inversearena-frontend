@@ -94,6 +94,7 @@ export function toArenaState(data: ArenaStateFromContract): ArenaState {
     payouts: data.contractArenaState.payouts,
     commitDeadline: data.commitDeadline,
     revealDeadline: data.revealDeadline,
+    roundSchedule: data.roundSchedule ?? null,
   };
 }
 

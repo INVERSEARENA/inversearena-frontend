@@ -36,6 +36,25 @@ Guards in the service prevent illegal transitions:
 - `resolveRound` accepts `OPEN` or `CLOSED`
 - settlement is modeled in the schema and docs, and downstream payout processing consumes the resolved result
 
+### 2.1 Arena Round Schedule Timing & Phase Lifecycle (#1836)
+
+Timing within an active arena round is managed deterministically via `RoundSchedule { started_at, commit_deadline, reveal_deadline, paused_total }`:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Commit: start_round(duration) [now < commit_deadline]
+  Commit --> Reveal: commit_deadline reached [now >= commit_deadline]
+  Reveal --> Resolved: resolve_round() [now >= reveal_deadline / commit_deadline]
+  Reveal --> Expired: expire_arena() [now > expiry_at = commit_deadline + 86400s]
+  Resolved --> [*]
+  Expired --> [*]
+```
+
+- **Commit Phase** (`now >= started_at && now < commit_deadline`): Players submit binary choices hashed with a salt.
+- **Reveal Phase** (`now >= commit_deadline && now <= reveal_deadline`): Players reveal choices with salt; resolution is locked until reveals complete.
+- **Resolution** (`now >= reveal_deadline`): Admin or permissionless keeper (`now >= reveal_deadline + HOST_GRACE_SECONDS`) triggers elimination and payout calculations.
+- **Expiry Guard** (`now > commit_deadline + EXPIRY_GRACE_SECONDS`): If abandoned or unresolvable, players can trigger pull-based emergency refunds.
+
 ## 3. Round Resolution Flow
 
 ```mermaid

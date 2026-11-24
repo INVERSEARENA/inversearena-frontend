@@ -2,6 +2,13 @@ import type { ArenaDomainEvent } from "@/shared/lib/stellar/arenaTypes";
 
 export type ArenaStateStatus = "open" | "round_active" | "resolving" | "finished" | "cancelled" | "settled";
 
+export interface RoundSchedule {
+  startedAt: number;
+  commitDeadline: number;
+  revealDeadline: number;
+  pausedTotal: number;
+}
+
 export interface ArenaState {
   id: string;
   status: ArenaStateStatus;
@@ -23,6 +30,7 @@ export interface ArenaState {
   payouts: bigint;
   commitDeadline: number | null;
   revealDeadline: number | null;
+  roundSchedule?: RoundSchedule | null;
 }
 
 export interface UserState {
@@ -96,6 +104,7 @@ export interface ArenaStateFromContract {
   playerCount: number;
   commitDeadline: number | null;
   revealDeadline: number | null;
+  roundSchedule?: RoundSchedule | null;
 }
 
 export interface FetchArenaStateResult {
