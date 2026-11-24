@@ -20,6 +20,10 @@
 import { useState, useCallback, useRef } from "react";
 import { parseStellarError } from "@/shared/lib/stellar/stellar-transactions";
 import { invalidateWalletBalances } from "@/shared/lib/stellar/balance-cache";
+import {
+  decodeInvocation,
+  type DecodedInvocationSummary,
+} from "@/shared/lib/stellar/decodeInvocation";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -51,6 +55,8 @@ export interface TransactionFlowState {
   errorDetail: string | null;
   /** Stellar expert explorer link — available as soon as txHash is set. */
   explorerUrl: string | null;
+  /** Local decoded preview of the Soroban invocation (#1829). */
+  decodedPreview?: DecodedInvocationSummary | null;
 }
 
 export interface TransactionFlowActions {
@@ -90,6 +96,10 @@ export interface UseTransactionFlowOptions {
   network?: "testnet" | "mainnet";
   timeoutMs?: number;
   publicKey?: string;
+  /** Additional verified arena IDs for manifest verification (#1829). */
+  knownArenaIds?: string[];
+  /** Block signing if decoded invocation targets an unknown contract (#1829). */
+  enforceManifest?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -146,6 +156,8 @@ export function useTransactionFlow(
     network = "testnet",
     timeoutMs = DEFAULT_TIMEOUT_MS,
     publicKey,
+    knownArenaIds,
+    enforceManifest = false,
   } = options;
 
   const [state, setState] = useState<TransactionFlowState>({
@@ -154,6 +166,7 @@ export function useTransactionFlow(
     failureReason: null,
     errorDetail: null,
     explorerUrl: null,
+    decodedPreview: null,
   });
 
   // Guard so a re-mount / strict-mode double-invoke can't double-run.
@@ -167,6 +180,7 @@ export function useTransactionFlow(
       failureReason: null,
       errorDetail: null,
       explorerUrl: null,
+      decodedPreview: null,
     });
   }, []);
 
@@ -207,8 +221,21 @@ export function useTransactionFlow(
       return;
     }
 
-    // ── 2. Awaiting signature ───────────────────────────────────────────────
-    setState((prev) => ({ ...prev, stage: "awaiting_signature" }));
+    // ── 2. Decode preview & Awaiting signature (#1829) ──────────────────────
+    let decodedPreview: DecodedInvocationSummary | null = null;
+    try {
+      decodedPreview = decodeInvocation(unsignedXdr, { knownArenaIds });
+    } catch {
+      decodedPreview = null;
+    }
+
+    if (enforceManifest && decodedPreview?.isBlocked) {
+      setState((prev) => ({ ...prev, decodedPreview }));
+      fail("user_rejected", decodedPreview.warnings.join(" ") || "Unknown contract blocked");
+      return;
+    }
+
+    setState((prev) => ({ ...prev, stage: "awaiting_signature", decodedPreview }));
 
     let signedXdr: string;
     try {
@@ -258,7 +285,7 @@ export function useTransactionFlow(
     }
     onSuccess?.(txHash);
     inFlightRef.current = false;
-  }, [builder, sign, submit, confirm, onSuccess, onFailure, network, timeoutMs, publicKey]);
+  }, [builder, sign, submit, confirm, onSuccess, onFailure, network, timeoutMs, publicKey, knownArenaIds, enforceManifest]);
 
   return { ...state, run, reset };
 }

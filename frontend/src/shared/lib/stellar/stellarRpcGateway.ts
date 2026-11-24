@@ -8,6 +8,7 @@ import {
   SimulationFailedError,
   parseContractError,
 } from "./contract-error";
+import { SorobanRpcPool } from "./sorobanRpcPool";
 
 export type SorobanRpcTransaction = Parameters<rpc.Server["simulateTransaction"]>[0];
 type SimulateTransactionResponse = Awaited<ReturnType<rpc.Server["simulateTransaction"]>>;
@@ -17,26 +18,45 @@ type GetTransactionResponse = Awaited<ReturnType<rpc.Server["getTransaction"]>>;
 export class StellarRpcGateway {
   private rpcServer: rpc.Server;
   private horizonServer: Horizon.Server;
+  private pool: SorobanRpcPool;
 
-  constructor() {
+  constructor(poolOrUrls?: SorobanRpcPool | string[] | string) {
+    if (poolOrUrls instanceof SorobanRpcPool) {
+      this.pool = poolOrUrls;
+    } else if (Array.isArray(poolOrUrls) && poolOrUrls.length > 0) {
+      this.pool = new SorobanRpcPool({ urls: poolOrUrls });
+    } else if (typeof poolOrUrls === "string") {
+      this.pool = new SorobanRpcPool({ urls: [poolOrUrls] });
+    } else {
+      const urls: string[] =
+        (stellarConfig as unknown as { sorobanRpcUrls?: string[] }).sorobanRpcUrls ??
+        [stellarConfig.sorobanRpcUrl];
+      const maxLedgerLag =
+        (stellarConfig as unknown as { sorobanMaxLedgerLag?: number }).sorobanMaxLedgerLag ?? 5;
+      this.pool = new SorobanRpcPool({ urls, maxLedgerLag });
+    }
     this.rpcServer = new ContractClientFactory(stellarConfig.sorobanRpcUrl).createRpcServer();
     this.horizonServer = new Horizon.Server(stellarConfig.horizonUrl);
+  }
+
+  getPool(): SorobanRpcPool {
+    return this.pool;
   }
 
   async simulateTransaction(
     transaction: SorobanRpcTransaction,
   ): Promise<SimulateTransactionResponse> {
-    return this.rpcServer.simulateTransaction(transaction);
+    return this.pool.simulateTransaction(transaction);
   }
 
   async sendTransaction(
     transaction: SorobanRpcTransaction,
   ): Promise<SendTransactionResponse> {
-    return this.rpcServer.sendTransaction(transaction);
+    return this.pool.sendTransaction(transaction);
   }
 
   async getTransaction(hash: string): Promise<GetTransactionResponse> {
-    return this.rpcServer.getTransaction(hash);
+    return this.pool.getTransaction(hash);
   }
 
   /**
@@ -44,7 +64,7 @@ export class StellarRpcGateway {
    * simulateTransaction when an entry is missing or does not decode.
    */
   async getLedgerEntries(keys: Parameters<rpc.Server["getLedgerEntries"]>[0][]) {
-    return this.rpcServer.getLedgerEntries(...keys);
+    return this.pool.getLedgerEntries(...keys);
   }
 
   /**
@@ -102,8 +122,7 @@ export class StellarRpcGateway {
   }
 
   async getLatestLedger(): Promise<number> {
-    const response = await this.rpcServer.getHealth();
-    return response.latestLedger;
+    return this.pool.getLatestLedger();
   }
 
   /**
@@ -113,8 +132,7 @@ export class StellarRpcGateway {
    * (#1490).
    */
   async getLatestLedgerIdentity(): Promise<{ sequence: number; id: string }> {
-    const response = await this.rpcServer.getLatestLedger();
-    return { sequence: response.sequence, id: response.id };
+    return this.pool.getLatestLedgerIdentity();
   }
 
   /**
@@ -126,6 +144,6 @@ export class StellarRpcGateway {
    * `onChainReader.toArenaProjectionEvent`).
    */
   async getEvents(request: rpc.Api.GetEventsRequest): Promise<rpc.Api.GetEventsResponse> {
-    return this.rpcServer.getEvents(request);
+    return this.pool.getEvents(request);
   }
 }

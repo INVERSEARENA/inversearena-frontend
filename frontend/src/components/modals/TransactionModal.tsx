@@ -1,8 +1,13 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { Modal } from "@/components/ui/Modal";
 import { parseStellarError } from "@/shared/lib/stellar/stellar-transactions";
+import {
+    decodeInvocation,
+    type DecodedInvocationSummary,
+} from "@/shared/lib/stellar/decodeInvocation";
+import { InvocationPreviewPanel } from "./InvocationPreviewPanel";
 
 export type TransactionState = "REVIEW" | "SIGNING" | "SUBMITTING" | "SUCCESS" | "ERROR";
 
@@ -39,6 +44,12 @@ interface TransactionModalProps {
     confirmLabel?: string;
     /** If provided, the modal shows a fee-sponsorship badge (#1413). */
     feeSponsorshipEligibility?: FeeSponsorshipEligibility | null;
+    /** Optional unsigned transaction XDR to decode and preview locally (#1829). */
+    unsignedXdr?: string;
+    /** Optional pre-decoded invocation summary (#1829). */
+    decodedPreview?: DecodedInvocationSummary | null;
+    /** Additional verified arena contract IDs for manifest checking (#1829). */
+    knownArenaIds?: string[];
 }
 
 export function TransactionModal({
@@ -50,9 +61,22 @@ export function TransactionModal({
     onConfirm,
     confirmLabel = "Approve Transaction",
     feeSponsorshipEligibility,
+    unsignedXdr,
+    decodedPreview,
+    knownArenaIds,
 }: TransactionModalProps) {
     const [state, setState] = useState<TransactionState>("REVIEW");
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+    const preview = useMemo(() => {
+        if (decodedPreview) return decodedPreview;
+        if (!unsignedXdr) return null;
+        try {
+            return decodeInvocation(unsignedXdr, { knownArenaIds });
+        } catch {
+            return null;
+        }
+    }, [decodedPreview, unsignedXdr, knownArenaIds]);
 
     // Reset state when modal opens
     useEffect(() => {
@@ -113,6 +137,9 @@ export function TransactionModal({
                             </div>
                         )}
 
+                        {/* ── Decoded Invocation Preview (#1829) ──────────────────── */}
+                        {preview && <InvocationPreviewPanel preview={preview} />}
+
                         <div className="space-y-4 mb-8">
                             {details.map((detail, index) => (
                                 <div key={index} className="flex justify-between items-center border-b border-white/10 pb-2">
@@ -135,9 +162,15 @@ export function TransactionModal({
                             </button>
                             <button
                                 onClick={handleConfirm}
-                                className="flex-1 bg-primary text-black border-2 border-black min-h-[44px] py-4 font-black uppercase tracking-widest hover:translate-y-[-2px] hover:shadow-[4px_4px_0px_0px_#fff] transition-all"
+                                disabled={Boolean(preview?.isBlocked)}
+                                aria-disabled={Boolean(preview?.isBlocked)}
+                                className={`flex-1 border-2 border-black min-h-[44px] py-4 font-black uppercase tracking-widest transition-all ${
+                                    preview?.isBlocked
+                                        ? "bg-slate-700 text-slate-400 cursor-not-allowed opacity-70"
+                                        : "bg-primary text-black hover:translate-y-[-2px] hover:shadow-[4px_4px_0px_0px_#fff]"
+                                }`}
                             >
-                                {confirmLabel}
+                                {preview?.isBlocked ? "Signing Blocked" : confirmLabel}
                             </button>
                         </div>
                     </>

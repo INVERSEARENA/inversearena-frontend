@@ -1,5 +1,6 @@
 #![no_std]
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+pub mod share_math;
 mod types;
 
 use soroban_sdk::{
@@ -302,27 +303,7 @@ impl StakingContract {
         let total_staked = Self::total_staked(env.clone());
         let total_shares = Self::total_shares(env.clone());
 
-        let shares = if total_staked == 0 || total_shares == 0 {
-            // Seeding an empty pool. A dust deposit here would let the seeder
-            // own the pool with a single share and round every later depositor
-            // down to nothing, so require a meaningful floor.
-            if amount < MIN_INITIAL_STAKE {
-                return Err(StakingError::BelowMinimumInitialStake);
-            }
-            amount
-        } else {
-            amount
-                .checked_mul(total_shares)
-                .and_then(|scaled| scaled.checked_div(total_staked))
-                .ok_or(StakingError::ArithmeticOverflow)?
-        };
-
-        // A deposit that mints no shares is a pure donation to the existing
-        // stakers — the victim side of the inflation attack. Reject it instead
-        // of silently confiscating the tokens. (#1010)
-        if shares == 0 {
-            return Err(StakingError::ZeroShares);
-        }
+        let shares = share_math::calculate_stake_shares(amount, total_staked, total_shares, MIN_INITIAL_STAKE)?;
 
         let new_total_staked = total_staked
             .checked_add(amount)
@@ -382,15 +363,7 @@ impl StakingContract {
         let total_staked = Self::total_staked(env.clone());
         let total_shares = Self::total_shares(env.clone());
 
-        // #1011: Prevent division by zero.
-        if total_shares == 0 {
-            return Err(StakingError::NoSharesOutstanding);
-        }
-
-        let tokens = shares
-            .checked_mul(total_staked)
-            .and_then(|scaled| scaled.checked_div(total_shares))
-            .ok_or(StakingError::ArithmeticOverflow)?;
+        let tokens = share_math::calculate_unstake_tokens(shares, total_staked, total_shares)?;
 
         // EFFECTS — update state before token transfer
         let new_staked = total_staked

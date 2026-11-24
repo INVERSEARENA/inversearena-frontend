@@ -70,6 +70,32 @@ make contracts-mutants      # see docs/MUTATION_TESTING.md
 Scheduled mutation testing (#1798) guards state-machine and settlement paths.
 See `docs/MUTATION_TESTING.md` for setup, triage, and thresholds.
 
+### Bounded Model Checking (Kani)
+
+Core elimination logic, staking share accounting, and payout arithmetic are verified exhaustively using Kani bounded model checking (#1845) under `#[cfg(kani)]`.
+
+Proofs cover:
+- **Elimination fairness**: `surviving_choice` leaves a strict minority (or no one on a tie), `is_eliminated` agrees with `surviving_choice`, and choice tally totals equal input lengths.
+- **Staking money conservation**: `calculate_stake_shares` and `calculate_unstake_tokens` round down against the caller and never mint value or dilute stakers.
+- **Payout conservation**: `calculate_payout_distribution` guarantees winner prize $principal + yield \le withdrawn$ from vault.
+
+#### Running Kani Proofs
+```bash
+# Prerequisites
+cargo install --locked kani-verifier
+cargo kani setup
+
+# Run model checking across harnesses
+cd contract
+cargo kani -p arena -p staking -p payout
+```
+
+#### Adding New Proofs
+1. Refactor pure logic out of `Env`-dependent functions into pure helper modules (`share_math.rs`, `payout_math.rs`, `eliminations.rs`).
+2. Add a verification submodule gated with `#[cfg(kani)]`.
+3. Mark harness functions with `#[kani::proof]`.
+4. Generate symbolic values with `kani::any()`, set input bounds with `kani::assume(...)`, and assert mathematical invariants with `assert!(...)`.
+
 ### ABI Snapshots
 
 ABI snapshots live at `<contract>/abi_snapshot.json` and are generated from compiled WASM artifacts.

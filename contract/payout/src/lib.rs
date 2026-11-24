@@ -1,5 +1,6 @@
 #![no_std]
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+pub mod payout_math;
 mod snapshot_tests;
 mod storage;
 mod types;

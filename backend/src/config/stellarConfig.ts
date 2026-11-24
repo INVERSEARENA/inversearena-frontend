@@ -5,7 +5,13 @@ const TESTNET_RPC_URL = "https://soroban-testnet.stellar.org";
 const TESTNET_PASSPHRASE = "Test SDF Network ; September 2015";
 
 const StellarEnvSchema = z.object({
-  SOROBAN_RPC_URL: z.string().url(),
+  SOROBAN_RPC_URL: z.string().url().optional(),
+  SOROBAN_RPC_URLS: z.string().optional(),
+  SOROBAN_MAX_LEDGER_LAG: z
+    .string()
+    .optional()
+    .transform((v) => Number(v ?? "5"))
+    .pipe(z.number().int().nonnegative()),
   STELLAR_NETWORK_PASSPHRASE: z.string().min(3),
   // On-chain transaction confirmation polling for resolveRound (#1193)
   ROUND_CONFIRM_POLL_MS: z
@@ -19,6 +25,29 @@ const StellarEnvSchema = z.object({
     .transform((v) => Number(v ?? "20"))
     .pipe(z.number().int().positive()),
 });
+
+export function parseSorobanRpcUrls(
+  urlsSpec: string | undefined,
+  singleUrl: string | undefined,
+  fallbackUrl?: string,
+): string[] {
+  const urlSchema = z.string().url();
+  const fromList = (urlsSpec ?? "")
+    .split(",")
+    .map((u) => u.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+
+  if (fromList.length > 0) {
+    return [...new Set(fromList.map((u) => urlSchema.parse(u)))];
+  }
+  if (singleUrl && singleUrl.trim() !== "") {
+    return [urlSchema.parse(singleUrl.trim().replace(/\/+$/, ""))];
+  }
+  if (fallbackUrl) {
+    return [urlSchema.parse(fallbackUrl.trim().replace(/\/+$/, ""))];
+  }
+  throw new Error("Either SOROBAN_RPC_URLS or SOROBAN_RPC_URL must be configured");
+}
 
 /** Outbound RPC allowlist + response cap (#1447). Empty allowlist = allow all. */
 export const RPC_MAX_RESPONSE_BYTES = Number(processEnv.RPC_MAX_RESPONSE_BYTES ?? 1_048_576);
@@ -82,6 +111,8 @@ export function parseAssetIssuers(spec: string | undefined): Record<string, stri
 
 export type StellarConfig = {
   sorobanRpcUrl: string;
+  sorobanRpcUrls: string[];
+  sorobanMaxLedgerLag: number;
   networkPassphrase: string;
   roundConfirmPollMs: number;
   roundConfirmMaxPolls: number;
@@ -97,6 +128,8 @@ export function getStellarConfig(
   const parsed = StellarEnvSchema.parse({
     SOROBAN_RPC_URL:
       env.SOROBAN_RPC_URL ?? (allowTestDefaults ? TESTNET_RPC_URL : undefined),
+    SOROBAN_RPC_URLS: env.SOROBAN_RPC_URLS,
+    SOROBAN_MAX_LEDGER_LAG: env.SOROBAN_MAX_LEDGER_LAG,
     STELLAR_NETWORK_PASSPHRASE:
       env.STELLAR_NETWORK_PASSPHRASE ??
       (allowTestDefaults ? TESTNET_PASSPHRASE : undefined),
@@ -104,8 +137,16 @@ export function getStellarConfig(
     ROUND_CONFIRM_MAX_POLLS: env.ROUND_CONFIRM_MAX_POLLS,
   });
 
+  const sorobanRpcUrls = parseSorobanRpcUrls(
+    parsed.SOROBAN_RPC_URLS,
+    parsed.SOROBAN_RPC_URL,
+    allowTestDefaults ? TESTNET_RPC_URL : undefined,
+  );
+
   return {
-    sorobanRpcUrl: parsed.SOROBAN_RPC_URL,
+    sorobanRpcUrl: sorobanRpcUrls[0],
+    sorobanRpcUrls,
+    sorobanMaxLedgerLag: parsed.SOROBAN_MAX_LEDGER_LAG,
     networkPassphrase: parsed.STELLAR_NETWORK_PASSPHRASE,
     roundConfirmPollMs: parsed.ROUND_CONFIRM_POLL_MS,
     roundConfirmMaxPolls: parsed.ROUND_CONFIRM_MAX_POLLS,
