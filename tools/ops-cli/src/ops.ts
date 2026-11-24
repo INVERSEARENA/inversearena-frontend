@@ -14,6 +14,7 @@ import {
   Address,
   BASE_FEE,
   Contract,
+  Operation,
   TransactionBuilder,
   contract,
   rpc,
@@ -77,6 +78,37 @@ export interface MutationReport {
   authorizers: string[];
   txHash?: string;
   ledger?: number;
+}
+
+export interface RestoreReport {
+  mode: "dry-run" | "submitted" | "not-needed" | "auto-restore";
+  network: string;
+  contract: string;
+  method: string;
+  source: string;
+  /** Ledger keys reported by simulation as needing (or receiving) restoration. */
+  archivedEntries: string[];
+  minResourceFee?: string;
+  txHash?: string;
+  ledger?: number;
+}
+
+function ledgerKeyLabel(key: xdr.LedgerKey): string {
+  return key.toXDR("base64");
+}
+
+function footprintKeys(data: xdr.SorobanTransactionData): string[] {
+  return data.resources().footprint().readWrite().map(ledgerKeyLabel);
+}
+
+/** Protocol 23 puts auto-restored keys in transaction data instead of a preamble. */
+function autoRestoredEntries(sim: rpc.Api.SimulateTransactionResponse): string[] {
+  const extra = sim as rpc.Api.SimulateTransactionSuccessResponse & {
+    archivedSorobanEntries?: string[] | xdr.LedgerKey[];
+  };
+  const entries = extra.archivedSorobanEntries;
+  if (!entries) return [];
+  return entries.map((entry) => (typeof entry === "string" ? entry : ledgerKeyLabel(entry)));
 }
 
 /** Map "Error(Contract, #N)" in a simulation error to the spec's error name. */
@@ -220,5 +252,82 @@ export class Ops {
       ledger: final.ledger,
       result: final.returnValue ? toJsonSafe(unwrapResult(spec.funcResToNative(method, final.returnValue))) : report.result,
     };
+  }
+
+  /**
+   * Simulate a call, identify archived footprint entries, and restore them with
+   * a standalone RestoreFootprint transaction. Dry-run unless `submit` is set.
+   */
+  async restoreArchived(
+    contractId: string,
+    kind: WasmKind,
+    method: string,
+    rawArgs: readonly string[] = [],
+  ): Promise<RestoreReport> {
+    const spec = await this.spec(contractId, kind);
+    const { signer, submit } = this.options;
+    if (submit && !signer) throw new ContractCallError("--submit needs a --signer");
+    const source = signer ? await signer.publicKey() : NULL_ACCOUNT;
+    const account = submit ? await this.options.server.getAccount(source) : new Account(source, "0");
+    const tx = this.build(account, contractId, method, encodeArgs(spec, method, rawArgs));
+    const sim = await this.options.server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(sim)) {
+      const decoded = decodeContractError(spec, sim.error);
+      const what = decoded ? `contract error ${decoded.name} (#${decoded.code})` : sim.error.split("\n")[0];
+      throw new ContractCallError(`${method} failed in simulation: ${what}`, decoded);
+    }
+
+    if (!rpc.Api.isSimulationRestore(sim)) {
+      const archivedEntries = autoRestoredEntries(sim);
+      return {
+        mode: archivedEntries.length > 0 ? "auto-restore" : "not-needed",
+        network: this.deployment.network,
+        contract: contractId,
+        method,
+        source,
+        archivedEntries,
+        minResourceFee: sim.minResourceFee,
+      };
+    }
+
+    const restoreData = sim.restorePreamble.transactionData.build();
+    const fee = (BigInt(BASE_FEE) + BigInt(sim.restorePreamble.minResourceFee)).toString();
+    const restoreTx = new TransactionBuilder(account, {
+      fee,
+      networkPassphrase: this.deployment.networkPassphrase,
+    })
+      .setSorobanData(restoreData)
+      .addOperation(Operation.restoreFootprint({}))
+      .setTimeout(60)
+      .build();
+
+    const report: RestoreReport = {
+      mode: "dry-run",
+      network: this.deployment.network,
+      contract: contractId,
+      method,
+      source,
+      archivedEntries: footprintKeys(restoreData),
+      minResourceFee: sim.restorePreamble.minResourceFee,
+    };
+    if (!submit) return report;
+
+    await confirmSubmit({
+      network: this.deployment.network,
+      action: `restore archived footprint for ${method} on ${contractId}`,
+      confirmFlag: this.options.confirmMainnet,
+      interactive: this.options.interactive,
+    });
+    await signer!.sign(restoreTx);
+    this.log(`Submitting RestoreFootprint signed by ${signer!.description}…`);
+    const sent = await this.options.server.sendTransaction(restoreTx);
+    if (sent.status === "ERROR" || sent.status === "TRY_AGAIN_LATER") {
+      throw new ContractCallError(`Submission rejected (${sent.status}) for ${sent.hash}`);
+    }
+    const final = await this.options.server.pollTransaction(sent.hash, { attempts: 30 });
+    if (final.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
+      throw new ContractCallError(`Transaction ${sent.hash} finished with status ${final.status}`);
+    }
+    return { ...report, mode: "submitted", txHash: sent.hash, ledger: final.ledger };
   }
 }

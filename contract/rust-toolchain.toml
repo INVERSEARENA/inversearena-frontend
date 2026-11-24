@@ -5,6 +5,6 @@
 # WASM files.  Changing this version changes every contract's output hash —
 # update the hash manifest in deployment-manifest.json and re-record expected
 # sha256 values in CI artifacts.
-channel = "1.82.0"
+channel = "1.96.0"
 targets = ["wasm32-unknown-unknown", "wasm32v1-none"]
 components = ["rustfmt", "clippy"]

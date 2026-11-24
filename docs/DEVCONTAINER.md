@@ -7,7 +7,7 @@ The repository includes a working `.devcontainer` for local development with pin
 - Node: `20.20.2`
 - npm: `10.9.9`
 - pnpm: `10.11.1`
-- Rust: `1.82.0`
+- Rust: `1.96.0`
 - Rust CI extra: `1.96.0`
 - Rust nightly: `nightly-2026-10-01`
 - Stellar CLI: `22.6.0`

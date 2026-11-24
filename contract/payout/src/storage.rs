@@ -15,9 +15,9 @@ pub trait TtlRepository<K> {
 
 /// Minimum ledgers remaining before we extend a persistent entry's TTL
 /// (~30 days at 5 s/ledger).
-const PERSISTENT_TTL_THRESHOLD: u32 = 518_400;
+pub(crate) const PERSISTENT_TTL_THRESHOLD: u32 = 518_400;
 /// Target TTL for persistent entries after extension (~1 year at 5 s/ledger).
-const PERSISTENT_TTL_TARGET: u32 = 6_307_200;
+pub(crate) const PERSISTENT_TTL_TARGET: u32 = 6_307_200;
 
 /// Storage keys.
 ///
@@ -123,10 +123,27 @@ pub struct PayoutStorage;
 
 impl PayoutStorage {
     pub fn load_storage_version(env: &Env) -> u32 {
+        let repo = PayoutRepository::new(env);
+        repo.extend_ttl(
+            &DataKey::StorageVersion,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_TARGET,
+        );
         env.storage().persistent().get(&DataKey::StorageVersion).unwrap_or(CURRENT_STORAGE_VERSION)
     }
     pub fn save_storage_version(env: &Env, v: u32) {
+        let repo = PayoutRepository::new(env);
+        repo.extend_ttl(
+            &DataKey::StorageVersion,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_TARGET,
+        );
         env.storage().persistent().set(&DataKey::StorageVersion, &v);
+        repo.extend_ttl(
+            &DataKey::StorageVersion,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_TARGET,
+        );
     }
     pub fn require_current_storage_version(env: &Env) -> Result<(), PayoutError> {
         if Self::load_storage_version(env) < CURRENT_STORAGE_VERSION { return Err(PayoutError::MigrationPending); }
@@ -140,6 +157,11 @@ impl PayoutStorage {
 
     pub fn has_admin(env: &Env) -> bool {
         let repo = PayoutRepository::new(env);
+        repo.extend_ttl(
+            &DataKey::Admin,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_TARGET,
+        );
         StorageRepository::<DataKey, Address>::has(&repo, &DataKey::Admin)
     }
 
@@ -289,6 +311,12 @@ impl PayoutStorage {
     }
 
     pub fn get_pending_cap(env: &Env) -> Option<PendingCap> {
+        let repo = PayoutRepository::new(env);
+        repo.extend_ttl(
+            &DataKey::PendingCap,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_TARGET,
+        );
         env.storage().persistent().get(&DataKey::PendingCap)
     }
 

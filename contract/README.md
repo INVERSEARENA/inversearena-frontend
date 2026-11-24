@@ -38,7 +38,7 @@ contract/
 
 ### Prerequisites
 
-- Rust 1.82.0 (pinned by `rust-toolchain.toml` / `contract/rust-toolchain.toml`) with `wasm32-unknown-unknown` and `wasm32v1-none` targets
+- Rust 1.96.0 (pinned by `rust-toolchain.toml` / `contract/rust-toolchain.toml`) with `wasm32-unknown-unknown` and `wasm32v1-none` targets
 - Stellar CLI 22.6.0: `cargo install --locked stellar-cli@22.6.0`
 - Node 20.20.2 for script-based checks
 

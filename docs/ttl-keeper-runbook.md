@@ -29,6 +29,8 @@ before using them, so older instances are skipped rather than probed.
 | `backend/src/services/ttlKeeperPlan.ts` | pure planner: identity + threshold + bounds |
 | `backend/src/services/ttlKeeperService.ts` | orchestration: statuses, metrics, execution |
 | `backend/src/scripts/ttlKeeperPlan.ts` | dry-run CLI (`npm run ttl:plan`) |
+| `tools/ops-cli/src/commands/restore.ts` | operator CLI `inverse-ops restore archived` |
+| `contract/scripts/restore-archived.sh` | shell wrapper for the operator CLI restore command |
 
 ## Renewal rules
 
@@ -63,6 +65,38 @@ a contract it merely discovered on the network. A malformed manifest (bad
 contract id, non-positive version, duplicate id) aborts the run rather than
 silently dropping a target.
 
+## Restoring archived entries
+
+The keeper can only extend entries that are still live. Once `liveUntilLedgerSeq`
+has passed, use the restore path instead:
+
+```bash
+contract/scripts/restore-archived.sh \
+  C... get_option_count \
+  --kind arena \
+  --rpc-url https://soroban-testnet.stellar.org \
+  --signer env:INVERSE_OPS_SIGNER \
+  --submit
+```
+
+The first positional argument is the contract: a manifest kind (`factory`,
+`oracle`, `vault`, `staking`, `payout`), `arena:<id>`, or a raw `C...` id with
+`--kind`. The second is the method; any remaining positional values are method
+arguments.
+
+Omit `--submit` for a dry run. The command simulates the named contract method,
+inspects `restorePreamble` and `archivedSorobanEntries`, and reports the exact
+entries that need restoration. With `--submit` it builds a single
+`RestoreFootprint` transaction from the simulation's transaction data and
+submits it. Protocol 23+ usually auto-restores archived entries in the invoked
+transaction; this manual path is for the fallback cases and for operators who
+want to pay restoration fees up front.
+
+The shell wrapper requires `pnpm` from the repository root and passes all
+arguments to `inverse-ops restore archived`. It does not embed a secret; the
+signer is resolved by the existing `env:` / `file:` / `ledger:` rules in
+`tools/ops-cli/src/signer.ts`.
+
 ## Dry-run
 
 ```bash
@@ -90,14 +124,41 @@ confirmation-lag alerts are the "the fix isn't working" signal.
 - **`identity_uncertain` / `*_mismatch` spikes** — the manifest version or
   network no longer matches the deployment (e.g. after a contract upgrade).
   Update `TTL_KEEPER_MANIFESTS` for that instance.
-- **`expired` keys** — an entry already lapsed. Restore it via a Soroban
-  `RestoreFootprint` / re-initialisation path; TTL renewal cannot recover it.
+- **`expired` keys** — an entry already lapsed. Run
+  `contract/scripts/restore-archived.sh` (or `inverse-ops restore archived`) and
+  re-check `ttl:plan`; TTL renewal cannot recover an archived entry.
 - **`failed` renewals** — check RPC health and that the keeper's admin key
   still holds authority on the contract (a lost admin key surfaces here as
   every renewal failing).
 - **`unreadable` (`headroom = -1`)** — `getLedgerEntries` failed for that key;
   usually a transient RPC issue, but persistent `-1` on a key that should exist
   means the entry may already be gone.
+
+## Operating cost of TTL bumps
+
+A TTL bump is a Soroban ledger-entry write, so it consumes write bytes and an
+entry slot in the transaction footprint. The contracts call `extend_ttl` only
+when an entry is below the 518,400-ledger threshold; the host does not charge a
+write when the entry is already above it. A typical arena lifecycle therefore
+has two cost regimes:
+
+| Phase | Cost |
+| --- | --- |
+| Active arena (entries refreshed by normal calls) | No incremental ledger writes; only the host call overhead of checking TTL |
+| Arena idle for more than ~30 days | The first read or write of each fund-bearing key pays one restore-to-one-year write; subsequent calls in that window are back to no incremental writes |
+| Archived entry (past its live TTL) | Cannot be bumped; requires a separate `RestoreFootprint` transaction via the restore tooling |
+
+At the maximum arena size (100 players), the fund-bearing footprint is bounded
+by the current roster, resolution pages, leaderboard accumulator and the arena
+configuration/instance entries; per-player temporary commitment and choice keys
+are not kept alive after the round. `contract/scripts/cost-bench.mjs` compares
+the compiled-WASM measurements for `join_arena`, `submit_commitment`,
+`reveal_choice`, `resolve_round`, `claim` and `claim_refund` at 10/50/100 players
+against [`contract/cost-baseline.json`](../contract/cost-baseline.json). Review
+that summary when changing TTL logic: a new key in a fund-moving footprint must
+be justified by a baseline diff, and every benchmark must remain within the
+network limits documented in
+[`contract/docs/COST_BENCHMARKS.md`](../contract/docs/COST_BENCHMARKS.md).
 
 ## Scheduling
 

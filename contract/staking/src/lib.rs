@@ -26,8 +26,8 @@ const REWARD_DURATION_KEY: soroban_sdk::Symbol = symbol_short!("RWDUR");
 const DEFAULT_REWARD_DURATION: u64 = 7 * 24 * 60 * 60;
 
 // TTL thresholds matching the arena contract pattern.
-const PERSISTENT_TTL_THRESHOLD: u32 = 100;
-const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
+const PERSISTENT_TTL_THRESHOLD: u32 = 518_400;
+const PERSISTENT_TTL_EXTEND_TO: u32 = 6_307_200;
 
 /// Staking contract ABI/storage version, for client-side capability
 /// negotiation across mixed deployment versions.
@@ -88,10 +88,12 @@ pub struct StakingContract;
 /// Matches the pattern used by the arena contract.
 
 fn load_storage_version(env: &Env) -> u32 {
+    extend_persistent_ttl(env, &DataKey::StorageVersion);
     env.storage().persistent().get(&DataKey::StorageVersion).unwrap_or(CURRENT_STORAGE_VERSION)
 }
 fn save_storage_version(env: &Env, v: u32) {
     env.storage().persistent().set(&DataKey::StorageVersion, &v);
+    extend_persistent_ttl(&env, &DataKey::StorageVersion);
 }
 fn require_current_storage_version(env: &Env) -> Result<(), StakingError> {
     if load_storage_version(env) < CURRENT_STORAGE_VERSION { return Err(StakingError::MigrationPending); }
@@ -121,8 +123,10 @@ impl StakingContract {
 
         // #1009: Use persistent storage instead of instance storage.
         env.storage().persistent().set(&ADMIN_KEY, &admin);
+        extend_persistent_ttl(&env, &ADMIN_KEY);
         save_storage_version(&env, CURRENT_STORAGE_VERSION);
         env.storage().persistent().set(&TOKEN_KEY, &token);
+        extend_persistent_ttl(&env, &TOKEN_KEY);
         env.storage().persistent().set(&TOTALS_KEY, &Totals {
             staked: 0,
             shares: 0,
@@ -130,18 +134,40 @@ impl StakingContract {
             period_finish: 0,
             last_update: env.ledger().timestamp(),
         });
+        extend_persistent_ttl(&env, &TOTALS_KEY);
         #[cfg(test)]
         {
             // Keep fixture-level access to the pre-#1623 keys while tests
             // exercise deployed-instance migration behaviour.
             env.storage().persistent().set(&TSTAKE_KEY, &0i128);
+            extend_persistent_ttl(&env, &TSTAKE_KEY);
             env.storage().persistent().set(&TSHARES_KEY, &0i128);
+            extend_persistent_ttl(&env, &TSHARES_KEY);
             env.storage().persistent().set(&REWARD_RATE_KEY, &0i128);
+            extend_persistent_ttl(&env, &REWARD_RATE_KEY);
             env.storage().persistent().set(&PERIOD_FINISH_KEY, &0u64);
+            extend_persistent_ttl(&env, &PERIOD_FINISH_KEY);
             env.storage().persistent().set(&LAST_UPDATE_KEY, &env.ledger().timestamp());
+            extend_persistent_ttl(&env, &LAST_UPDATE_KEY);
         }
         env.storage().persistent().set(&PAUSED_KEY, &false);
+        extend_persistent_ttl(&env, &PAUSED_KEY);
         env.storage().persistent().set(&REWARD_DURATION_KEY, &DEFAULT_REWARD_DURATION);
+        extend_persistent_ttl(&env, &REWARD_DURATION_KEY);
+        for key in Self::critical_global_keys(&env).iter() {
+            extend_persistent_ttl(&env, &key);
+        }
+        extend_persistent_ttl(&env, &DataKey::StorageVersion);
+        #[cfg(test)]
+        for key in [
+            TSTAKE_KEY,
+            TSHARES_KEY,
+            REWARD_RATE_KEY,
+            PERIOD_FINISH_KEY,
+            LAST_UPDATE_KEY,
+        ] {
+            extend_persistent_ttl(&env, &key);
+        }
 
         // #1012: Emit initialization event.
         env.events()
@@ -157,6 +183,7 @@ impl StakingContract {
     pub fn storage_version(env: Env) -> u32 { load_storage_version(&env) }
     pub fn migrate(env: Env, caller: Address, _max_steps: u32) -> Result<u32, StakingError> {
         caller.require_auth();
+        extend_persistent_ttl(&env, &ADMIN_KEY);
         let admin: Address = env.storage().persistent().get(&ADMIN_KEY).ok_or(StakingError::NotInitialized)?;
         if caller != admin { return Err(StakingError::Unauthorized); }
         save_storage_version(&env, CURRENT_STORAGE_VERSION); Ok(CURRENT_STORAGE_VERSION)
@@ -182,6 +209,7 @@ impl StakingContract {
         require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         env.storage().persistent().set(&PAUSED_KEY, &true);
+        extend_persistent_ttl(&env, &PAUSED_KEY);
         env.events().publish((symbol_short!("PAUSED"),), ());
         Ok(())
     }
@@ -190,6 +218,7 @@ impl StakingContract {
         require_current_storage_version(&env)?;
         Self::require_admin(&env)?;
         env.storage().persistent().set(&PAUSED_KEY, &false);
+        extend_persistent_ttl(&env, &PAUSED_KEY);
         env.events().publish((symbol_short!("UNPAUS"),), ());
         Ok(())
     }
@@ -202,10 +231,10 @@ impl StakingContract {
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), StakingError> {
         require_current_storage_version(&env)?;
         let admin = Self::require_admin(&env)?;
-        extend_persistent_ttl(&env, &PENDING_ADMIN_KEY);
         env.storage()
             .persistent()
             .set(&PENDING_ADMIN_KEY, &new_admin);
+        extend_persistent_ttl(&env, &PENDING_ADMIN_KEY);
         env.events()
             .publish((symbol_short!("ADM_PROP"),), (admin, new_admin));
         Ok(())
@@ -224,6 +253,7 @@ impl StakingContract {
         env.storage()
             .persistent()
             .set(&ADMIN_KEY, &pending_admin);
+        extend_persistent_ttl(&env, &ADMIN_KEY);
         env.storage()
             .persistent()
             .remove(&PENDING_ADMIN_KEY);
@@ -330,6 +360,7 @@ impl StakingContract {
         env.storage()
             .persistent()
             .set(&DataKey::Position(staker.clone()), &position);
+        extend_persistent_ttl(&env, &DataKey::Position(staker.clone()));
 
         // INTERACTIONS — transfer tokens in
         let token_addr = Self::token(env.clone());
@@ -389,6 +420,7 @@ impl StakingContract {
         env.storage()
             .persistent()
             .set(&DataKey::Position(staker.clone()), &new_position);
+        extend_persistent_ttl(&env, &DataKey::Position(staker.clone()));
 
         // INTERACTIONS — transfer tokens out
         let token_addr = Self::token(env.clone());
@@ -429,6 +461,7 @@ impl StakingContract {
         let now = env.ledger().timestamp();
         let totals = Self::load_totals(&env);
         let finish = totals.period_finish;
+        extend_persistent_ttl(&env, &REWARD_DURATION_KEY);
         let duration: u64 = env.storage().persistent().get(&REWARD_DURATION_KEY).unwrap_or(DEFAULT_REWARD_DURATION);
         let previous_rate = totals.reward_rate;
         let remainder = if now < finish {
@@ -460,6 +493,7 @@ impl StakingContract {
     }
 
     pub fn reward_duration(env: Env) -> u64 {
+        extend_persistent_ttl(&env, &REWARD_DURATION_KEY);
         env.storage().persistent().get(&REWARD_DURATION_KEY).unwrap_or(DEFAULT_REWARD_DURATION)
     }
 
@@ -468,6 +502,7 @@ impl StakingContract {
         if duration == 0 || duration > 365 * 24 * 60 * 60 { return Err(StakingError::InvalidAmount); }
         Self::accrue_rewards(&env)?;
         env.storage().persistent().set(&REWARD_DURATION_KEY, &duration);
+        extend_persistent_ttl(&env, &REWARD_DURATION_KEY);
         env.events().publish((symbol_short!("RWDUR"),), duration);
         Ok(())
     }
@@ -506,8 +541,7 @@ impl StakingContract {
         )
     }
 
-    /// Read-only inventory of the contract's critical global storage keys
-    /// (#1516).
+    /// Inventory of the contract's critical global storage keys (#1516).
     ///
     /// Returns one row per critical key with its presence flag. Callable by
     /// anyone: it exposes only the contract's own aggregate/admin key
@@ -517,6 +551,7 @@ impl StakingContract {
     pub fn storage_inventory(env: Env) -> Vec<StorageKeyInfo> {
         let mut out = Vec::new(&env);
         for key in Self::critical_global_keys(&env).iter() {
+            extend_persistent_ttl(&env, &key);
             let present = env.storage().persistent().has(&key);
             out.push_back(StorageKeyInfo { key, present });
         }
@@ -567,6 +602,7 @@ impl StakingContract {
     }
 
     fn require_initialized(env: &Env) -> Result<(), StakingError> {
+        extend_persistent_ttl(env, &ADMIN_KEY);
         if !env.storage().persistent().has(&ADMIN_KEY) {
             return Err(StakingError::NotInitialized);
         }
@@ -592,6 +628,11 @@ impl StakingContract {
         extend_persistent_ttl(env, &TOTALS_KEY);
         #[cfg(test)]
         if env.storage().persistent().has(&TSTAKE_KEY) {
+            extend_persistent_ttl(env, &TSTAKE_KEY);
+            extend_persistent_ttl(env, &TSHARES_KEY);
+            extend_persistent_ttl(env, &REWARD_RATE_KEY);
+            extend_persistent_ttl(env, &PERIOD_FINISH_KEY);
+            extend_persistent_ttl(env, &LAST_UPDATE_KEY);
             return Totals {
                 staked: env.storage().persistent().get(&TSTAKE_KEY).unwrap_or(0),
                 shares: env.storage().persistent().get(&TSHARES_KEY).unwrap_or(0),
@@ -604,6 +645,9 @@ impl StakingContract {
             return totals;
         }
         // Lazy migration for instances deployed before #1623.
+        for key in [TSTAKE_KEY, TSHARES_KEY, REWARD_RATE_KEY, PERIOD_FINISH_KEY, LAST_UPDATE_KEY] {
+            extend_persistent_ttl(env, &key);
+        }
         let totals = Totals {
             staked: env.storage().persistent().get(&TSTAKE_KEY).unwrap_or(0),
             shares: env.storage().persistent().get(&TSHARES_KEY).unwrap_or(0),
@@ -612,19 +656,29 @@ impl StakingContract {
             last_update: env.storage().persistent().get(&LAST_UPDATE_KEY).unwrap_or(env.ledger().timestamp()),
         };
         env.storage().persistent().set(&TOTALS_KEY, &totals);
+        extend_persistent_ttl(&env, &TOTALS_KEY);
         totals
     }
 
     fn save_totals(env: &Env, totals: &Totals) {
         extend_persistent_ttl(env, &TOTALS_KEY);
         env.storage().persistent().set(&TOTALS_KEY, totals);
+        extend_persistent_ttl(&env, &TOTALS_KEY);
         #[cfg(test)]
         {
             env.storage().persistent().set(&TSTAKE_KEY, &totals.staked);
+            extend_persistent_ttl(&env, &TSTAKE_KEY);
             env.storage().persistent().set(&TSHARES_KEY, &totals.shares);
+            extend_persistent_ttl(&env, &TSHARES_KEY);
             env.storage().persistent().set(&REWARD_RATE_KEY, &totals.reward_rate);
+            extend_persistent_ttl(&env, &REWARD_RATE_KEY);
             env.storage().persistent().set(&PERIOD_FINISH_KEY, &totals.period_finish);
+            extend_persistent_ttl(&env, &PERIOD_FINISH_KEY);
             env.storage().persistent().set(&LAST_UPDATE_KEY, &totals.last_update);
+            extend_persistent_ttl(&env, &LAST_UPDATE_KEY);
+            for key in [TSTAKE_KEY, TSHARES_KEY, REWARD_RATE_KEY, PERIOD_FINISH_KEY, LAST_UPDATE_KEY] {
+                extend_persistent_ttl(env, &key);
+            }
         }
     }
 }
@@ -632,5 +686,3 @@ impl StakingContract {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod test;
-        let staker = Address::generate(env);
-        soroban_sdk::token::StellarAssetClient::new(env, token).mint(&staker, &amount);

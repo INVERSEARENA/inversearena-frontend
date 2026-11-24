@@ -45,6 +45,14 @@ const success = {
   result: { auth: [], retval: xdr.ScVal.scvVoid() },
 };
 
+const restoreNeeded = {
+  ...success,
+  restorePreamble: {
+    minResourceFee: "54321",
+    transactionData: new SorobanDataBuilder(),
+  },
+};
+
 function ops(server: object, extra: Partial<ConstructorParameters<typeof Ops>[0]> = {}) {
   const instance = new Ops({
     deployment: deployment(),
@@ -104,4 +112,43 @@ test("a contract error in simulation is named from the spec", async () => {
 test("decodeContractError falls back to the code for an unknown case", () => {
   assert.deepEqual(decodeContractError(ARENA_LIKE_SPEC, "Error(Contract, #99)"), { code: 99, name: "#99" });
   assert.equal(decodeContractError(ARENA_LIKE_SPEC, "Error(Budget, ExceededLimit)"), undefined);
+});
+
+test("restoreArchived dry-run reports the restore preamble without sending", async () => {
+  const server = fakeServer(restoreNeeded);
+  const report = await ops(server, { signer }).restoreArchived(CONTRACT, "arena", "resolve_round");
+  assert.equal(report.mode, "dry-run");
+  assert.equal(report.minResourceFee, "54321");
+  assert.deepEqual(report.archivedEntries, []);
+  assert.deepEqual(server.calls, ["simulate"]);
+});
+
+test("restoreArchived --submit signs, sends and waits", async () => {
+  const server = fakeServer(restoreNeeded);
+  const report = await ops(server, { signer, submit: true }).restoreArchived(CONTRACT, "arena", "resolve_round");
+  assert.equal(report.mode, "submitted");
+  assert.equal(report.txHash, "ab".repeat(32));
+  assert.deepEqual(server.calls, ["getAccount", "simulate", "send", "poll"]);
+});
+
+test("restoreArchived reports no work when simulation needs no restore", async () => {
+  const server = fakeServer(success);
+  const report = await ops(server, { signer }).restoreArchived(CONTRACT, "arena", "resolve_round");
+  assert.equal(report.mode, "not-needed");
+  assert.deepEqual(report.archivedEntries, []);
+  assert.deepEqual(server.calls, ["simulate"]);
+});
+
+test("restoreArchived reports Protocol 23 auto-restored entries", async () => {
+  const server = fakeServer({ ...success, archivedSorobanEntries: ["entry-xdr"] });
+  const report = await ops(server, { signer }).restoreArchived(CONTRACT, "arena", "resolve_round");
+  assert.equal(report.mode, "auto-restore");
+  assert.deepEqual(report.archivedEntries, ["entry-xdr"]);
+});
+
+test("restoreArchived on mainnet without confirmation never sends", async () => {
+  const server = fakeServer(restoreNeeded);
+  const mainnet = ops(server, { signer, submit: true, deployment: deployment("mainnet") });
+  await assert.rejects(mainnet.restoreArchived(CONTRACT, "arena", "resolve_round"), /MAINNET/);
+  assert.ok(!server.calls.includes("send"));
 });

@@ -7,11 +7,11 @@ that power InverseArena.
 
 Use the pinned toolchain for reproducible builds:
 
-- **Rust 1.82.0** (`rust-toolchain.toml` / `contract/rust-toolchain.toml`)
+- **Rust 1.96.0** (`rust-toolchain.toml` / `contract/rust-toolchain.toml`)
   ```bash
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  rustup toolchain install 1.82.0
-  rustup target add wasm32-unknown-unknown wasm32v1-none --toolchain 1.82.0
+  rustup toolchain install 1.96.0
+  rustup target add wasm32-unknown-unknown wasm32v1-none --toolchain 1.96.0
   ```
 - **Stellar CLI 22.6.0**
   ```bash

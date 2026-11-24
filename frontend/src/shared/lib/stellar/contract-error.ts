@@ -27,6 +27,8 @@ export enum ContractErrorCode {
   ACCOUNT_NOT_FOUND = "ACCOUNT_NOT_FOUND",
   /** Soroban simulation returned an error */
   SIMULATION_FAILED = "SIMULATION_FAILED",
+  /** Archived persistent/instance state must be restored before the call */
+  ARCHIVED_STATE = "ARCHIVED_STATE",
   /** Transaction was rejected by the network */
   TRANSACTION_FAILED = "TRANSACTION_FAILED",
   /** Transaction timed out waiting for confirmation */
@@ -51,6 +53,8 @@ const DEFAULT_MESSAGES: Record<ContractErrorCode, string> = {
     "Account not found on network. Please fund it first.",
   [ContractErrorCode.SIMULATION_FAILED]:
     "Contract simulation failed. The transaction may not be valid.",
+  [ContractErrorCode.ARCHIVED_STATE]:
+    "Contract state needs restoring. Please try again; the required restore will be applied automatically.",
   [ContractErrorCode.TRANSACTION_FAILED]:
     "Transaction was rejected by the network.",
   [ContractErrorCode.TRANSACTION_TIMEOUT]:
@@ -90,6 +94,27 @@ export class SimulationFailedError extends Error {
     super(simulation.error);
     this.name = "SimulationFailedError";
   }
+}
+
+/**
+ * Detect Soroban responses that require restoring archived ledger entries.
+ * Pre-protocol-23 RPC returns `restorePreamble`; newer RPCs put the entries in
+ * `archivedSorobanEntries` and auto-restore them during invocation.
+ */
+export function isArchivedStateError(error: unknown): boolean {
+  if (typeof error === "object" && error !== null) {
+    const obj = error as Record<string, unknown>;
+    if ("restorePreamble" in obj && obj.restorePreamble) return true;
+    if (
+      "archivedSorobanEntries" in obj &&
+      Array.isArray(obj.archivedSorobanEntries) &&
+      obj.archivedSorobanEntries.length > 0
+    ) {
+      return true;
+    }
+  }
+  const msg = extractMessage(error);
+  return /ENTRY_ARCHIVED|EntryArchived|archived|restorePreamble/i.test(msg);
 }
 
 // ── ContractError class ──────────────────────────────────────────────
@@ -156,6 +181,15 @@ export function parseContractError(
   }
 
   const msg = extractMessage(error);
+
+  // ── Archived ledger state ────────────────────────────────────────
+  if (isArchivedStateError(error)) {
+    return new ContractError({
+      code: ContractErrorCode.ARCHIVED_STATE,
+      fn,
+      cause: error,
+    });
+  }
 
   // ── Soroban simulation errors ────────────────────────────────────
   if (isSimulationError(error) || msg.includes("simulation")) {

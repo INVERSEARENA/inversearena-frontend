@@ -563,11 +563,6 @@ pub enum ArenaError {
     /// older than `CURRENT_STORAGE_VERSION` and requires explicit migration.
     MigrationPending = 48,
 
-    /// Returned by the one-shot `resolve_round` while a paged resolution
-    /// (#1639) is in progress. Mixing the two would double-apply the round:
-    /// drive the existing resolution to completion first.
-    ResolutionInProgress = 48,
-
     /// Returned by `claim_refund` while the arena's principal is still held by
     /// the yield vault because a cancellation-time withdrawal failed (#1631).
     /// The arena cannot pay refunds from its own balance until `retry_withdraw`

@@ -7,7 +7,7 @@
       "NODE_VERSION": "20.20.2",
       "NPM_VERSION": "10.9.9",
       "PNPM_VERSION": "10.11.1",
-      "RUST_VERSION": "1.82.0",
+      "RUST_VERSION": "1.96.0",
       "RUST_CI_VERSION": "1.96.0",
       "RUST_NIGHTLY_VERSION": "nightly-2026-10-01",
       "STELLAR_CLI_VERSION": "22.6.0",

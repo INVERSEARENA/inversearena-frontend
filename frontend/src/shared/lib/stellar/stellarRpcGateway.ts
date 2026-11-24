@@ -6,6 +6,7 @@ import {
   ContractError,
   ContractErrorCode,
   SimulationFailedError,
+  isArchivedStateError,
   parseContractError,
 } from "./contract-error";
 import { SorobanRpcPool } from "./sorobanRpcPool";
@@ -74,6 +75,13 @@ export class StellarRpcGateway {
    */
   async prepareTransaction(transaction: SorobanRpcTransaction) {
     const simulation = await this.simulateTransaction(transaction);
+    if (rpc.Api.isSimulationRestore(simulation) || isArchivedStateError(simulation)) {
+      throw new ContractError({
+        code: ContractErrorCode.ARCHIVED_STATE,
+        fn: "prepareTransaction",
+        cause: simulation,
+      });
+    }
     if (rpc.Api.isSimulationError(simulation)) {
       throw new SimulationFailedError(simulation);
     }

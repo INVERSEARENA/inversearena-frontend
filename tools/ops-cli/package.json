@@ -17,7 +17,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/cli.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test test/encode.test.ts test/events.test.ts test/manifest.test.ts test/ops.test.ts test/safety.test.ts test/signer.test.ts test/smoke.test.ts",
+    "test": "tsx --test test/encode.test.ts test/events.test.ts test/manifest.test.ts test/ops.test.ts test/restore.test.ts test/safety.test.ts test/signer.test.ts test/smoke.test.ts",
     "test:smoke": "pnpm run build && INVERSE_OPS_SMOKE=1 tsx --test test/smoke.test.ts"
   },
   "dependencies": {

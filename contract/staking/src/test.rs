@@ -513,14 +513,15 @@ fn admin_ttl(env: &Env, contract: &Address) -> u32 {
 #[test]
 fn renew_storage_extends_when_below_threshold_and_is_idempotent() {
     let (env, client, _admin, _token, _staker) = setup();
-    let initial = admin_ttl(&env, &client.address);
-    assert!(
-        initial > PERSISTENT_TTL_THRESHOLD,
-        "test env default TTL should exceed the threshold",
-    );
-    env.ledger().set_sequence_number(
-        env.ledger().sequence() + (initial - PERSISTENT_TTL_THRESHOLD + 1),
-    );
+    env.as_contract(&client.address, || {
+        env.storage().instance().extend_ttl(
+            PERSISTENT_TTL_THRESHOLD - 1,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
+    });
+    env.ledger().with_mut(|li| {
+        li.sequence_number += PERSISTENT_TTL_EXTEND_TO - PERSISTENT_TTL_THRESHOLD + 1;
+    });
     let before = admin_ttl(&env, &client.address);
     assert!(before < PERSISTENT_TTL_THRESHOLD);
     client.renew_storage();
@@ -531,6 +532,33 @@ fn renew_storage_extends_when_below_threshold_and_is_idempotent() {
     );
     client.renew_storage();
     assert_eq!(admin_ttl(&env, &client.address), after);
+}
+
+#[test]
+fn persistent_keys_are_extended_on_read_and_write() {
+    let (env, client, _admin, _token, staker) = setup();
+    client.stake(&staker, &100);
+
+    let position_ttl = env.as_contract(&client.address, || {
+        env.storage().persistent().get_ttl(&DataKey::Position(staker.clone()))
+    });
+    assert!(position_ttl >= PERSISTENT_TTL_EXTEND_TO);
+
+    env.as_contract(&client.address, || {
+        env.storage().instance().extend_ttl(
+            PERSISTENT_TTL_THRESHOLD - 1,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
+    });
+    env.ledger().with_mut(|li| {
+        li.sequence_number += PERSISTENT_TTL_EXTEND_TO - PERSISTENT_TTL_THRESHOLD + 1;
+    });
+    let before = admin_ttl(&env, &client.address);
+    assert!(before < PERSISTENT_TTL_THRESHOLD);
+
+    client.admin();
+    let after = admin_ttl(&env, &client.address);
+    assert!(after >= PERSISTENT_TTL_EXTEND_TO);
 }
 
 #[test]

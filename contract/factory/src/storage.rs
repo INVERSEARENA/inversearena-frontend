@@ -5,8 +5,8 @@ use crate::types::{
 };
 use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, Vec, contracttype};
 
-const PERSISTENT_TTL_THRESHOLD: u32 = 100;
-const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
+pub(crate) const PERSISTENT_TTL_THRESHOLD: u32 = 518_400;
+pub(crate) const PERSISTENT_TTL_EXTEND_TO: u32 = 6_307_200;
 
 #[contracttype]
 pub enum DataKey {
@@ -70,9 +70,14 @@ pub struct FactoryStorage;
 
 impl FactoryStorage {
     pub fn load_storage_version(env: &Env) -> u32 {
+        Self::extend_persistent_ttl(env, &DataKey::StorageVersion);
         env.storage().persistent().get(&DataKey::StorageVersion).unwrap_or(CURRENT_STORAGE_VERSION)
     }
-    pub fn save_storage_version(env: &Env, v: u32) { env.storage().persistent().set(&DataKey::StorageVersion, &v); }
+    pub fn save_storage_version(env: &Env, v: u32) {
+        Self::extend_persistent_ttl(env, &DataKey::StorageVersion);
+        env.storage().persistent().set(&DataKey::StorageVersion, &v);
+        Self::extend_persistent_ttl(env, &DataKey::StorageVersion);
+    }
     pub fn require_current_storage_version(env: &Env) -> Result<(), FactoryError> {
         if Self::load_storage_version(env) < CURRENT_STORAGE_VERSION { return Err(FactoryError::MigrationPending); }
         Ok(())
@@ -104,6 +109,7 @@ impl FactoryStorage {
     pub fn save_admin(env: &Env, admin: &Address) {
         Self::extend_persistent_ttl(env, &DataKey::Admin);
         env.storage().persistent().set(&DataKey::Admin, admin);
+        Self::extend_persistent_ttl(env, &DataKey::Admin);
     }
 
     pub fn load_admin(env: &Env) -> Result<Address, FactoryError> {
@@ -119,6 +125,7 @@ impl FactoryStorage {
         env.storage()
             .persistent()
             .set(&DataKey::PendingAdmin, admin);
+        Self::extend_persistent_ttl(env, &DataKey::PendingAdmin);
     }
 
     pub fn load_pending_admin(env: &Env) -> Option<Address> {
@@ -137,6 +144,7 @@ impl FactoryStorage {
         env.storage()
             .persistent()
             .set(&DataKey::MinStake, &min_stake);
+        Self::extend_persistent_ttl(env, &DataKey::MinStake);
     }
 
     pub fn load_min_stake(env: &Env) -> Result<i128, FactoryError> {
@@ -152,6 +160,7 @@ impl FactoryStorage {
         env.storage()
             .persistent()
             .set(&DataKey::Whitelisted(host.clone()), &whitelisted);
+        Self::extend_persistent_ttl(env, &DataKey::Whitelisted(host.clone()));
     }
 
     pub fn is_whitelisted(env: &Env, host: &Address) -> bool {
@@ -167,6 +176,7 @@ impl FactoryStorage {
         env.storage()
             .persistent()
             .set(&DataKey::ArenaWasmHash, wasm_hash);
+        Self::extend_persistent_ttl(env, &DataKey::ArenaWasmHash);
     }
 
     pub fn load_arena_wasm_hash(env: &Env) -> Result<BytesN<32>, FactoryError> {
@@ -191,6 +201,7 @@ impl FactoryStorage {
         env.storage()
             .persistent()
             .set(&DataKey::PoolSequence, &next);
+        Self::extend_persistent_ttl(env, &DataKey::PoolSequence);
         Ok(next)
     }
 
@@ -199,6 +210,7 @@ impl FactoryStorage {
         env.storage()
             .persistent()
             .set(&DataKey::ApprovedVault(vault.clone()), &approved);
+        Self::extend_persistent_ttl(env, &DataKey::ApprovedVault(vault.clone()));
     }
 
     pub fn is_approved_vault(env: &Env, vault: &Address) -> bool {
@@ -235,6 +247,7 @@ impl FactoryStorage {
         env.storage()
             .persistent()
             .set(&DataKey::ApprovedOracle(oracle.clone()), &approved);
+        Self::extend_persistent_ttl(env, &DataKey::ApprovedOracle(oracle.clone()));
     }
 
     pub fn is_approved_oracle(env: &Env, oracle: &Address) -> bool {
@@ -250,6 +263,7 @@ impl FactoryStorage {
         env.storage()
             .persistent()
             .set(&DataKey::CreatorStake(arena.clone()), record);
+        Self::extend_persistent_ttl(env, &DataKey::CreatorStake(arena.clone()));
     }
 
     pub fn load_creator_stake(env: &Env, arena: &Address) -> Option<CreatorStakeRecord> {
@@ -280,6 +294,7 @@ impl FactoryStorage {
         env.storage()
             .persistent()
             .set(&DataKey::ActivePoolCount(creator.clone()), &count);
+        Self::extend_persistent_ttl(env, &DataKey::ActivePoolCount(creator.clone()));
     }
 
     pub fn increment_active_pool_count(env: &Env, creator: &Address) -> u32 {
@@ -313,14 +328,19 @@ impl FactoryStorage {
     pub fn set_paused(env: &Env, paused: bool) {
         Self::extend_persistent_ttl(env, &DataKey::Paused);
         env.storage().persistent().set(&DataKey::Paused, &paused);
+        Self::extend_persistent_ttl(env, &DataKey::Paused);
     }
 
     /// Protocol-wide emergency pause read by every arena (#1583).
     ///
     /// Kept in instance storage: invoking the factory already loads its
     /// instance entry, so an arena's cross-contract check adds no further
-    /// ledger entry. The read never extends a TTL.
+    /// ledger entry.
     pub fn is_globally_paused(env: &Env) -> bool {
+        env.storage().instance().extend_ttl(
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
         env.storage()
             .instance()
             .get(&DataKey::GlobalPaused)
@@ -350,6 +370,7 @@ impl FactoryStorage {
         env.storage()
             .persistent()
             .set(&DataKey::Pool(pool_id), metadata);
+        Self::extend_persistent_ttl(env, &DataKey::Pool(pool_id));
     }
 
     pub fn load_pool(env: &Env, pool_id: u32) -> Option<ArenaMetadata> {
@@ -368,6 +389,7 @@ impl FactoryStorage {
         let count = Self::pool_count(env) + 1;
         Self::extend_persistent_ttl(env, &DataKey::PoolCount);
         env.storage().persistent().set(&DataKey::PoolCount, &count);
+        Self::extend_persistent_ttl(env, &DataKey::PoolCount);
         count
     }
 
@@ -391,6 +413,7 @@ impl FactoryStorage {
         env.storage()
             .persistent()
             .set(&DataKey::MaxActivePools, &max);
+        Self::extend_persistent_ttl(env, &DataKey::MaxActivePools);
     }
 
     // ── Supported Token Registry ──────────────────────────────────────────
@@ -400,7 +423,9 @@ impl FactoryStorage {
         env.storage()
             .persistent()
             .set(&DataKey::SupportedToken(token.clone()), &supported);
+        Self::extend_persistent_ttl(env, &DataKey::SupportedToken(token.clone()));
 
+        Self::extend_persistent_ttl(env, &DataKey::SupportedTokens);
         let current: Vec<Address> = env
             .storage()
             .persistent()
@@ -417,10 +442,13 @@ impl FactoryStorage {
         if supported {
             next.push_back(token.clone());
         }
+        Self::extend_persistent_ttl(env, &DataKey::SupportedTokens);
         env.storage().persistent().set(&DataKey::SupportedTokens, &next);
+        Self::extend_persistent_ttl(env, &DataKey::SupportedTokens);
     }
 
     pub fn list_supported_tokens(env: &Env, offset: u32, limit: u32) -> Vec<Address> {
+        Self::extend_persistent_ttl(env, &DataKey::SupportedTokens);
         let current: Vec<Address> = env
             .storage()
             .persistent()
@@ -463,7 +491,9 @@ impl FactoryStorage {
         page.push_back(pool_id);
 
         env.storage().persistent().set(&page_key, &page);
+        Self::extend_persistent_ttl(env, &page_key);
         env.storage().persistent().set(&count_key, &(count + 1));
+        Self::extend_persistent_ttl(env, &count_key);
     }
 
     /// Total pools indexed for `host` across all pages.
@@ -491,6 +521,7 @@ impl FactoryStorage {
         let key = DataKey::StatusBucket(status.clone());
         Self::extend_persistent_ttl(env, &key);
         env.storage().persistent().set(&key, ids);
+        Self::extend_persistent_ttl(env, &key);
     }
 
     fn position_of(ids: &Vec<u32>, pool_id: u32) -> Option<u32> {
@@ -571,6 +602,7 @@ impl FactoryStorage {
     /// predates the lifecycle (#1688).
     pub fn load_lifecycle(env: &Env, kind: &RegistryKind, address: &Address) -> Option<RegistryEntry> {
         let key = Self::lifecycle_key(kind, address);
+        Self::extend_persistent_ttl(env, &key);
         env.storage().persistent().get(&key)
     }
 
@@ -585,6 +617,7 @@ impl FactoryStorage {
     /// The current registry revision (#1688). Bumped on every lifecycle
     /// change so caches can be invalidated without replaying events.
     pub fn registry_revision(env: &Env) -> u64 {
+        Self::extend_persistent_ttl(env, &DataKey::RegistryRevision);
         env.storage().persistent().get(&DataKey::RegistryRevision).unwrap_or(0)
     }
 
@@ -607,12 +640,14 @@ impl FactoryStorage {
     /// predates the registry tracking (#1688).
     pub fn load_pool_integration(env: &Env, pool_id: u32) -> Option<PoolIntegration> {
         let key = DataKey::PoolIntegration(pool_id);
+        Self::extend_persistent_ttl(env, &key);
         env.storage().persistent().get(&key)
     }
 
     /// Record one more live pool against an integration (#1688).
     pub fn increment_live_use(env: &Env, kind: &RegistryKind, address: &Address) {
         let key = DataKey::LiveUse(kind.clone(), address.clone());
+        Self::extend_persistent_ttl(env, &key);
         let next = env.storage().persistent().get::<_, u32>(&key).unwrap_or(0).saturating_add(1);
         env.storage().persistent().set(&key, &next);
         Self::extend_persistent_ttl(env, &key);
@@ -621,6 +656,7 @@ impl FactoryStorage {
     /// Drop one live pool from an integration (#1688).
     pub fn decrement_live_use(env: &Env, kind: &RegistryKind, address: &Address) {
         let key = DataKey::LiveUse(kind.clone(), address.clone());
+        Self::extend_persistent_ttl(env, &key);
         let current = env.storage().persistent().get::<_, u32>(&key).unwrap_or(0);
         let next = if current <= 1 { 0 } else { current - 1 };
         env.storage().persistent().set(&key, &next);
@@ -632,6 +668,7 @@ impl FactoryStorage {
     /// integrations.
     pub fn live_use(env: &Env, kind: &RegistryKind, address: &Address) -> u32 {
         let key = DataKey::LiveUse(kind.clone(), address.clone());
+        Self::extend_persistent_ttl(env, &key);
         env.storage().persistent().get(&key).unwrap_or(0)
     }
 }

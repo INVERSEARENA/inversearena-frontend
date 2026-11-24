@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod fuzz_tests {
-    use crate::eliminations::{Tally, is_eliminated, surviving_choice, tally_choices};
+    use crate::eliminations::{Tally, is_eliminated, tally_choices};
     use crate::types::Choice;
     use proptest::prelude::*;
     use soroban_sdk::{Env, Vec};
@@ -19,30 +19,28 @@ mod fuzz_tests {
 
             if heads == 0 && tails == 0 {
                 // No votes at all — no survivor.
-                prop_assert_eq!(surviving_choice(&tally), None);
+                prop_assert!(!is_eliminated(Choice::Heads, &tally, 2));
+                prop_assert!(!is_eliminated(Choice::Tails, &tally, 2));
             } else if heads == 0 {
                 // Only tails voted — they survive (no opposing majority).
-                prop_assert_eq!(surviving_choice(&tally), Some(Choice::Tails));
-                prop_assert!(!is_eliminated(Choice::Tails, &tally));
+                prop_assert!(is_eliminated(Choice::Heads, &tally, 2));
+                prop_assert!(!is_eliminated(Choice::Tails, &tally, 2));
             } else if tails == 0 {
                 // Only heads voted — they survive (no opposing majority).
-                prop_assert_eq!(surviving_choice(&tally), Some(Choice::Heads));
-                prop_assert!(!is_eliminated(Choice::Heads, &tally));
+                prop_assert!(!is_eliminated(Choice::Heads, &tally, 2));
+                prop_assert!(is_eliminated(Choice::Tails, &tally, 2));
             } else if heads < tails {
                 // Heads is minority — heads survive, tails are eliminated.
-                prop_assert_eq!(surviving_choice(&tally), Some(Choice::Heads));
-                prop_assert!(!is_eliminated(Choice::Heads, &tally));
-                prop_assert!(is_eliminated(Choice::Tails, &tally));
+                prop_assert!(!is_eliminated(Choice::Heads, &tally, 2));
+                prop_assert!(is_eliminated(Choice::Tails, &tally, 2));
             } else if tails < heads {
                 // Tails is minority — tails survive, heads are eliminated.
-                prop_assert_eq!(surviving_choice(&tally), Some(Choice::Tails));
-                prop_assert!(!is_eliminated(Choice::Tails, &tally));
-                prop_assert!(is_eliminated(Choice::Heads, &tally));
+                prop_assert!(is_eliminated(Choice::Heads, &tally, 2));
+                prop_assert!(!is_eliminated(Choice::Tails, &tally, 2));
             } else {
                 // Tie — nobody is eliminated.
-                prop_assert_eq!(surviving_choice(&tally), None);
-                prop_assert!(!is_eliminated(Choice::Heads, &tally));
-                prop_assert!(!is_eliminated(Choice::Tails, &tally));
+                prop_assert!(!is_eliminated(Choice::Heads, &tally, 2));
+                prop_assert!(!is_eliminated(Choice::Tails, &tally, 2));
             }
         }
 
@@ -56,19 +54,12 @@ mod fuzz_tests {
             let tally = Tally { heads, tails, option3: 0 };
             prop_assert_eq!(tally.total(), heads + tails);
 
-            match surviving_choice(&tally) {
-                Some(Choice::Heads) => {
-                    // survivors = heads, eliminated = tails
-                    prop_assert_eq!(heads + tails, tally.total());
-                }
-                Some(Choice::Tails) => {
-                    // survivors = tails, eliminated = heads
-                    prop_assert_eq!(tails + heads, tally.total());
-                }
-                None => {
-                    // Tie: no eliminations, all players survive.
-                    prop_assert_eq!(heads, tails);
-                }
+            if !is_eliminated(Choice::Heads, &tally, 2) && is_eliminated(Choice::Tails, &tally, 2) {
+                prop_assert!(heads > 0);
+            } else if !is_eliminated(Choice::Tails, &tally, 2) && is_eliminated(Choice::Heads, &tally, 2) {
+                prop_assert!(tails > 0);
+            } else {
+                prop_assert_eq!(heads, tails);
             }
         }
 

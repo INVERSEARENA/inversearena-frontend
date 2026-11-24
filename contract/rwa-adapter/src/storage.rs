@@ -2,8 +2,8 @@ use crate::types::{PendingAdmin, RwaConfig, RwaError, StrategyRecord, YieldAccru
 use soroban_sdk::{Address, Env, Vec, symbol_short};
 
 // Extend TTL whenever a persistent key is read or written (#1076, #1077).
-const PERSISTENT_TTL_THRESHOLD: u32 = 100;
-const PERSISTENT_TTL_EXTEND_TO: u32 = 1000;
+pub(crate) const PERSISTENT_TTL_THRESHOLD: u32 = 518_400;
+pub(crate) const PERSISTENT_TTL_EXTEND_TO: u32 = 6_307_200;
 
 #[soroban_sdk::contracttype]
 enum DataKey {
@@ -30,8 +30,15 @@ pub const CURRENT_STORAGE_VERSION: u32 = 1;
 pub struct RwaStorage;
 
 impl RwaStorage {
-    pub fn load_storage_version(env: &Env) -> u32 { env.storage().persistent().get(&DataKey::StorageVersion).unwrap_or(CURRENT_STORAGE_VERSION) }
-    pub fn save_storage_version(env: &Env, v: u32) { env.storage().persistent().set(&DataKey::StorageVersion, &v); }
+    pub fn load_storage_version(env: &Env) -> u32 {
+        Self::extend_ttl(env, &DataKey::StorageVersion);
+        env.storage().persistent().get(&DataKey::StorageVersion).unwrap_or(CURRENT_STORAGE_VERSION)
+    }
+    pub fn save_storage_version(env: &Env, v: u32) {
+        Self::extend_ttl(env, &DataKey::StorageVersion);
+        env.storage().persistent().set(&DataKey::StorageVersion, &v);
+        Self::extend_ttl(env, &DataKey::StorageVersion);
+    }
     pub fn require_current_storage_version(env: &Env) -> Result<(), RwaError> {
         if Self::load_storage_version(env) < CURRENT_STORAGE_VERSION { return Err(RwaError::MigrationPending); }
         Ok(())
@@ -51,6 +58,13 @@ impl RwaStorage {
         }
     }
 
+    fn extend_instance_ttl(env: &Env) {
+        env.storage().instance().extend_ttl(
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
+    }
+
     pub fn assert_initialized(env: &Env) -> Result<(), RwaError> {
         Self::extend_ttl(env, &symbol_short!("RWAINIT"));
         env.storage()
@@ -66,6 +80,7 @@ impl RwaStorage {
         env.storage()
             .persistent()
             .set(&symbol_short!("RWAINIT"), &true);
+        Self::extend_ttl(env, &symbol_short!("RWAINIT"));
     }
 
     pub fn load_config(env: &Env) -> Result<RwaConfig, RwaError> {
@@ -81,6 +96,7 @@ impl RwaStorage {
         env.storage()
             .persistent()
             .set(&symbol_short!("RWACONFIG"), config);
+        Self::extend_ttl(env, &symbol_short!("RWACONFIG"));
     }
 
     pub fn load_position(env: &Env, user: &Address) -> YieldAccrual {
@@ -104,6 +120,7 @@ impl RwaStorage {
     pub fn save_yield_index(env: &Env, index: &YieldIndex) {
         Self::extend_ttl(env, &DataKey::YieldIndex);
         env.storage().persistent().set(&DataKey::YieldIndex, index);
+        Self::extend_ttl(env, &DataKey::YieldIndex);
     }
 
     pub fn save_position(env: &Env, user: &Address, pos: &YieldAccrual) {
@@ -111,6 +128,7 @@ impl RwaStorage {
         env.storage()
             .persistent()
             .set(&DataKey::Position(user.clone()), pos);
+        Self::extend_ttl(env, &DataKey::Position(user.clone()));
     }
 
     pub fn load_basis(env: &Env, user: &Address) -> i128 {
@@ -136,6 +154,7 @@ impl RwaStorage {
         env.storage()
             .persistent()
             .set(&symbol_short!("PADMIN"), pending);
+        Self::extend_ttl(env, &symbol_short!("PADMIN"));
     }
 
     pub fn load_pending_admin(env: &Env) -> Option<PendingAdmin> {
@@ -148,12 +167,14 @@ impl RwaStorage {
     }
 
     pub fn set_factory(env: &Env, factory: &Address) {
+        Self::extend_instance_ttl(env);
         env.storage()
             .instance()
             .set(&symbol_short!("FACTORY"), factory);
     }
 
     pub fn load_factory(env: &Env) -> Option<Address> {
+        Self::extend_instance_ttl(env);
         env.storage().instance().get(&symbol_short!("FACTORY"))
     }
 
@@ -177,6 +198,7 @@ impl RwaStorage {
     }
 
     pub fn share_supply(env: &Env) -> i128 {
+        Self::extend_instance_ttl(env);
         env.storage()
             .instance()
             .get(&DataKey::ShareSupply)
@@ -184,13 +206,16 @@ impl RwaStorage {
     }
 
     pub fn set_share_supply(env: &Env, supply: i128) {
+        Self::extend_instance_ttl(env);
         env.storage().instance().set(&DataKey::ShareSupply, &supply);
     }
 
     pub fn user_shares(env: &Env, user: &Address) -> i128 {
+        let key = DataKey::Shares(user.clone());
+        Self::extend_ttl(env, &key);
         env.storage()
             .persistent()
-            .get(&DataKey::Shares(user.clone()))
+            .get(&key)
             .unwrap_or(0)
     }
 
