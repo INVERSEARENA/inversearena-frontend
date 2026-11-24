@@ -68,6 +68,10 @@ jobs:
         working-directory: ./backend
         run: pnpm run test:unit
 
+      - name: Pact provider verification (#1846)
+        working-directory: ./backend
+        run: pnpm exec jest --selectProjects unit tests/contracts/provider.pact.test.ts
+
       - name: node:test suites
         working-directory: ./backend
         run: pnpm run test:node:validation && pnpm run test:node

@@ -1,6 +1,8 @@
 name: Contract CI
 
 on:
+  schedule:
+    - cron: "0 3 * * *"
   push:
     branches: ["main"]
     paths:
@@ -241,3 +243,22 @@ jobs:
           name: contract-cost-bench
           path: contract/target/cost-bench/
           if-no-files-found: warn
+
+  # #1845: Bounded model checking for elimination invariants, staking share arithmetic,
+  # and money-conservation proofs.
+  kani-model-check:
+    name: Kani Bounded Model Checking
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify with Kani
+        uses: model-checking/kani-github-action@v1
+        with:
+          working-directory: ./contract
+          args: "--enable-unstable --time-budget 300s -p arena -p staking -p payout"

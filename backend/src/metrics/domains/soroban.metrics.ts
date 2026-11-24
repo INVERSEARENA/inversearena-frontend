@@ -125,3 +125,58 @@ export const contractMetadataLookupDuration = createHistogram(
   },
   { domain: "soroban" },
 );
+
+// #1830: Multi-provider Soroban RPC pool metrics
+export const sorobanRpcProviderHealthScore = createGauge(
+  {
+    name: "inversearena_soroban_rpc_provider_health_score",
+    help: "Computed health score (0-100) for each Soroban RPC provider",
+    labelNames: ["provider"],
+  },
+  { domain: "soroban" },
+);
+
+export const sorobanRpcProviderLatencySeconds = createGauge(
+  {
+    name: "inversearena_soroban_rpc_provider_latency_seconds",
+    help: "Rolling average request latency in seconds per Soroban RPC provider",
+    labelNames: ["provider"],
+  },
+  { domain: "soroban" },
+);
+
+export const sorobanRpcProviderErrorsTotal = createCounter(
+  {
+    name: "inversearena_soroban_rpc_provider_errors_total",
+    help: "Total RPC errors per Soroban RPC provider",
+    labelNames: ["provider", "error_type"],
+  },
+  { domain: "soroban" },
+);
+
+export const sorobanRpcProviderLedgerLag = createGauge(
+  {
+    name: "inversearena_soroban_rpc_provider_ledger_lag",
+    help: "Number of ledgers this provider lags behind the pool highest known ledger",
+    labelNames: ["provider"],
+  },
+  { domain: "soroban" },
+);
+
+export const sorobanRpcProviderStatus = createGauge(
+  {
+    name: "inversearena_soroban_rpc_provider_status",
+    help: "Provider availability status (1=healthy, 0=lagging or down)",
+    labelNames: ["provider", "status"],
+  },
+  { domain: "soroban" },
+);
+
+export const sorobanRpcFailoversTotal = createCounter(
+  {
+    name: "inversearena_soroban_rpc_failovers_total",
+    help: "Total Soroban RPC failovers between providers",
+    labelNames: ["from_provider", "to_provider"],
+  },
+  { domain: "soroban" },
+);

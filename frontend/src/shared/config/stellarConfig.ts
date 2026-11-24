@@ -12,7 +12,13 @@ const StellarEnvSchema = z.object({
   NEXT_PUBLIC_STELLAR_NETWORK: z
     .enum(["testnet", "mainnet"])
     .default("testnet"),
-  NEXT_PUBLIC_SOROBAN_RPC_URL: z.string().trim().url(),
+  NEXT_PUBLIC_SOROBAN_RPC_URL: z.string().trim().url().optional(),
+  NEXT_PUBLIC_SOROBAN_RPC_URLS: z.string().trim().optional(),
+  NEXT_PUBLIC_SOROBAN_MAX_LEDGER_LAG: z
+    .string()
+    .optional()
+    .transform((v) => Number(v ?? "5"))
+    .pipe(z.number().int().nonnegative()),
   NEXT_PUBLIC_HORIZON_URL: z.string().trim().url(),
   NEXT_PUBLIC_FACTORY_CONTRACT_ID: z.string().trim().min(3),
   NEXT_PUBLIC_USDC_CONTRACT_ID: z.string().trim().min(3),
@@ -43,6 +49,8 @@ export interface StellarConfig {
   network: Networks;
   passphrase: string;
   sorobanRpcUrl: string;
+  sorobanRpcUrls: string[];
+  sorobanMaxLedgerLag: number;
   horizonUrl: string;
   factoryContractId: string;
   usdcContractId: string;
@@ -79,6 +87,24 @@ function buildStellarConfig():
   const env = result.data;
   const isMainnet = env.NEXT_PUBLIC_STELLAR_NETWORK === "mainnet";
 
+  const rawUrls = (env.NEXT_PUBLIC_SOROBAN_RPC_URLS ?? "")
+    .split(",")
+    .map((u) => u.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+  const sorobanRpcUrls =
+    rawUrls.length > 0
+      ? [...new Set(rawUrls)]
+      : env.NEXT_PUBLIC_SOROBAN_RPC_URL
+        ? [env.NEXT_PUBLIC_SOROBAN_RPC_URL.replace(/\/+$/, "")]
+        : [];
+
+  if (sorobanRpcUrls.length === 0) {
+    return {
+      config: null,
+      error: "Missing or invalid Stellar environment variable(s): NEXT_PUBLIC_SOROBAN_RPC_URL or NEXT_PUBLIC_SOROBAN_RPC_URLS",
+    };
+  }
+
   // Only set keys for issuers that were actually provided, so
   // `assetIssuers["USDC"]` is `undefined` (not `""`) when unconfigured.
   const assetIssuers: Record<string, string> = {};
@@ -92,7 +118,9 @@ function buildStellarConfig():
       passphrase:
         env.NEXT_PUBLIC_STELLAR_NETWORK_PASSPHRASE ??
         (isMainnet ? MAINNET_PASSPHRASE : TESTNET_PASSPHRASE),
-      sorobanRpcUrl: env.NEXT_PUBLIC_SOROBAN_RPC_URL.replace(/\/+$/, ""),
+      sorobanRpcUrl: sorobanRpcUrls[0],
+      sorobanRpcUrls,
+      sorobanMaxLedgerLag: env.NEXT_PUBLIC_SOROBAN_MAX_LEDGER_LAG,
       horizonUrl: env.NEXT_PUBLIC_HORIZON_URL.replace(/\/+$/, ""),
       factoryContractId: env.NEXT_PUBLIC_FACTORY_CONTRACT_ID,
       usdcContractId: env.NEXT_PUBLIC_USDC_CONTRACT_ID,

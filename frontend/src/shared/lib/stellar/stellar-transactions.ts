@@ -91,6 +91,14 @@ export { ContractError, ContractErrorCode, parseContractError } from "@/shared/l
 
 export { ContractClientFactory } from "@/shared/lib/stellar/contract-client-factory";
 export type { ContractClientFactoryDeps, DeploymentManifest } from "@/shared/lib/stellar/contract-client-factory";
+export {
+  decodeInvocation,
+  formatTokenAmount,
+  buildDefaultManifest,
+  type DecodedInvocationSummary,
+  type DecodeInvocationOptions,
+  type ContractManifestEntry,
+} from "@/shared/lib/stellar/decodeInvocation";
 
 export const FACTORY_CONTRACT_ID = stellarConfig.factoryContractId;
 export const XLM_CONTRACT_ID = stellarConfig.xlmContractId;

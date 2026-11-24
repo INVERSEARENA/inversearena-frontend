@@ -67,6 +67,14 @@ jobs:
       - name: Jest unit tests
         run: pnpm exec jest --ci --runInBand --passWithNoTests
 
+      - name: Upload Pact consumer contract artifacts (#1846)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pact-contracts
+          path: frontend/pacts/*.json
+          if-no-files-found: warn
+
       # Cache .next/cache between runs so incremental builds stay fast.
       - name: Cache Next.js build cache
         uses: actions/cache@v4

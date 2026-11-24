@@ -320,3 +320,31 @@ During a rolling deployment across multiple instances, old workers and new worke
 4. **Rollback Strategy**:
    - If rolling back to the previous release, old workers can process legacy unversioned payloads. New producers only add `v: 1` to standard fields, which old JSON readers safely ignore as extraneous fields.
 
+---
+
+## Multi-Provider Soroban RPC Pool Runbook (#1830)
+
+The backend and frontend server-side Stellar adapters route Soroban RPC calls through `SorobanRpcPool`, supporting automatic failover, health scoring, ledger-lag exclusion, and sticky transaction polling.
+
+### Configuration
+- `SOROBAN_RPC_URLS` (backend) / `NEXT_PUBLIC_SOROBAN_RPC_URLS` (frontend): Comma-separated list of Soroban RPC endpoints in priority order (e.g., `https://rpc1.stellar.org,https://rpc2.stellar.org`).
+- `SOROBAN_RPC_URL` / `NEXT_PUBLIC_SOROBAN_RPC_URL`: Still supported for single-endpoint environments.
+- `SOROBAN_MAX_LEDGER_LAG` (default `5`): Maximum ledgers a provider may lag behind the pool's highest known ledger before being excluded from read routing.
+
+### Health Scoring & Failover Behavior
+- **Reads (`simulateTransaction`, `getLedgerEntries`, `getEvents`, `getLatestLedger`)**: Routed to the highest-scoring healthy, non-lagging provider. On network error, HTTP 5xx, or timeout, the request automatically fails over to the next healthiest provider.
+- **Writes & Sticky Polling (`sendTransaction` → `getTransaction`)**: `sendTransaction` routes to the best healthy provider and pins the resulting `txHash` to that provider (5-minute TTL). Subsequent `getTransaction` polls target that sticky provider first, automatically falling back across the pool if it becomes unresponsive.
+
+### Prometheus Observability & Alerts
+Monitor the following gauges and counters on `/metrics`:
+- `inversearena_soroban_rpc_provider_health_score{provider}` (0–100)
+- `inversearena_soroban_rpc_provider_latency_seconds{provider}`
+- `inversearena_soroban_rpc_provider_ledger_lag{provider}`
+- `inversearena_soroban_rpc_provider_status{provider, status}` (`1` = healthy, `0` = lagging/down)
+- `inversearena_soroban_rpc_failovers_total{from_provider, to_provider}`
+- `inversearena_soroban_rpc_provider_errors_total{provider, error_type}`
+
+### Troubleshooting
+1. **Frequent Failovers**: Inspect `soroban_rpc_provider_errors_total` and `soroban_rpc_provider_latency_seconds`. Replace or deprioritize degraded providers in `SOROBAN_RPC_URLS`.
+2. **All Providers Marked Lagging**: Verify upstream Stellar network status or increase `SOROBAN_MAX_LEDGER_LAG` temporarily if all providers experience sync jitter.
+
