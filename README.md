@@ -177,7 +177,7 @@ Postgres, Redis, and Mongo; builds and deploys the Soroban contracts; writes
 frontend auto-load; seeds arenas in every lifecycle state; and starts both apps.
 
 Devcontainer quickstart: open in VS Code and Reopen in Container (`.devcontainer/`, see `docs/DEVCONTAINER.md`).
-Pinned versions: Node 20.20.2, npm 10.9.9, pnpm 10.11.1, Rust 1.82.0 (CI extras 1.96.0, nightly-2026-10-01), Stellar CLI 22.6.0, pre-commit 4.7.0.
+Pinned versions: Node 20.20.2, npm 10.9.9, pnpm 10.11.1, Rust 1.96.0 (CI extras nightly-2026-10-01), Stellar CLI 22.6.0, pre-commit 4.7.0.
 Fast checks: `make check-fast`, `make check-toolchain`, `make dev-doctor`. Pre-commit is opt-in via `INSTALL_PRE_COMMIT=1`.
 
 **Manual setup** (if you prefer running against testnet or your own services):

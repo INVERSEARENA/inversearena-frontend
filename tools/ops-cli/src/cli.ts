@@ -10,6 +10,7 @@ import { registerArena } from "./commands/arena.js";
 import { registerFactory } from "./commands/factory.js";
 import { registerInvoke } from "./commands/invoke.js";
 import { registerOracle } from "./commands/oracle.js";
+import { registerRestore } from "./commands/restore.js";
 import { registerVault } from "./commands/vault.js";
 import { type Context, type GlobalOptions, createContext } from "./context.js";
 
@@ -37,6 +38,7 @@ export function buildProgram(makeContext: (options: GlobalOptions) => Context = 
   registerVault(program, lazyContext);
   registerOracle(program, lazyContext);
   registerInvoke(program, lazyContext);
+  registerRestore(program, lazyContext);
   return program;
 }
 

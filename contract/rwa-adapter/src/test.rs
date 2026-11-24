@@ -11,8 +11,12 @@
 
 extern crate std;
 
-use soroban_sdk::{Env, testutils::Address as _};
+use soroban_sdk::{
+    Env, symbol_short,
+    testutils::{Address as _, Ledger as _, storage::Persistent as _},
+};
 
+use crate::storage::{PERSISTENT_TTL_EXTEND_TO, PERSISTENT_TTL_THRESHOLD};
 use crate::{RwaAdapterContract, RwaAdapterContractClient, RwaError};
 
 // ── Helper ────────────────────────────────────────────────────────────────────
@@ -39,6 +43,32 @@ fn setup() -> (
 }
 
 // ── Initialisation ────────────────────────────────────────────────────────────
+
+#[test]
+fn persistent_config_ttl_is_restored_on_read() {
+    let (env, client, admin, oracle, token) = setup();
+    client.initialize(&admin, &oracle, &token, &500u32);
+    env.as_contract(&client.address, || {
+        env.storage().instance().extend_ttl(
+            PERSISTENT_TTL_THRESHOLD - 1,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
+    });
+    env.ledger().with_mut(|li| {
+        li.sequence_number += PERSISTENT_TTL_EXTEND_TO - PERSISTENT_TTL_THRESHOLD + 1;
+    });
+
+    let before = env.as_contract(&client.address, || {
+        env.storage().persistent().get_ttl(&symbol_short!("RWACONFIG"))
+    });
+    assert!(before < PERSISTENT_TTL_THRESHOLD);
+
+    client.get_config();
+    let after = env.as_contract(&client.address, || {
+        env.storage().persistent().get_ttl(&symbol_short!("RWACONFIG"))
+    });
+    assert!(after >= PERSISTENT_TTL_EXTEND_TO);
+}
 
 #[test]
 fn test_initialize_stores_rate() {

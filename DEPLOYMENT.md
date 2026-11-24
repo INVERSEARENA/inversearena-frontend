@@ -13,8 +13,8 @@ End-to-end reference for building, deploying, and running the InverseArena stack
 | Tool | Purpose | Install |
 |------|---------|---------|
 | **Node 20.20.2** | Backend + frontend | [nodejs.org](https://nodejs.org) |
-| **Rust 1.82.0** | Soroban contract builds | `rustup toolchain install 1.82.0` |
-| **WASM targets** | Cross-compile contracts | `rustup target add wasm32-unknown-unknown wasm32v1-none --toolchain 1.82.0` |
+| **Rust 1.96.0** | Soroban contract builds | `rustup toolchain install 1.96.0` |
+| **WASM targets** | Cross-compile contracts | `rustup target add wasm32-unknown-unknown wasm32v1-none --toolchain 1.96.0` |
 | **Stellar CLI 22.6.0** | Build / deploy contracts | `cargo install --locked stellar-cli@22.6.0` |
 | **PostgreSQL** | Backend DB | docker or local install |
 

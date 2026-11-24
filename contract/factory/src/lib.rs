@@ -1208,7 +1208,8 @@ impl FactoryContract {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod test {
     use super::*;
-    use soroban_sdk::testutils::Address as _;
+    use crate::storage::{DataKey, PERSISTENT_TTL_EXTEND_TO, PERSISTENT_TTL_THRESHOLD};
+    use soroban_sdk::testutils::{Address as _, Ledger as _, storage::Persistent as _};
 
     fn setup() -> (Env, FactoryContractClient<'static>, Address, Address) {
         let env = Env::default();
@@ -1219,6 +1220,31 @@ mod test {
         let host = Address::generate(&env);
         client.initialize(&admin, &100);
         (env, client, admin, host)
+    }
+
+    #[test]
+    fn persistent_admin_ttl_is_restored_on_read() {
+        let (env, client, _admin, _host) = setup();
+        env.as_contract(&client.address, || {
+            env.storage().instance().extend_ttl(
+                PERSISTENT_TTL_THRESHOLD - 1,
+                PERSISTENT_TTL_EXTEND_TO,
+            );
+        });
+        env.ledger().with_mut(|li| {
+            li.sequence_number += PERSISTENT_TTL_EXTEND_TO - PERSISTENT_TTL_THRESHOLD + 1;
+        });
+
+        let before = env.as_contract(&client.address, || {
+            env.storage().persistent().get_ttl(&DataKey::Admin)
+        });
+        assert!(before < PERSISTENT_TTL_THRESHOLD);
+
+        client.admin();
+        let after = env.as_contract(&client.address, || {
+            env.storage().persistent().get_ttl(&DataKey::Admin)
+        });
+        assert!(after >= PERSISTENT_TTL_EXTEND_TO);
     }
 
     fn pool_config(env: &Env, entry_fee: i128) -> PoolConfig {

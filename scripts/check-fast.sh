@@ -46,7 +46,7 @@ run_frontend() {
 
 run_contract_fmt() {
   if ! has_cmd cargo; then
-    skip "cargo missing (install Rust 1.82.0)"
+    skip "cargo missing (install Rust 1.96.0)"
     return 0
   fi
   log "contract-fmt: cargo fmt --check"
@@ -55,7 +55,7 @@ run_contract_fmt() {
 
 run_contract() {
   if ! has_cmd cargo; then
-    skip "cargo missing (install Rust 1.82.0)"
+    skip "cargo missing (install Rust 1.96.0)"
     return 0
   fi
   log "contract: cargo test --workspace"

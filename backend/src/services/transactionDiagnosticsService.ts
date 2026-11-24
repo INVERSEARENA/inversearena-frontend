@@ -41,6 +41,17 @@ const GENERIC_REMEDIATION =
 const RESTORE_REMEDIATION =
   "Some on-chain state this transaction depends on has expired and must be restored before this can succeed. Try again — a restore is applied automatically on next submission.";
 
+type SimulationResponse = Awaited<ReturnType<rpc.Server["simulateTransaction"]>>;
+
+/** Manual restore preambles (#1828) and Protocol 23 auto-restored entries. */
+export function simulationNeedsRestore(simulation: SimulationResponse): boolean {
+  if (rpc.Api.isSimulationRestore(simulation)) return true;
+  const extra = simulation as SimulationResponse & {
+    archivedSorobanEntries?: unknown[];
+  };
+  return Array.isArray(extra.archivedSorobanEntries) && extra.archivedSorobanEntries.length > 0;
+}
+
 /**
  * Extracts a Soroban contract panic code from a raw RPC error string, e.g.
  * "HostError: Error(Contract, #4)". Mirrors the pattern in
@@ -65,7 +76,7 @@ function sanitizeRemediation(rawError: string): { contractCode: number | null; r
 export async function diagnoseTransaction(unsignedXdr: string): Promise<TransactionDiagnostics> {
   const startedAt = Date.now();
 
-  let simulation: Awaited<ReturnType<rpc.Server["simulateTransaction"]>>;
+  let simulation: SimulationResponse;
   try {
     const tx = TransactionBuilder.fromXDR(unsignedXdr, getStellarConfig().networkPassphrase);
     const server = new rpc.Server(getStellarConfig().sorobanRpcUrl);
@@ -102,7 +113,7 @@ export async function diagnoseTransaction(unsignedXdr: string): Promise<Transact
     };
   }
 
-  const isRestore = "restorePreamble" in simulation;
+  const isRestore = simulationNeedsRestore(simulation);
   const outcome: DiagnosticsOutcome = isRestore ? "restore_required" : "would_succeed";
   const sorobanData = simulation.transactionData.build();
   const resources = sorobanData.resources();

@@ -3,9 +3,10 @@
 use super::*;
 use soroban_sdk::{
     Env, Address, testutils::Address as _,
-    testutils::Ledger as _,
+    testutils::{Ledger as _, storage::Persistent as _},
     token::{Client as TokenClient, StellarAssetClient},
 };
+use crate::storage::{DataKey, PERSISTENT_TTL_EXTEND_TO, PERSISTENT_TTL_THRESHOLD};
 use crate::types::{FeeRouterError, MAX_STAKING_SHARE_BPS, MIN_FLUSH_AMOUNT, STAKING_SHARE_TIMELOCK_SECS};
 
 // ─── Minimal staking mock ─────────────────────────────────────────────────────
@@ -123,6 +124,31 @@ impl TestFixture {
 }
 
 // ─── Initialization tests ─────────────────────────────────────────────────────
+
+#[test]
+fn persistent_admin_ttl_is_restored_on_read() {
+    let fx = TestFixture::new(5_000);
+    fx.env.as_contract(&fx.router.address, || {
+        fx.env.storage().instance().extend_ttl(
+            PERSISTENT_TTL_THRESHOLD - 1,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
+    });
+    fx.env.ledger().with_mut(|li| {
+        li.sequence_number += PERSISTENT_TTL_EXTEND_TO - PERSISTENT_TTL_THRESHOLD + 1;
+    });
+
+    let before = fx.env.as_contract(&fx.router.address, || {
+        fx.env.storage().persistent().get_ttl(&DataKey::Admin)
+    });
+    assert!(before < PERSISTENT_TTL_THRESHOLD);
+
+    fx.router.admin();
+    let after = fx.env.as_contract(&fx.router.address, || {
+        fx.env.storage().persistent().get_ttl(&DataKey::Admin)
+    });
+    assert!(after >= PERSISTENT_TTL_EXTEND_TO);
+}
 
 #[test]
 fn test_initialize_sets_state() {

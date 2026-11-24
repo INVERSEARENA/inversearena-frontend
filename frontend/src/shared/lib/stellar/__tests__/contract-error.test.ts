@@ -184,6 +184,19 @@ describe('parseContractError', () => {
     expect(result.message).toContain('do not match your commitment');
   });
 
+  it('maps a restore preamble to ARCHIVED_STATE', () => {
+    const simulation = { restorePreamble: { minResourceFee: '123', transactionData: {} }, events: [] };
+    const result = parseContractError(simulation, 'buildClaimTransaction', { kind: 'arena' });
+    expect(result.code).toBe(ContractErrorCode.ARCHIVED_STATE);
+    expect(result.message).toContain('state needs restoring');
+  });
+
+  it('maps an archived-entry host error to ARCHIVED_STATE', () => {
+    const result = parseContractError('INVOKE_HOST_FUNCTION_ENTRY_ARCHIVED', 'fetchArenaState');
+    expect(result.code).toBe(ContractErrorCode.ARCHIVED_STATE);
+    expect(result.message).toContain('state needs restoring');
+  });
+
   // ── Transaction failures ─────────────────────────────────────────
 
   it('should detect transaction failed', () => {

@@ -2,8 +2,8 @@ use crate::types::{FeeRouterError, PendingShareChange};
 use soroban_sdk::{Address, Env, IntoVal, Val, contracttype};
 
 // ─── TTL constants (matching arena/staking pattern) ──────────────────────────
-const PERSISTENT_TTL_THRESHOLD: u32 = 100;
-const PERSISTENT_TTL_EXTEND_TO: u32 = 1_000;
+pub(crate) const PERSISTENT_TTL_THRESHOLD: u32 = 518_400;
+pub(crate) const PERSISTENT_TTL_EXTEND_TO: u32 = 6_307_200;
 
 // ─── Storage keys ─────────────────────────────────────────────────────────────
 #[contracttype]

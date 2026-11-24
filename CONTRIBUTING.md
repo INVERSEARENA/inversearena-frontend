@@ -105,7 +105,7 @@ Mongo 27018, Quickstart 8000. Generated env uses `MONGODB_URI`, `PORT=3001`, and
 
 For a reproducible toolchain, use the devcontainer (`.devcontainer/`, see
 `docs/DEVCONTAINER.md`). Pinned versions: Node 20.20.2, npm 10.9.9, pnpm 10.11.1,
-Rust 1.82.0 (CI extras 1.96.0, nightly-2026-10-01), Stellar CLI 22.6.0,
+Rust 1.96.0 (CI extras nightly-2026-10-01), Stellar CLI 22.6.0,
 pre-commit 4.7.0.
 
 Fast checks:

@@ -12,7 +12,7 @@ const PINS = {
   node: "20.20.2",
   npm: "10.9.9",
   pnpm: "10.11.1",
-  rust: "1.82.0",
+  rust: "1.96.0",
   rustCi: "1.96.0",
   rustNightly: "nightly-2026-10-01",
   stellarCli: "22.6.0",
@@ -22,11 +22,11 @@ const PINS = {
 test("pinned toolchain files exist and match", () => {
   assert.equal(read(".node-version").trim(), PINS.node);
   const rust = read("rust-toolchain.toml");
-  assert.match(rust, /channel = "1.82.0"/);
+  assert.match(rust, /channel = "1.96.0"/);
   assert.match(rust, /"wasm32-unknown-unknown"/);
   assert.match(rust, /"wasm32v1-none"/);
   const contractRust = read("contract/rust-toolchain.toml");
-  assert.match(contractRust, /channel = "1.82.0"/);
+  assert.match(contractRust, /channel = "1.96.0"/);
 });
 
 test("devcontainer config is parseable and pinned", () => {
@@ -146,6 +146,6 @@ test("toolchain docs mention pinned versions", () => {
   const readme = read("README.md");
   const contributing = read("CONTRIBUTING.md");
   assert.match(readme, /20\.20\.2/);
-  assert.match(readme, /1\.82\.0/);
+  assert.match(readme, /1\.96\.0/);
   assert.match(contributing, /check-fast|check-toolchain|dev-doctor/);
 });

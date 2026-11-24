@@ -18,6 +18,7 @@ use oracle::OracleContractClient;
 use rwa_adapter::RwaAdapterClient;
 use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::token::StellarAssetClient;
+use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{Address, Bytes, BytesN, Env};
 use staking::StakingContractClient;
 
@@ -60,10 +61,20 @@ fn record(env: &Env, name: &str, players: u32) {
     }
 }
 
-fn commitment(env: &Env, choice: Choice, salt: &BytesN<32>) -> BytesN<32> {
-    let mut preimage = Bytes::new(env);
+fn commitment(
+    env: &Env,
+    arena: &Address,
+    round: u32,
+    player: &Address,
+    choice: Choice,
+    salt: &BytesN<32>,
+) -> BytesN<32> {
+    let mut preimage = Bytes::from_slice(env, b"IA_COMMIT_V1");
+    preimage.append(&arena.clone().to_xdr(env));
+    preimage.append(&Bytes::from_slice(env, &round.to_be_bytes()));
+    preimage.append(&player.clone().to_xdr(env));
     preimage.push_back(choice.to_byte());
-    preimage.extend_from_array(&salt.to_array());
+    preimage.append(&Bytes::from_slice(env, &salt.to_array()));
     env.crypto().sha256(&preimage).into()
 }
 
@@ -153,7 +164,14 @@ impl ArenaBench {
 
     fn commit_all(&self) {
         for (i, player) in self.players.iter().enumerate() {
-            let c = commitment(&self.env, Self::choice(i), &salt(&self.env, i as u32));
+            let c = commitment(
+                &self.env,
+                &self.arena.address,
+                1,
+                player,
+                Self::choice(i),
+                &salt(&self.env, i as u32),
+            );
             self.arena.submit_commitment(player, &c);
         }
     }

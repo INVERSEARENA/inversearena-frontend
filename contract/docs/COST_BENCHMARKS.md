@@ -66,13 +66,14 @@ stays visible without blocking unrelated work.
 
 ## Known issue: `resolve_round` exceeds transaction limits at scale
 
-`resolve_round` cost grows linearly with the roster. As of the first baseline:
+`resolve_round` cost grows linearly with the roster. As of the current baseline,
+which includes the persistent TTL bumps from #1828:
 
 | Players | CPU instructions | Memory | Ledger writes |
 | --- | ---: | ---: | ---: |
-| 10 | 66.4M | 22.6 MB | 51 |
-| 50 | 154.3M | 38.0 MB | 211 |
-| 100 | 336.3M | 80.8 MB | 412 |
+| 10 | 81.0M | 25.9 MB | 51 |
+| 50 | 157.6M | 40.4 MB | 211 |
+| 100 | 322.9M | 80.3 MB | 412 |
 
 From 50 players, resolution exceeds the 100M-instruction transaction limit, so
 an arena that fills up cannot resolve in a single transaction. The benchmark

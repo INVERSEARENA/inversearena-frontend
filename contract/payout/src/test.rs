@@ -1,6 +1,7 @@
 use super::*;
+use crate::storage::{DataKey, PERSISTENT_TTL_TARGET, PERSISTENT_TTL_THRESHOLD};
 use crate::test_support::{LegacyArena, MockArena, MockArenaClient, MockFactory, MockFactoryClient};
-use soroban_sdk::testutils::{Address as _, Ledger as _};
+use soroban_sdk::testutils::{Address as _, Ledger as _, storage::Persistent as _};
 use soroban_sdk::token;
 
 const CAP: i128 = 10_000;
@@ -74,6 +75,31 @@ fn setup(funding: i128) -> Fixture {
 
     let token = token::TokenClient::new(&env, &token_addr);
     Fixture { env, client, token, factory, next_pool: core::cell::Cell::new(0) }
+}
+
+#[test]
+fn persistent_admin_ttl_is_restored_on_read() {
+    let fx = setup(0);
+    fx.env.as_contract(&fx.client.address, || {
+        fx.env.storage().instance().extend_ttl(
+            PERSISTENT_TTL_THRESHOLD - 1,
+            PERSISTENT_TTL_TARGET,
+        );
+    });
+    fx.env.ledger().with_mut(|li| {
+        li.sequence_number += PERSISTENT_TTL_TARGET - PERSISTENT_TTL_THRESHOLD + 1;
+    });
+
+    let before = fx.env.as_contract(&fx.client.address, || {
+        fx.env.storage().persistent().get_ttl(&DataKey::Admin)
+    });
+    assert!(before < PERSISTENT_TTL_THRESHOLD);
+
+    fx.client.admin();
+    let after = fx.env.as_contract(&fx.client.address, || {
+        fx.env.storage().persistent().get_ttl(&DataKey::Admin)
+    });
+    assert!(after >= PERSISTENT_TTL_TARGET);
 }
 
 #[test]
