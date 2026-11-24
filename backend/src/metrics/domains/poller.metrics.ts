@@ -52,6 +52,15 @@ export const arenaStreamResyncsTotal = createCounter(
   { domain: "poller" },
 );
 
+export const arenaStreamUpdateBytesTotal = createCounter(
+  {
+    name: "inversearena_arena_stream_update_bytes_total",
+    help: "JSON bytes published on the arena stream, by envelope kind (snapshot or delta) (#1767)",
+    labelNames: ["kind"],
+  },
+  { domain: "poller" },
+);
+
 // #1433: Bounded concurrency & backpressure metrics for arena poller
 export const arenaPollerActivePollsGauge = createGauge(
   {

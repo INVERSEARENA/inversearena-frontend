@@ -9,6 +9,7 @@ members = [
     "oracle",
     "payout",
     "rwa-adapter",
+    "idle-strategy",
     "staking",
 ]
 

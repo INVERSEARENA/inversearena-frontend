@@ -47,6 +47,15 @@ pub struct YieldAccrual {
     pub index_entry: i128,
 }
 
+/// One registered yield source and its allocation cap, in basis points of
+/// the adapter's total strategy assets (#1848). `10_000` is 100%.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StrategyRecord {
+    pub address: Address,
+    pub cap_bps: u32,
+}
+
 #[contracttype]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct YieldIndex {
@@ -73,4 +82,12 @@ pub enum RwaError {
     /// Only the admin may fund the yield reserve (#1628).
     NotAuthorized = 11,
     MigrationPending = 12,
+    /// Strategy address is not an approved vault on the factory (#1848).
+    StrategyNotApproved = 13,
+    /// `remove_strategy` was called while the strategy still holds assets.
+    StrategyNotEmpty = 14,
+    /// Deposit or rebalance would push a strategy past its allocation cap.
+    CapExceeded = 15,
+    /// Strategy address is not registered on this adapter.
+    UnknownStrategy = 16,
 }

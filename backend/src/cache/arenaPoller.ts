@@ -22,8 +22,10 @@ import type { ArenaService } from "../services/arenaService";
 import { getSorobanBreaker } from "../utils/circuitBreaker";
 import { refreshLedgerIdentity } from "../services/ledgerClock";
 import { getRollbackGuard } from "../services/ledgerContinuity";
+import { buildFieldDelta, preferDelta } from "./arenaSnapshotDelta";
 import {
   arenaPollsTotal,
+  arenaStreamUpdateBytesTotal,
   arenaSuppressedPublishesTotal,
   arenaSemanticChangesTotal,
   arenaPollerActivePollsGauge,
@@ -285,6 +287,10 @@ interface ArenaPollerState {
   sequence: number;
   history: Array<{ event: string; payload: unknown; sequence: number }>;
   lastSnapshot: { payload: unknown; sequence: number } | null;
+  /** Last snapshot object used to build field deltas (#1767). */
+  publishedSnapshot?: ArenaSnapshot | null;
+  /** Publishes since the last full snapshot was written to subscribers. */
+  updatesSinceFull?: number;
   consecutiveFailures: number;
   /** Rollback epoch this poller last published under (#1490). */
   rollbackEpoch: number;
@@ -412,6 +418,8 @@ export function subscribeArena(
       sequence: 0,
       history: [],
       lastSnapshot: null,
+      publishedSnapshot: null,
+      updatesSinceFull: 0,
       consecutiveFailures: 0,
       rollbackEpoch: getRollbackGuard().getEpoch(),
     };
@@ -557,24 +565,54 @@ function startPollLoop(
       }
     }
 
-    const envelope = {
-      type: "snapshot",
-      sequence: ++state.sequence,
+    const sequence = ++state.sequence;
+    const createdAt = new Date().toISOString();
+    const fullEnvelope = {
+      type: "snapshot" as const,
+      sequence,
       arenaId,
       payload: snapshot,
-      createdAt: new Date().toISOString(),
+      createdAt,
       version: meta.version,
       previousVersion: meta.previousVersion,
       instanceId: state.instanceId,
     };
-    state.lastSnapshot = { payload: envelope, sequence: envelope.sequence };
-    state.history.push({ event: "snapshot", payload: envelope, sequence: envelope.sequence });
+    const previous = state.publishedSnapshot ?? null;
+    const delta = previous
+      ? buildFieldDelta(previous as unknown as Record<string, unknown>, snapshot as unknown as Record<string, unknown>)
+      : null;
+    const updatesSinceFull = state.updatesSinceFull ?? 0;
+    const sendFull =
+      !previous ||
+      !delta ||
+      Object.keys(delta.replace).length === 0 ||
+      updatesSinceFull >= 9 ||
+      !preferDelta(delta, snapshot);
+    const wireEnvelope = sendFull
+      ? fullEnvelope
+      : {
+          type: "delta" as const,
+          sequence,
+          arenaId,
+          payload: { patch: delta },
+          createdAt,
+          version: meta.version,
+          previousVersion: meta.previousVersion,
+          instanceId: state.instanceId,
+        };
+    const eventName = sendFull ? "snapshot" : "delta";
+    arenaStreamUpdateBytesTotal.inc({ kind: eventName }, Buffer.byteLength(JSON.stringify(wireEnvelope)));
+    state.lastSnapshot = { payload: fullEnvelope, sequence };
+    state.publishedSnapshot = snapshot;
+    state.updatesSinceFull = sendFull ? 0 : updatesSinceFull + 1;
+    state.history.push({ event: eventName, payload: wireEnvelope, sequence });
     if (state.history.length > HISTORY_LIMIT) {
       state.history.splice(0, state.history.length - HISTORY_LIMIT);
     }
     for (const sub of state.subscribers) {
       try {
-        sub.sendSnapshot(envelope, envelope.sequence);
+        if (sendFull) sub.sendSnapshot(fullEnvelope, sequence);
+        else sub.sendEvent("delta", wireEnvelope, sequence);
       } catch {
         // Client disconnected
       }
@@ -615,6 +653,8 @@ function startPollLoop(
         state.seenEliminations.clear();
         state.history.length = 0;
         state.lastSnapshot = null;
+        state.publishedSnapshot = null;
+        state.updatesSinceFull = 0;
       }
       state.consecutiveFailures = 0;
 

@@ -20,6 +20,7 @@ import { metricsMiddleware } from "./middleware/metrics";
 import { queryBudgetMiddleware } from "./middleware/queryBudgetMiddleware";
 import { maintenanceGuard } from "./middleware/maintenance";
 import { privateNoStore } from "./middleware/cachePolicy";
+import { responseCompression } from "./middleware/responseCompression";
 import {
   ApiKeyAuthProvider,
   requireAdmin,
@@ -146,6 +147,9 @@ export function createApp(deps: AppDependencies): express.Application {
     }),
   );
   app.use(express.json());
+  // JSON bodies over the size threshold. SSE routes are excluded inside the
+  // middleware so event frames are not buffered by a compressor (#1767).
+  app.use(responseCompression);
   app.use(requestLogger);
   app.use(requestContextMiddleware);
   app.use(metricsMiddleware);

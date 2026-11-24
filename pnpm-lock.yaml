@@ -162,9 +162,6 @@ importers:
       '@tanstack/react-query':
         specifier: ^5.108.3
         version: 5.108.3(@types/react@19.2.14)(react@19.2.3)
-      framer-motion:
-        specifier: ^12.29.2
-        version: 12.34.3(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       ioredis:
         specifier: ^5.8.2
         version: 5.9.3

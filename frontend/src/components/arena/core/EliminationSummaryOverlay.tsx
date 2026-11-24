@@ -1,6 +1,6 @@
 "use client";
 
-import { motion, AnimatePresence } from "framer-motion";
+import { m as motion, AnimatePresence } from "motion/react";
 
 interface EliminationSummaryOverlayProps {
   isOpen: boolean;

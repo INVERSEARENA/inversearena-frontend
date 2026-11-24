@@ -8,10 +8,13 @@ const INDEX_SCALE: i128 = 1_000_000_000_000_000_000;
 mod events;
 mod oracle;
 mod storage;
+mod strategy;
 mod types;
 
 #[cfg(test)]
 mod auth_tests;
+#[cfg(test)]
+mod strategy_tests;
 
 use storage::RwaStorage;
 use types::PendingAdmin;
@@ -56,6 +59,9 @@ impl RwaAdapter {
 
     pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), RwaError> {
         RwaStorage::require_current_storage_version(&env)?;
+        if RwaStorage::strategy_count(&env) > 0 {
+            return strategy::deposit(&env, &from, amount);
+        }
         from.require_auth();
         if amount <= 0 {
             return Err(RwaError::InvalidAmount);
@@ -116,6 +122,10 @@ impl RwaAdapter {
     }
 
     pub fn withdraw_all(env: Env, from: Address) -> Result<i128, RwaError> {
+        RwaStorage::require_current_storage_version(&env)?;
+        if RwaStorage::strategy_count(&env) > 0 {
+            return strategy::withdraw_all(&env, &from);
+        }
         from.require_auth();
         let config = RwaStorage::load_config(&env)?;
         let index = Self::accrue_index(&env, &config)?;
@@ -184,6 +194,9 @@ impl RwaAdapter {
     /// returned value is what was actually paid.
     pub fn withdraw(env: Env, from: Address, amount: i128) -> Result<i128, RwaError> {
         RwaStorage::require_current_storage_version(&env)?;
+        if RwaStorage::strategy_count(&env) > 0 {
+            return strategy::withdraw(&env, &from, amount);
+        }
         from.require_auth();
         if amount <= 0 {
             return Err(RwaError::InvalidAmount);
@@ -280,6 +293,9 @@ impl RwaAdapter {
     }
 
     pub fn balance_of(env: Env, user: Address) -> i128 {
+        if RwaStorage::strategy_count(&env) > 0 {
+            return strategy::shares_value(&env, &user);
+        }
         RwaStorage::load_config(&env)
             .map(|config| {
                 let pos = RwaStorage::load_position(&env, &user);
@@ -346,6 +362,115 @@ impl RwaAdapter {
         RwaStorage::load_config(&env)
             .map(|c| c.yield_reserve)
             .unwrap_or(0)
+    }
+
+    /// Net assets owed to depositors. With strategies registered this is the
+    /// sum of `strategy.total_assets()`; otherwise it is the legacy counter.
+    pub fn get_total_deposited(env: Env) -> i128 {
+        if RwaStorage::strategy_count(&env) > 0 {
+            return strategy::total_assets(&env);
+        }
+        RwaStorage::load_config(&env)
+            .map(|c| c.total_deposited)
+            .unwrap_or(0)
+    }
+
+    /// Factory whose `is_approved_vault` gates `add_strategy` (#1848).
+    pub fn set_factory(env: Env, factory: Address) -> Result<(), RwaError> {
+        let config = RwaStorage::load_config(&env)?;
+        config.admin.require_auth();
+        RwaStorage::set_factory(&env, &factory);
+        Ok(())
+    }
+
+    /// Register `strategy` with an allocation cap. `cap_bps` is a fraction of
+    /// total strategy assets (`10_000` = 100%). The address must be an
+    /// approved vault on the factory set by `set_factory`.
+    pub fn add_strategy(env: Env, strategy: Address, cap_bps: u32) -> Result<(), RwaError> {
+        let config = RwaStorage::load_config(&env)?;
+        config.admin.require_auth();
+        if cap_bps == 0 || cap_bps > 10_000 {
+            return Err(RwaError::InvalidAmount);
+        }
+        let factory = RwaStorage::load_factory(&env).ok_or(RwaError::NotInitialized)?;
+        if !strategy::ApprovedVaultClient::new(&env, &factory).is_approved_vault(&strategy) {
+            return Err(RwaError::StrategyNotApproved);
+        }
+        let mut list = RwaStorage::load_strategies(&env);
+        for record in list.iter() {
+            if record.address == strategy {
+                return Err(RwaError::InvalidAmount);
+            }
+        }
+        list.push_back(types::StrategyRecord {
+            address: strategy.clone(),
+            cap_bps,
+        });
+        RwaStorage::save_strategies(&env, &list);
+        events::strategy_added(&env, &strategy, cap_bps);
+        Ok(())
+    }
+
+    /// Remove a strategy that reports zero assets.
+    pub fn remove_strategy(env: Env, strategy: Address) -> Result<(), RwaError> {
+        let config = RwaStorage::load_config(&env)?;
+        config.admin.require_auth();
+        let list = RwaStorage::load_strategies(&env);
+        strategy::require_known(&list, &strategy)?;
+        if strategy::StrategyClient::new(&env, &strategy).total_assets() != 0 {
+            return Err(RwaError::StrategyNotEmpty);
+        }
+        let mut next = soroban_sdk::Vec::new(&env);
+        for record in list.iter() {
+            if record.address != strategy {
+                next.push_back(record);
+            }
+        }
+        RwaStorage::save_strategies(&env, &next);
+        events::strategy_removed(&env, &strategy);
+        Ok(())
+    }
+
+    /// Move `amount` of the stake token from one strategy to another.
+    /// The destination must still be inside its cap afterwards.
+    pub fn rebalance(env: Env, from: Address, to: Address, amount: i128) -> Result<(), RwaError> {
+        let config = RwaStorage::load_config(&env)?;
+        config.admin.require_auth();
+        env.current_contract_address().require_auth();
+        if amount <= 0 {
+            return Err(RwaError::InvalidAmount);
+        }
+        let list = RwaStorage::load_strategies(&env);
+        strategy::require_known(&list, &from)?;
+        strategy::require_known(&list, &to)?;
+        let adapter = env.current_contract_address();
+        strategy::StrategyClient::new(&env, &from).withdraw(&adapter, &amount);
+        // `amount` is sitting in the adapter, so strategy totals no longer
+        // include it. Caps are a fraction of the whole pool, including it.
+        let assets = strategy::total_assets(&env)
+            .checked_add(amount)
+            .ok_or(RwaError::ArithmeticOverflow)?;
+        let mut room = 0i128;
+        for record in list.iter() {
+            if record.address == to {
+                let held = strategy::StrategyClient::new(&env, &to).total_assets();
+                let cap = assets
+                    .checked_mul(record.cap_bps as i128)
+                    .and_then(|v| v.checked_div(10_000))
+                    .ok_or(RwaError::ArithmeticOverflow)?;
+                room = cap.saturating_sub(held);
+            }
+        }
+        if amount > room {
+            return Err(RwaError::CapExceeded);
+        }
+        strategy::StrategyClient::new(&env, &to).deposit(&adapter, &amount);
+        events::rebalanced(&env, &from, &to, amount);
+        Ok(())
+    }
+
+    pub fn get_strategies(env: Env) -> soroban_sdk::Vec<types::StrategyRecord> {
+        RwaStorage::load_strategies(&env)
     }
 
     /// Checkpoint the index using the previous rate, then begin applying the
@@ -672,6 +797,8 @@ mod test {
                 stake_token: token_id.clone(),
                 oracle: oracle_id,
                 total_deposited: 0,
+                principal_total: 0,
+                yield_reserve: 0,
             };
             RwaStorage::save_config(&env, &config);
             RwaStorage::set_initialized(&env);
@@ -707,6 +834,8 @@ mod test {
                 stake_token: token_id.clone(),
                 oracle: oracle_id,
                 total_deposited: 0,
+                principal_total: 0,
+                yield_reserve: 0,
             };
             RwaStorage::save_config(&env, &config);
             RwaStorage::set_initialized(&env);
@@ -741,6 +870,8 @@ mod test {
                 stake_token: token_id.clone(),
                 oracle: oracle_id,
                 total_deposited: 0,
+                principal_total: 0,
+                yield_reserve: 0,
             };
             RwaStorage::save_config(&env, &config);
             RwaStorage::set_initialized(&env);

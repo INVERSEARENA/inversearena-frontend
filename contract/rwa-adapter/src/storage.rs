@@ -1,5 +1,5 @@
-use crate::types::{PendingAdmin, RwaConfig, RwaError, YieldAccrual, YieldIndex};
-use soroban_sdk::{Address, Env, symbol_short};
+use crate::types::{PendingAdmin, RwaConfig, RwaError, StrategyRecord, YieldAccrual, YieldIndex};
+use soroban_sdk::{Address, Env, Vec, symbol_short};
 
 // Extend TTL whenever a persistent key is read or written (#1076, #1077).
 const PERSISTENT_TTL_THRESHOLD: u32 = 100;
@@ -18,6 +18,12 @@ enum DataKey {
     _YieldReserve,
     /// Tracks the total principal deposited across all positions (#1628).
     _PrincipalTotal,
+    /// Registered strategies in insertion order (#1848).
+    Strategies,
+    /// Total shares outstanding against strategy assets.
+    ShareSupply,
+    /// A depositor's shares of strategy assets.
+    Shares(Address),
 }
 
 pub const CURRENT_STORAGE_VERSION: u32 = 1;
@@ -139,5 +145,62 @@ impl RwaStorage {
 
     pub fn delete_pending_admin(env: &Env) {
         env.storage().persistent().remove(&symbol_short!("PADMIN"));
+    }
+
+    pub fn set_factory(env: &Env, factory: &Address) {
+        env.storage()
+            .instance()
+            .set(&symbol_short!("FACTORY"), factory);
+    }
+
+    pub fn load_factory(env: &Env) -> Option<Address> {
+        env.storage().instance().get(&symbol_short!("FACTORY"))
+    }
+
+    pub fn load_strategies(env: &Env) -> Vec<StrategyRecord> {
+        let key = DataKey::Strategies;
+        Self::extend_ttl(env, &key);
+        env.storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    pub fn save_strategies(env: &Env, strategies: &Vec<StrategyRecord>) {
+        let key = DataKey::Strategies;
+        env.storage().persistent().set(&key, strategies);
+        Self::extend_ttl(env, &key);
+    }
+
+    pub fn strategy_count(env: &Env) -> u32 {
+        Self::load_strategies(env).len()
+    }
+
+    pub fn share_supply(env: &Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ShareSupply)
+            .unwrap_or(0)
+    }
+
+    pub fn set_share_supply(env: &Env, supply: i128) {
+        env.storage().instance().set(&DataKey::ShareSupply, &supply);
+    }
+
+    pub fn user_shares(env: &Env, user: &Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Shares(user.clone()))
+            .unwrap_or(0)
+    }
+
+    pub fn set_user_shares(env: &Env, user: &Address, shares: i128) {
+        let key = DataKey::Shares(user.clone());
+        if shares == 0 {
+            env.storage().persistent().remove(&key);
+            return;
+        }
+        env.storage().persistent().set(&key, &shares);
+        Self::extend_ttl(env, &key);
     }
 }

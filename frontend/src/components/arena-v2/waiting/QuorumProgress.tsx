@@ -1,6 +1,6 @@
 "use client";
 
-import { motion } from "framer-motion";
+import { m as motion } from "motion/react";
 import { useTranslations } from "next-intl";
 
 interface QuorumProgressProps {

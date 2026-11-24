@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { m as motion, AnimatePresence } from "motion/react";
 import { Modal } from '../../ui/Modal';
 import { SocialCard } from './SocialCard';
 

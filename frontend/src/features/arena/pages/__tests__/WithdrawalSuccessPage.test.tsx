@@ -41,13 +41,17 @@ jest.mock("next/navigation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// framer-motion stub (avoid animation overhead in tests)
+// motion/react stub (avoid animation overhead in tests). The Jest mapper
+// already points motion/react at src/__mocks__/motion-react.tsx; this keeps
+// the page's m.div render local if that mapper is bypassed.
 // ---------------------------------------------------------------------------
-jest.mock("framer-motion", () => ({
-  motion: {
+jest.mock("motion/react", () => ({
+  m: {
     div: ({ children, ...rest }: React.HTMLAttributes<HTMLDivElement>) =>
       React.createElement("div", rest, children),
   },
+  LazyMotion: ({ children }: { children: React.ReactNode }) => children,
+  domAnimation: {},
 }));
 
 // ---------------------------------------------------------------------------
