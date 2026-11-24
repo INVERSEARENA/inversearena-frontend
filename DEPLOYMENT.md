@@ -36,7 +36,7 @@ npm install
 npx tsx setup-testnet.ts
 ```
 
-This creates four accounts (admin, payout source, two test players), funds them via Stellar Friendbot, and writes keys to `.env.test` in the repo root.
+This sets up four accounts—an admin, a payout source, and two test players—funds them through Stellar Friendbot, and stores their keys in the `.env.test` file at the repository root.
 
 > **WARNING:** Never commit `.env.test`. It contains private keys. It is already in `.gitignore`.
 
