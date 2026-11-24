@@ -223,3 +223,25 @@ export function formatCount(
   assertValidLocale(locale);
   return new Intl.NumberFormat(locale).format(value);
 }
+
+/**
+ * Format a USD fiat equivalent as a secondary label (#1858).
+ * Returns null when the price is unavailable or stale — the caller is
+ * responsible for not rendering fiat when this returns null.
+ *
+ * Always prefixed with "≈" to indicate it is an approximation.
+ */
+export function formatFiat(
+  usd: number | null | undefined,
+  locale: FormatterLocale = "en",
+): string | null {
+  if (usd === null || usd === undefined || !Number.isFinite(usd)) return null;
+  assertValidLocale(locale);
+  const formatted = new Intl.NumberFormat(locale, {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 2,
+  }).format(usd);
+  return `≈ ${formatted}`;
+}
