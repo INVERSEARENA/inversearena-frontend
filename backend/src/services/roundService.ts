@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { Contract, Keypair, TransactionBuilder, xdr } from "@stellar/stellar-sdk";
 import { StellarRpcGateway } from "../../../frontend/src/shared/lib/stellar/stellarRpcGateway";
+import { setSorobanSpanLedger, withSorobanRpcSpan } from "../utils/sorobanTracing";
 
 import { RoundRepository } from '../repositories/roundRepository';
 import {
@@ -245,7 +246,14 @@ export class RoundService {
       .setTimeout(60)
       .build();
 
-    const simulated = await this.stellarRpcGateway.simulateTransaction(tx);
+    const simulated = await withSorobanRpcSpan(
+      { method: "simulateTransaction", contractId, fn: "resolve_round" },
+      async (span) => {
+        const res = await this.stellarRpcGateway.simulateTransaction(tx);
+        if ("latestLedger" in res) setSorobanSpanLedger(span, res.latestLedger);
+        return res;
+      },
+    );
     if (simulated.error) {
       throw new Error(`resolve_round simulation failed: ${simulated.error}`);
     }
@@ -256,7 +264,14 @@ export class RoundService {
     const prepared = TransactionBuilder.fromXDR(xdr.Transaction.toXDR(tx), this.stellarConfig.networkPassphrase).build();
     prepared.sign(signer);
 
-    const sendResult = await this.stellarRpcGateway.sendTransaction(prepared);
+    const sendResult = await withSorobanRpcSpan(
+      { method: "sendTransaction", contractId, fn: "resolve_round" },
+      async (span) => {
+        const res = await this.stellarRpcGateway.sendTransaction(prepared);
+        if ("latestLedger" in res) setSorobanSpanLedger(span, res.latestLedger);
+        return res;
+      },
+    );
     if (sendResult.status === "PENDING" || sendResult.status === "DUPLICATE") {
       const hash = sendResult.hash;
       const maxPolls = this.stellarConfig.roundConfirmMaxPolls;
@@ -272,7 +287,14 @@ export class RoundService {
         await new Promise((resolve) => setTimeout(resolve, delay));
 
         const elapsed = Date.now() - start;
-        const status = await this.stellarRpcGateway.getTransaction(hash);
+        const status = await withSorobanRpcSpan(
+          { method: "getTransaction", contractId, fn: "resolve_round" },
+          async (span) => {
+            const res = await this.stellarRpcGateway.getTransaction(hash);
+            if ("ledger" in res) setSorobanSpanLedger(span, res.ledger);
+            return res;
+          },
+        );
 
         console.info(
           `[roundService] resolve_round poll attempt=${attempt + 1}/${maxPolls} ` +

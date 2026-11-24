@@ -67,6 +67,12 @@ Backend tests live under `backend/tests/` in three tiers (#1644):
 
 Shared helpers are in `tests/helpers/`; shared setup in `tests/setup/`
 (`unit-setup.ts` for the unit project, `setup.ts` for integration).
+Repository-wide typed protocol fixture builders (`Arena`, `Round`, `Commitment`,
+`Transaction`, `CompatibilityManifest`) live in
+`frontend/src/shared/lib/testing/protocolFixtures.ts`, are re-exported for
+backend tests in `backend/tests/helpers/protocolFixtures.ts`, and have Rust
+counterparts in `contract/test-support/fixtures.rs` (see
+`docs/design/protocol-fixture-builders.md`).
 
 **Where to put a new test**
 
@@ -99,6 +105,21 @@ commit those generated files. Seed state lives in `scripts/.seed-state.json`.
 The dev stack uses Docker Compose with offset ports: Postgres 5433, Redis 6380,
 Mongo 27018, Quickstart 8000. Generated env uses `MONGODB_URI`, `PORT=3001`, and
 `NEXT_PUBLIC_API_BASE_URL=http://localhost:3001`.
+
+### Distributed tracing (Jaeger)
+
+To inspect OpenTelemetry traces locally across Express, BullMQ, Prisma, Redis,
+MongoDB, and Soroban RPC calls:
+
+```bash
+docker compose -f docker-compose.dev.yml --profile tracing up -d jaeger
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 pnpm --filter inversearena-backend dev
+```
+
+Open the Jaeger UI at `http://localhost:16686` and select service
+`inversearena-backend`. Tracing is off by default in `NODE_ENV=test` (set
+`OTEL_SDK_DISABLED=false` to enable it in tests) and configured via standard
+`OTEL_*` environment variables (see `backend/.env.example`).
 
 For a reproducible toolchain, use the devcontainer (`.devcontainer/`, see
 `docs/DEVCONTAINER.md`). Pinned versions: Node 20.20.2, npm 10.9.9, pnpm 10.11.1,

@@ -12,6 +12,7 @@ import {
   backfillCursorPosition,
 } from "../utils/metrics";
 import { logger } from "../utils/logger";
+import { withWorkerSpan } from "../utils/workerTracing";
 
 /** Job name used as the primary key of the single `BackfillCursor` row this
  * worker owns. Keying by job name (rather than a hard-coded singleton row)
@@ -122,7 +123,8 @@ export class ArenaBackfillWorker {
     }
 
     this.isRunning = true;
-    const startedAt = Date.now();
+    return withWorkerSpan("arenaBackfillWorker.run", async () => {
+      const startedAt = Date.now();
     let discovered = 0;
     let failed = 0;
     let pagesRead = 0;
@@ -230,9 +232,10 @@ export class ArenaBackfillWorker {
         pagesRead,
         durationMs,
       };
-    } finally {
-      this.isRunning = false;
-    }
+      } finally {
+        this.isRunning = false;
+      }
+    });
   }
 
   private async loadCursor(): Promise<number> {

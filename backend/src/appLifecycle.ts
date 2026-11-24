@@ -4,6 +4,7 @@ import { logger } from "./utils/logger";
 import { prisma } from "./db/prisma";
 import { mongoose } from "./db/connection";
 import { redis } from "./cache/redisClient";
+import { shutdownTracing } from "./tracing";
 
 export interface ApplicationResources {
   httpServer: Server;
@@ -24,4 +25,5 @@ export async function shutdownApplication(resources: ApplicationResources): Prom
   await resources.txQueue?.close();
   await Promise.allSettled([redis.quit(), prisma.$disconnect(), mongoose.disconnect()]);
   logger.info("InverseArena backend stopped");
+  await shutdownTracing();
 }

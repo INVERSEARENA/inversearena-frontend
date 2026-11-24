@@ -74,6 +74,20 @@ services:
       timeout: 5s
       retries: 5
 
+  # Optional OpenTelemetry trace collector + UI (#1844):
+  #   docker compose -f docker-compose.dev.yml --profile tracing up -d jaeger
+  #   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 pnpm --filter inversearena-backend dev
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: inversearena-jaeger
+    profiles: ["tracing"]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # Jaeger UI
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+
 volumes:
   pgdata:
   mongodata:

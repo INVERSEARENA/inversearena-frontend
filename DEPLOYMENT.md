@@ -161,11 +161,33 @@ Query parameters: `limit` (1–200, default 50), `action`, `adminId`.
 
 ## Mainnet checklist
 
+- [ ] Run `make release-preflight DRY_RUN=1 NETWORK=mainnet` and confirm `"status": "pass"`
 - [ ] Separate funded mainnet deployer identity with minimal balance
 - [ ] Review all contract WASM with `scripts/generate_abi_snapshots.sh --check`
 - [ ] Run `deploy.sh --network mainnet` — script pauses 5 s before proceeding
 - [ ] Update frontend + backend env vars with mainnet contract IDs
 - [ ] Do not use accounts from `.env.test` on mainnet
+
+---
+
+## Release Preflight (#1465)
+
+Before deploying to testnet or mainnet, run the unified release preflight command:
+
+```bash
+make release-preflight DRY_RUN=1 NETWORK=testnet
+```
+
+It validates four domains and emits a machine-readable JSON report (`schemaVersion: 1`) on stdout (with structured check logs on stderr), exiting `1` if any artifact is incompatible:
+
+| Check | What it verifies |
+| --- | --- |
+| `prisma.migrations` | `migration_lock.toml` provider, non-empty bounded `migration.sql` files, and live `prisma migrate status` when `DATABASE_URL` is set (skipped in `--dry-run`) |
+| `soroban.abis_and_manifest` | `contract/*/abi_snapshot.json`, `contract/deployment-manifest.json` (`schemaVersion`, contract IDs, WASM hashes), `network_mismatch`, and `generate_abi_snapshots.sh --check` when WASM + CLI are present |
+| `env.config_and_network` | `backend/.env.example` schema sync and `STELLAR_NETWORK_PASSPHRASE` alignment with `--network` |
+| `release.rollback_readiness` | Flags unguarded destructive DDL (`DROP TABLE`, `DROP COLUMN`, `TRUNCATE`) lacking a `-- rollback:` note, plus manifest/compatibility-doc rollback readiness |
+
+See `docs/design/release-preflight.md` for ownership, state transitions, and failure semantics.
 
 ---
 

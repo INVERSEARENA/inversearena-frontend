@@ -8,6 +8,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { StellarRpcGateway } from "../../../frontend/src/shared/lib/stellar/stellarRpcGateway";
+import { setSorobanSpanLedger, withSorobanRpcSpan } from "../utils/sorobanTracing";
 
 import type {
   ArenaCreationResult,
@@ -173,7 +174,14 @@ export class ArenaService {
       );
     }
 
-    const tx = await this.stellarRpcGateway.getTransaction(txHash);
+    const tx = await withSorobanRpcSpan(
+      { method: "getTransaction", contractId: factoryContractId, fn: "create_pool" },
+      async (span) => {
+        const res = await this.stellarRpcGateway.getTransaction(txHash);
+        if ("ledger" in res) setSorobanSpanLedger(span, res.ledger);
+        return res;
+      },
+    );
 
     if (tx.status !== "SUCCESS") {
       throw new Error(`Arena deployment transaction ${txHash} did not succeed on-chain`);

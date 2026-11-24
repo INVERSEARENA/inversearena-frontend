@@ -1,6 +1,8 @@
 import "dotenv/config";
 // Validate the whole environment before any module below opens a connection (#1650).
 import "./config/bootEnv";
+// Initialize OpenTelemetry before Express, Prisma, ioredis, Mongoose, or BullMQ (#1844).
+import "./tracing";
 // import { db } from "./db/client";
 import { redis } from "./cache/redisClient";
 import { prisma } from "./db/prisma";
