@@ -2,6 +2,7 @@
  * Operations, Audit, Retention & Diagnostics Metrics Domain (#1750)
  */
 
+import { monitorEventLoopDelay, type EventLoopDelayMonitor } from "node:perf_hooks";
 import {
   createCounter,
   createGauge,
@@ -382,3 +383,49 @@ export const cacheRequestsTotal = createCounter(
   },
   { domain: "ops" },
 );
+
+// #1834: Event-loop lag histogram exported as a metric
+export const eventLoopLagSeconds = createHistogram(
+  {
+    name: "inversearena_event_loop_lag_seconds",
+    help: "Event loop lag histogram measured via perf_hooks.monitorEventLoopDelay in seconds",
+    buckets: [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2],
+  },
+  { domain: "ops" },
+);
+
+let eventLoopMonitor: EventLoopDelayMonitor | null = null;
+let eventLoopSamplingTimer: NodeJS.Timeout | null = null;
+
+export function startEventLoopMonitoring(resolutionMs = 20, sampleIntervalMs = 500): EventLoopDelayMonitor {
+  if (eventLoopMonitor) return eventLoopMonitor;
+  eventLoopMonitor = monitorEventLoopDelay({ resolution: resolutionMs });
+  eventLoopMonitor.enable();
+
+  eventLoopSamplingTimer = setInterval(() => {
+    if (!eventLoopMonitor) return;
+    const meanSeconds = eventLoopMonitor.mean / 1e9;
+    if (Number.isFinite(meanSeconds) && meanSeconds > 0) {
+      eventLoopLagSeconds.observe(meanSeconds);
+    }
+    eventLoopMonitor.reset();
+  }, sampleIntervalMs);
+  eventLoopSamplingTimer.unref();
+
+  return eventLoopMonitor;
+}
+
+export function stopEventLoopMonitoring(): void {
+  if (eventLoopSamplingTimer) {
+    clearInterval(eventLoopSamplingTimer);
+    eventLoopSamplingTimer = null;
+  }
+  if (eventLoopMonitor) {
+    eventLoopMonitor.disable();
+    eventLoopMonitor = null;
+  }
+}
+
+export function getEventLoopMonitor(): EventLoopDelayMonitor | null {
+  return eventLoopMonitor;
+}

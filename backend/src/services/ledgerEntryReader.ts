@@ -10,6 +10,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Address, scValToNative, xdr } from "@stellar/stellar-sdk";
+import {
+  XdrDecodePool,
+  getSharedXdrDecodePool,
+  type LedgerEntryItem,
+} from "./xdrDecodePool";
 
 export const LEDGER_ENTRY_BATCH_LIMIT = 200;
 export const STORAGE_LAYOUT_VERSION = 1;
@@ -130,6 +135,7 @@ export async function readArenaHotState(
   source: LedgerEntrySource,
   contractId: string,
   nowLedger?: number,
+  pool?: XdrDecodePool,
 ): Promise<HotReadResult> {
   const layout = loadArenaStorageLayout();
   const specs = layout.keys.filter((key) => key.encoding !== "enum-address");
@@ -141,6 +147,8 @@ export async function readArenaHotState(
   let offset = 0;
   for (const batch of chunkKeys(ledgerKeys)) {
     const response = await source.getLedgerEntries(batch);
+    const batchItems: LedgerEntryItem[] = [];
+
     for (const [index, entry] of response.entries.entries()) {
       if (!entry?.xdr) continue;
       const byKey = entry.key
@@ -151,8 +159,28 @@ export async function readArenaHotState(
       sawEntry = true;
       const liveUntil =
         entry.liveUntilLedgerSeq === undefined ? undefined : Number(entry.liveUntilLedgerSeq);
-      values[spec.name] = decodeEntry(entry.xdr, nowLedger, liveUntil);
+      batchItems.push({ name: spec.name, xdr: entry.xdr, liveUntil });
     }
+
+    if (batchItems.length > 0) {
+      const activePool = pool ?? getSharedXdrDecodePool();
+      if (activePool && batchItems.length >= activePool.batchThreshold) {
+        try {
+          const decoded = await activePool.decodeLedgerEntries(batchItems, nowLedger);
+          Object.assign(values, decoded);
+        } catch (err) {
+          if (err instanceof Error && err.message.includes("archived")) {
+            throw new LedgerLayoutError("ledger entry is archived and needs a restore");
+          }
+          throw new LedgerLayoutError(`Failed to decode ledger entries: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } else {
+        for (const item of batchItems) {
+          values[item.name] = decodeEntry(item.xdr, nowLedger, item.liveUntil);
+        }
+      }
+    }
+
     offset += batch.length;
   }
   if (!sawEntry) return { kind: "miss", values };
@@ -165,9 +193,10 @@ export async function readArenaHotStateOrSimulate<T>(
   simulate: () => Promise<T>,
   project: (values: Record<string, unknown>) => T | undefined,
   nowLedger?: number,
+  pool?: XdrDecodePool,
 ): Promise<T> {
   try {
-    const read = await readArenaHotState(source, contractId, nowLedger);
+    const read = await readArenaHotState(source, contractId, nowLedger, pool);
     if (read.kind === "value") {
       const projected = project(read.values);
       if (projected !== undefined) return projected;

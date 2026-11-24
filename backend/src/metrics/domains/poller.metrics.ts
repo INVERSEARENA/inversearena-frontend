@@ -153,6 +153,34 @@ export const arenaPollerActiveArenasGauge = createGauge(
   { domain: "poller" },
 );
 
+// #1834: XDR worker decode pool metrics
+export const xdrDecodeDurationSeconds = createHistogram(
+  {
+    name: "inversearena_xdr_decode_duration_seconds",
+    help: "Duration of XDR decoding operations in seconds",
+    labelNames: ["mode"],
+    buckets: [0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25],
+  },
+  { domain: "poller" },
+);
+
+export const xdrDecodePoolTasksTotal = createCounter(
+  {
+    name: "inversearena_xdr_decode_pool_tasks_total",
+    help: "Total tasks dispatched to the XDR worker decode pool, by outcome",
+    labelNames: ["outcome"],
+  },
+  { domain: "poller" },
+);
+
+export const xdrDecodePoolQueueDepth = createGauge(
+  {
+    name: "inversearena_xdr_decode_pool_queue_depth",
+    help: "Current queue depth of pending tasks in the XDR decode pool",
+  },
+  { domain: "poller" },
+);
+
 export async function refreshArenaMetrics(prisma: PrismaClient): Promise<void> {
   const activeRounds = await prisma.round.findMany({
     where: {
