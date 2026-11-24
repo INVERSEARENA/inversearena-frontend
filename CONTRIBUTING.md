@@ -141,3 +141,23 @@ Pre-commit hooks are optional; install with `INSTALL_PRE_COMMIT=1`.
 The static documentation portal is generated from existing Markdown, the backend OpenAPI document, and contract doc comments. Run `make docs-check` before submitting documentation changes and `make docs-build` to render the site. See `docs/DOCUMENTATION_PORTAL.md`.
 
 Changes to contract state machines or fund-moving paths must add guard tests that survive mutation testing. Run `make contracts-mutants` when `cargo-mutants` is available; see `contract/docs/MUTATION_TESTING.md`.
+
+## Express 5 Migration Notes (#1837)
+
+The backend has migrated to Express 5. Contributors writing new route handlers or middleware should be aware of key differences:
+
+1. **Native Async Error Propagation**:
+   - Async route handlers no longer require `asyncHandler` wrappers or boilerplate `try / catch (err) { next(err); }`.
+   - Any thrown error or rejected promise inside an `async (req, res) => { ... }` handler is automatically forwarded to the global error handler (`errorHandler.ts`).
+   - The legacy `asyncHandler` in `src/middleware/validate.ts` is maintained as a transparent pass-through for backward compatibility.
+
+2. **`req.query` is a Getter**:
+   - In Express 5, `req.query` is defined with a getter. Direct assignment (`req.query = ...`) throws in strict mode.
+   - Validation middleware (`validateQuery`) parses schemas and stores validated objects on `res.locals.query`, while gracefully maintaining best-effort compatibility for handlers.
+
+3. **Status Codes & Response**:
+   - The deprecated `res.send(status)` numeric shorthand has been removed in Express 5. Always use `res.sendStatus(statusCode)` or `res.status(statusCode).send(...)` / `res.status(statusCode).json(...)`.
+
+4. **Path Syntax (path-to-regexp v8)**:
+   - Regexp parameters and wildcard paths use updated syntax. Optional parameters are written as `{/:param}` rather than `:param?`.
+

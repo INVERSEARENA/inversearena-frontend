@@ -319,6 +319,10 @@ export class RetentionWorker {
   /** Child partitions currently attached to a managed parent. */
   async listPartitions(table: string): Promise<string[]> {
     assertSafeIdent(table);
+    // Justification for $queryRawUnsafe (#1838): System catalog query against pg_inherits
+    // and pg_class to introspect dynamic table partitions. The input `table` is strictly validated
+    // via `assertSafeIdent()` against a regex whitelist (/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/) to prevent SQL injection.
+    // Cannot be migrated to TypedSQL because it queries PostgreSQL system catalogs rather than application models.
     const rows = await this.prisma.$queryRawUnsafe<Array<{ relname: string }>>(
       `SELECT c.relname
        FROM pg_inherits i
@@ -455,6 +459,10 @@ export class RetentionWorker {
   private async relationExistsInArchive(name: string): Promise<boolean> {
     assertSafeIdent(name);
     assertSafeIdent(ARCHIVE_SCHEMA);
+    // Justification for $queryRawUnsafe (#1838): System catalog query against pg_class
+    // and pg_namespace to check partition existence in the archive schema. The inputs `name`
+    // and `ARCHIVE_SCHEMA` are validated via `assertSafeIdent()` against SQL injection.
+    // Cannot use TypedSQL because it targets Postgres internal catalogs across dynamic schemas.
     const rows = await this.prisma.$queryRawUnsafe<Array<{ one: number }>>(
       `SELECT 1 AS one
        FROM pg_class c
