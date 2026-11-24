@@ -487,3 +487,7 @@ pub(crate) mod test_support {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod test;
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod fixture_tests;

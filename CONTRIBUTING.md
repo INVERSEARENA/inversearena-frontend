@@ -70,6 +70,12 @@ Backend tests live under `backend/tests/` in three tiers (#1644):
 
 Shared helpers are in `tests/helpers/`; shared setup in `tests/setup/`
 (`unit-setup.ts` for the unit project, `setup.ts` for integration).
+Repository-wide typed protocol fixture builders (`Arena`, `Round`, `Commitment`,
+`Transaction`, `CompatibilityManifest`) live in
+`frontend/src/shared/lib/testing/protocolFixtures.ts`, are re-exported for
+backend tests in `backend/tests/helpers/protocolFixtures.ts`, and have Rust
+counterparts in `contract/test-support/fixtures.rs` (see
+`docs/design/protocol-fixture-builders.md`).
 
 **Where to put a new test**
 
