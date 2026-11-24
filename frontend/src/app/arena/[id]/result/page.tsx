@@ -29,6 +29,7 @@ interface ResultData {
   gameState: string;
 }
 
+// #1776: server-rendered/ISR result pages are tracked separately.
 // Truncate a wallet address for display
 function shortAddress(addr: string): string {
   if (!addr || addr.length < 10) return addr;
