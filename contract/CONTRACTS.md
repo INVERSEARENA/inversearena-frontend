@@ -192,6 +192,29 @@ lost: treat the frozen rate like a stale reading (`stale == true`).
 - `pub fn get_reporters(env: Env) -> Vec<Address>` — registered reporters in insertion order
 - `pub fn get_oracle_status(env: Env) -> OracleStatus` — `{rate_bps, stale, fresh_reports, quorum, reporter_count, finalized_at}`
 
+## RWA adapter
+
+Accounting (who is owed what) and the yield source (where the tokens sit) are separate (#1848). With no strategy registered, `deposit`, `withdraw`, `withdraw_all`, and `balance_of` keep the index path arenas already call. After `set_factory` and `add_strategy`, those same entry points mint and burn shares of `sum(strategy.total_assets())`, so a gain or a loss in one strategy is split across depositors in proportion to their shares. The arena client is unchanged.
+
+### Strategy interface
+
+`deposit(from, amount)`, `withdraw(to, amount) -> i128`, `total_assets() -> i128`. `contract/idle-strategy` is the reference: it holds the stake token and lets only the depositing vault withdraw.
+
+### Admin
+
+- `set_factory(factory)` — admin. `add_strategy` asks that factory `is_approved_vault`.
+- `add_strategy(strategy, cap_bps)` — admin. `cap_bps` is the strategy's share of total strategy assets (`10_000` = 100%). Rejects an address the factory has not approved.
+- `remove_strategy(strategy)` — admin, and only when `total_assets` is 0.
+- `rebalance(from, to, amount)` — admin. Pulls `amount` from `from` and deposits it into `to`, reverting if that would pass `to`'s cap.
+
+`withdraw_all` pulls strategies in registration order. A strategy that reverts is skipped. If the rest cannot cover the shares being burned, the call returns `InsufficientBalance` and nothing is paid. Events: `str_add`, `str_rem`, `rebalance` (namespace `rwa`).
+
+### Errors
+- `StrategyNotApproved`
+- `StrategyNotEmpty`
+- `CapExceeded`
+- `UnknownStrategy`
+
 ## Staking
 
 ### Errors

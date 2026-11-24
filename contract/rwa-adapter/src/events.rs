@@ -83,6 +83,30 @@ pub fn admin_changed(env: &Env, old_admin: &Address, new_admin: &Address) {
     );
 }
 
+/// Emitted when a strategy is registered (#1848).
+pub fn strategy_added(env: &Env, strategy: &Address, cap_bps: u32) {
+    env.events().publish(
+        (NS(env), symbol_short!("str_add"), strategy.clone()),
+        (1u32, cap_bps),
+    );
+}
+
+/// Emitted when an empty strategy is removed (#1848).
+pub fn strategy_removed(env: &Env, strategy: &Address) {
+    env.events().publish(
+        (NS(env), symbol_short!("str_rem"), strategy.clone()),
+        (1u32,),
+    );
+}
+
+/// Emitted when assets move from one strategy to another (#1848).
+pub fn rebalanced(env: &Env, from: &Address, to: &Address, amount: i128) {
+    env.events().publish(
+        (NS(env), symbol_short!("rebalance"), from.clone(), to.clone()),
+        (1u32, amount),
+    );
+}
+
 /// Emitted when the WASM is upgraded.
 pub fn upgraded(env: &Env) {
     env.events().publish(
