@@ -179,12 +179,15 @@ export function createApp(deps: AppDependencies): express.Application {
       ]);
 
       const breakerStats = deps.paymentService.getSorobanBreakerStats();
+      const protocol = await checkRpcProtocolSupport();
+      const unhealthy = (breakerStats.isOpen && !breakerStats.reportOnly) || !protocol.ok;
 
-      res.status(200).json({
-        status: "ready",
+      res.status(unhealthy ? 503 : 200).json({
+        status: unhealthy ? "not_ready" : "ready",
         database: dbResult,
         redis: redisResult,
         sorobanCircuitBreaker: breakerStats,
+        rpcProtocol: protocol,
       });
     } catch (error) {
       res.status(503).json({

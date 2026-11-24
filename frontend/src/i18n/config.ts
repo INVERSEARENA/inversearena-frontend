@@ -7,6 +7,7 @@
  * no hydration mismatches. The switcher writes the cookie and refreshes.
  */
 export const LOCALES = ["en", "es"] as const;
+// #1777: per-route message namespace catalogs are tracked separately.
 
 export type Locale = (typeof LOCALES)[number];
 

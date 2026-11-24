@@ -4,23 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-echo "[devcontainer] installing frontend dependencies"
-if [ -d frontend ]; then
-  (cd frontend && pnpm install --frozen-lockfile --ignore-scripts || pnpm install --ignore-scripts)
-fi
-
-echo "[devcontainer] installing backend dependencies"
-if [ -d backend ]; then
-  (cd backend && npm ci --ignore-scripts || npm install --ignore-scripts)
-fi
-
-echo "[devcontainer] installing tools dependencies"
-if [ -d tools/ops-cli ]; then
-  (cd tools/ops-cli && npm ci --ignore-scripts || npm install --ignore-scripts)
-fi
-if [ -d scripts ] && [ -f scripts/package.json ]; then
-  (cd scripts && npm ci --ignore-scripts || npm install --ignore-scripts)
-fi
+echo "[devcontainer] installing workspace dependencies"
+pnpm install --frozen-lockfile --ignore-scripts || pnpm install --ignore-scripts
 
 echo "[devcontainer] pinned versions"
 node -v || true

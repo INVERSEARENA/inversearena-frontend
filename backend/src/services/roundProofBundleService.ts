@@ -29,6 +29,7 @@ import type {
 import { ROUND_PROOF_BUNDLE_VERSION } from '../types/round';
 import { getStellarConfig, type StellarConfig } from '../config/stellarConfig';
 import { contextLogger } from '../utils/logger';
+import { getConfiguredNetwork } from "../config/network";
 import {
   proofBundleAssemblyDuration,
   proofBundleAssemblyRetriesTotal,
@@ -292,7 +293,7 @@ export class RoundProofBundleService {
    * failure behavior).
    */
   private async resolveArenaContractId(arenaId: string): Promise<string> {
-    const arena = await this.prisma.arena.findUnique({ where: { id: arenaId } });
+    const arena = await this.prisma.arena.findFirst({ where: { id: arenaId, network: getConfiguredNetwork() },});
     const metadata = (arena?.metadata as Record<string, unknown> | null) ?? {};
     const contractAddress = metadata.contractAddress;
     if (typeof contractAddress !== 'string' || contractAddress.length === 0) {

@@ -23,6 +23,7 @@ import { UserModel } from "../db/models/user.model";
 import { apiError } from "../utils/apiError";
 import { logger } from "../utils/logger";
 import { watchlistOperationsTotal } from "../utils/metrics";
+import { getConfiguredNetwork } from "../config/network";
 
 const MAX_WATCHED_ARENAS = 200;
 
@@ -30,7 +31,7 @@ export class WatchlistService {
   constructor(private readonly prisma: PrismaClient) {}
 
   private async assertArenaExists(arenaId: string): Promise<void> {
-    const arena = await this.prisma.arena.findUnique({ where: { id: arenaId }, select: { id: true } });
+    const arena = await this.prisma.arena.findFirst({ where: { id: arenaId, network: getConfiguredNetwork() }, select: { id: true } });
     if (!arena) {
       throw apiError(404, "ARENA_NOT_FOUND", `Arena '${arenaId}' not found`);
     }

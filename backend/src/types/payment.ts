@@ -10,6 +10,7 @@ export type PaymentStatus =
 
 export interface TransactionRecord {
   id: string;
+  network?: string;
   payoutId: string;
   /**
    * Arena contract the payout is validated against on-chain (#1632): the

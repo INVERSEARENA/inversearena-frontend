@@ -90,10 +90,16 @@ test("package manager and engines pins", () => {
   assert.equal(rootPkg.dependencies, undefined);
   assert.equal(rootPkg.devDependencies, undefined);
 
+  const ws = read("pnpm-workspace.yaml");
+  for (const pkg of ["frontend", "backend", "packages/*", "tools/*", "scripts", "docs-portal"]) {
+    assert.match(ws, new RegExp(`- ${pkg.replace(/[/*]/g, "\\$&")}`), `workspace includes ${pkg}`);
+  }
+  assert.match(ws, /onlyBuiltDependencies:/);
+
   const frontend = JSON.parse(read("frontend/package.json"));
   const backend = JSON.parse(read("backend/package.json"));
   assert.equal(frontend.packageManager, `pnpm@${PINS.pnpm}`);
-  if (backend.packageManager) assert.equal(backend.packageManager, `npm@${PINS.npm}`);
+  assert.equal(backend.packageManager, undefined);
 });
 
 test("dev-stack env and modes are correct", () => {

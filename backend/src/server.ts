@@ -45,6 +45,12 @@ async function main() {
   initSentry();
   await connectDB();
   await redis.connect();
+  // #1841: refuse startup if persisted chain data belongs to a different Stellar network.
+  const configuredNetwork = process.env.STELLAR_NETWORK_PASSPHRASE?.trim() || "Test SDF Network ; September 2015";
+  const mismatchedArena = await prisma.arena.findFirst({ where: { network: { not: configuredNetwork } }, select: { id: true, network: true } });
+  if (mismatchedArena) {
+    throw new Error(`network_mismatch:db_configured_for_different_network:${mismatchedArena.network}`);
+  }
   const projectionStreamSubscriber = redis.duplicate();
   projectionStreamSubscriber.on("error", (err) => {
     logger.error({ err }, "Projection stream subscriber connection error");

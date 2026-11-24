@@ -13,7 +13,7 @@ has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
 run_backend() {
   if [ ! -d backend/node_modules ]; then
-    skip "backend deps missing (run: cd backend && npm ci)"
+    skip "backend deps missing (run: pnpm install)"
     return 0
   fi
   if ! has_cmd node || ! has_cmd npm; then
@@ -29,7 +29,7 @@ run_backend() {
 
 run_frontend() {
   if [ ! -d frontend/node_modules ]; then
-    skip "frontend deps missing (run: cd frontend && pnpm install --frozen-lockfile --ignore-scripts)"
+    skip "frontend deps missing (run: pnpm install)"
     return 0
   fi
   if ! has_cmd node || ! has_cmd pnpm; then
@@ -64,7 +64,7 @@ run_contract() {
 
 run_ops_cli() {
   if [ ! -d tools/ops-cli/node_modules ]; then
-    skip "ops-cli deps missing (run: cd tools/ops-cli && npm ci)"
+    skip "ops-cli deps missing (run: pnpm install)"
     return 0
   fi
   if ! has_cmd node || ! has_cmd npm; then

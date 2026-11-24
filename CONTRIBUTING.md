@@ -64,8 +64,8 @@ Backend tests live under `backend/tests/` in three tiers (#1644):
 
 | Directory | Needs services? | Run with |
 | --- | --- | --- |
-| `tests/unit/` | no | `npm run test:unit` |
-| `tests/integration/` | Postgres + Redis (+ Mongo via `mongodb-memory-server`) | `npm run test:integration` |
+| `tests/unit/` | no | `pnpm --filter inversearena-backend run test:unit` |
+| `tests/integration/` | Postgres + Redis (+ Mongo via `mongodb-memory-server`) | `pnpm --filter inversearena-backend run test:integration` |
 | `tests/contract-fixtures/` | no (data only) | — |
 
 Shared helpers are in `tests/helpers/`; shared setup in `tests/setup/`

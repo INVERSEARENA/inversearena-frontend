@@ -36,7 +36,7 @@ try {
   Networks = sdk.Networks;
 } catch {
   // Fallback: resolve from backend node_modules
-  const sdkPath = path.resolve(__dirname, "../backend/node_modules/@stellar/stellar-sdk");
+  const sdkPath = path.resolve(__dirname, "../node_modules/@stellar/stellar-sdk");
   const sdk = await import(sdkPath);
   Keypair = sdk.Keypair;
   Networks = sdk.Networks;

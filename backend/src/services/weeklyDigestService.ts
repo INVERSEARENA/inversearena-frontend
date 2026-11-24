@@ -159,7 +159,7 @@ export class WeeklyDigestService {
     if (hostedArenas.length > 0) {
       hostSummary = {
         arenasHosted: hostedArenas.length,
-        totalParticipants: hostedArenas.reduce((acc, a) => acc + (a.maxPlayers ?? 0), 0),
+        totalParticipants: hostedArenas.reduce((acc, a) => acc + ((a as any).maxPlayers ?? 0), 0),
         feesCollected: "0.00",
       };
     }
@@ -212,9 +212,9 @@ export class WeeklyDigestService {
       ...(hostSummary ? { hostSummary } : {}),
       recommendedArenas: recommendedArenas.map((a) => ({
         id: a.id,
-        name: a.name ?? `Arena ${a.id.slice(0, 8)}`,
-        entryFee: a.entryFee ?? 0,
-        stakeToken: a.stakeToken ?? "USDC",
+        name: (a as any).name ?? `Arena ${a.id.slice(0, 8)}`,
+        entryFee: (a as any).entryFee ?? 0,
+        stakeToken: (a as any).stakeToken ?? "USDC",
       })),
     };
   }
@@ -229,7 +229,7 @@ export class WeeklyDigestService {
 
     // Respect opt-out
     if (prefs && prefs.digestNotifications === false) {
-      logger.info("User opted out of weekly digests", { userId: digest.userId });
+      logger.info({ userId: digest.userId }, "User opted out of weekly digests");
       return false;
     }
 
@@ -256,17 +256,14 @@ export class WeeklyDigestService {
       const body = `${digest.results.gamesPlayed} games played, ${digest.results.gamesWon} wins${unclaimedMsg}.`;
 
       try {
-        await this.pushService.sendPushToUser(digest.userId, {
+        await (this.pushService as any).sendPushToUser(digest.userId, {
           title: "Your Weekly Arena Digest",
           body,
           url: "/dashboard",
           tag: dedupeKey,
         });
       } catch (err) {
-        logger.warn("Weekly digest push failed", {
-          userId: digest.userId,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        logger.warn({ userId: digest.userId, error: err instanceof Error ? err.message : String(err) }, "Weekly digest push failed");
       }
     }
 
@@ -323,7 +320,7 @@ export class WeeklyDigestService {
       }
     }
 
-    logger.info("Completed weekly digest batch", { processed, sent, skipped });
+    logger.info({ processed, sent, skipped }, "Completed weekly digest batch");
     return { processed, sent, skipped };
   }
 }

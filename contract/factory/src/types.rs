@@ -175,4 +175,5 @@ pub enum FactoryError {
     OutstandingLiabilities = 25,
     /// The entry is not approved, so it cannot be reactivated (#1688).
     IntegrationNotApproved = 26,
+    MigrationPending = 27,
 }

@@ -29,7 +29,8 @@ const COMMIT_TTL_GRACE_LEDGERS: u32 = 17_280;
 /// of protocol 21.  Clamping prevents set_ttl rejections when a configured
 /// round duration would exceed this.
 const SOROBAN_TEMP_MAX_TTL: u32 = 3_110_400; // ~6 months
-pub(crate) const PAGED_ROSTER_VERSION: u32 = 2;
+pub(crate) const CURRENT_STORAGE_VERSION: u32 = 2;
+pub(crate) const PAGED_ROSTER_VERSION: u32 = CURRENT_STORAGE_VERSION;
 const LEGACY_ROSTER_VERSION: u32 = 1;
 
 /// Storage key for per-player data, keyed by the player's address.
@@ -87,6 +88,12 @@ pub(crate) enum DataKey {
     /// self-funded joins. Kept in its own key so the persisted `PlayerState`
     /// XDR layout is unchanged. Refunds are paid to this address when present.
     Sponsor(Address),
+    /// Ledger timestamp at which the arena entered Open after a round.
+    LastTransitionAt,
+    /// Inter-round abandonment timeout snapshotted at initialization.
+    InterRoundTimeout,
+    /// Cumulative paused seconds applied to the current round deadlines.
+    PausedDeadlineSeconds,
 }
 
 pub struct ArenaRepository<'a> {
@@ -656,6 +663,24 @@ impl ArenaStorage {
     pub fn migrate_legacy_players(env: &Env) {
         Self::ensure_paged_roster(env);
     }
+
+    pub fn require_current_storage_version(env: &Env) -> Result<(), ArenaError> {
+        let v = Self::load_storage_version_raw(env);
+        if v < CURRENT_STORAGE_VERSION {
+            return Err(ArenaError::MigrationPending);
+        }
+        Ok(())
+    }
+
+    pub fn migrate(env: &Env, max_steps: u32) -> u32 {
+        // Idempotent/resumable migration. Current migration is roster pagination;
+        // it runs in bounded work by nature (single roster rewrite) but we keep
+        // the chunked API for future migrations.
+        let _ = max_steps;
+        Self::ensure_paged_roster(env);
+        Self::load_storage_version_raw(env)
+    }
+
 
     /// Return the list of all player addresses that have joined this arena.
     pub fn load_all_players(env: &Env) -> Vec<Address> {

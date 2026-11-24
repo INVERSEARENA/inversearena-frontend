@@ -12,7 +12,6 @@
  * independently — consistent with how arenaPoller/paymentService already
  * treat Soroban unavailability.
  */
-// @ts-ignore
 import { rpc } from "@stellar/stellar-sdk";
 const { Server } = rpc;
 import { getSorobanBreaker, type CircuitBreaker } from "../utils/circuitBreaker";

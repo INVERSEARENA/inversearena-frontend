@@ -3,6 +3,7 @@ import { PrismaClient, type Arena, type Round } from "@prisma/client";
 import { readOnChainGameState, readOnChainPlayerStatus } from "./onChainReader";
 import { isVerifiedRead } from "../types/onChainRead";
 import type { PlayerChoice } from "../types/round";
+import { getConfiguredNetwork } from "../config/network";
 
 export type RecoveryStatus = "refundable" | "submitted" | "confirmed" | "failed";
 
@@ -49,8 +50,7 @@ export class CancellationRecoveryService {
   constructor(private prisma: PrismaClient) {}
 
   async getArenaRecovery(arenaId: string): Promise<ArenaCancellationRecovery | null> {
-    const arena = await this.prisma.arena.findUnique({
-      where: { id: arenaId },
+    const arena = await this.prisma.arena.findFirst({ where: { id: arenaId, network: getConfiguredNetwork() },
       include: { rounds: { orderBy: { roundNumber: "asc" } } },
     });
     if (!arena) return null;

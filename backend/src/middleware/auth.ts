@@ -38,6 +38,7 @@ declare global {
 export function requireAuth(authService: AuthService): RequestHandler {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
+      // #1780: cookie-backed token acceptance is tracked in a follow-up.
       const header = req.headers.authorization ?? "";
       const token = header.startsWith("Bearer ") ? header.slice(7) : "";
       if (!token) {

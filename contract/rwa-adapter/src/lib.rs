@@ -51,12 +51,14 @@ impl RwaAdapter {
             rate_bps: oracle::fetch_yield_bps(&env, &config.oracle),
         });
         RwaStorage::set_initialized(&env);
+        RwaStorage::save_storage_version(&env, storage::CURRENT_STORAGE_VERSION);
         env.events()
             .publish((soroban_sdk::symbol_short!("init"),), ());
         Ok(())
     }
 
     pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), RwaError> {
+        RwaStorage::require_current_storage_version(&env)?;
         if RwaStorage::strategy_count(&env) > 0 {
             return strategy::deposit(&env, &from, amount);
         }
@@ -120,6 +122,7 @@ impl RwaAdapter {
     }
 
     pub fn withdraw_all(env: Env, from: Address) -> Result<i128, RwaError> {
+        RwaStorage::require_current_storage_version(&env)?;
         if RwaStorage::strategy_count(&env) > 0 {
             return strategy::withdraw_all(&env, &from);
         }
@@ -190,6 +193,7 @@ impl RwaAdapter {
     /// `withdraw_all`; a shortfall is surfaced with the `short` event and the
     /// returned value is what was actually paid.
     pub fn withdraw(env: Env, from: Address, amount: i128) -> Result<i128, RwaError> {
+        RwaStorage::require_current_storage_version(&env)?;
         if RwaStorage::strategy_count(&env) > 0 {
             return strategy::withdraw(&env, &from, amount);
         }
@@ -325,6 +329,7 @@ impl RwaAdapter {
     }
 
     pub fn fund_yield_reserve(env: Env, from: Address, amount: i128) -> Result<(), RwaError> {
+        RwaStorage::require_current_storage_version(&env)?;
         from.require_auth();
         let config = RwaStorage::load_config(&env)?;
         if config.admin != from {
@@ -480,6 +485,7 @@ impl RwaAdapter {
     /// Propose a new admin. The current admin must authorize the proposal.
     /// The proposed admin must call `accept_admin` to complete the transfer.
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), RwaError> {
+        RwaStorage::require_current_storage_version(&env)?;
         let config = RwaStorage::load_config(&env)?;
         config.admin.require_auth();
         RwaStorage::save_pending_admin(&env, &PendingAdmin { new_admin });
@@ -488,6 +494,7 @@ impl RwaAdapter {
 
     /// Accept a pending admin transfer. Only the proposed admin may call this.
     pub fn accept_admin(env: Env) -> Result<(), RwaError> {
+        RwaStorage::require_current_storage_version(&env)?;
         let pending = RwaStorage::load_pending_admin(&env).ok_or(RwaError::NoPendingAdmin)?;
         pending.new_admin.require_auth();
         let mut config = RwaStorage::load_config(&env)?;
@@ -503,6 +510,7 @@ impl RwaAdapter {
     }
 
     pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) -> Result<(), RwaError> {
+        RwaStorage::require_current_storage_version(&env)?;
         let config = RwaStorage::load_config(&env)?;
         config.admin.require_auth();
         env.deployer()

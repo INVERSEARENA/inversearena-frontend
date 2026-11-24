@@ -53,6 +53,7 @@ pub enum DataKey {
     /// #1688: Number of pools that still carry a liability against an
     /// integration — created, but not yet finished or cancelled.
     LiveUse(RegistryKind, Address),
+    StorageVersion,
 }
 
 #[contracttype]
@@ -64,9 +65,24 @@ pub struct CreatorStakeRecord {
     pub stake_token: Address,
 }
 
+pub const CURRENT_STORAGE_VERSION: u32 = 1;
 pub struct FactoryStorage;
 
 impl FactoryStorage {
+    pub fn load_storage_version(env: &Env) -> u32 {
+        env.storage().persistent().get(&DataKey::StorageVersion).unwrap_or(CURRENT_STORAGE_VERSION)
+    }
+    pub fn save_storage_version(env: &Env, v: u32) { env.storage().persistent().set(&DataKey::StorageVersion, &v); }
+    pub fn require_current_storage_version(env: &Env) -> Result<(), FactoryError> {
+        if Self::load_storage_version(env) < CURRENT_STORAGE_VERSION { return Err(FactoryError::MigrationPending); }
+        Ok(())
+    }
+    pub fn migrate(env: &Env, _max_steps: u32) -> u32 {
+        let v = Self::load_storage_version(env);
+        if v < CURRENT_STORAGE_VERSION { Self::save_storage_version(env, CURRENT_STORAGE_VERSION); }
+        CURRENT_STORAGE_VERSION
+    }
+
     fn extend_persistent_ttl<K>(env: &Env, key: &K)
     where
         K: IntoVal<Env, Val>,

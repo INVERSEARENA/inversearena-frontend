@@ -81,12 +81,13 @@ pub enum RwaError {
     NotAdmin = 10,
     /// Only the admin may fund the yield reserve (#1628).
     NotAuthorized = 11,
+    MigrationPending = 12,
     /// Strategy address is not an approved vault on the factory (#1848).
-    StrategyNotApproved = 12,
+    StrategyNotApproved = 13,
     /// `remove_strategy` was called while the strategy still holds assets.
-    StrategyNotEmpty = 13,
+    StrategyNotEmpty = 14,
     /// Deposit or rebalance would push a strategy past its allocation cap.
-    CapExceeded = 14,
+    CapExceeded = 15,
     /// Strategy address is not registered on this adapter.
-    UnknownStrategy = 15,
+    UnknownStrategy = 16,
 }

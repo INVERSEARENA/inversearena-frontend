@@ -11,6 +11,7 @@ import { getAssetMetadata, formatAmount } from "../types/asset";
 import { lobbyReservationStore } from "../cache/lobbyReservationStore";
 import { decodeCursorInput, encodeKeysetCursor } from "../utils/keysetPagination";
 import { verifyMetadataHash } from "../utils/metadataHash";
+import { getConfiguredNetwork } from "../config/network";
 
 const PaginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
@@ -56,7 +57,9 @@ export function createPoolsRouter(authMiddleware: RequestHandler): Router {
       });
       const { arenaId, stakeAmount, assetCode } = PoolCreateSchema.parse(req.body);
 
-      const arena = await prisma.arena.findUnique({
+      const network = getConfiguredNetwork();
+      const arena = await prisma.arena.findFirst({
+        where: { id: arenaId, network },
         where: { id: arenaId },
         select: { id: true, stakeToken: true },
       });
