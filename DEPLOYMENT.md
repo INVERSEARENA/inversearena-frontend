@@ -236,12 +236,9 @@ contract version each entrypoint needs.
 
 **Rollout order**
 
-1. Deploy the backend first. An old frontend ignores the endpoint.
-2. Upgrade contracts. Arenas still on an older version report the affected
-   capabilities as unsupported, so the new frontend disables only those actions
-   (reads keep working).
-3. Deploy the frontend last. Against a backend without the endpoint (404) it
-   allows every action, as before.
+1. **Deploy the backend first.** Existing frontend versions safely ignore the new endpoint.
+2. **Upgrade the contracts.** Arenas running older contract versions report the affected capabilities as unsupported. The new frontend disables only those actions, while read operations remain available.
+3. **Deploy the frontend last.** If the backend does not expose the endpoint (returns 404), the frontend preserves its existing behavior by allowing all actions.
 
 **Rollback**
 
