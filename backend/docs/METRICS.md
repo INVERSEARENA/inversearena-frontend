@@ -379,6 +379,27 @@ groups:
           summary: "High transaction failure rate"
 ```
 
+### Poller & XDR Worker Decode Pool Metrics (#1834)
+
+Exported to monitor event-loop responsiveness and offloaded XDR deserialization across worker threads:
+
+**`inversearena_event_loop_lag_seconds`** (Histogram)
+- Event loop lag measured via `perf_hooks.monitorEventLoopDelay` in seconds
+- Captures event-loop delays and thread blocking under high arena load
+- Buckets: 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2 seconds
+
+**`inversearena_xdr_decode_duration_seconds`** (Histogram)
+- Latency of XDR decoding operations
+- Labels: `mode` (`inline` for small batches, `worker` for offloaded thread pool execution)
+- Buckets: 0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25 seconds
+
+**`inversearena_xdr_decode_pool_tasks_total`** (Counter)
+- Tasks dispatched to the XDR worker decode pool
+- Labels: `outcome` (`ok`, `error`, `timeout`)
+
+**`inversearena_xdr_decode_pool_queue_depth`** (Gauge)
+- Current queue depth of pending tasks waiting for worker threads
+
 ## Metric Cardinality
 
 To keep cardinality low and avoid metric explosion:

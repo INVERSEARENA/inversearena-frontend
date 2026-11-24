@@ -38,6 +38,8 @@ import { publishArenaProjectionUpdate } from "./cache/arenaPoller";
 import { initSentry } from "./utils/sentry";
 import { logger } from "./utils/logger";
 import { env } from "./config/env";
+import { startEventLoopMonitoring, stopEventLoopMonitoring } from "./metrics/domains/ops.metrics";
+import { closeSharedXdrDecodePool } from "./services/xdrDecodePool";
 
 const PORT = Number(env.PORT ?? 3001);
 const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
@@ -45,6 +47,7 @@ const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
 async function main() {
   validateConfig();
   initSentry();
+  startEventLoopMonitoring(); // #1834: monitor event loop delay
   await connectDB();
   await redis.connect();
   // #1841: refuse startup if persisted chain data belongs to a different Stellar network.
@@ -201,7 +204,9 @@ async function main() {
           reconciler.close(),
           outboxDispatcher.stop(),
           projectionStreamSubscriber.quit(),
+          closeSharedXdrDecodePool(), // #1834: drain XDR decode worker pool
         ]);
+        stopEventLoopMonitoring(); // #1834: stop event loop monitoring
       },
     }).catch((err) => {
       logger.error({ err }, "Failed to shut down backend cleanly");
