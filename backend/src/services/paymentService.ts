@@ -10,7 +10,13 @@ import type { TransactionRepository } from "../repositories/transactionRepositor
 import { payoutsSuccessTotal, txConfirmEnqueuedTotal, txConfirmWaitHistogram } from "../utils/metrics";
 import { CircuitOpenError, getSorobanBreaker, resetSorobanBreakerForTest, type CircuitBreaker } from "../utils/circuitBreaker";
 import type { Queue } from "bullmq";
-import type { ConfirmJobData } from "../queues/txQueue";
+import {
+  TX_CONFIRM_QUEUE,
+  injectTraceContext,
+  withBullMqProducerSpan,
+  type ConfirmJobData,
+} from "../queues/txQueue";
+import { setSorobanSpanLedger, withSorobanRpcSpan } from "../utils/sorobanTracing";
 import type {
   BuildPayoutResult,
   CreatePayoutRequest,
@@ -303,7 +309,16 @@ export class PayoutOrchestrator {
 
       let sendResult: Awaited<ReturnType<typeof this.rpcServer.sendTransaction>>;
       try {
-        sendResult = await this.submitter.submit(signedTransaction);
+        sendResult = await withSorobanRpcSpan(
+          { method: "sendTransaction", contractId: this.config.payoutContractId, fn: "payout" },
+          async (span) => {
+            const res = await this.submitter.submit(signedTransaction);
+            if ("latestLedger" in res) {
+              setSorobanSpanLedger(span, res.latestLedger);
+            }
+            return res;
+          },
+        );
       } catch (err) {
         if (err instanceof CircuitOpenError) {
           return { transaction, submitted: false };
@@ -344,10 +359,16 @@ export class PayoutOrchestrator {
       // transaction already submitted) are silently deduped by BullMQ.
       if (this.txQueue) {
         const enqueuedAt = Date.now();
-        await this.txQueue.add(
+        await withBullMqProducerSpan(
+          TX_CONFIRM_QUEUE,
           "confirm",
-          { transactionId: transaction.id },
-          { jobId: transaction.id },
+          transaction.id,
+          () =>
+            this.txQueue!.add(
+              "confirm",
+              injectTraceContext({ transactionId: transaction.id }),
+              { jobId: transaction.id },
+            ),
         );
         txConfirmEnqueuedTotal.inc();
         txConfirmWaitHistogram.observe((Date.now() - enqueuedAt) / 1000);
@@ -375,8 +396,17 @@ export class PayoutOrchestrator {
 
     let onChain: Awaited<ReturnType<typeof this.rpcServer.getTransaction>>;
     try {
-      onChain = await this.breaker.fire(() =>
-        this.rpcServer.getTransaction(transaction.txHash)
+      onChain = await withSorobanRpcSpan(
+        { method: "getTransaction", contractId: this.config.payoutContractId, fn: "confirm" },
+        async (span) => {
+          const res = await this.breaker.fire(() =>
+            this.rpcServer.getTransaction(transaction.txHash)
+          );
+          if ("ledger" in res) {
+            setSorobanSpanLedger(span, res.ledger);
+          }
+          return res;
+        },
       );
     } catch (err) {
       if (err instanceof CircuitOpenError) {

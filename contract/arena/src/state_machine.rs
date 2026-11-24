@@ -16,7 +16,7 @@
 //!
 //! `Cancelled` and `Settled` are terminal — no transitions leave them.
 
-use crate::types::{ArenaError, ArenaPhase, GameState};
+use crate::types::{ArenaError, ArenaPhase, GameState, RoundSchedule};
 
 /// Returns `true` if a direct transition from `from` to `to` is allowed.
 ///
@@ -73,6 +73,26 @@ pub fn phase(state: &GameState, round_count: u32, commit_deadline: u64, now: u64
         GameState::Open => ArenaPhase::Intermission,
         GameState::Active if now < commit_deadline => ArenaPhase::Commit,
         GameState::Active => ArenaPhase::Reveal,
+        GameState::Finished => ArenaPhase::Finished,
+        GameState::Settled => ArenaPhase::Settled,
+        GameState::Cancelled => ArenaPhase::Cancelled,
+    }
+}
+
+/// Derive the player-facing phase with a `RoundSchedule` reference (#1836).
+pub fn phase_with_schedule(
+    state: &GameState,
+    round_count: u32,
+    schedule: Option<&RoundSchedule>,
+    now: u64,
+) -> ArenaPhase {
+    match state {
+        GameState::Open if round_count == 0 => ArenaPhase::Lobby,
+        GameState::Open => ArenaPhase::Intermission,
+        GameState::Active => match schedule {
+            Some(s) if s.can_commit(now) => ArenaPhase::Commit,
+            _ => ArenaPhase::Reveal,
+        },
         GameState::Finished => ArenaPhase::Finished,
         GameState::Settled => ArenaPhase::Settled,
         GameState::Cancelled => ArenaPhase::Cancelled,

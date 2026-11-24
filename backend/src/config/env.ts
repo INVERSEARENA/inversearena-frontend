@@ -31,6 +31,7 @@ import { paymentEnvVars } from "./envDomains/paymentEnvVars";
 import { workerEnvVars } from "./envDomains/workerEnvVars";
 import { rateLimitEnvVars } from "./envDomains/rateLimitEnvVars";
 import { webPushEnvVars } from "./envDomains/webPushEnvVars";
+import { otelEnvVars } from "./envDomains/otelEnvVars";
 
 export const ENV_VARS = {
   ...serverEnvVars,
@@ -45,6 +46,7 @@ export const ENV_VARS = {
   ...workerEnvVars,
   ...rateLimitEnvVars,
   ...webPushEnvVars,
+  ...otelEnvVars,
 } satisfies Record<string, EnvVarSpec>;
 
 export type EnvKey = keyof typeof ENV_VARS;

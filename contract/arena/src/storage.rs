@@ -2,7 +2,7 @@ use crate::types::PendingUpgrade;
 use crate::types::{
     ArenaConfig, ArenaError, Choice, EliminationReason, GameState, LeaderboardEntry,
     OracleFreshnessPolicy, PendingAdmin, PlayerState, ResolutionProgress, RoundResult,
-    YieldSnapshot,
+    RoundSchedule, YieldSnapshot,
 };
 use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, Vec, contracttype, symbol_short};
 
@@ -45,6 +45,7 @@ pub(crate) enum DataKey {
     RoundYieldBps(u32),
     RoundStart,
     RoundDuration,
+    RoundSchedule,
     LastVaultBalance,
     PrizeClaimed,
     MinPlayers,
@@ -1056,6 +1057,53 @@ impl ArenaStorage {
         env.storage()
             .persistent()
             .set(&DataKey::RoundDuration, &duration_seconds);
+    }
+
+    pub fn save_round_schedule(env: &Env, schedule: &RoundSchedule) {
+        Self::extend_persistent_ttl(env, &DataKey::RoundSchedule);
+        env.storage()
+            .persistent()
+            .set(&DataKey::RoundSchedule, schedule);
+    }
+
+    pub fn load_round_schedule(env: &Env) -> Option<RoundSchedule> {
+        Self::extend_persistent_ttl(env, &DataKey::RoundSchedule);
+        if let Some(schedule) = env.storage().persistent().get(&DataKey::RoundSchedule) {
+            return Some(schedule);
+        }
+        // Migration: derive from legacy fields on read (#1836)
+        if let Some(started_at) = Self::load_round_start(env) {
+            let duration = Self::load_round_duration(env);
+            let config = Self::load_config(env).ok();
+            let commit_deadline = if let Some(ref c) = config {
+                if c.commit_deadline > 0 {
+                    c.commit_deadline
+                } else {
+                    started_at.saturating_add(duration)
+                }
+            } else {
+                started_at.saturating_add(duration)
+            };
+            return Some(RoundSchedule {
+                started_at,
+                commit_deadline,
+                reveal_deadline: commit_deadline,
+                paused_total: 0,
+            });
+        }
+        if let Ok(config) = Self::load_config(env) {
+            if config.commit_deadline > 0 {
+                let duration = Self::load_round_duration(env);
+                let started_at = config.commit_deadline.saturating_sub(duration);
+                return Some(RoundSchedule {
+                    started_at,
+                    commit_deadline: config.commit_deadline,
+                    reveal_deadline: config.commit_deadline,
+                    paused_total: 0,
+                });
+            }
+        }
+        None
     }
 
     pub fn load_round_duration(env: &Env) -> u64 {

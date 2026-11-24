@@ -3,6 +3,7 @@
         contracts-coverage contracts-cost-bench \
         backend-dev backend-test frontend-dev deps-gate deps-gate-test \
         check-toolchain check-fast dev-doctor pr-triage-test \
+        release-preflight release-preflight-test \
         docs-generate docs-check docs-build docs-links contracts-mutants
 
 NETWORK ?= testnet
@@ -58,6 +59,15 @@ dev-doctor: ## Validate local dev stack config without starting services
 
 pr-triage-test: ## Run PR triage unit tests
 	node --test scripts/pr-triage/*.test.mjs
+
+DRY_RUN ?= 1
+FORMAT  ?= json
+
+release-preflight: ## Run release preflight across migrations, ABIs, config, and rollback (#1465)
+	pnpm --filter inversearena-backend exec tsx ../scripts/release-preflight.ts --network $(NETWORK) --format $(FORMAT) $(if $(filter 1 true,$(DRY_RUN)),--dry-run,)
+
+release-preflight-test: ## Run release preflight unit and integration tests (#1465)
+	pnpm --filter inversearena-backend exec tsx --test ../scripts/release-preflight.test.ts
 
 docs-generate: ## Generate OpenAPI and contract documentation artifacts
 	node docs-portal/scripts/generate-openapi.mjs

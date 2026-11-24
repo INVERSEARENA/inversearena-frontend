@@ -5,6 +5,7 @@ import type { TransactionRepository } from "../repositories/transactionRepositor
 import type { ConfirmJobData } from "../queues/txQueue";
 import { workerJobsPending, txsConfirmedTotal, payoutsDeadLetterTotal } from "../utils/metrics";
 import { logger, reportErrorToSentry } from "../utils/logger";
+import { withWorkerSpan } from "../utils/workerTracing";
 
 export interface PaymentWorkerResult {
   processed: number;
@@ -54,8 +55,9 @@ export class PaymentWorker {
     }
 
     this.isRunning = true;
-    try {
-      const statuses: PaymentStatus[] = ["queued", "submitted", "failed"];
+    return withWorkerSpan("paymentWorker.processBatch", async () => {
+      try {
+        const statuses: PaymentStatus[] = ["queued", "submitted", "failed"];
       const pending = await this.transactions.listByStatus(statuses, limit);
 
       workerJobsPending.set({ job_type: 'payment' }, pending.length);
@@ -126,9 +128,10 @@ export class PaymentWorker {
         retried,
         deadLettered,
       };
-    } finally {
-      this.isRunning = false;
-    }
+      } finally {
+        this.isRunning = false;
+      }
+    });
   }
 
   /**

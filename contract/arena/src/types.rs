@@ -1,4 +1,5 @@
 use soroban_sdk::{Address, BytesN, contracterror, contracttype};
+pub use crate::schedule::{EXPIRY_GRACE_SECONDS, Phase, RoundSchedule};
 
 /// Schema-level limits for untrusted, size-variable inputs (#1455).
 ///

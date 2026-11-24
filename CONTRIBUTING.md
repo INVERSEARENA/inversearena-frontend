@@ -2,10 +2,7 @@
 
 ## Smart Contract Code Review Checklist
 
-Every PR that touches a contract function which moves funds (transfers tokens,
-interacts with a vault, pays out prizes, etc.) must be reviewed against the
-checks-effects-interactions pattern. Reviewers should confirm each of the
-following before approving:
+Any PR that modifies a contract function involving the movement of funds, such as token transfers, vault interactions, or prize payouts, must be reviewed for compliance with the Checks-Effects-Interactions (CEI) pattern. Before approving the PR, reviewers must verify the following:
 
 - [ ] **Checks first.** All input validation, auth (`require_auth`), state
   preconditions (e.g. `GameState`), and "already done" guards
@@ -70,6 +67,12 @@ Backend tests live under `backend/tests/` in three tiers (#1644):
 
 Shared helpers are in `tests/helpers/`; shared setup in `tests/setup/`
 (`unit-setup.ts` for the unit project, `setup.ts` for integration).
+Repository-wide typed protocol fixture builders (`Arena`, `Round`, `Commitment`,
+`Transaction`, `CompatibilityManifest`) live in
+`frontend/src/shared/lib/testing/protocolFixtures.ts`, are re-exported for
+backend tests in `backend/tests/helpers/protocolFixtures.ts`, and have Rust
+counterparts in `contract/test-support/fixtures.rs` (see
+`docs/design/protocol-fixture-builders.md`).
 
 **Where to put a new test**
 
@@ -102,6 +105,21 @@ commit those generated files. Seed state lives in `scripts/.seed-state.json`.
 The dev stack uses Docker Compose with offset ports: Postgres 5433, Redis 6380,
 Mongo 27018, Quickstart 8000. Generated env uses `MONGODB_URI`, `PORT=3001`, and
 `NEXT_PUBLIC_API_BASE_URL=http://localhost:3001`.
+
+### Distributed tracing (Jaeger)
+
+To inspect OpenTelemetry traces locally across Express, BullMQ, Prisma, Redis,
+MongoDB, and Soroban RPC calls:
+
+```bash
+docker compose -f docker-compose.dev.yml --profile tracing up -d jaeger
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 pnpm --filter inversearena-backend dev
+```
+
+Open the Jaeger UI at `http://localhost:16686` and select service
+`inversearena-backend`. Tracing is off by default in `NODE_ENV=test` (set
+`OTEL_SDK_DISABLED=false` to enable it in tests) and configured via standard
+`OTEL_*` environment variables (see `backend/.env.example`).
 
 For a reproducible toolchain, use the devcontainer (`.devcontainer/`, see
 `docs/DEVCONTAINER.md`). Pinned versions: Node 20.20.2, npm 10.9.9, pnpm 10.11.1,
@@ -144,3 +162,23 @@ Pre-commit hooks are optional; install with `INSTALL_PRE_COMMIT=1`.
 The static documentation portal is generated from existing Markdown, the backend OpenAPI document, and contract doc comments. Run `make docs-check` before submitting documentation changes and `make docs-build` to render the site. See `docs/DOCUMENTATION_PORTAL.md`.
 
 Changes to contract state machines or fund-moving paths must add guard tests that survive mutation testing. Run `make contracts-mutants` when `cargo-mutants` is available; see `contract/docs/MUTATION_TESTING.md`.
+
+## Express 5 Migration Notes (#1837)
+
+The backend has migrated to Express 5. Contributors writing new route handlers or middleware should be aware of key differences:
+
+1. **Native Async Error Propagation**:
+   - Async route handlers no longer require `asyncHandler` wrappers or boilerplate `try / catch (err) { next(err); }`.
+   - Any thrown error or rejected promise inside an `async (req, res) => { ... }` handler is automatically forwarded to the global error handler (`errorHandler.ts`).
+   - The legacy `asyncHandler` in `src/middleware/validate.ts` is maintained as a transparent pass-through for backward compatibility.
+
+2. **`req.query` is a Getter**:
+   - In Express 5, `req.query` is defined with a getter. Direct assignment (`req.query = ...`) throws in strict mode.
+   - Validation middleware (`validateQuery`) parses schemas and stores validated objects on `res.locals.query`, while gracefully maintaining best-effort compatibility for handlers.
+
+3. **Status Codes & Response**:
+   - The deprecated `res.send(status)` numeric shorthand has been removed in Express 5. Always use `res.sendStatus(statusCode)` or `res.status(statusCode).send(...)` / `res.status(statusCode).json(...)`.
+
+4. **Path Syntax (path-to-regexp v8)**:
+   - Regexp parameters and wildcard paths use updated syntax. Optional parameters are written as `{/:param}` rather than `:param?`.
+

@@ -5,6 +5,7 @@ import {
   type OutboxMessage,
 } from "../services/outbox/outboxStore";
 import type { WebhookService } from "../services/webhooks/webhookService";
+import { withWorkerSpan } from "../utils/workerTracing";
 
 export type OutboxPublisher = (message: OutboxMessage) => Promise<void>;
 
@@ -33,53 +34,55 @@ export class OutboxDispatcher {
   }
 
   async processBatch(limit = 25): Promise<number> {
-    const messages = await this.store.claimBatch(limit);
-    for (const message of messages) {
-      try {
-        await this.publish(message);
+    return withWorkerSpan("outboxDispatcher.processBatch", async () => {
+      const messages = await this.store.claimBatch(limit);
+      for (const message of messages) {
+        try {
+          await this.publish(message);
 
-        // Dispatch to webhooks if service is available
-        if (this.webhookService) {
-          try {
-            await this.webhookService.dispatchToSubscriptions(
-              message.id,
-              message.eventType,
-              message.aggregateId,
-              message.payload,
-            );
-          } catch (webhookErr) {
-            logger.error(
-              {
-                outboxEventId: message.id,
-                err: webhookErr,
-              },
-              "Webhook dispatch failed; continuing with outbox marking",
-            );
-            // Don't fail the entire event due to webhook dispatch errors
+          // Dispatch to webhooks if service is available
+          if (this.webhookService) {
+            try {
+              await this.webhookService.dispatchToSubscriptions(
+                message.id,
+                message.eventType,
+                message.aggregateId,
+                message.payload,
+              );
+            } catch (webhookErr) {
+              logger.error(
+                {
+                  outboxEventId: message.id,
+                  err: webhookErr,
+                },
+                "Webhook dispatch failed; continuing with outbox marking",
+              );
+              // Don't fail the entire event due to webhook dispatch errors
+            }
           }
-        }
 
-        await this.store.markPublished(message.id, message.leaseOwner);
-      } catch (error) {
-        logger.error(
-          {
-            outboxEventId: message.id,
-            eventType: message.eventType,
-            aggregateId: message.aggregateId,
-            attempts: message.attempts,
-            err: error,
-          },
-          "Outbox event publication failed; retry scheduled",
-        );
-        await this.store.scheduleRetry(
-          message.id,
-          message.leaseOwner,
-          message.attempts,
-          error,
-        );
+          await this.store.markPublished(message.id, message.leaseOwner);
+        } catch (error) {
+          logger.error(
+            {
+              outboxEventId: message.id,
+              eventType: message.eventType,
+              aggregateId: message.aggregateId,
+              attempts: message.attempts,
+              err: error,
+            },
+            "Outbox event publication failed; retry scheduled",
+          );
+          await this.store.scheduleRetry(
+            message.id,
+            message.leaseOwner,
+            message.attempts,
+            error,
+          );
+        }
       }
-    }
-    return messages.length;
+      return messages.length;
+    });
   }
 
   private schedule(delay: number): void {

@@ -24,6 +24,7 @@ import {
   getSorobanSimulationSingleFlight,
   SorobanSimulationSingleFlight,
 } from "../utils/sorobanSimulationSingleFlight";
+import { setSorobanSpanLedger, withSorobanRpcSpan } from "../utils/sorobanTracing";
 import {
   ARENA_EVENT_TOPICS,
   isArenaEventTopic,
@@ -180,9 +181,18 @@ async function simulateViewCallDetailed(
       .setTimeout(60)
       .build();
 
-    const result = rpcServerOverride
-      ? await rpcServerOverride.simulateTransaction(tx)
-      : await stellarRpcGateway.simulateTransaction(tx);
+    const result = await withSorobanRpcSpan(
+      { method: "simulateTransaction", contractId, fn: functionName },
+      async (span) => {
+        const res = rpcServerOverride
+          ? await rpcServerOverride.simulateTransaction(tx)
+          : await stellarRpcGateway.simulateTransaction(tx);
+        if ("latestLedger" in res) {
+          setSorobanSpanLedger(span, res.latestLedger);
+        }
+        return res;
+      },
+    );
 
     if ("error" in result) {
       throw new Error(`Simulation error for ${functionName}: ${result.error}`);
@@ -1273,11 +1283,23 @@ export async function getArenaEvents(
         ? { cursor: options.cursor }
         : { startLedger: options.startLedger as number };
 
-    const response = await stellarRpcGateway.getEvents({
-      filters: [{ type: "contract", contractIds: [contractId] }],
-      ...paginationArg,
-      limit,
-    });
+    const response = await withSorobanRpcSpan(
+      {
+        method: "getEvents",
+        contractId,
+        fn: "getEvents",
+        ledger: "startLedger" in options ? options.startLedger : undefined,
+      },
+      async (span) => {
+        const res = await stellarRpcGateway.getEvents({
+          filters: [{ type: "contract", contractIds: [contractId] }],
+          ...paginationArg,
+          limit,
+        });
+        setSorobanSpanLedger(span, res.latestLedger);
+        return res;
+      },
+    );
 
     const events = response.events.map(toArenaProjectionEvent);
     const lastRawEvent = response.events[response.events.length - 1];

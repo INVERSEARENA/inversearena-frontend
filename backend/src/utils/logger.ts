@@ -1,4 +1,5 @@
 import pino from "pino";
+import { trace } from "@opentelemetry/api";
 // @ts-ignore
 import * as Sentry from "@sentry/node";
 import { redactSecrets } from "../../../frontend/src/shared/lib/security/redaction";
@@ -24,11 +25,24 @@ const configuredSecrets = [
     env.ADMIN_API_KEY,
 ].filter(Boolean) as string[];
 
+const INVALID_TRACE_ID = "00000000000000000000000000000000";
+
+export function activeTraceContext(): { traceId: string; spanId: string } | undefined {
+    const span = trace.getActiveSpan();
+    if (!span) return undefined;
+    const { traceId, spanId } = span.spanContext();
+    if (!traceId || traceId === INVALID_TRACE_ID) return undefined;
+    return { traceId, spanId };
+}
+
 export const logger = pino({
     level: env.LOG_LEVEL || "info",
     redact: {
         paths: redactPaths,
         censor: "[REDACTED]",
+    },
+    mixin() {
+        return activeTraceContext() ?? {};
     },
     formatters: {
         level: (label) => {
@@ -48,9 +62,14 @@ export const contextLogger = () => {
 
 export const reportErrorToSentry = (err: Error, context?: Record<string, any>) => {
     Sentry.withScope((scope: any) => {
-        // Tie the Sentry event back to the originating request (#661).
+        // Tie the Sentry event back to the originating request (#661) and active trace (#1844).
         const requestId = getRequestId();
         if (requestId) scope.setTag("requestId", requestId);
+        const traceCtx = activeTraceContext();
+        if (traceCtx) {
+            scope.setTag("traceId", traceCtx.traceId);
+            scope.setTag("spanId", traceCtx.spanId);
+        }
 
         if (context) {
             if (context.userWallet) {

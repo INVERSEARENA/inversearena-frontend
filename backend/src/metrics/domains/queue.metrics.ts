@@ -1,5 +1,5 @@
 /**
- * Queue & Worker Metrics Domain (#1750)
+ * Queue & Worker Metrics Domain (#1750, extended for #1839 3-queue split)
  */
 
 import {
@@ -10,12 +10,24 @@ import {
 } from "../registry";
 import { logger } from "../../utils/logger";
 import {
+  PAYOUT_QUEUE,
+  RECONCILE_QUEUE,
+  NOTIFICATION_QUEUE,
   TX_CONFIRM_QUEUE,
   type QueueSnapshot,
   type QueueSnapshotSource,
 } from "../../queues/txQueue";
 
-export const QUEUE_LABELS = { queue: TX_CONFIRM_QUEUE } as const;
+/** Per-queue label sets initialised at startup for clean Prometheus scrape state. */
+export const PAYOUT_QUEUE_LABELS = { queue: PAYOUT_QUEUE } as const;
+export const RECONCILE_QUEUE_LABELS = { queue: RECONCILE_QUEUE } as const;
+export const NOTIFICATION_QUEUE_LABELS = { queue: NOTIFICATION_QUEUE } as const;
+
+/**
+ * @deprecated Use PAYOUT_QUEUE_LABELS.
+ * Kept during rolling-deploy window; remove after all workers have restarted.
+ */
+export const QUEUE_LABELS = PAYOUT_QUEUE_LABELS;
 export const WORKER_LABELS = { worker: "tx-reconciler" } as const;
 
 export const workerJobsPending = createGauge(
@@ -182,14 +194,17 @@ export const workerActiveJobsGauge = createGauge(
   { domain: "queue" },
 );
 
-// Initial values for clean scrape state
-queueBacklogGauge.set(QUEUE_LABELS, -1);
-queueOldestAgeGauge.set(QUEUE_LABELS, -1);
-queueDelayedGauge.set(QUEUE_LABELS, -1);
-queueActiveGauge.set(QUEUE_LABELS, -1);
-queueCapacityGauge.set(QUEUE_LABELS, -1);
-queueSaturationGauge.set(QUEUE_LABELS, -1);
-queueSnapshotAvailableGauge.set(QUEUE_LABELS, 0);
+// Initial values for clean scrape state — seeded for all three queues.
+const ALL_QUEUE_LABELS = [PAYOUT_QUEUE_LABELS, RECONCILE_QUEUE_LABELS, NOTIFICATION_QUEUE_LABELS] as const;
+for (const labels of ALL_QUEUE_LABELS) {
+  queueBacklogGauge.set(labels, -1);
+  queueOldestAgeGauge.set(labels, -1);
+  queueDelayedGauge.set(labels, -1);
+  queueActiveGauge.set(labels, -1);
+  queueCapacityGauge.set(labels, -1);
+  queueSaturationGauge.set(labels, -1);
+  queueSnapshotAvailableGauge.set(labels, 0);
+}
 workerActiveJobsGauge.set(WORKER_LABELS, 0);
 
 export interface QueueMetricsRefreshResult {
@@ -201,9 +216,11 @@ export interface QueueMetricsRefreshOptions {
   capacity?: number;
 }
 
+const KNOWN_QUEUES = new Set([PAYOUT_QUEUE, RECONCILE_QUEUE, NOTIFICATION_QUEUE, TX_CONFIRM_QUEUE]);
+
 function isValidQueueSnapshot(snapshot: QueueSnapshot): boolean {
   return (
-    snapshot.queue === TX_CONFIRM_QUEUE &&
+    KNOWN_QUEUES.has(snapshot.queue) &&
     Number.isFinite(snapshot.backlog) &&
     snapshot.backlog >= 0 &&
     Number.isFinite(snapshot.delayed) &&
@@ -228,17 +245,17 @@ function normalizedCapacity(capacity: number | undefined, fallback: number): num
   return Math.floor(value);
 }
 
-function setQueueUnavailable(capacity?: number): void {
-  queueBacklogGauge.set(QUEUE_LABELS, -1);
-  queueOldestAgeGauge.set(QUEUE_LABELS, -1);
-  queueDelayedGauge.set(QUEUE_LABELS, -1);
-  queueActiveGauge.set(QUEUE_LABELS, -1);
-  queueSaturationGauge.set(QUEUE_LABELS, -1);
-  queueSnapshotAvailableGauge.set(QUEUE_LABELS, 0);
+function setQueueUnavailable(queueLabels: { queue: string }, capacity?: number): void {
+  queueBacklogGauge.set(queueLabels, -1);
+  queueOldestAgeGauge.set(queueLabels, -1);
+  queueDelayedGauge.set(queueLabels, -1);
+  queueActiveGauge.set(queueLabels, -1);
+  queueSaturationGauge.set(queueLabels, -1);
+  queueSnapshotAvailableGauge.set(queueLabels, 0);
   if (capacity !== undefined) {
-    queueCapacityGauge.set(QUEUE_LABELS, normalizedCapacity(capacity, 0));
+    queueCapacityGauge.set(queueLabels, normalizedCapacity(capacity, 0));
   } else {
-    queueCapacityGauge.set(QUEUE_LABELS, -1);
+    queueCapacityGauge.set(queueLabels, -1);
   }
 }
 
@@ -254,11 +271,15 @@ export async function refreshQueueMetrics(
   options: QueueMetricsRefreshOptions = {},
 ): Promise<QueueMetricsRefreshResult> {
   const started = process.hrtime.bigint();
+  // Snapshot may come from any of the three queues; use its own queue field as label.
+  let snapshotQueueName: string = TX_CONFIRM_QUEUE;
   try {
     const snapshot = await source.getSnapshot();
+    snapshotQueueName = snapshot.queue;
     if (!isValidQueueSnapshot(snapshot)) {
       throw new Error("Queue snapshot is invalid");
     }
+    const queueLabels = { queue: snapshotQueueName };
     const capacity = normalizedCapacity(options.capacity, snapshot.capacity);
     const effectiveSnapshot: QueueSnapshot = {
       ...snapshot,
@@ -266,37 +287,38 @@ export async function refreshQueueMetrics(
       saturation: capacity === 0 ? 0 : snapshot.active / capacity,
     };
 
-    queueCapacityGauge.set(QUEUE_LABELS, capacity);
-    queueBacklogGauge.set(QUEUE_LABELS, effectiveSnapshot.backlog);
+    queueCapacityGauge.set(queueLabels, capacity);
+    queueBacklogGauge.set(queueLabels, effectiveSnapshot.backlog);
     queueOldestAgeGauge.set(
-      QUEUE_LABELS,
+      queueLabels,
       effectiveSnapshot.oldestAgeSeconds ?? -1,
     );
-    queueDelayedGauge.set(QUEUE_LABELS, effectiveSnapshot.delayed);
-    queueActiveGauge.set(QUEUE_LABELS, effectiveSnapshot.active);
-    queueSaturationGauge.set(QUEUE_LABELS, effectiveSnapshot.saturation);
-    queueSnapshotAvailableGauge.set(QUEUE_LABELS, 1);
-    queueRefreshSuccessTotal.inc(QUEUE_LABELS);
+    queueDelayedGauge.set(queueLabels, effectiveSnapshot.delayed);
+    queueActiveGauge.set(queueLabels, effectiveSnapshot.active);
+    queueSaturationGauge.set(queueLabels, effectiveSnapshot.saturation);
+    queueSnapshotAvailableGauge.set(queueLabels, 1);
+    queueRefreshSuccessTotal.inc(queueLabels);
     return { available: true, snapshot: effectiveSnapshot };
   } catch (error) {
+    const queueLabels = { queue: snapshotQueueName };
     logger.error(
       {
         event: "queue_snapshot_refresh_failure",
-        queue: TX_CONFIRM_QUEUE,
+        queue: snapshotQueueName,
         outcome: "failure",
         errorName: safeErrorName(error),
       },
       "Queue snapshot refresh failed",
     );
     try {
-      setQueueUnavailable(options.capacity);
+      setQueueUnavailable(queueLabels, options.capacity);
     } catch {
-      queueCapacityGauge.set(QUEUE_LABELS, -1);
+      queueCapacityGauge.set(queueLabels, -1);
     }
-    queueRefreshFailureTotal.inc(QUEUE_LABELS);
+    queueRefreshFailureTotal.inc(queueLabels);
     return { available: false };
   } finally {
     const elapsed = Number(process.hrtime.bigint() - started) / 1_000_000_000;
-    queueRefreshDuration.observe(QUEUE_LABELS, Math.max(0, elapsed));
+    queueRefreshDuration.observe({ queue: snapshotQueueName }, Math.max(0, elapsed));
   }
 }
