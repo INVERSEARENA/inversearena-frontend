@@ -10,6 +10,7 @@ Defined in `contract/arena/src/bounds.rs`:
 |----------|-----------------------------|---------|
 | `MAX_ARENA_PARTICIPANTS` | `10_000` | Hard ceiling on joins; also interacts with admin `set_capacity` (effective cap is `min(capacity, MAX_ARENA_PARTICIPANTS)` when `capacity > 0`). |
 | `MAX_SUBMISSIONS_PER_ROUND` | `10_000` | Hard ceiling on distinct submitters per active round. |
+| `MIN_REQUIRED_STAKE` | `10_000_000` | Minimum `required_stake_amount` accepted by `init()`. Equals 10 XLM in stroops (7-decimal token). Matches the factory's `DEFAULT_MIN_STAKE` to prevent dust-stake arenas and enforce a consistent floor regardless of whether the arena was created via the factory or directly. |
 
 **Test builds** (`cfg(test)`) use smaller values (`64` participants, `32` submissions per round) so CI can run **N−1 / N / N+1** boundary tests quickly.
 
@@ -19,6 +20,17 @@ Defined in `contract/arena/src/bounds.rs`:
 |-------|------|
 | [`ArenaError::ArenaFull`](arena/src/lib.rs) | Join would exceed the effective participant cap. |
 | [`ArenaError::MaxSubmissionsPerRound`](arena/src/lib.rs) | `submit_choice` would exceed `MAX_SUBMISSIONS_PER_ROUND`. |
+
+## Untrusted-input schema limits (#1455)
+
+Size-controlling inputs are validated against constants that live beside their types:
+
+| Constant | Location | Behaviour |
+|----------|----------|-----------|
+| `MAX_LEADERBOARD_LIMIT = 100` | `arena/src/types.rs` | `configure_leaderboard_limit` rejects `0` and `> 100` with `ArenaError::InvalidLeaderboardLimit` (38); nothing is persisted. |
+| `MAX_ARENAS_PAGE_SIZE = 50` | `factory/src/types.rs` | `get_arenas` clamps any caller `limit` (read-only; unchanged ABI behaviour). |
+
+`pause(reason: Symbol)` is already bounded by the Soroban `Symbol` type (≤ 32 chars). See `docs/design/payload-limits.md` for the matching backend limits.
 
 ## Versioning
 

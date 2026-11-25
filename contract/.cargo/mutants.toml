@@ -1,0 +1,41 @@
+output = "mutants.out"
+cap_lints = true
+skip_calls_defaults = true
+minimum_test_timeout = 120.0
+timeout_multiplier = 3.0
+build_timeout_multiplier = 3.0
+
+examine_globs = [
+    "arena/src/**/*.rs",
+    "factory/src/**/*.rs",
+    "fee-router/src/**/*.rs",
+    "oracle/src/**/*.rs",
+    "payout/src/**/*.rs",
+    "rwa-adapter/src/**/*.rs",
+    "staking/src/**/*.rs",
+]
+
+exclude_globs = [
+    "**/src/events.rs",
+    "**/src/*event*.rs",
+    "**/src/test.rs",
+    "**/src/tests.rs",
+    "**/src/*_test.rs",
+    "**/src/*_tests.rs",
+    "**/src/**/test.rs",
+    "**/src/**/tests.rs",
+    "**/src/**/*_test.rs",
+    "**/src/**/*_tests.rs",
+    "**/src/storage_layout_fixture.rs",
+]
+
+skip_calls = [
+    "println!",
+    "eprintln!",
+    "debug!",
+    "info!",
+    "warn!",
+    "error!",
+    "trace!",
+    "publish",
+]

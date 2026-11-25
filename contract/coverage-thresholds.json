@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "crates": {
+    "arena": {
+      "lines": 80,
+      "branches": 82
+    },
+    "factory": {
+      "lines": 76,
+      "branches": 70
+    },
+    "fee-router": {
+      "lines": 99,
+      "branches": 100
+    },
+    "oracle": {
+      "lines": 81,
+      "branches": 60
+    },
+    "payout": {
+      "lines": 94,
+      "branches": 93
+    },
+    "rwa-adapter": {
+      "lines": 78,
+      "branches": 69
+    },
+    "staking": {
+      "lines": 90,
+      "branches": 75
+    }
+  }
+}

@@ -1,0 +1,252 @@
+{
+  "consumer": {
+    "name": "inversearena-frontend"
+  },
+  "provider": {
+    "name": "inversearena-backend"
+  },
+  "interactions": [
+    {
+      "type": "Synchronous/HTTP",
+      "description": "a request for the global leaderboard",
+      "providerStates": [
+        {
+          "name": "leaderboard has ranked players"
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/leaderboard",
+        "query": {
+          "limit": "20"
+        },
+        "headers": {
+          "Authorization": "Bearer test-jwt"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "players": [
+            {
+              "id": "player-1",
+              "rank": 1,
+              "walletAddress": "GABC1234567890TESTWALLET",
+              "survivalStreak": 5,
+              "totalYield": 120.5,
+              "arenasWon": 3
+            }
+          ],
+          "nextCursor": null
+        }
+      }
+    },
+    {
+      "type": "Synchronous/HTTP",
+      "description": "a request for the arena list",
+      "providerStates": [
+        {
+          "name": "arenas exist in the lobby"
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/arenas"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "arenas": [
+            {
+              "id": "arena-1",
+              "name": "High Stakes Minority",
+              "status": "OPEN",
+              "entryFee": 10,
+              "stakeToken": "USDC",
+              "maxPlayers": 32
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "Synchronous/HTTP",
+      "description": "a request for arena detail stats",
+      "providerStates": [
+        {
+          "name": "arena exists with id arena-1",
+          "params": {
+            "arenaId": "arena-1"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/arenas/arena-1/stats"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "arenaId": "arena-1",
+          "arenaName": "High Stakes Minority",
+          "currentPot": 100,
+          "playerCount": 10,
+          "maxPlayers": 32,
+          "survivorCount": 10,
+          "currentRound": 1,
+          "entryFee": 10,
+          "stakeToken": "USDC",
+          "joinDeadline": "2026-12-01T00:00:00.000Z",
+          "yieldAccrued": 1.25,
+          "status": "OPEN",
+          "lastUpdated": "2026-11-24T12:00:00.000Z"
+        }
+      }
+    },
+    {
+      "type": "Synchronous/HTTP",
+      "description": "a request for arena participant player status",
+      "providerStates": [
+        {
+          "name": "arena arena-1 has active participants",
+          "params": {
+            "arenaId": "arena-1"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/arenas/arena-1/participants",
+        "query": {
+          "limit": "25",
+          "cursor": "0"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "arenaId": "arena-1",
+          "total": 1,
+          "nextCursor": null,
+          "hasMore": false,
+          "items": [
+            {
+              "id": "part-1",
+              "walletAddress": "GABC1234567890TESTWALLET",
+              "choice": "heads",
+              "stake": 10,
+              "status": "ACTIVE",
+              "roundNumber": 1,
+              "joinedAt": "2026-11-24T12:00:00.000Z"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "Synchronous/HTTP",
+      "description": "a request for the user claim inbox",
+      "providerStates": [
+        {
+          "name": "authenticated user has a claimable payout"
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/users/me/claim-inbox",
+        "query": {
+          "limit": "20"
+        },
+        "headers": {
+          "Authorization": "Bearer test-jwt"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "items": [
+            {
+              "arenaId": "arena-1",
+              "arenaName": "High Stakes Minority",
+              "kind": "winner_claim",
+              "state": "actionable",
+              "reason": "claim_ready",
+              "amountStroops": "150000000",
+              "assetCode": "USDC",
+              "message": "Your prize is ready to claim.",
+              "updatedAt": "2026-11-24T12:00:00.000Z",
+              "action": {
+                "kind": "claim",
+                "label": "Claim Prize"
+              }
+            }
+          ],
+          "summary": {
+            "actionableCount": 1,
+            "pendingCount": 0,
+            "completedCount": 0,
+            "blockedCount": 0,
+            "unavailableCount": 0
+          },
+          "cursor": null,
+          "hasMore": false,
+          "verificationComplete": true
+        }
+      }
+    },
+    {
+      "type": "Synchronous/HTTP",
+      "description": "a request for a wallet auth nonce",
+      "providerStates": [
+        {
+          "name": "auth service is ready to issue nonces"
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/auth/nonce",
+        "body": {
+          "walletAddress": "GABC1234567890TESTWALLET"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "nonce": "nonce-hex-123456",
+          "message": "Sign this nonce to authenticate: nonce-hex-123456",
+          "expiresAt": "2026-11-24T12:05:00.000Z"
+        }
+      }
+    },
+    {
+      "type": "Synchronous/HTTP",
+      "description": "a request to verify wallet signature and login",
+      "providerStates": [
+        {
+          "name": "a valid auth nonce exists for wallet"
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/auth/verify",
+        "body": {
+          "walletAddress": "GABC1234567890TESTWALLET",
+          "signature": "valid-signature-base64",
+          "nonce": "nonce-hex-123456"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "accessToken": "jwt-access-token",
+          "walletAddress": "GABC1234567890TESTWALLET"
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "4.0"
+    }
+  }
+}

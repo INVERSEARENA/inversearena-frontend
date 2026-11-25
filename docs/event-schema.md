@@ -1,0 +1,298 @@
+# InverseArena Contract Event Schema
+
+This document defines all events emitted by the `ArenaContract` so frontend indexers and WebSocket listeners can parse them deterministically.
+
+## Encoding
+
+Events are emitted via `env.events().publish((topics...), data)` using the Soroban SDK. The Horizon/RPC event stream encodes them as:
+
+```json
+{
+  "type": "contract",
+  "ledger": "<u32>",
+  "ledgerClosedAt": "<ISO-8601>",
+  "contractId": "<contract-address>",
+  "topic": ["<Symbol>"],
+  "value": { "xdr": "<base64>" }
+}
+```
+
+### Normative event convention (#1607)
+
+All contracts MUST emit events using the following convention. This section
+is **normative** — deviations are bugs.
+
+```
+topic[0]  = contract namespace as a Symbol
+            arena   → "arena"
+            factory → "factory"
+            rwa     → "rwa"
+topic[1]  = event name as a Symbol (max 9 ASCII chars via symbol_short!)
+topic[2+] = indexed addresses only (filterable by indexers)
+            Never put amounts, counts, or other data in topics.
+
+data      = versioned tuple (v: u32, ...rest)
+            v MUST be the first field so decoders can dispatch without
+            reading further.  Unknown versions MUST be silently ignored,
+            never cause a decoder to fail.
+```
+
+**Example (arena `player_joined`):**
+
+```text
+topic[0] = "arena"
+topic[1] = "join"
+topic[2] = player address  (indexed)
+data     = (1, player_count: u32)     // v=1
+```
+
+**Example (factory `pool_created`):**
+
+```text
+topic[0] = "factory"
+topic[1] = "pool_cre"
+topic[2] = host address  (indexed)
+data     = (1, pool_id: u32, arena: Address, entry_fee: i128)
+```
+
+**Example (rwa `deposited`):**
+
+```text
+topic[0] = "rwa"
+topic[1] = "deposit"
+topic[2] = depositor address  (indexed)
+data     = (1, amount: i128)
+```
+
+### Versioning rules
+
+- `v = 1` is the current version for all events.
+- When a payload field is added, removed, or retyped, bump `v`.
+- Decoders MUST tolerate unknown newer versions by skipping the event (log
+  and ignore), never by throwing.
+- Adding a new event topic (additive) does NOT require bumping `v` for
+  existing events — only payload shape changes do.
+
+### Migration note
+
+Before #1607, events used inconsistent conventions: factory used
+`symbol_short!("POOL_CRE")`, the adapter used lowercase `dep`/`wdraw`/`short`
+with amounts in topics, and arena used `ArenaEvents` helpers without a
+namespace or version field.  All contracts now emit via typed helpers in an
+`events.rs` per contract.  The legacy event topics are still emitted
+alongside the normalized ones during a transition period so existing indexers
+do not break.
+
+## Decoder versioning and ownership
+
+`frontend/src/features/arena/api/sorobanEventParser.ts` owns the UI-domain decoder registry. The current raw Soroban envelope is schema version `1`; existing events that do not carry a `schemaVersion` field are interpreted as v1 for compatibility. Adding a new wire shape or changing a payload contract requires a new registry version and fixture coverage before consumers switch. Unknown event names and unknown versions are logged and ignored, never coerced into a known domain event. The version is local decoder metadata; it is not an extra Soroban topic and does not alter contract ABI.
+
+The backend currently reads authoritative round state through Soroban view calls rather than decoding the frontend event stream. Any future backend event consumer must use the fixtures and mappings in this document and add the same raw-event fixtures to its suite before becoming authoritative.
+
+---
+
+## Events
+
+### `INIT` — Arena Initialized
+
+Emitted once when `initialize()` succeeds.
+
+| Field  | XDR type | Description                      |
+|--------|----------|----------------------------------|
+| topic  | Symbol   | `"INIT"`                         |
+| value  | Address  | The arena admin's account address |
+
+**Frontend action:** Register the arena in your index; set status = `Open`.
+
+---
+
+### `CFGD` — Arena Configured
+
+Emitted when `configure_arena()` succeeds (admin updates entry fee / max players / deadline).
+
+| Field  | XDR type | Description |
+|--------|----------|-------------|
+| topic  | Symbol   | `"CFGD"`   |
+| value  | void     | `()`        |
+
+**Frontend action:** Re-fetch `get_config()` to refresh cached arena parameters.
+
+---
+
+### `START` — Game Started
+
+Emitted when `start_game()` transitions state to `InProgress`.
+
+| Field  | XDR type | Description |
+|--------|----------|-------------|
+| topic  | Symbol   | `"START"`  |
+| value  | void     | `()`        |
+
+**Frontend action:** Update arena status to `InProgress`; open the round submission UI.
+
+---
+
+### `FINISH` — Game Finished
+
+Emitted when `finish_game()` is called or when `resolve_round()` finds ≤ 1 survivor.
+
+| Field  | XDR type | Description |
+|--------|----------|-------------|
+| topic  | Symbol   | `"FINISH"` |
+| value  | void     | `()`        |
+
+**Frontend action:** Update arena status to `Finished`; show winner banner.
+
+---
+
+### `JOIN` — Player Joined
+
+Emitted once per successful `join()` call.
+
+| Field  | XDR type | Description                     |
+|--------|----------|---------------------------------|
+| topic  | Symbol   | `"JOIN"`                        |
+| value  | Address  | The joining player's account address |
+
+**Frontend action:** Increment live player count; add player to the lobby list.
+
+---
+
+### `join_spon` — Sponsored Player Joined (#1715)
+
+Emitted by `join_arena_for(payer, player)` for a "Gift a seat" entry. This is a
+new normalized event; it has no legacy uppercase topic. It follows the
+normative convention in this document:
+
+```text
+topic[0] = "arena"        (namespace Symbol)
+topic[1] = "join_spon"    (event-name Symbol, 9 chars)
+topic[2] = payer address  (indexed)
+topic[3] = player address (indexed)
+data     = (1, player_count: u32)
+```
+
+| Field         | XDR type | Description                                      |
+|---------------|----------|--------------------------------------------------|
+| topic[2]      | Address  | Account that funded the entry fee and owns refunds |
+| topic[3]      | Address  | Seat owner; receives any prizes                   |
+| data[1]       | u32      | Roster size after the join                       |
+
+**Refund policy:** the sponsor is persisted under `DataKey::Sponsor(player)`
+and surfaced as `PlayerStatus.sponsor`. `leave_arena`, `ban_player` and
+`claim_refund` return the fee to `topic[2]` (the payer); prizes are always paid
+to `topic[3]` (the player). A payer may fund more than one seat, and
+`payer == player` is allowed and behaves like a self-funded join with an
+explicit sponsored event.
+
+**Frontend/indexer action:** treat this as a `player_joined_sponsored` join —
+increment the live player count, add `topic[3]` to the lobby, and record
+`topic[2]` as the refund destination for that seat.
+
+---
+
+### `CHOICE` — Choice Submitted
+
+Emitted when a player submits their round choice via `submit_choice()`.
+
+| Field  | XDR type | Description                            |
+|--------|----------|----------------------------------------|
+| topic  | Symbol   | `"CHOICE"`                             |
+| value  | Address  | The player who submitted their choice  |
+
+**Frontend action:** Mark player as "locked in" for the current round. Do not reveal the actual choice — only the address.
+
+---
+
+### `ELIM` — Player Eliminated
+
+Emitted once per eliminated player in `resolve_round()`.
+
+| Field  | XDR type | Description                       |
+|--------|----------|-----------------------------------|
+| topic  | Symbol   | `"ELIM"`                          |
+| value  | Address  | The eliminated player's address   |
+
+**Frontend action:** Remove player from the survivor list; animate elimination.
+
+---
+
+### `CLAIMED` — Prize Claimed
+
+Emitted once when the winner calls `claim()` and the prize is transferred.
+
+| Field  | XDR type | Description                      |
+|--------|----------|----------------------------------|
+| topic  | Symbol   | `"CLAIMED"`                      |
+| value  | Address  | The winner's account address     |
+
+**Frontend action:** Mark arena as fully settled; show payout confirmation.
+
+---
+
+### `RWAYLD` — RWA Yield Received
+
+Emitted when an external RWA adapter deposits yield into the prize pool via `receive_rwa_yield()`.
+
+| Field  | XDR type | Description                                        |
+|--------|----------|----------------------------------------------------|
+| topic  | Symbol   | `"RWAYLD"`                                         |
+| value  | i128     | Yield amount deposited in stroops (1 XLM = 10⁷)   |
+
+**Frontend action:** Increment the displayed prize pool total by the received amount.
+
+---
+
+## Indexer example (TypeScript)
+
+```typescript
+import { SorobanRpc } from '@stellar/stellar-sdk';
+
+const TOPIC_MAP: Record<string, string> = {
+  INIT:    'arena_initialized',
+  CFGD:    'arena_configured',
+  START:   'game_started',
+  FINISH:  'game_finished',
+  JOIN:    'player_joined',
+  // #1715 is normalized: its name is topic[1], after the "arena" namespace.
+  join_spon: 'player_joined_sponsored',
+  CHOICE:  'choice_submitted',
+  ELIM:    'player_eliminated',
+  CLAIMED: 'prize_claimed',
+  RWAYLD:  'rwa_yield_received',
+};
+
+async function indexArenaEvents(
+  server: SorobanRpc.Server,
+  contractId: string,
+  startLedger: number,
+) {
+  const events = await server.getEvents({
+    startLedger,
+    filters: [{ type: 'contract', contractIds: [contractId] }],
+  });
+
+  for (const event of events.events) {
+    const topicSymbol = event.topic[0]?.value as string;
+    const eventName = TOPIC_MAP[topicSymbol] ?? 'unknown';
+    console.log(`[${event.ledger}] ${eventName}`, event.value);
+    // dispatch to your store / WebSocket clients here
+  }
+}
+```
+
+---
+
+## Notes
+
+- All `Symbol` topic values are ≤ 9 ASCII characters (Soroban `symbol_short!` constraint).
+- `i128` values are encoded as XDR `SCV_I128`; decode with `scValToNative` from `@stellar/stellar-sdk`.
+- `Address` values are encoded as XDR `SCV_ADDRESS`; call `.toString()` on the decoded `Address` to get the strkey.
+- `FINISH` can be emitted by either `finish_game()` (admin-driven) or `resolve_round()` (auto when ≤ 1 survivor). Index both paths.
+# Three-option round resolution
+
+Three-option arenas emit the existing `arena/rslvd2` event unchanged and an
+additional `arena/rslvd3` event. The `rslvd3` data tuple is
+`(version=2, heads_count, tails_count, option3_count, eliminated, survivors)`;
+the round number remains indexed in topic 2. Consumers should prefer `rslvd3`
+when present and otherwise decode `rslvd2` as a binary tally.

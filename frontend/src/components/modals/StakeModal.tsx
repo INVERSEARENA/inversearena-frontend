@@ -1,13 +1,37 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { TrendingUp, CheckSquare, Zap, Info, Loader2, TerminalSquare, ShieldCheck } from "lucide-react";
-import { useWallet } from "@/shared-d/hooks/useWallet";
+import { TrendingUp, CheckSquare, Zap, Info, Loader2, TerminalSquare, ShieldCheck, AlertTriangle } from "lucide-react";
+import { useWallet } from "@/features/wallet/hooks/useWallet";
+import {
+  evaluateSigningRequest,
+  // Imported as a value, not a type: these call sites narrow policy
+  // rejections with `instanceof SigningPolicyError`, which a type-only import
+  // erases to `any` and silently turns into a dead branch.
+  SigningPolicyError,
+  type DecodedEnvelope,
+} from "@/shared/lib/security/policy";
 import {
   buildStakeProtocolTransaction,
   submitSignedTransaction,
   parseStellarError,
-} from "@/shared-d/utils/stellar-transactions";
+  STAKING_CONTRACT_ID,
+  STELLAR_PLACEHOLDERS,
+  NETWORK_PASSPHRASE,
+} from "@/shared/lib/stellar/stellar-transactions";
+import {
+  formatCurrencyInput,
+  sanitizeNumericInput,
+  type Currency,
+} from "@/shared/lib/form-validation";
+import { useAssetReadinessGate } from "@/features/asset-readiness/hooks/useAssetReadinessGate";
+import { displayAmountToStroops } from "@/shared/lib/stellar/stellar-asset-reader";
+import { AssetTrustlinePrompt } from "@/components/modals/AssetTrustlinePrompt";
+import { useTransactionIntent } from "@/shared/lib/hooks/useTransactionIntent";
+
+// Stakes here are denominated in XLM (the modal validates against
+// balance.xlm), so the shared helpers use XLM's 7-decimal precision.
+const STAKE_CURRENCY: Currency = "XLM";
 
 type TransactionState = "idle" | "signing" | "submitting" | "success" | "error";
 
@@ -26,8 +50,17 @@ export default function StakeModal({
   apy = 12.5,
   connectionLabel = "SOROBAN_MAINNET_NODE_04",
 }: StakeModalProps) {
-  const { address, isConnected, connect, signTransaction, balance, isLoadingBalance } =
-    useWallet();
+  const {
+    address,
+    isConnected,
+    connect,
+    signTransaction,
+    balance,
+    isLoadingBalance,
+    balanceError,
+    refreshBalance,
+  } = useWallet();
+  const { runTrackedTransaction } = useTransactionIntent();
 
   const [amount, setAmount] = useState<string>("5000.00");
   const [txState, setTxState] = useState<TransactionState>("idle");
@@ -36,11 +69,47 @@ export default function StakeModal({
   const isProcessing = txState === "signing" || txState === "submitting";
   const displayBalance = balance.xlm;
   const numAmount = parseFloat(amount) || 0;
+  // #1295 — when the balance couldn't be loaded we don't actually know
+  // whether the amount is affordable, so we can't call it "valid" (and must
+  // never report "Insufficient balance" off a zero fallback).
   const isValidAmount = numAmount > 0 && numAmount <= displayBalance;
+
+  // Block staking if contract is not configured (#1112)
+  const isStakingContractConfigured =
+    STAKING_CONTRACT_ID &&
+    STAKING_CONTRACT_ID !== STELLAR_PLACEHOLDERS.stakingContractId &&
+    !STAKING_CONTRACT_ID.includes("...");
+
+  /**
+   * Asset-readiness gate (#1487).
+   *
+   * Staking is denominated in XLM, so this resolves `native` and the gate is
+   * open — but it is wired rather than assumed, so the same check applies the
+   * moment `STAKE_CURRENCY` becomes a credit asset, instead of the stake flow
+   * being the one path that silently starts requiring a trustline.
+   */
+  const amountStroops = (() => {
+    try {
+      return displayAmountToStroops(Number(amount));
+    } catch {
+      return 0n;
+    }
+  })();
+  const assetGate = useAssetReadinessGate({
+    assetCode: STAKE_CURRENCY,
+    amountStroops,
+    entryPoint: "stake",
+    enabled: isOpen && isConnected,
+  });
+  const [showTrustline, setShowTrustline] = useState(false);
+
   const isButtonDisabled =
     isProcessing ||
     txState === "success" ||
-    (isConnected && !isValidAmount);
+    (isConnected && !!balanceError) ||
+    (isConnected && !isValidAmount) ||
+    !isStakingContractConfigured ||
+    !assetGate.canProceed;
 
   useEffect(() => {
     if (!isOpen) {
@@ -66,6 +135,13 @@ export default function StakeModal({
       setTxState("error");
       return;
     }
+    // #1295 — don't fall through to the "Insufficient balance" check when the
+    // balance simply failed to load; that would be a misleading error.
+    if (balanceError) {
+      setErrorMessage("Couldn't load your balance. Retry before staking.");
+      setTxState("error");
+      return;
+    }
     if (numAmount > displayBalance) {
       setErrorMessage("Insufficient balance");
       setTxState("error");
@@ -74,11 +150,40 @@ export default function StakeModal({
 
     try {
       setTxState("signing");
-      const tx = await buildStakeProtocolTransaction(address, numAmount);
-      const signedXdr = await signTransaction(tx.toXDR());
+      let policyRejected = false;
+      await runTrackedTransaction({
+        kind: "stake",
+        actionKey: `stake:${numAmount}`,
+        publicKey: address,
+        buildTransaction: async () => {
+          const tx = await buildStakeProtocolTransaction(address, numAmount);
 
-      setTxState("submitting");
-      await submitSignedTransaction(signedXdr);
+          // Validate XDR against the signing policy before prompting the wallet.
+          // This distinct error is catchable so the UI can show a policy-rejection
+          // message rather than a wallet-rejection one.
+          try {
+            evaluateSigningRequest(tx.toXDR(), "STAKE");
+          } catch (error) {
+            if (error instanceof SigningPolicyError) {
+              policyRejected = true;
+              setErrorMessage(error.message);
+              setTxState("error");
+            }
+            throw error;
+          }
+
+          setErrorMessage("");
+          return tx;
+        },
+        signTransaction,
+        submitSignedTransaction,
+        networkPassphrase: NETWORK_PASSPHRASE,
+        onSigned: () => setTxState("submitting"),
+      }).catch((error) => {
+        if (policyRejected) return;
+        throw error;
+      });
+      if (policyRejected) return;
 
       setTxState("success");
       setTimeout(() => {
@@ -92,7 +197,12 @@ export default function StakeModal({
   };
 
   const handleAmountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = e.target.value.replace(/[^0-9.]/g, "");
+    // #1340 — the previous /[^0-9.]/g strip allowed multiple decimal points,
+    // so "12..34" stayed on screen while parseFloat silently read it as 12.
+    // Reuse the shared helpers PoolCreationModal already uses so both modals
+    // normalise identically.
+    const sanitized = sanitizeNumericInput(e.target.value);
+    const value = formatCurrencyInput(sanitized, STAKE_CURRENCY);
     setAmount(value);
     if (txState === "error") {
       setTxState("idle");
@@ -137,6 +247,8 @@ export default function StakeModal({
               <span className="border border-zinc-800 bg-lime-400 px-2.5 py-1 font-mono text-xs font-bold text-black">
                 {isLoadingBalance ? (
                   "LOADING..."
+                ) : balanceError ? (
+                  "BALANCE: UNAVAILABLE"
                 ) : (
                   <>BALANCE: {displayBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })}</>
                 )}
@@ -197,6 +309,37 @@ export default function StakeModal({
             </p>
           </div>
 
+          {/* Staking Contract Not Configured Warning (#1112) */}
+          {!isStakingContractConfigured && (
+            <div className="flex gap-3 rounded-sm border-l-4 border-red-500 bg-red-200/50 p-4">
+              <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-red-600" />
+              <p className="font-mono text-xs uppercase leading-relaxed tracking-wide text-zinc-800">
+                STAKING CONTRACT NOT CONFIGURED: THE STAKING FEATURE IS CURRENTLY
+                UNAVAILABLE. PLEASE CONTACT THE ADMINISTRATOR OR CHECK BACK LATER.
+              </p>
+            </div>
+          )}
+
+          {/* Balance Load Failure — retry, don't misreport as insufficient (#1295) */}
+          {isConnected && balanceError && !isLoadingBalance && (
+            <div className="flex items-center justify-between gap-3 rounded-sm border-l-4 border-yellow-500 bg-yellow-200/50 p-4">
+              <div className="flex gap-3">
+                <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-yellow-600" />
+                <p className="font-mono text-xs uppercase leading-relaxed tracking-wide text-zinc-800">
+                  COULDN&apos;T LOAD YOUR WALLET BALANCE. THIS IS USUALLY A TEMPORARY
+                  NETWORK ISSUE — RETRY BEFORE STAKING.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void refreshBalance()}
+                className="shrink-0 border-2 border-zinc-800 bg-white px-3 py-1.5 font-mono text-xs font-bold uppercase tracking-wider text-zinc-800 transition-colors hover:bg-zinc-100"
+              >
+                RETRY
+              </button>
+            </div>
+          )}
+
           {/* Success Message */}
           {txState === "success" && (
             <div className="rounded-sm border border-lime-400 bg-lime-400/20 p-4 text-center">
@@ -216,6 +359,33 @@ export default function StakeModal({
           )}
 
           {/* Action Buttons */}
+          {assetGate.phase !== "ready" && assetGate.phase !== "idle" && (
+            <div className="border-2 border-amber-500 bg-amber-50 p-4 text-sm text-amber-900">
+              <p className="font-bold uppercase tracking-widest">Asset readiness</p>
+              <p className="mt-2 text-left">{assetGate.message}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {assetGate.phase === "remediation_offered" && (
+                  <button
+                    type="button"
+                    onClick={() => setShowTrustline(true)}
+                    className="border-2 border-zinc-800 px-4 py-2 text-xs font-bold uppercase tracking-wider"
+                  >
+                    Set up trustline
+                  </button>
+                )}
+                {assetGate.canRetry && (
+                  <button
+                    type="button"
+                    onClick={() => void assetGate.check()}
+                    className="border-2 border-zinc-800 px-4 py-2 text-xs font-bold uppercase tracking-wider"
+                  >
+                    Check again
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="space-y-3">
             <button
               onClick={handleInitiateStake}
@@ -276,6 +446,26 @@ export default function StakeModal({
           </span>
         </div>
       </div>
+
+      <AssetTrustlinePrompt
+        isOpen={showTrustline}
+        onClose={() => setShowTrustline(false)}
+        remediation={assetGate.remediation}
+        message={assetGate.message}
+        phase={
+          assetGate.phase === "remediating"
+            ? "remediating"
+            : assetGate.phase === "blocked"
+              ? "blocked"
+              : "remediation_offered"
+        }
+        onConfirm={async () => {
+          await assetGate.remediate();
+          if (assetGate.canProceed) setShowTrustline(false);
+        }}
+        onRetry={() => void assetGate.check()}
+        actionLabel="stake"
+      />
     </div>
   );
 }

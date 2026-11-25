@@ -1,0 +1,34 @@
+{
+  "name": "InverseArena Dev",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "..",
+    "args": {
+      "NODE_VERSION": "20.20.2",
+      "NPM_VERSION": "10.9.9",
+      "PNPM_VERSION": "10.11.1",
+      "RUST_VERSION": "1.96.0",
+      "RUST_CI_VERSION": "1.96.0",
+      "RUST_NIGHTLY_VERSION": "nightly-2026-10-01",
+      "STELLAR_CLI_VERSION": "22.6.0",
+      "PRE_COMMIT_VERSION": "4.7.0",
+      "STELLAR_CLI_SHA256_X86_64": "00936c190cb8be4adc1251c758656fff697d7f60e967ed3a782c9d981d0def20",
+      "STELLAR_CLI_SHA256_AARCH64": "ae07920d46363724e3af27570b41884dacf4e2c73d6184ec816766e3da31179d"
+    }
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "forwardPorts": [3000, 3001, 4000, 5433, 6380, 8000, 27018],
+  "portsAttributes": {
+    "3000": { "label": "Frontend" },
+    "3001": { "label": "Backend" },
+    "4000": { "label": "Ops/Alt" },
+    "5433": { "label": "Postgres" },
+    "6380": { "label": "Redis" },
+    "8000": { "label": "Stellar Quickstart" },
+    "27018": { "label": "MongoDB" }
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "remoteUser": "vscode"
+}

@@ -7,32 +7,32 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "jest",
+    "typecheck": "tsc --noEmit",
     "test:pagination": "echo \"No dedicated pagination tests currently defined\"",
     "test:rate-limit": "node --test src/server/rate-limit/limiter.test.ts",
-    "test:pools-route": "node --test src/app/pools/validation.test.ts",
-    "test:frontend": "jest"
+    "test:frontend": "jest",
+    "i18n:check": "node scripts/check-i18n-messages.mjs"
   },
   "dependencies": {
     "@creit-tech/stellar-wallets-kit": "npm:@jsr/creit-tech__stellar-wallets-kit@^2.0.0-beta.9",
+    "@inversearena/rate-limit": "workspace:*",
     "@sentry/nextjs": "^10.40.0",
     "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^14.5.0",
-    "framer-motion": "^12.29.2",
+    "@tanstack/react-query": "^5.108.3",
     "ioredis": "^5.8.2",
     "lucide-react": "^0.468.0",
     "motion": "^12.29.0",
     "next": "16.1.6",
+    "next-intl": "^4.14.9",
+    "next-themes": "^0.4.6",
     "qrcode.react": "^4.2.0",
     "rate-limiter-flexible": "^8.2.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "recharts": "^3.7.0",
     "zod": "^3.24.2"
-  },
-  "overrides": {
-    "axios": "^1.13.5",
-    "minimatch": "^10.2.2",
-    "preact": "^10.28.4"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -51,5 +51,6 @@
     "ts-jest": "^29.4.6",
     "ts-node": "^10.9.2",
     "typescript": "5.9.3"
-  }
+  },
+  "packageManager": "pnpm@10.11.1"
 }

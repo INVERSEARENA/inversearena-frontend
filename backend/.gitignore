@@ -4,3 +4,7 @@ dist/
 *.js.map
 
 /src/generated/prisma
+
+# k6 load-test run artifacts (generated; not committed — only baseline.json is)
+tests/load/baselines/latest.json
+tests/load/baselines/summary.json

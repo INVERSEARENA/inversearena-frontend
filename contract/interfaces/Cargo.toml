@@ -1,0 +1,17 @@
+[package]
+name = "inversearena-interfaces"
+version = "0.1.0"
+edition = "2024"
+description = "Shared cross-contract client traits and types for InverseArena (#1603)"
+
+# This crate is a library only — it must NOT be compiled as a cdylib.
+# Contracts that implement the traits link it as an rlib; the crate emits
+# no WASM exports of its own so downstream bundles stay clean.
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }

@@ -6,6 +6,9 @@ import { z } from "zod";
 const LeaderboardQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   cursor: z.string().optional(),
+  // Ranked leaderboard excludes wallets with unreviewed sybil flags by default
+  // (issue #1635). Pass excludeFlagged=false to include them (admin use only).
+  excludeFlagged: z.coerce.boolean().default(true),
 });
 
 // ── Response shape (matches frontend Survivor type) ─────────────────
@@ -42,16 +45,24 @@ export class LeaderboardController {
    *  }
    */
   getLeaderboard = async (req: Request, res: Response): Promise<void> => {
-    const { limit, cursor } = LeaderboardQuerySchema.parse(req.query);
+    const { limit, cursor, excludeFlagged } = LeaderboardQuerySchema.parse(req.query);
 
     const offset = cursor ? this.decodeCursor(cursor) : 0;
 
-    // ── Build the full ranked list ──────────────────────────────────
-    const rankedPlayers = await this.buildRankedPlayers();
+    // Page in SQL (#1352). This used to aggregate every user with any yield or
+    // elimination history on every cache miss, materialise all of them as JS
+    // objects, then `slice()` the requested window — so page 40 cost exactly as
+    // much as page 1, and the cost grew with the platform rather than the page.
+    //
+    // One extra row is requested to decide `hasMore` without a second count
+    // query.
+    //
+    // excludeFlagged=true (default) omits wallets with unreviewed sybil flags
+    // from ranked results (issue #1635).
+    const rows = await this.buildRankedPlayers(limit + 1, offset, excludeFlagged);
 
-    // ── Paginate ────────────────────────────────────────────────────
-    const page = rankedPlayers.slice(offset, offset + limit);
-    const hasMore = offset + limit < rankedPlayers.length;
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
     const nextCursor = hasMore ? this.encodeCursor(offset + limit) : null;
 
     res.json({
@@ -65,132 +76,128 @@ export class LeaderboardController {
   // ──────────────────────────────────────────────────────────────────
 
   /**
-   * Aggregates all users' stats from resolved rounds and elimination logs,
-   * returning a sorted array of players ranked by total yield (descending).
+   * Fetch one page of the ranked leaderboard.
    *
-   * - totalYield     : sum of payouts from round resolution metadata
-   * - arenasWon      : distinct arenas where user participated but was never eliminated
-   * - survivalStreak : rounds participated minus rounds eliminated (cumulative)
+   * Rank is computed by the database with `ROW_NUMBER()` over the full ordering,
+   * so a row's rank is its position on the whole leaderboard — not its index
+   * within the page (#1352). arenasWon / survivalStreak use an anti-join
+   * against RESOLVED-round eliminations rather than subtracting independently
+   * scoped counts (#1346).
    */
-  private async buildRankedPlayers(): Promise<PlayerStats[]> {
-    // 1. Fetch all resolved rounds
-    const resolvedRounds = await this.prisma.round.findMany({
-      where: { state: "RESOLVED" },
-      select: { arenaId: true, metadata: true },
-    });
+  private async buildRankedPlayers(
+    limit: number,
+    offset: number,
+    excludeFlagged = true
+  ): Promise<PlayerStats[]> {
+    type RawRow = {
+      id: string;
+      walletAddress: string;
+      totalYield: string;      // PostgreSQL numeric → string in Prisma $queryRaw
+      arenasWon: string;       // bigint → string
+      survivalStreak: string;  // bigint → string
+      rank: string;            // bigint → string
+    };
 
-    // Per-user accumulators
-    const yieldByUser = new Map<string, number>();
-    const arenasByUser = new Map<string, Set<string>>();
-    const roundsParticipatedByUser = new Map<string, number>();
+    const rows = await this.prisma.$queryRaw<RawRow[]>`
+      WITH round_choices AS (
+        SELECT
+          r.id                                       AS round_id,
+          r.arena_id,
+          (choice->>'userId')                        AS user_id,
+          COALESCE((
+            SELECT SUM((p->>'amount')::numeric)
+            FROM jsonb_array_elements(r.metadata->'resolution'->'payouts') AS p
+            WHERE p->>'userId' = choice->>'userId'
+          ), 0)                                      AS payout
+        FROM rounds r
+        CROSS JOIN LATERAL jsonb_array_elements(r.metadata->'playerChoices') AS c(choice)
+        WHERE r.state = 'RESOLVED'
+      ),
+      round_stats AS (
+        SELECT
+          user_id,
+          SUM(payout) AS total_yield
+        FROM round_choices
+        GROUP BY user_id
+      ),
+      elim_stats AS (
+        SELECT DISTINCT el.user_id
+        FROM elimination_logs el
+        JOIN rounds r ON r.id = el.round_id
+        WHERE r.state = 'RESOLVED'
+      ),
+      arena_wins AS (
+        SELECT rc.user_id, COUNT(*)::bigint AS arenas_won
+        FROM (SELECT DISTINCT user_id, arena_id FROM round_choices) rc
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM elimination_logs el
+          JOIN rounds r ON r.id = el.round_id
+          WHERE el.user_id = rc.user_id
+            AND r.arena_id = rc.arena_id
+            AND r.state = 'RESOLVED'
+        )
+        GROUP BY rc.user_id
+      ),
+      round_survivals AS (
+        SELECT rc.user_id, COUNT(*)::bigint AS survival_streak
+        FROM (SELECT DISTINCT user_id, round_id FROM round_choices) rc
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM elimination_logs el
+          JOIN rounds r ON r.id = el.round_id
+          WHERE el.user_id = rc.user_id
+            AND el.round_id = rc.round_id
+            AND r.state = 'RESOLVED'
+        )
+        GROUP BY rc.user_id
+      ),
+      all_user_ids AS (
+        SELECT user_id FROM round_stats
+        UNION
+        SELECT user_id FROM elim_stats
+      )
+      SELECT
+        u.id,
+        u.wallet_address                                                    AS "walletAddress",
+        COALESCE(rs.total_yield, 0)::numeric                                AS "totalYield",
+        COALESCE(aw.arenas_won, 0)::bigint                                  AS "arenasWon",
+        COALESCE(sv.survival_streak, 0)::bigint                             AS "survivalStreak",
+        ROW_NUMBER() OVER (
+          ORDER BY
+            COALESCE(rs.total_yield, 0)::numeric DESC,
+            COALESCE(aw.arenas_won, 0)::bigint DESC
+        )                                                                   AS "rank"
+      FROM all_user_ids au
+      JOIN users u ON u.id = au.user_id
+      LEFT JOIN round_stats rs ON rs.user_id = au.user_id
+      LEFT JOIN arena_wins aw ON aw.user_id = au.user_id
+      LEFT JOIN round_survivals sv ON sv.user_id = au.user_id
+      -- Exclude wallets with unreviewed sybil flags from the ranked board
+      -- when excludeFlagged=true (issue #1635). Admins pass excludeFlagged=false.
+      WHERE (
+        NOT ${excludeFlagged}
+        OR NOT EXISTS (
+          SELECT 1
+          FROM sybil_flags sf
+          WHERE sf.wallet_address = u.wallet_address
+            AND sf.reviewed_at IS NULL
+        )
+      )
+      ORDER BY "totalYield" DESC, "arenasWon" DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `;
 
-    for (const round of resolvedRounds) {
-      const meta = round.metadata as Record<string, unknown> | null;
-      if (!meta) continue;
+    if (rows.length === 0) return [];
 
-      const choices = meta.playerChoices as
-        | Array<{ userId: string }>
-        | undefined;
-      if (choices) {
-        for (const c of choices) {
-          if (!arenasByUser.has(c.userId)) arenasByUser.set(c.userId, new Set());
-          arenasByUser.get(c.userId)!.add(round.arenaId);
-          roundsParticipatedByUser.set(
-            c.userId,
-            (roundsParticipatedByUser.get(c.userId) ?? 0) + 1,
-          );
-        }
-      }
-
-      const resolution = meta.resolution as
-        | { payouts?: Array<{ userId: string; amount: number }> }
-        | undefined;
-      if (resolution?.payouts) {
-        for (const p of resolution.payouts) {
-          yieldByUser.set(p.userId, (yieldByUser.get(p.userId) ?? 0) + p.amount);
-        }
-      }
-    }
-
-    // 2. Fetch elimination logs to compute arenasWon and survivalStreak
-    const eliminations = await this.prisma.eliminationLog.findMany({
-      select: {
-        userId: true,
-        round: { select: { arenaId: true } },
-      },
-    });
-
-    const eliminatedArenasByUser = new Map<string, Set<string>>();
-    const eliminationCountByUser = new Map<string, number>();
-
-    for (const el of eliminations) {
-      if (!arenasByUser.has(el.userId)) arenasByUser.set(el.userId, new Set());
-      arenasByUser.get(el.userId)!.add(el.round.arenaId);
-
-      if (!eliminatedArenasByUser.has(el.userId)) {
-        eliminatedArenasByUser.set(el.userId, new Set());
-      }
-      eliminatedArenasByUser.get(el.userId)!.add(el.round.arenaId);
-
-      eliminationCountByUser.set(
-        el.userId,
-        (eliminationCountByUser.get(el.userId) ?? 0) + 1,
-      );
-    }
-
-    // 3. Merge all user IDs
-    const allUserIds = new Set([
-      ...yieldByUser.keys(),
-      ...arenasByUser.keys(),
-    ]);
-
-    if (allUserIds.size === 0) return [];
-
-    // 4. Fetch user identity from PostgreSQL (same DB as game data)
-    type UserRow = { id: string; walletAddress: string };
-    const users: UserRow[] = await this.prisma.user.findMany({
-      where: { id: { in: Array.from(allUserIds) } },
-      select: { id: true, walletAddress: true },
-    });
-
-    const userMap = new Map<string, UserRow>(users.map((u) => [u.id, u]));
-
-    // 5. Build unsorted player list
-    const players: Omit<PlayerStats, "rank">[] = [];
-
-    for (const userId of allUserIds) {
-      const user = userMap.get(userId);
-      if (!user) continue; // skip orphaned game records
-
-      const participatedArenas = arenasByUser.get(userId) ?? new Set<string>();
-      const eliminatedArenas = eliminatedArenasByUser.get(userId) ?? new Set<string>();
-
-      const arenasWon = [...participatedArenas].filter(
-        (a) => !eliminatedArenas.has(a),
-      ).length;
-
-      const roundsParticipated = roundsParticipatedByUser.get(userId) ?? 0;
-      const eliminationCount = eliminationCountByUser.get(userId) ?? 0;
-      const survivalStreak = Math.max(0, roundsParticipated - eliminationCount);
-
-      players.push({
-        id: user.id,
-        walletAddress: user.walletAddress,
-        totalYield: yieldByUser.get(userId) ?? 0,
-        arenasWon,
-        survivalStreak,
-      });
-    }
-
-    // 6. Sort by totalYield descending, arenasWon as tiebreaker
-    players.sort((a, b) => {
-      const yieldDiff = b.totalYield - a.totalYield;
-      if (yieldDiff !== 0) return yieldDiff;
-      return b.arenasWon - a.arenasWon;
-    });
-
-    // 7. Assign 1-based ranks
-    return players.map((p, i) => ({ ...p, rank: i + 1 }));
+    return rows.map((row) => ({
+      id: row.id,
+      walletAddress: row.walletAddress,
+      totalYield: Number(row.totalYield),
+      arenasWon: Number(row.arenasWon),
+      survivalStreak: Number(row.survivalStreak),
+      rank: Number(row.rank),
+    }));
   }
 
   // ── Cursor encoding ───────────────────────────────────────────────

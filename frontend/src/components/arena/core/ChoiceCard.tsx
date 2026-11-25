@@ -1,10 +1,13 @@
 "use client";
 
+import { useTranslations } from "next-intl";
+
 interface ChoiceCardProps {
   type: "heads" | "tails";
   estimatedYield: number;
   isSelected?: boolean;
   onSelect?: () => void;
+  disabled?: boolean;
 }
 
 function HeadsIcon() {
@@ -45,7 +48,9 @@ export function ChoiceCard({
   estimatedYield,
   isSelected = false,
   onSelect,
+  disabled = false,
 }: ChoiceCardProps) {
+  const t = useTranslations("arena");
   const isHeads = type === "heads";
   const accentColor = isHeads ? "bg-neon-green" : "bg-neon-pink";
   const selectedBorder = isSelected
@@ -57,12 +62,14 @@ export function ChoiceCard({
   return (
     <button
       onClick={onSelect}
+      disabled={disabled}
       className={`
         group relative bg-white w-full py-12 px-8 border-2 ${selectedBorder}
         transition-all duration-300 hover:scale-[1.02] active:scale-[0.98]
         flex flex-col items-center h-full
         ${isSelected ? "ring-2 ring-offset-2 ring-offset-dark-bg" : ""}
         ${isSelected ? (isHeads ? "ring-neon-green" : "ring-neon-pink") : ""}
+        ${disabled ? "opacity-40 cursor-not-allowed hover:scale-100 active:scale-100" : ""}
       `}
     >
       {/* Dashed circle container */}
@@ -80,13 +87,13 @@ export function ChoiceCard({
 
       {/* Choice name */}
       <h3 className="text-4xl md:text-5xl font-bold text-black tracking-wide mb-6">
-        {type.toUpperCase()}
+        {t(type)}
       </h3>
 
       {/* Estimated yield badge */}
       <div className={`${accentColor} px-4 py-2`}>
         <span className="font-pixel text-[10px] tracking-wider text-black">
-          EST. YIELD +{estimatedYield}%
+          {t("estimatedYield", { value: estimatedYield })}
         </span>
       </div>
     </button>

@@ -1,0 +1,93 @@
+use soroban_sdk::{Address, contracterror, contracttype};
+
+/// Wrapper for a pending admin transfer proposal.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingAdmin {
+    pub new_admin: Address,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct RwaConfig {
+    pub admin: Address,
+    pub stake_token: Address,
+    pub oracle: Address,
+    pub total_deposited: i128,
+    /// Total principal deposited across all positions, tracked separately from
+    /// yield reserves (#1628).
+    pub principal_total: i128,
+    /// Yield reserve funded by the operator/strategy; only this can pay accrued
+    /// yield. Never drawn from other depositors' principal (#1628).
+    pub yield_reserve: i128,
+}
+
+/// Public, read-only view of the settings a vault was initialised with
+/// (#1634). Returned by `RwaAdapter::config` so the factory can check that an
+/// arena's `stake_token` and `oracle_contract` match the vault it is wired to.
+///
+/// The factory decodes this with its own copy of the struct
+/// (`factory::types::VaultConfig`), so the field names and types here are an
+/// ABI: renaming one breaks pool creation against this vault.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VaultConfig {
+    pub stake_token: Address,
+    pub oracle: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct YieldAccrual {
+    /// Normalized principal shares whose value is derived from YieldIndex.
+    pub principal: i128,
+    pub withdrawn: bool,
+    pub deposited_at: u64,
+    /// Zero identifies a legacy position which is migrated lazily.
+    pub index_entry: i128,
+}
+
+/// One registered yield source and its allocation cap, in basis points of
+/// the adapter's total strategy assets (#1848). `10_000` is 100%.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StrategyRecord {
+    pub address: Address,
+    pub cap_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct YieldIndex {
+    pub value: i128,
+    pub last_updated: u64,
+    pub rate_bps: u32,
+}
+
+#[contracterror]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RwaError {
+    NotInitialized = 1,
+    AlreadyInitialized = 2,
+    NoDeposit = 3,
+    Unauthorized = 4,
+    AlreadyWithdrawn = 5,
+    InsufficientBalance = 6,
+    ArithmeticOverflow = 7,
+    InvalidAmount = 8,
+    /// Returned when no admin transfer proposal is pending.
+    NoPendingAdmin = 9,
+    /// Returned when a non-admin caller attempts to propose a new admin.
+    NotAdmin = 10,
+    /// Only the admin may fund the yield reserve (#1628).
+    NotAuthorized = 11,
+    MigrationPending = 12,
+    /// Strategy address is not an approved vault on the factory (#1848).
+    StrategyNotApproved = 13,
+    /// `remove_strategy` was called while the strategy still holds assets.
+    StrategyNotEmpty = 14,
+    /// Deposit or rebalance would push a strategy past its allocation cap.
+    CapExceeded = 15,
+    /// Strategy address is not registered on this adapter.
+    UnknownStrategy = 16,
+}

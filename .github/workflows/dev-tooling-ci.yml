@@ -1,0 +1,55 @@
+name: Dev Tooling CI
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".devcontainer/**"
+      - ".node-version"
+      - "rust-toolchain.toml"
+      - ".pre-commit-config.yaml"
+      - "scripts/check-fast.sh"
+      - "scripts/toolchain-config.test.mjs"
+      - "scripts/dev-stack.sh"
+      - "Makefile"
+      - "docker-compose.dev.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/dev-tooling-ci.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".devcontainer/**"
+      - ".node-version"
+      - "rust-toolchain.toml"
+      - ".pre-commit-config.yaml"
+      - "scripts/check-fast.sh"
+      - "scripts/toolchain-config.test.mjs"
+      - "scripts/dev-stack.sh"
+      - "Makefile"
+      - "docker-compose.dev.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/dev-tooling-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  tooling:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.20.2"
+      - name: Toolchain config tests
+        run: node --test scripts/toolchain-config.test.mjs
+      - name: Shell syntax
+        run: bash -n scripts/dev-stack.sh scripts/check-fast.sh
+      - name: Makefile dry run
+        run: make -n dev
+      - name: Compose config
+        run: docker compose -f docker-compose.dev.yml config -q

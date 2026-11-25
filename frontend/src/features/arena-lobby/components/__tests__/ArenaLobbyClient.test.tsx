@@ -1,0 +1,405 @@
+import React from "react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { ArenaLobbyClient } from "../ArenaLobbyClient";
+import {
+  buildJoinArenaTransaction,
+  submitSignedTransaction,
+} from "@/shared/lib/stellar/stellar-transactions";
+
+jest.mock("next/navigation", () => ({
+  useRouter: () => ({ push: jest.fn(), replace: jest.fn() }),
+}));
+
+const WALLET_ADDRESS = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
+
+const walletMock = {
+  publicKey: WALLET_ADDRESS,
+  address: WALLET_ADDRESS,
+  isConnected: true,
+  status: "connected" as const,
+  error: null,
+  network: "TESTNET",
+  balance: { xlm: 0, usdc: 0 },
+  isLoadingBalance: false,
+  balanceError: null,
+  connect: jest.fn().mockResolvedValue(WALLET_ADDRESS),
+  disconnect: jest.fn(),
+  signTransaction: jest.fn(),
+  refreshBalance: jest.fn().mockResolvedValue(undefined),
+};
+
+jest.mock("@/features/wallet/hooks/useWallet", () => ({
+  useWallet: () => walletMock,
+}));
+
+jest.mock("@/shared/lib/stellar/stellar-transactions", () => ({
+  buildJoinArenaTransaction: jest.fn(),
+  buildSubmitChoiceTransaction: jest.fn(),
+  buildChangeTrustTransaction: jest.fn(),
+  submitSignedTransaction: jest.fn(),
+  parseStellarError: (err: unknown) => (err instanceof Error ? err.message : "Unknown error"),
+}));
+
+/**
+ * The signing firewall is stubbed in this suite, and that is deliberate.
+ *
+ * The flow fixtures here use a placeholder envelope ("unsigned-xdr") because
+ * these tests are about click → validate → sign → submit ordering, not about
+ * XDR. The real policy rejects a placeholder as malformed, which is correct:
+ * it cannot distinguish a placeholder from a tampered envelope. The firewall's
+ * own behaviour is covered directly in
+ * `src/shared/lib/security/__tests__/policy.test.ts`, against real signed
+ * envelopes. Do not "fix" a failure here by loosening the policy.
+ */
+jest.mock("@/shared/lib/security/policy", () => ({
+  evaluateSigningRequest: jest.fn(() => ({
+    type: "JOIN",
+    operations: [{ type: "invokeHostFunction" }],
+  })),
+  SigningPolicyError: class SigningPolicyError extends Error {},
+}));
+
+const STATS = {
+  arenaId: "arena-1",
+  arenaName: "Alpha Arena",
+  currentPot: 1000,
+  playerCount: 10,
+  maxPlayers: 100,
+  survivorCount: 10,
+  currentRound: 1,
+  entryFee: 100,
+  stakeToken: "XLM",
+  joinDeadline: new Date(Date.now() + 60_000).toISOString(),
+  yieldAccrued: 5,
+  status: "open",
+  lastUpdated: new Date().toISOString(),
+};
+
+function mockFetchOnce(response: unknown) {
+  return { ok: true, json: async () => response } as Response;
+}
+
+function mockReservationFetch(status: number) {
+  return { ok: status < 400, status, json: async () => ({}) } as Response;
+}
+
+describe("ArenaLobbyClient join flow", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    walletMock.signTransaction.mockResolvedValue("signed-xdr");
+    (buildJoinArenaTransaction as jest.Mock).mockResolvedValue({
+      toXDR: () => "unsigned-xdr",
+    });
+    (submitSignedTransaction as jest.Mock).mockResolvedValue(undefined);
+
+    global.fetch = jest.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes("/reservation")) {
+        return Promise.resolve(mockReservationFetch(init?.method === "DELETE" ? 204 : 201));
+      }
+      if (url.includes("/participants")) {
+        return Promise.resolve(
+          mockFetchOnce({ arenaId: "arena-1", total: 0, nextCursor: null, hasMore: false, items: [] }),
+        );
+      }
+      return Promise.resolve(mockFetchOnce(STATS));
+    });
+  });
+
+  it("builds, signs, and submits a real join transaction when the CTA is confirmed", async () => {
+    render(
+      <ArenaLobbyClient
+        arenaId="arena-1"
+        initialStats={STATS}
+        initialParticipants={[]}
+        initialNextCursor={null}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Join Arena" }));
+
+    // The modal overlay is marked aria-hidden on an ancestor, so role
+    // queries need `hidden: true` to see inside it (plain DOM debugging
+    // still shows the content — only accessible-role queries filter it).
+    const signButton = await screen.findByRole("button", {
+      name: /sign & join/i,
+      hidden: true,
+    });
+    fireEvent.click(signButton);
+
+    await waitFor(() => {
+      expect(buildJoinArenaTransaction).toHaveBeenCalledWith(
+        WALLET_ADDRESS,
+        "arena-1",
+      );
+    });
+    expect(walletMock.signTransaction).toHaveBeenCalledWith("unsigned-xdr");
+    expect(submitSignedTransaction).toHaveBeenCalledWith("signed-xdr");
+  });
+
+  it("reflects a wallet connected via the shared context, not an independent hook instance (#1282)", async () => {
+    // Before the fix, this component called useStellarWallet(...) directly,
+    // holding its own local connection state disconnected from the
+    // context-backed ConnectWalletButton in the header — a genuinely
+    // connected user would still see "Wallet Required" here. Using the
+    // shared useWallet() context (mocked above) means this component's
+    // "connected" state comes from the same source the header uses.
+    render(
+      <ArenaLobbyClient
+        arenaId="arena-1"
+        initialStats={STATS}
+        initialParticipants={[]}
+        initialNextCursor={null}
+      />,
+    );
+
+    const joinButton = await screen.findByRole("button", { name: "Join Arena" });
+    expect(joinButton).not.toHaveTextContent("Wallet Required");
+  });
+
+  it("renders a hidden placeholder instead of crashing when the backend masks an open round's choice (#1212)", async () => {
+    // The backend now returns choice: null for any round still OPEN, so
+    // other players can't see how someone voted before the round closes.
+    // This asserts the frontend renders that as a placeholder rather than
+    // crashing on participant.choice.toUpperCase().
+    render(
+      <ArenaLobbyClient
+        arenaId="arena-1"
+        initialStats={STATS}
+        initialParticipants={[
+          {
+            id: "round-1:user-1:0",
+            walletAddress: "GUSER1",
+            choice: null,
+            stake: 100,
+            status: "READY",
+            roundNumber: 1,
+            joinedAt: new Date().toISOString(),
+          },
+        ]}
+        initialNextCursor={null}
+      />,
+    );
+
+    const hidden = await screen.findByText("HIDDEN");
+    expect(hidden).toBeInTheDocument();
+
+    // The participant row is the only place that should render this
+    // wallet's choice — scope to it, since "HEADS" also appears
+    // unconditionally as a static vote-button label in <ChoiceSubmission>
+    // elsewhere on the page.
+    const participantRow = hidden.closest("div.grid") as HTMLElement;
+    expect(participantRow).not.toBeNull();
+    expect(participantRow).toHaveTextContent("GUSER1");
+    expect(participantRow).not.toHaveTextContent("HEADS");
+    expect(participantRow).not.toHaveTextContent("TAILS");
+  });
+
+  it("allows joining and choice submission when joinDeadline is null (open-ended arena) (#1334)", async () => {
+    // An arena with joinDeadline: null is open-ended and should always
+    // allow joining and choice submission while the arena status is "open"
+    const openEndedStats = {
+      ...STATS,
+      joinDeadline: null,
+    };
+
+    render(
+      <ArenaLobbyClient
+        arenaId="arena-1"
+        initialStats={openEndedStats}
+        initialParticipants={[]}
+        initialNextCursor={null}
+      />,
+    );
+
+    // Join button should be enabled for open-ended arenas
+    const joinButton = await screen.findByRole("button", { name: "Join Arena" });
+    expect(joinButton).toBeEnabled();
+    expect(joinButton).toHaveTextContent("Join Arena");
+
+    // Countdown should show "No deadline"
+    expect(screen.getByText("No deadline")).toBeInTheDocument();
+
+    // Choice submission should also show "No deadline" and be enabled
+    expect(screen.getByText(/Submission deadline/i)).toBeInTheDocument();
+  });
+
+  it("disables joining when joinDeadline has passed", async () => {
+    // An arena with a past deadline should disable joining
+    const pastDeadlineStats = {
+      ...STATS,
+      joinDeadline: new Date(Date.now() - 60_000).toISOString(),
+    };
+
+    // Keep the component's immediate refresh consistent with the initial
+    // snapshot; the suite default otherwise replaces it with future-dated STATS.
+    (global.fetch as jest.Mock).mockImplementation((url: string) => {
+      if (url.includes("/participants")) {
+        return Promise.resolve(
+          mockFetchOnce({ arenaId: "arena-1", total: 0, nextCursor: null, hasMore: false, items: [] }),
+        );
+      }
+      return Promise.resolve(mockFetchOnce(pastDeadlineStats));
+    });
+
+    render(
+      <ArenaLobbyClient
+        arenaId="arena-1"
+        initialStats={pastDeadlineStats}
+        initialParticipants={[]}
+        initialNextCursor={null}
+      />,
+    );
+
+    const joinButton = await screen.findByRole("button", { name: "Join Unavailable" });
+    expect(joinButton).toBeDisabled();
+  });
+
+  it("shows a delayed-data badge with the snapshot ledger when the backend reports degraded stats (#1408)", async () => {
+    const degradedStats = { ...STATS, degraded: true, ledgerSequence: 4242, snapshotVerifiedAt: "2026-01-01T00:00:00.000Z" };
+
+    (global.fetch as jest.Mock).mockImplementation((url: string) => {
+      if (url.includes("/participants")) {
+        return Promise.resolve(
+          mockFetchOnce({ arenaId: "arena-1", total: 0, nextCursor: null, hasMore: false, items: [] }),
+        );
+      }
+      return Promise.resolve(mockFetchOnce(degradedStats));
+    });
+
+    render(
+      <ArenaLobbyClient
+        arenaId="arena-1"
+        initialStats={degradedStats}
+        initialParticipants={[]}
+        initialNextCursor={null}
+      />,
+    );
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/Delayed data.*ledger 4242/);
+  });
+
+  it("does not show the delayed-data badge for a normal (non-degraded) response", async () => {
+    render(
+      <ArenaLobbyClient
+        arenaId="arena-1"
+        initialStats={STATS}
+        initialParticipants={[]}
+        initialNextCursor={null}
+      />,
+    );
+
+    await screen.findByText("Alpha Arena");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  describe("lobby capacity reservation (#1406)", () => {
+    it("reserves a slot via POST before opening the sign modal", async () => {
+      render(
+        <ArenaLobbyClient
+          arenaId="arena-1"
+          initialStats={STATS}
+          initialParticipants={[]}
+          initialNextCursor={null}
+        />,
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: "Join Arena" }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          expect.stringContaining("/api/arenas/arena-1/reservation"),
+          expect.objectContaining({ method: "POST" }),
+        );
+      });
+      expect(
+        await screen.findByRole("button", { name: /sign & join/i, hidden: true }),
+      ).toBeInTheDocument();
+    });
+
+    it("shows an error and does not open the sign modal when the arena is full (409)", async () => {
+      (global.fetch as jest.Mock).mockImplementation((url: string, init?: RequestInit) => {
+        if (url.includes("/reservation")) {
+          return Promise.resolve(mockReservationFetch(init?.method === "DELETE" ? 204 : 409));
+        }
+        if (url.includes("/participants")) {
+          return Promise.resolve(
+            mockFetchOnce({ arenaId: "arena-1", total: 0, nextCursor: null, hasMore: false, items: [] }),
+          );
+        }
+        return Promise.resolve(mockFetchOnce(STATS));
+      });
+
+      render(
+        <ArenaLobbyClient
+          arenaId="arena-1"
+          initialStats={STATS}
+          initialParticipants={[]}
+          initialNextCursor={null}
+        />,
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: "Join Arena" }));
+
+      expect(
+        await screen.findByText(/no open slots right now/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /sign & join/i, hidden: true }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("releases the reservation via DELETE when the sign modal is closed without confirming", async () => {
+      render(
+        <ArenaLobbyClient
+          arenaId="arena-1"
+          initialStats={STATS}
+          initialParticipants={[]}
+          initialNextCursor={null}
+        />,
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: "Join Arena" }));
+      await screen.findByRole("button", { name: /sign & join/i, hidden: true });
+
+      const cancelButton = await screen.findByRole("button", {
+        name: /cancel/i,
+        hidden: true,
+      });
+      fireEvent.click(cancelButton);
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          expect.stringContaining("/api/arenas/arena-1/reservation"),
+          expect.objectContaining({ method: "DELETE" }),
+        );
+      });
+    });
+
+    it("does not call DELETE when the modal closes because the join succeeded", async () => {
+      render(
+        <ArenaLobbyClient
+          arenaId="arena-1"
+          initialStats={STATS}
+          initialParticipants={[]}
+          initialNextCursor={null}
+        />,
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: "Join Arena" }));
+      const signButton = await screen.findByRole("button", {
+        name: /sign & join/i,
+        hidden: true,
+      });
+      fireEvent.click(signButton);
+
+      await waitFor(() => {
+        expect(submitSignedTransaction).toHaveBeenCalled();
+      });
+
+      const deleteCalls = (global.fetch as jest.Mock).mock.calls.filter(
+        ([, init]) => init?.method === "DELETE",
+      );
+      expect(deleteCalls).toHaveLength(0);
+    });
+  });
+});

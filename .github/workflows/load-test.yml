@@ -1,31 +1,39 @@
-name: Load Test
+name: Load Tests (k6)
+
+# Issue #1624 — k6 load-test suite for arena APIs and SSE streams.
+#
+# Triggered manually via workflow_dispatch so it never blocks a PR merge.
+# Pass `update_baseline: true` to overwrite the stored baseline artifact with
+# the results of this run.
 
 on:
   workflow_dispatch:
     inputs:
-      duration:
-        description: 'Test duration (e.g., 60s, 5m)'
+      base_url:
+        description: "Backend API base URL (no trailing slash)"
         required: false
-        default: '60s'
-      vus:
-        description: 'Number of virtual users'
+        default: "http://localhost:3001"
+      arena_id:
+        description: "Arena ID to use for SSE and state-read scenarios"
         required: false
-        default: '50'
-      target_url:
-        description: 'Target URL'
+        default: ""
+      sse_dwell_seconds:
+        description: "How long (s) each SSE VU holds its connection"
         required: false
-        default: 'http://localhost:3001'
-  pull_request:
-    paths:
-      - 'backend/src/db/**'
-      - 'backend/src/config/database.ts'
-      - 'backend/load-tests/**'
-      - '.github/workflows/load-test.yml'
+        default: "15"
+      update_baseline:
+        description: "Overwrite the stored baseline with this run's results"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   load-test:
+    name: k6 load test suite
     runs-on: ubuntu-latest
-    timeout-minutes: 15
 
     services:
       postgres:
@@ -34,27 +42,10 @@ jobs:
           POSTGRES_USER: testuser
           POSTGRES_PASSWORD: testpassword
           POSTGRES_DB: inversearenatest
-          POSTGRES_MAX_CONNECTIONS: 200
-        ports:
-          - 5433:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-      pgbouncer:
-        image: edoburu/pgbouncer:1.21.0
-        env:
-          DATABASE_URL: postgres://testuser:testpassword@postgres:5432/inversearenatest
-          POOL_MODE: transaction
-          MAX_CLIENT_CONN: 1000
-          DEFAULT_POOL_SIZE: 25
-          MAX_DB_CONNECTIONS: 100
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "psql -h localhost -U testuser -d pgbouncer -c 'SHOW VERSION;'"
+          --health-cmd pg_isready
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -76,128 +67,146 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: backend/package-lock.json
+          node-version: "20.x"
+          cache: "npm"
+          cache-dependency-path: pnpm-lock.yaml
 
-      - name: Install dependencies
-        working-directory: backend
+      - name: Install backend dependencies
+        working-directory: ./backend
         run: npm ci
 
-      - name: Run database migrations
-        working-directory: backend
+      - name: Apply Prisma migrations
+        working-directory: ./backend
         env:
-          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest?schema=public
-          PROCESS_ROLE: MIGRATION
-        run: npm run migrate
+          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest
+        run: npx prisma migrate deploy
 
-      - name: Seed database
-        working-directory: backend
+      - name: Seed test arena
+        id: seed
+        working-directory: ./backend
         env:
-          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest?schema=public
-        run: npx prisma db seed
+          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest
+          REDIS_URL: redis://localhost:6379
+          JWT_SECRET: k6-load-test-jwt-secret-must-be-at-least-32-chars
+          ADMIN_API_KEY: k6-load-test-admin-key
+          PAYOUT_CONTRACT_ID: CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          PAYOUT_SOURCE_ACCOUNT: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+        # Seed creates a test arena and prints its ID on the last line as:
+        #   ARENA_ID=<uuid>
+        # If the caller supplied an explicit ARENA_ID we use that instead.
+        run: |
+          SUPPLIED="${{ github.event.inputs.arena_id }}"
+          if [ -n "$SUPPLIED" ]; then
+            echo "arena_id=$SUPPLIED" >> "$GITHUB_OUTPUT"
+          else
+            SEED_OUTPUT=$(npx tsx prisma/seed.ts 2>&1)
+            echo "$SEED_OUTPUT"
+            ARENA_ID=$(echo "$SEED_OUTPUT" | grep '^ARENA_ID=' | tail -1 | cut -d= -f2)
+            if [ -z "$ARENA_ID" ]; then
+              echo "Seed did not emit ARENA_ID — using placeholder."
+              ARENA_ID="test-arena-placeholder"
+            fi
+            echo "arena_id=$ARENA_ID" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Start backend server
-        working-directory: backend
+        working-directory: ./backend
         env:
-          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest?schema=public
-          PROCESS_ROLE: API
-          DB_POOL_SIZE: 10
-          PORT: 3001
+          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest
           REDIS_URL: redis://localhost:6379
-          JWT_SECRET: test-secret-minimum-32-characters-long
-          ADMIN_API_KEY: test-admin-key
+          JWT_SECRET: k6-load-test-jwt-secret-must-be-at-least-32-chars
+          ADMIN_API_KEY: k6-load-test-admin-key
+          PAYOUT_CONTRACT_ID: CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          PAYOUT_SOURCE_ACCOUNT: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          NODE_ENV: production
+          PORT: "3001"
+          SSE_MAX_CONNECTIONS_PER_IP: "1100"
+          SSE_MAX_CONNECTIONS_PER_ARENA: "1100"
+          LOAD_TEST_BYPASS_KEY: ${{ secrets.LOAD_TEST_BYPASS_KEY || 'k6-load-test-local-ci-key-32chars' }}
         run: |
-          npm run build
+          pnpm run build
           node dist/server.js &
-          echo $! > server.pid
-          sleep 5
-
-      - name: Wait for server readiness
-        run: |
-          for i in {1..30}; do
-            if curl -f http://localhost:3001/health > /dev/null 2>&1; then
-              echo "Server is ready"
-              exit 0
+          # Wait for the server to be ready.
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3001/health > /dev/null 2>&1; then
+              echo "Backend is up."
+              break
             fi
-            echo "Waiting for server... ($i/30)"
+            echo "Waiting for backend... ($i/30)"
             sleep 2
           done
-          echo "Server failed to start"
-          exit 1
 
       - name: Install k6
         run: |
-          sudo gpg -k
-          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
-          sudo apt-get update
-          sudo apt-get install k6
+          sudo apt-get update -qq
+          sudo apt-get install -y k6
 
-      - name: Run baseline load test (without PgBouncer)
-        working-directory: backend
-        env:
-          BASE_URL: http://localhost:3001
-        run: |
-          echo "Running baseline test..."
-          k6 run --vus ${{ github.event.inputs.vus || '50' }} \
-                 --duration ${{ github.event.inputs.duration || '60s' }} \
-                 --out json=baseline-results.json \
-                 load-tests/connection-pooling.js
+      - name: Download previous baseline artifact
+        id: download_baseline
+        uses: actions/download-artifact@v4
+        with:
+          name: k6-load-test-baseline
+          path: backend/tests/load/baselines
+        # Don't fail the job if no baseline has been stored yet.
         continue-on-error: true
 
-      - name: Restart server with PgBouncer
-        working-directory: backend
+      - name: Run k6 load tests
         env:
-          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inversearenatest?schema=public&pgbouncer=true
-          PROCESS_ROLE: API
-          DB_POOL_SIZE: 10
-          PORT: 3001
-          REDIS_URL: redis://localhost:6379
-          JWT_SECRET: test-secret-minimum-32-characters-long
-          ADMIN_API_KEY: test-admin-key
+          BASE_URL: ${{ github.event.inputs.base_url || 'http://localhost:3001' }}
+          ARENA_ID: ${{ steps.seed.outputs.arena_id }}
+          BYPASS_RATE_LIMIT: "1"
+          LOAD_TEST_SECRET_KEY: ${{ secrets.LOAD_TEST_BYPASS_KEY || 'k6-load-test-local-ci-key-32chars' }}
+          SSE_DWELL_SECONDS: ${{ github.event.inputs.sse_dwell_seconds || '15' }}
         run: |
-          if [ -f server.pid ]; then
-            kill $(cat server.pid) || true
-            rm server.pid
-          fi
-          sleep 2
-          node dist/server.js &
-          echo $! > server.pid
-          sleep 5
+          mkdir -p backend/tests/load/baselines
+          k6 run \
+            -e BASE_URL="$BASE_URL" \
+            -e ARENA_ID="$ARENA_ID" \
+            -e AUTH_TOKEN="" \
+            -e BYPASS_RATE_LIMIT="$BYPASS_RATE_LIMIT" \
+            -e LOAD_TEST_SECRET_KEY="$LOAD_TEST_SECRET_KEY" \
+            -e SSE_DWELL_SECONDS="$SSE_DWELL_SECONDS" \
+            --out json=backend/tests/load/baselines/latest.json \
+            --summary-export=backend/tests/load/baselines/summary.json \
+            backend/tests/load/suite.js
 
-      - name: Run PgBouncer load test
-        working-directory: backend
-        env:
-          BASE_URL: http://localhost:3001
+      - name: Compare against baseline
         run: |
-          echo "Running PgBouncer test..."
-          k6 run --vus ${{ github.event.inputs.vus || '50' }} \
-                 --duration ${{ github.event.inputs.duration || '60s' }} \
-                 --out json=pgbouncer-results.json \
-                 load-tests/connection-pooling.js
+          node backend/tests/load/compare-baseline.js \
+            backend/tests/load/baselines/baseline.json \
+            backend/tests/load/baselines/latest.json
 
-      - name: Compare results
-        working-directory: backend
+      - name: Update baseline (when requested)
+        if: ${{ github.event.inputs.update_baseline == 'true' }}
         run: |
-          echo "=== Baseline Results ==="
-          cat baseline-results.json | jq '.metrics.http_req_duration.values'
-          echo ""
-          echo "=== PgBouncer Results ==="
-          cat pgbouncer-results.json | jq '.metrics.http_req_duration.values'
+          cp backend/tests/load/baselines/latest.json \
+             backend/tests/load/baselines/baseline.json
+          echo "Baseline updated from this run."
 
-      - name: Upload results
+      - name: Upload load test results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: load-test-results
+          name: k6-load-test-results-${{ github.run_id }}
           path: |
-            backend/baseline-results.json
-            backend/pgbouncer-results.json
-            backend/summary.json
+            backend/tests/load/baselines/latest.json
+            backend/tests/load/baselines/summary.json
+          retention-days: 90
 
-      - name: Stop server
-        if: always()
+      - name: Upload updated baseline
+        if: ${{ github.event.inputs.update_baseline == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-load-test-baseline
+          path: backend/tests/load/baselines/baseline.json
+          retention-days: 365
+          # Overwrite the previous baseline artifact.
+          overwrite: true
+
+      - name: Run baseline comparator unit tests
+        working-directory: ./backend
         run: |
-          if [ -f backend/server.pid ]; then
-            kill $(cat backend/server.pid) || true
-          fi
+          npx tsx --test tests/load/compare-baseline.unit.test.ts \
+                         tests/loadTestBypass.unit.test.ts

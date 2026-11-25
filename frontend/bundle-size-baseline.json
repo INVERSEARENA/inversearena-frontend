@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "updatedAt": "2026-10-16T12:00:00Z",
+  "limits": {
+    "maxTotalFirstLoadJsKb": 250,
+    "maxIndividualChunkKb": 150,
+    "maxRegressionPercent": 5.0
+  },
+  "bundles": {
+    "app/layout": {
+      "baselineKb": 85.5,
+      "maxAllowedKb": 120.0
+    },
+    "app/dashboard/page": {
+      "baselineKb": 42.0,
+      "maxAllowedKb": 65.0
+    },
+    "app/dashboard/games/page": {
+      "baselineKb": 38.5,
+      "maxAllowedKb": 60.0
+    },
+    "app/dashboard/creator/page": {
+      "baselineKb": 45.0,
+      "maxAllowedKb": 70.0
+    }
+  }
+}

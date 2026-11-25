@@ -1,6 +1,6 @@
 "use client";
 
-import { motion } from "framer-motion";
+import { m as motion } from "motion/react";
 
 interface UnlockedPadlockProps {
   pulse?: boolean;

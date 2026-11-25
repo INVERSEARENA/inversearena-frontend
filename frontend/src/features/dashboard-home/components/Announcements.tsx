@@ -1,4 +1,4 @@
-import type { Announcement } from "../types";
+import type { Announcement } from "../model/types";
 
 interface AnnouncementsProps {
     announcement: Announcement;

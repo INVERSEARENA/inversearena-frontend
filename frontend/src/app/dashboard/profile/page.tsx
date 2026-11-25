@@ -2,22 +2,23 @@
 
 import React, { useState } from "react";
 import { Button } from "@/components/ui/Button";
-import { useArenaSettings } from "@/shared-d/hooks/useArenaSettings";
+import { useArenaSettings } from "@/features/arena/hooks/useArenaSettings";
 import { SettingsToggle } from "@/components/arena-v2/settings/SettingsToggle";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LayoutGrid, History } from "lucide-react";
-import { useProfile } from "@/shared-d/features/profile/hooks/useProfile";
-import { MyArenasFilter } from "@/shared-d/features/profile/types";
+import { useProfile, type MyArenasFilter } from "@/features/profile";
+import { useWallet } from "@/features/wallet/hooks/useWallet";
+// Issue #1414 — alias management
+import { AliasManager } from "./AliasManager";
+// Issue #1571 — Web Push opt-in for round-phase alerts
+import { PushSubscribeButton } from "@/features/notifications";
+import StakingPositionPanel from "@/features/staking/components/StakingPositionPanel";
 
-// Mock helpers - in a real app these would come from a utils file
 const truncateAddress = (address: string) => {
   if (!address) return "";
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 };
-
-// Dummy useWallet for now if not available
-const useWallet = () => ({ address: "GD...X4Y2" });
 
 export default function ProfilePage() {
   const { settings, updateSetting } = useArenaSettings();
@@ -33,7 +34,7 @@ export default function ProfilePage() {
     error,
     refetch
   } = useProfile({
-    address,
+    ...(address ? { address } : {}),
     myArenasFilter: arenaFilter
   });
 
@@ -122,8 +123,19 @@ export default function ProfilePage() {
             </div>
           </div>
 
-          <Button variant="secondary" className="w-full md:w-auto mt-4 md:mt-0 border-neon-green/50 text-neon-green hover:bg-neon-green/10">
+          {/* #1294 — profile editing isn't wired up yet; render as an
+              explicitly disabled control with a "soon" affordance instead of
+              a live-looking CTA that silently does nothing on click. */}
+          <Button
+            variant="secondary"
+            disabled
+            aria-disabled="true"
+            title="Profile editing isn't available yet"
+            aria-label="Edit profile — coming soon"
+            className="w-full md:w-auto mt-4 md:mt-0 border-neon-green/50 text-neon-green hover:bg-neon-green/10"
+          >
             EDIT PROFILE
+            <span className="ml-2 text-[9px] font-bold tracking-widest opacity-70">SOON</span>
           </Button>
         </div>
       </section>
@@ -138,9 +150,16 @@ export default function ProfilePage() {
         </div>
       )}
 
+      {/* ── Issue #1414 — Privacy-preserving public alias ───────────────────── */}
+      <section>
+        <h3 className="text-sm font-bold tracking-[0.2em] text-zinc-400 uppercase mb-3">
+          PUBLIC_ALIAS.CFG
+        </h3>
+        <AliasManager currentAlias={profile?.identity?.displayName ?? null} />
+      </section>
+
       {/* Stats Row */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Games Played */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">        {/* Games Played */}
         <div className="p-6 border border-white/5 bg-black/20 backdrop-blur-sm space-y-6">
           <div className="flex justify-between items-start">
             <h4 className="text-[10px] font-bold tracking-[0.2em] text-zinc-500 uppercase">GAMES_PLAYED.SYS</h4>
@@ -177,9 +196,22 @@ export default function ProfilePage() {
             )}
             <div className="text-[10px] text-zinc-500 font-mono uppercase tracking-widest mt-1">GENERATED VIA RWA DEPLOYMENT</div>
           </div>
-          <Button className="w-full h-10 text-[10px] tracking-widest uppercase bg-neon-pink hover:bg-neon-pink/90 text-white border-none">
+          {/* #1294 — on-chain yield claiming isn't implemented yet. Keep the
+              button visible for discoverability but disabled, so clicking the
+              page's most prominent CTA never looks broken. */}
+          <Button
+            disabled
+            aria-disabled="true"
+            title="Yield claiming isn't available yet"
+            aria-label="Claim yield — coming soon"
+            className="w-full h-10 text-[10px] tracking-widest uppercase bg-neon-pink hover:bg-neon-pink/90 text-white border-none"
+          >
             CLAIM YIELD
+            <span className="ml-2 opacity-70">— SOON</span>
           </Button>
+          <p className="text-[9px] text-zinc-500 font-mono uppercase tracking-widest text-center">
+            Claiming goes live with RWA payout support
+          </p>
         </div>
 
         {/* Rank */}
@@ -317,6 +349,12 @@ export default function ProfilePage() {
         </div>
       </div>
 
+      {/* Staking Position Section (#1510) */}
+      <section className="space-y-4">
+        <h3 className="text-sm font-bold tracking-[0.2em] text-zinc-400 uppercase">STAKING.CFG</h3>
+        <StakingPositionPanel />
+      </section>
+
       {/* Preferences Section */}
       <section className="space-y-4">
         <h3 className="text-sm font-bold tracking-[0.2em] text-zinc-400 uppercase">PREFERENCES.CFG</h3>
@@ -342,6 +380,18 @@ export default function ProfilePage() {
                 <p className="text-[10px] text-zinc-600 mt-1 uppercase">RECAP_EMAILS_AND_UPDATES</p>
               </div>
               <span className="text-[9px] font-bold text-zinc-600 tracking-widest border border-zinc-700 px-2 py-1">DISABLED</span>
+            </div>
+          </div>
+
+          {/* Issue #1571 — opt in to Web Push round-phase alerts (works with
+              the app closed; delivery honors notification preferences). */}
+          <div className="p-6 border border-white/5 bg-black/20 backdrop-blur-sm space-y-4">
+            <div className="flex justify-between items-start gap-4">
+              <div>
+                <h4 className="text-[10px] font-bold tracking-[0.2em] text-zinc-500 uppercase">PUSH_ALERTS</h4>
+                <p className="text-[10px] text-zinc-600 mt-1 uppercase">ROUND_START_COMMIT_REVEAL_PAYOUT</p>
+              </div>
+              <PushSubscribeButton />
             </div>
           </div>
         </div>

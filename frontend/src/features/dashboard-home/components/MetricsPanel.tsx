@@ -1,7 +1,7 @@
 "use client";
 
-import { usePolling } from "@/shared-d/hooks/usePolling";
-import { fetchNetworkStats } from "@/shared-d/mocks/mockNetworkStats";
+import { usePolling } from "@/shared/lib/hooks/usePolling";
+import { fetchNetworkStats } from "@/shared/lib/mockNetworkStats";
 
 export function MetricsPanel() {
     const { data: stats, status } = usePolling(fetchNetworkStats, {
