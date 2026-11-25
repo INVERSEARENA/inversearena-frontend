@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @keyframes ticker {
   from { transform: translateX(0); }
   to { transform: translateX(-50%); }
@@ -33,14 +35,34 @@
 }
 
 :root {
+  --background: #FFFFFF;
+  --foreground: #09101D;
+  --grid-line: rgba(9, 16, 29, 0.03);
+  --card-bg: #F8F9FA;
+  --card-border: #E5E7EB;
+  --text-muted: #6B7280;
+  --navbar-bg: rgba(255, 255, 255, 0.95);
+  --sidebar-bg: #FFFFFF;
+  --sidebar-border: rgba(0, 0, 0, 0.1);
+}
+
+.dark {
   --background: #09101D;
   --foreground: #FFFFFF;
+  --grid-line: rgba(55, 255, 28, 0.06);
+  --card-bg: #0D1117;
+  --card-border: #1E232B;
+  --text-muted: #9CA3AF;
+  --navbar-bg: rgba(0, 0, 0, 0.95);
+  --sidebar-bg: #000000;
+  --sidebar-border: rgba(255, 255, 255, 0.1);
 }
 
 html {
   scroll-behavior: smooth;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 ::selection {
@@ -55,8 +77,8 @@ body {
 
   /* Grid with thin neon-green lines - slightly adjusted for better visibility */
   background-image:
-    linear-gradient(rgba(55, 255, 28, 0.06) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(55, 255, 28, 0.06) 1px, transparent 1px);
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
   background-size: 40px 40px;
   background-attachment: fixed;
 }

@@ -1,10 +1,14 @@
-import type { ArenaCard } from "../types";
+"use client";
+
+import { useRouter } from "next/navigation";
+import type { ArenaCard } from "../model/types";
 
 interface FeaturedArenaCardProps {
     arena: ArenaCard;
 }
 
 export function FeaturedArenaCard({ arena }: FeaturedArenaCardProps) {
+    const router = useRouter();
     const progressPercentage = (arena.currentPlayers / arena.maxPlayers) * 100;
 
     return (
@@ -71,6 +75,7 @@ export function FeaturedArenaCard({ arena }: FeaturedArenaCardProps) {
                     {/* JOIN NOW Button */}
                     <button
                         type="button"
+                        onClick={() => router.push(`/arena/${arena.id}`)}
                         className="flex items-center gap-2 rounded-md bg-[#37FF1C] px-6 py-3 text-sm font-bold text-black transition-all hover:bg-[#2be012] hover:shadow-lg hover:shadow-[#37FF1C]/20 focus:outline-none focus:ring-2 focus:ring-[#37FF1C] focus:ring-offset-2 focus:ring-offset-black"
                     >
                         <svg

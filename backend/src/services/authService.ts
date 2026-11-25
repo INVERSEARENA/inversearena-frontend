@@ -1,25 +1,79 @@
-import { randomBytes } from "crypto";
+import { randomBytes, randomUUID } from "crypto";
+import { createHash } from "crypto";
 import jwt from "jsonwebtoken";
-import { Keypair } from "@stellar/stellar-sdk";
+import { Keypair, Transaction } from "@stellar/stellar-sdk";
 import { NonceModel } from "../db/models/nonce.model";
 import { UserModel } from "../db/models/user.model";
-import type { AuthUser, JwtPayload, TokenPair } from "../types/auth";
+import { RefreshTokenModel, generateFamilyId } from "../db/models/refreshToken.model";
+import { SessionStore, sessionStore as defaultSessionStore } from "../cache/sessionStore";
+import type { AuthUser, DeviceMetadata, JwtPayload, SessionView, TokenPair } from "../types/auth";
+import { getKeyring, recordVerification, verificationCandidates, type SecretKeyring } from "../config/secretKeyring";
+import { getStellarConfig } from "../config/stellarConfig";
+import { env } from "../config/env";
 
 const NONCE_PREFIX = "Sign this message to authenticate with InverseArena:\n";
+/** Must stay in sync with the frontend challenge builder (session/challenge.ts). */
+const CHALLENGE_DATA_KEY = "inversearena_auth_challenge";
 
 const PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
 
-function getJwtSecret(): string {
-  const secret = process.env.JWT_SECRET;
-  if (!secret || secret.length < 32) {
-    throw new Error("JWT_SECRET must be set and at least 32 characters");
+function getJwtKeyring(): SecretKeyring {
+  const keyring = getKeyring("jwt");
+  if (!keyring) throw new Error("JWT_SECRET must be set and at least 32 characters");
+  return keyring;
+}
+
+/**
+ * Verify a JWT against the rotation keyring (#1456). The `kid` header selects
+ * exactly one key; an unknown or retired kid is rejected without trying other
+ * keys. Tokens minted before kids existed (no header) are checked against the
+ * current key and, during an overlap window, the previous one.
+ */
+function verifyJwt(token: string): JwtPayload {
+  const keyring = getJwtKeyring();
+  const decoded = jwt.decode(token, { complete: true });
+  const rawKid = decoded && typeof decoded === "object" ? decoded.header?.kid : undefined;
+  const kid = typeof rawKid === "string" ? rawKid : undefined;
+  const candidates = verificationCandidates(keyring, kid);
+  if (candidates.length === 0) {
+    recordVerification("jwt", "unknown_kid", "none", kid);
+    throw new Error("Unknown JWT key id");
   }
-  return secret;
+  for (const key of candidates) {
+    try {
+      const payload = jwt.verify(token, key.secret, { algorithms: ["HS256"] }) as JwtPayload;
+      recordVerification("jwt", "accepted", key.slot, kid);
+      return payload;
+    } catch (err) {
+      // Expiry is only reported after the signature checked out: stop here.
+      if (err instanceof jwt.TokenExpiredError) throw err;
+    }
+  }
+  recordVerification("jwt", "bad_signature", "none", kid);
+  throw new Error("Invalid JWT signature");
 }
 
 function nonceTtlSeconds(): number {
-  const val = Number(process.env.NONCE_TTL_SECONDS);
+  const val = Number(env.NONCE_TTL_SECONDS);
   return Number.isFinite(val) && val > 0 ? val : 300;
+}
+
+function refreshTokenTtlSeconds(): number {
+  const val = Number(env.JWT_REFRESH_EXPIRES_IN);
+  if (typeof val === "number" && Number.isFinite(val) && val > 0) return val;
+  // Default 7 days
+  return 7 * 24 * 60 * 60;
+}
+
+function accessTokenTtlSeconds(): number {
+  const val = Number(env.JWT_ACCESS_EXPIRES_IN);
+  if (typeof val === "number" && Number.isFinite(val) && val > 0) return val;
+  // Default 15 minutes
+  return 15 * 60;
+}
+
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
 }
 
 function validateWalletAddress(walletAddress: string): void {
@@ -30,24 +84,29 @@ function validateWalletAddress(walletAddress: string): void {
 }
 
 export class AuthService {
+  constructor(private readonly sessions: SessionStore = defaultSessionStore) {}
+
   async requestNonce(walletAddress: string): Promise<{ nonce: string; expiresAt: Date }> {
     validateWalletAddress(walletAddress);
 
     const rawHex = randomBytes(32).toString("hex");
-    const nonce = `${NONCE_PREFIX}${rawHex}`;
     const expiresAt = new Date(Date.now() + nonceTtlSeconds() * 1000);
+    // Signature is bound to origin, network, nonce and expiry (#1445): a
+    // capture from another origin/network no longer verifies here.
+    const origin = env.PUBLIC_WEB_ORIGIN ?? "https://app.inversearena.com";
+    const nonce = `${NONCE_PREFIX}origin=${origin}\nnetwork=${getStellarConfig().networkPassphrase}\nnonce=${rawHex}\nexpires=${expiresAt.toISOString()}`;
+
+    await NonceModel.updateMany(
+      { walletAddress, used: false, expiresAt: { $gt: new Date() } },
+      { $set: { used: true } },
+    );
 
     await NonceModel.create({ walletAddress, nonce, used: false, expiresAt });
 
     return { nonce, expiresAt };
   }
 
-  async verifySignatureAndLogin(
-    walletAddress: string,
-    signature: string
-  ): Promise<TokenPair & { user: AuthUser }> {
-    validateWalletAddress(walletAddress);
-
+  private async findValidNonce(walletAddress: string) {
     const nonceRecord = await NonceModel.findOne({
       walletAddress,
       used: false,
@@ -61,6 +120,99 @@ export class AuthService {
       );
       throw err;
     }
+    return nonceRecord;
+  }
+
+  /**
+   * Verifies the fallback proof for wallets that cannot sign an arbitrary
+   * message. The signed XDR is never submitted on-chain: it carries the SHA-256
+   * digest of the backend nonce in a manageData operation, so replaying it for
+   * a different challenge (or network) fails verification.
+   */
+  private verifyChallengeTransaction(signedChallengeXdr: string, nonce: string, walletAddress: string): void {
+    let transaction: Transaction;
+    try {
+      transaction = new Transaction(signedChallengeXdr, getStellarConfig().networkPassphrase);
+    } catch {
+      const err = Object.assign(new Error("Invalid challenge transaction"), { status: 401 });
+      throw err;
+    }
+
+    const expectedDigest = createHash("sha256").update(nonce, "utf-8").digest();
+    const carriesNonce = transaction.operations.some((operation) => {
+      if (operation.type !== "manageData" || operation.name !== CHALLENGE_DATA_KEY) return false;
+      // stellar-base exposes manageData values as a Buffer when parsing XDR,
+      // while some SDK versions decouple them as base64 strings. Accept both.
+      const value = operation.value as unknown;
+      let valueBytes: Buffer;
+      if (typeof value === "string") {
+        valueBytes = Buffer.from(value, "base64");
+      } else if (value instanceof Uint8Array) {
+        valueBytes = Buffer.from(value);
+      } else {
+        return false;
+      }
+      return valueBytes.equals(expectedDigest);
+    });
+
+    const maxTime = transaction.timeBounds?.maxTime;
+    const notExpired = maxTime === undefined || Number(maxTime) > Math.floor(Date.now() / 1000);
+
+    let signatureValid = false;
+    if (carriesNonce && notExpired) {
+      try {
+        const keypair = Keypair.fromPublicKey(walletAddress);
+        const hash = transaction.hash();
+        signatureValid = transaction.signatures.some((signature) =>
+          keypair.verify(hash, signature.signature())
+        );
+      } catch {
+        signatureValid = false;
+      }
+    }
+
+    if (!signatureValid) {
+      const err = Object.assign(new Error("Invalid challenge signature"), { status: 401 });
+      throw err;
+    }
+  }
+
+  private async completeLogin(
+    nonceRecord: { _id: unknown; nonce: string },
+    walletAddress: string,
+    device?: DeviceMetadata
+  ): Promise<TokenPair & { user: AuthUser }> {
+    await NonceModel.findByIdAndUpdate(nonceRecord._id, { used: true });
+
+    const now = new Date();
+    const user = await UserModel.findOneAndUpdate(
+      { walletAddress },
+      { $set: { lastLoginAt: now }, $setOnInsert: { walletAddress, joinedAt: now } },
+      { upsert: true, new: true }
+    );
+
+    const tokens = await this.issueTokenPair(user._id.toString(), walletAddress, undefined, device);
+
+    const authUser: AuthUser = {
+      id: user._id.toString(),
+      walletAddress: user.walletAddress,
+      joinedAt: user.joinedAt,
+      lastLoginAt: user.lastLoginAt,
+      ...(user.displayName !== undefined && user.displayName !== null
+        ? { displayName: user.displayName }
+        : {}),
+    };
+
+    return { ...tokens, user: authUser };
+  }
+
+  async verifySignatureAndLogin(
+    walletAddress: string,
+    signature: string,
+    device?: DeviceMetadata
+  ): Promise<TokenPair & { user: AuthUser }> {
+    validateWalletAddress(walletAddress);
+    const nonceRecord = await this.findValidNonce(walletAddress);
 
     let valid = false;
     try {
@@ -77,33 +229,25 @@ export class AuthService {
       throw err;
     }
 
-    await NonceModel.findByIdAndUpdate(nonceRecord._id, { used: true });
+    return this.completeLogin(nonceRecord, walletAddress, device);
+  }
 
-    const now = new Date();
-    const user = await UserModel.findOneAndUpdate(
-      { walletAddress },
-      { $set: { lastLoginAt: now }, $setOnInsert: { walletAddress, joinedAt: now } },
-      { upsert: true, new: true }
-    );
-
-    const tokens = this.issueTokenPair(user._id.toString(), walletAddress);
-
-    return {
-      ...tokens,
-      user: {
-        id: user._id.toString(),
-        walletAddress: user.walletAddress,
-        displayName: user.displayName,
-        joinedAt: user.joinedAt,
-        lastLoginAt: user.lastLoginAt,
-      },
-    };
+  /** Fallback login for wallets that only support signing transactions. */
+  async verifyChallengeAndLogin(
+    walletAddress: string,
+    signedChallengeXdr: string,
+    device?: DeviceMetadata
+  ): Promise<TokenPair & { user: AuthUser }> {
+    validateWalletAddress(walletAddress);
+    const nonceRecord = await this.findValidNonce(walletAddress);
+    this.verifyChallengeTransaction(signedChallengeXdr, nonceRecord.nonce, walletAddress);
+    return this.completeLogin(nonceRecord, walletAddress, device);
   }
 
   async refreshTokens(refreshToken: string): Promise<TokenPair> {
     let payload: JwtPayload;
     try {
-      payload = jwt.verify(refreshToken, getJwtSecret()) as JwtPayload;
+      payload = verifyJwt(refreshToken);
     } catch {
       const err = Object.assign(new Error("Invalid or expired refresh token"), { status: 401 });
       throw err;
@@ -114,13 +258,158 @@ export class AuthService {
       throw err;
     }
 
-    return this.issueTokenPair(payload.sub, payload.wallet);
+    // A token whose JTI has been revoked (logout / revoke-all) is rejected
+    // even if its signature and DB row still look valid.
+    if (payload.jti && !(await this.sessions.isActive(payload.jti))) {
+      const err = Object.assign(new Error("Refresh token has been revoked"), { status: 401 });
+      throw err;
+    }
+
+    const tokenHash = hashToken(refreshToken);
+
+    // Atomically claim the token: match only a row that is still unused and
+    // unrevoked, and flip `used` in the same operation. A separate read-then-
+    // write let two concurrent requests both observe `used: false` before
+    // either write landed, so both were issued fresh pairs and the reuse
+    // branch never fired — defeating the very control it implements (#1347).
+    // MongoDB applies a single-document update atomically, so exactly one
+    // racing request can match this filter.
+    const claimedToken = await RefreshTokenModel.findOneAndUpdate(
+      { tokenHash, used: false, revoked: false },
+      { $set: { used: true } },
+      { new: false }
+    );
+
+    if (!claimedToken) {
+      // The claim failed. Re-read to tell the three possible causes apart:
+      // the token never existed / expired, it was revoked, or it was already
+      // used — the last of which is a replay and must burn the family.
+      const existingToken = await RefreshTokenModel.findOne({ tokenHash });
+
+      if (!existingToken) {
+        const err = Object.assign(new Error("Refresh token has been revoked or expired"), { status: 401 });
+        throw err;
+      }
+
+      if (existingToken.revoked) {
+        const err = Object.assign(new Error("Refresh token has been revoked"), { status: 401 });
+        throw err;
+      }
+
+      // Token reuse detected — this is a theft attempt.
+      // Revoke all tokens in this family and wipe the wallet's active JTIs.
+      // Also revoke all JTIs minted from this family to invalidate access tokens
+      // that were issued before the reuse was detected.
+      await RefreshTokenModel.updateMany(
+        { familyId: existingToken.familyId },
+        { $set: { revoked: true } }
+      );
+      await this.sessions.removeAllSessions(payload.wallet);
+      const err = Object.assign(
+        new Error("Refresh token reuse detected — all sessions invalidated"),
+        { status: 401 }
+      );
+      throw err;
+    }
+
+    // The token is now marked used, so a replay cannot claim it again.
+    // Retire its JTI so it cannot be replayed against the new access token.
+    if (payload.jti) {
+      await this.sessions.removeSession(payload.jti);
+    }
+
+    // Issue a new token pair in the same family, carrying the original
+    // login's device label/IP forward so a session's identity in the "active
+    // sessions" list doesn't change just because its access token rotated.
+    return this.issueTokenPair(payload.sub, payload.wallet, claimedToken.familyId, {
+      deviceLabel: claimedToken.deviceLabel ?? "Unknown device",
+      ip: claimedToken.ip ?? null,
+    });
   }
 
-  verifyAccessToken(token: string): JwtPayload {
+  /**
+   * Invalidate a single session. The middleware passes the access token's
+   * jti so only the current device/browser is logged out; other active
+   * sessions for this wallet remain valid.
+   */
+  async logout(jti: string): Promise<void> {
+    await this.sessions.removeSession(jti);
+  }
+
+  /**
+   * Invalidate every session for a wallet. Called from
+   * DELETE /auth/sessions when a wallet is compromised, rotated, or the
+   * user wants a full sign-out. Also revokes all of the user's refresh
+   * tokens so the refresh endpoint cannot mint new sessions.
+   */
+  async revokeAllSessions(walletAddress: string, userId: string): Promise<number> {
+    const revokedCount = await this.sessions.removeAllSessions(walletAddress);
+    await RefreshTokenModel.updateMany(
+      { userId, revoked: false },
+      { $set: { revoked: true } }
+    );
+    return revokedCount;
+  }
+
+  /**
+   * List this user's active sessions (#1410) — one row per refresh-token
+   * family that hasn't been rotated away, revoked, or expired. `currentJti`
+   * (the caller's own access-token jti) flags which entry is "this device".
+   */
+  async listSessions(userId: string, currentJti?: string): Promise<SessionView[]> {
+    const rows = await RefreshTokenModel.find({
+      userId,
+      used: false,
+      revoked: false,
+      expiresAt: { $gt: new Date() },
+    }).sort({ createdAt: -1 });
+
+    return rows.map((row) => ({
+      familyId: row.familyId,
+      deviceLabel: row.deviceLabel ?? "Unknown device",
+      ip: row.ip ?? null,
+      createdAt: row.createdAt,
+      expiresAt: row.expiresAt,
+      current: currentJti !== undefined && row.accessJti === currentJti,
+    }));
+  }
+
+  /**
+   * Revoke exactly one session (one refresh-token family) — the per-device
+   * counterpart to revokeAllSessions. Scoped by userId as well as familyId
+   * so a caller cannot revoke another user's session by guessing a familyId.
+   *
+   * Only that family's two JTIs are removed from Redis and only that
+   * family's DB rows are marked revoked; every other active family for this
+   * user (and its JTIs) is left untouched — this is what "without logging
+   * out other devices" means in practice.
+   */
+  async revokeSession(userId: string, familyId: string): Promise<void> {
+    const current = await RefreshTokenModel.findOne({
+      userId,
+      familyId,
+      used: false,
+      revoked: false,
+    });
+
+    if (!current) {
+      const err = Object.assign(
+        new Error("Session not found or already revoked"),
+        { status: 404 }
+      );
+      throw err;
+    }
+
+    await RefreshTokenModel.updateMany({ familyId }, { $set: { revoked: true } });
+
+    if (current.accessJti) await this.sessions.removeSession(current.accessJti);
+    if (current.refreshJti) await this.sessions.removeSession(current.refreshJti);
+  }
+
+  async verifyAccessToken(token: string): Promise<JwtPayload> {
     let payload: JwtPayload;
     try {
-      payload = jwt.verify(token, getJwtSecret()) as JwtPayload;
+      payload = verifyJwt(token);
     } catch {
       const err = Object.assign(new Error("Invalid or expired access token"), { status: 401 });
       throw err;
@@ -131,20 +420,70 @@ export class AuthService {
       throw err;
     }
 
+    // Reject tokens whose JTI has been invalidated server-side. This is the
+    // mechanism that lets POST /auth/logout and DELETE /auth/sessions take
+    // effect immediately instead of waiting for the JWT to expire.
+    if (!payload.jti || !(await this.sessions.isActive(payload.jti))) {
+      const err = Object.assign(new Error("Session has been revoked"), { status: 401 });
+      throw err;
+    }
+
     return payload;
   }
 
-  private issueTokenPair(userId: string, walletAddress: string): TokenPair {
-    const secret = getJwtSecret();
-    const accessPayload: JwtPayload = { sub: userId, wallet: walletAddress, type: "access" };
-    const refreshPayload: JwtPayload = { sub: userId, wallet: walletAddress, type: "refresh" };
+  private async issueTokenPair(
+    userId: string,
+    walletAddress: string,
+    existingFamilyId?: string,
+    device?: DeviceMetadata
+  ): Promise<TokenPair> {
+    // New tokens are always signed with the current key and carry its kid.
+    const { current } = getJwtKeyring();
+    const signOptions = { algorithm: "HS256" as const, keyid: current.kid };
+    const accessTtl = accessTokenTtlSeconds();
+    const refreshTtl = refreshTokenTtlSeconds();
+    const accessJti = randomUUID();
+    const refreshJti = randomUUID();
 
-    const accessToken = jwt.sign(accessPayload, secret, {
-      expiresIn: (process.env.JWT_EXPIRES_IN ?? "15m") as jwt.SignOptions["expiresIn"],
+    const accessPayload: JwtPayload = {
+      sub: userId,
+      wallet: walletAddress,
+      type: "access",
+      jti: accessJti,
+    };
+    const refreshPayload: JwtPayload = {
+      sub: userId,
+      wallet: walletAddress,
+      type: "refresh",
+      jti: refreshJti,
+    };
+
+    const accessToken = jwt.sign(accessPayload, current.secret, { ...signOptions, expiresIn: accessTtl });
+    const refreshToken = jwt.sign(refreshPayload, current.secret, { ...signOptions, expiresIn: refreshTtl });
+
+    // Persist the refresh token (hashed) for the family-based rotation
+    // checks in `refreshTokens`. The DB is the durable record; Redis is the
+    // fast-revocation index.
+    await RefreshTokenModel.create({
+      tokenHash: hashToken(refreshToken),
+      familyId: existingFamilyId ?? generateFamilyId(),
+      userId,
+      used: false,
+      revoked: false,
+      expiresAt: new Date(Date.now() + refreshTtl * 1000),
+      accessJti,
+      refreshJti,
+      deviceLabel: device?.deviceLabel ?? "Unknown device",
+      ip: device?.ip ?? null,
     });
-    const refreshToken = jwt.sign(refreshPayload, secret, {
-      expiresIn: (process.env.JWT_REFRESH_EXPIRES_IN ?? "7d") as jwt.SignOptions["expiresIn"],
-    });
+
+    // Register both JTIs in Redis so they can be revoked individually
+    // (logout) or wholesale (revoke-all-sessions). The TTL on each key
+    // matches the JWT lifetime, so expired tokens disappear automatically.
+    await this.sessions.addSessions([
+      { walletAddress, jti: accessJti, ttlSeconds: accessTtl },
+      { walletAddress, jti: refreshJti, ttlSeconds: refreshTtl },
+    ]);
 
     return { accessToken, refreshToken };
   }

@@ -1,7 +1,7 @@
 "use client";
 
 import React from 'react';
-import { useNotification } from '../../shared-d/hooks/useNotification';
+import { useNotification } from '@/shared/lib/hooks/useNotification';
 import { Button } from './Button';
 
 export function NotificationDemo() {

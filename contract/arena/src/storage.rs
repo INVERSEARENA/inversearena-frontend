@@ -1,0 +1,1866 @@
+use crate::types::PendingUpgrade;
+use crate::types::{
+    ArenaConfig, ArenaError, Choice, EliminationReason, GameState, LeaderboardEntry,
+    OracleFreshnessPolicy, PendingAdmin, PlayerState, ResolutionProgress, RoundResult,
+    RoundSchedule, YieldSnapshot,
+};
+use soroban_sdk::{Address, BytesN, Env, IntoVal, Val, Vec, contracttype, symbol_short};
+
+pub trait StorageRepository<K, V> {
+    fn has(env: &Env, key: &K) -> bool;
+    fn get(env: &Env, key: &K) -> Option<V>;
+    fn set(env: &Env, key: &K, val: &V);
+    fn remove(env: &Env, key: &K);
+}
+
+pub trait TtlRepository<K> {
+    fn extend_ttl(env: &Env, key: &K, threshold: u32, extend_to: u32);
+}
+
+pub(crate) const PERSISTENT_TTL_THRESHOLD: u32 = 518_400;
+pub(crate) const PERSISTENT_TTL_EXTEND_TO: u32 = 6_307_200;
+
+/// Grace period (in ledgers) added on top of the round duration for the
+/// temporary-storage TTL of CommitmentForRound and ChoiceForRound (#1612).
+/// 17_280 ledgers ≈ 1 day at a 5-second cadence.
+const COMMIT_TTL_GRACE_LEDGERS: u32 = 17_280;
+
+/// Soroban temporary storage maximum TTL (ledgers). Current network value as
+/// of protocol 21.  Clamping prevents set_ttl rejections when a configured
+/// round duration would exceed this.
+const SOROBAN_TEMP_MAX_TTL: u32 = 3_110_400; // ~6 months
+pub(crate) const CURRENT_STORAGE_VERSION: u32 = 2;
+pub(crate) const PAGED_ROSTER_VERSION: u32 = CURRENT_STORAGE_VERSION;
+const LEGACY_ROSTER_VERSION: u32 = 1;
+
+/// Storage key for per-player data, keyed by the player's address.
+#[contracttype]
+pub(crate) enum DataKey {
+    Player(Address),
+    BannedPlayer(Address),
+    CommitmentForRound(Address, u32),
+    ChoiceForRound(Address, u32),
+    YieldSnapshot(u32),
+    RoundResult(u32),
+    RoundYieldBps(u32),
+    RoundStart,
+    RoundDuration,
+    RoundSchedule,
+    LastVaultBalance,
+    PrizeClaimed,
+    MinPlayers,
+    MaxPlayers,
+    ReentrancyGuard,
+    Winner,
+    RefundClaimed(Address),
+    Leaderboard,
+    LeaderboardLimit,
+    PlatformFeeBps,
+    PlayerPage(u32),
+    SurvivorPage(u32),
+    RosterCount,
+    SurvivorCount,
+    StorageVersion,
+    /// Per-instance oracle freshness policy (#1512). See
+    /// `ArenaRepository::load_oracle_freshness_policy`.
+    OracleFreshnessPolicy,
+    /// Lobby start deadline (#1579). `0` means no deadline is configured.
+    StartDeadline,
+    /// Why a player was eliminated (#1582). Written once by `resolve_round`.
+    EliminationReason(Address),
+    /// Paged-resolution progress + cursor (#1639).
+    Resolution,
+    /// Working list a paged resolution iterates over (#1639).
+    ResolutionPlayers,
+    /// Top-K leaderboard accumulator a paged resolution builds (#1639).
+    ResolutionLeaderboard,
+    /// Set when a settlement-time vault withdrawal failed and the arena's
+    /// principal is still held by the vault (#1631). Cleared by `retry_withdraw`.
+    FundsInVault,
+    /// Ledger timestamp (seconds) at which the protocol admin paused this
+    /// arena (#1629). Absent means "not paused by the protocol"; a pause
+    /// recorded before the role split has no timestamp and is therefore
+    /// treated as already expired, so an unbounded legacy pause can never
+    /// lock player funds.
+    PausedAt,
+    /// Choice count for this arena; absent on legacy instances means binary.
+    OptionCount,
+    /// Payer who funded a sponsored ("Gift a seat") entry (#1715). Absent for
+    /// self-funded joins. Kept in its own key so the persisted `PlayerState`
+    /// XDR layout is unchanged. Refunds are paid to this address when present.
+    Sponsor(Address),
+    /// Ledger timestamp at which the arena entered Open after a round.
+    LastTransitionAt,
+    /// Inter-round abandonment timeout snapshotted at initialization.
+    InterRoundTimeout,
+    /// Cumulative paused seconds applied to the current round deadlines.
+    PausedDeadlineSeconds,
+}
+
+pub struct ArenaRepository<'a> {
+    env: &'a Env,
+}
+
+impl<'a> ArenaRepository<'a> {
+    pub fn new(env: &'a Env) -> Self {
+        ArenaRepository { env }
+    }
+
+    // Generic function to extend TTL for any persistent key
+    // Extend after a write or a successful read: the entry is known to exist,
+    // so avoid the extra `has()` ledger read in the guarded helper.
+    fn extend_persistent_ttl<K>(env: &Env, key: &K)
+    where
+        K: IntoVal<Env, Val>,
+    {
+        env.storage().persistent().extend_ttl(
+            key,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
+    }
+
+    fn extend_persistent_ttl_if_exists<K>(env: &Env, key: &K)
+    where
+        K: IntoVal<Env, Val>,
+    {
+        if env.storage().persistent().has(key) {
+            env.storage().persistent().extend_ttl(
+                key,
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_EXTEND_TO,
+            );
+        }
+    }
+}
+
+// Implement StorageRepository for DataKey and various Value types
+impl StorageRepository<DataKey, PlayerState> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        let present = env.storage().persistent().has(key);
+        if present {
+            Self::extend_persistent_ttl(env, key);
+        }
+        present
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<PlayerState> {
+        let value = env.storage().persistent().get(key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, key);
+        }
+        value
+    }
+    fn set(env: &Env, key: &DataKey, val: &PlayerState) {
+        env.storage().persistent().set(key, val);
+        Self::extend_persistent_ttl(env, key);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, bool> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        let present = env.storage().persistent().has(key);
+        if present {
+            Self::extend_persistent_ttl(env, key);
+        }
+        present
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<bool> {
+        let value = env.storage().persistent().get(key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, key);
+        }
+        value
+    }
+    fn set(env: &Env, key: &DataKey, val: &bool) {
+        env.storage().persistent().set(key, val);
+        Self::extend_persistent_ttl(env, key);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, u32> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        let present = env.storage().persistent().has(key);
+        if present {
+            Self::extend_persistent_ttl(env, key);
+        }
+        present
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<u32> {
+        let value = env.storage().persistent().get(key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, key);
+        }
+        value
+    }
+    fn set(env: &Env, key: &DataKey, val: &u32) {
+        env.storage().persistent().set(key, val);
+        Self::extend_persistent_ttl(env, key);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, BytesN<32>> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        let present = env.storage().persistent().has(key);
+        if present {
+            Self::extend_persistent_ttl(env, key);
+        }
+        present
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<BytesN<32>> {
+        let value = env.storage().persistent().get(key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, key);
+        }
+        value
+    }
+    fn set(env: &Env, key: &DataKey, val: &BytesN<32>) {
+        env.storage().persistent().set(key, val);
+        Self::extend_persistent_ttl(env, key);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, Choice> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        let present = env.storage().persistent().has(key);
+        if present {
+            Self::extend_persistent_ttl(env, key);
+        }
+        present
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<Choice> {
+        let value = env.storage().persistent().get(key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, key);
+        }
+        value
+    }
+    fn set(env: &Env, key: &DataKey, val: &Choice) {
+        env.storage().persistent().set(key, val);
+        Self::extend_persistent_ttl(env, key);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, u64> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        let present = env.storage().persistent().has(key);
+        if present {
+            Self::extend_persistent_ttl(env, key);
+        }
+        present
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<u64> {
+        let value = env.storage().persistent().get(key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, key);
+        }
+        value
+    }
+    fn set(env: &Env, key: &DataKey, val: &u64) {
+        env.storage().persistent().set(key, val);
+        Self::extend_persistent_ttl(env, key);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, i128> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        let present = env.storage().persistent().has(key);
+        if present {
+            Self::extend_persistent_ttl(env, key);
+        }
+        present
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<i128> {
+        let value = env.storage().persistent().get(key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, key);
+        }
+        value
+    }
+    fn set(env: &Env, key: &DataKey, val: &i128) {
+        env.storage().persistent().set(key, val);
+        Self::extend_persistent_ttl(env, key);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, YieldSnapshot> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        let present = env.storage().persistent().has(key);
+        if present {
+            Self::extend_persistent_ttl(env, key);
+        }
+        present
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<YieldSnapshot> {
+        let value = env.storage().persistent().get(key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, key);
+        }
+        value
+    }
+    fn set(env: &Env, key: &DataKey, val: &YieldSnapshot) {
+        env.storage().persistent().set(key, val);
+        Self::extend_persistent_ttl(env, key);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, RoundResult> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        let present = env.storage().persistent().has(key);
+        if present {
+            Self::extend_persistent_ttl(env, key);
+        }
+        present
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<RoundResult> {
+        let value = env.storage().persistent().get(key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, key);
+        }
+        value
+    }
+    fn set(env: &Env, key: &DataKey, val: &RoundResult) {
+        env.storage().persistent().set(key, val);
+        Self::extend_persistent_ttl(env, key);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, Address> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        let present = env.storage().persistent().has(key);
+        if present {
+            Self::extend_persistent_ttl(env, key);
+        }
+        present
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<Address> {
+        let value = env.storage().persistent().get(key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, key);
+        }
+        value
+    }
+    fn set(env: &Env, key: &DataKey, val: &Address) {
+        env.storage().persistent().set(key, val);
+        Self::extend_persistent_ttl(env, key);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, Vec<Address>> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        let present = env.storage().persistent().has(key);
+        if present {
+            Self::extend_persistent_ttl(env, key);
+        }
+        present
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<Vec<Address>> {
+        let value = env.storage().persistent().get(key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, key);
+        }
+        value
+    }
+    fn set(env: &Env, key: &DataKey, val: &Vec<Address>) {
+        env.storage().persistent().set(key, val);
+        Self::extend_persistent_ttl(env, key);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, crate::types::LeaderboardEntry> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        let present = env.storage().persistent().has(key);
+        if present {
+            Self::extend_persistent_ttl(env, key);
+        }
+        present
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<crate::types::LeaderboardEntry> {
+        let value = env.storage().persistent().get(key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, key);
+        }
+        value
+    }
+    fn set(env: &Env, key: &DataKey, val: &crate::types::LeaderboardEntry) {
+        env.storage().persistent().set(key, val);
+        Self::extend_persistent_ttl(env, key);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<DataKey, Vec<crate::types::LeaderboardEntry>> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &DataKey) -> bool {
+        let present = env.storage().persistent().has(key);
+        if present {
+            Self::extend_persistent_ttl(env, key);
+        }
+        present
+    }
+    fn get(env: &Env, key: &DataKey) -> Option<Vec<crate::types::LeaderboardEntry>> {
+        let value = env.storage().persistent().get(key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, key);
+        }
+        value
+    }
+    fn set(env: &Env, key: &DataKey, val: &Vec<crate::types::LeaderboardEntry>) {
+        env.storage().persistent().set(key, val);
+        Self::extend_persistent_ttl(env, key);
+    }
+    fn remove(env: &Env, key: &DataKey) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+// Implement TTLRepository for DataKey
+impl TtlRepository<DataKey> for ArenaRepository<'_> {
+    fn extend_ttl(env: &Env, key: &DataKey, threshold: u32, extend_to: u32) {
+        if env.storage().persistent().has(key) {
+            env.storage().persistent().extend_ttl(key, threshold, extend_to);
+        }
+    }
+}
+
+// Implement StorageRepository for Symbol and various Value types (for instance storage)
+impl StorageRepository<soroban_sdk::Symbol, ArenaConfig> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &soroban_sdk::Symbol) -> bool {
+        let present = env.storage().persistent().has(key);
+        if present {
+            Self::extend_persistent_ttl(env, key);
+        }
+        present
+    }
+    fn get(env: &Env, key: &soroban_sdk::Symbol) -> Option<ArenaConfig> {
+        let value = env.storage().persistent().get(key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, key);
+        }
+        value
+    }
+    fn set(env: &Env, key: &soroban_sdk::Symbol, val: &ArenaConfig) {
+        env.storage().persistent().set(key, val);
+        Self::extend_persistent_ttl(env, key);
+    }
+    fn remove(env: &Env, key: &soroban_sdk::Symbol) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<soroban_sdk::Symbol, Vec<Address>> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &soroban_sdk::Symbol) -> bool {
+        let present = env.storage().persistent().has(key);
+        if present {
+            Self::extend_persistent_ttl(env, key);
+        }
+        present
+    }
+    fn get(env: &Env, key: &soroban_sdk::Symbol) -> Option<Vec<Address>> {
+        let value = env.storage().persistent().get(key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, key);
+        }
+        value
+    }
+    fn set(env: &Env, key: &soroban_sdk::Symbol, val: &Vec<Address>) {
+        env.storage().persistent().set(key, val);
+        Self::extend_persistent_ttl(env, key);
+    }
+    fn remove(env: &Env, key: &soroban_sdk::Symbol) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<soroban_sdk::Symbol, PendingAdmin> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &soroban_sdk::Symbol) -> bool {
+        let present = env.storage().persistent().has(key);
+        if present {
+            Self::extend_persistent_ttl(env, key);
+        }
+        present
+    }
+    fn get(env: &Env, key: &soroban_sdk::Symbol) -> Option<PendingAdmin> {
+        let value = env.storage().persistent().get(key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, key);
+        }
+        value
+    }
+    fn set(env: &Env, key: &soroban_sdk::Symbol, val: &PendingAdmin) {
+        env.storage().persistent().set(key, val);
+        Self::extend_persistent_ttl(env, key);
+    }
+    fn remove(env: &Env, key: &soroban_sdk::Symbol) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+impl StorageRepository<soroban_sdk::Symbol, PendingUpgrade> for ArenaRepository<'_> {
+    fn has(env: &Env, key: &soroban_sdk::Symbol) -> bool {
+        let present = env.storage().persistent().has(key);
+        if present {
+            Self::extend_persistent_ttl(env, key);
+        }
+        present
+    }
+    fn get(env: &Env, key: &soroban_sdk::Symbol) -> Option<PendingUpgrade> {
+        let value = env.storage().persistent().get(key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, key);
+        }
+        value
+    }
+    fn set(env: &Env, key: &soroban_sdk::Symbol, val: &PendingUpgrade) {
+        env.storage().persistent().set(key, val);
+        Self::extend_persistent_ttl(env, key);
+    }
+    fn remove(env: &Env, key: &soroban_sdk::Symbol) {
+        env.storage().persistent().remove(key);
+    }
+}
+
+// Implement TTLRepository for Symbol (for instance storage)
+impl TtlRepository<soroban_sdk::Symbol> for ArenaRepository<'_> {
+    fn extend_ttl(env: &Env, key: &soroban_sdk::Symbol, threshold: u32, extend_to: u32) {
+        if env.storage().persistent().has(key) {
+            env.storage().persistent().extend_ttl(key, threshold, extend_to);
+        }
+    }
+}
+
+pub struct ArenaStorage;
+
+impl ArenaStorage {
+    // Extend after a write or a successful read: the entry is known to exist,
+    // so avoid the extra `has()` ledger read in the guarded helper.
+    fn extend_persistent_ttl<K>(env: &Env, key: &K)
+    where
+        K: IntoVal<Env, Val>,
+    {
+        env.storage().persistent().extend_ttl(
+            key,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
+    }
+
+    pub fn save_option_count(env: &Env, count: u32) {
+        env.storage().persistent().set(&DataKey::OptionCount, &count);
+        Self::extend_persistent_ttl(env, &DataKey::OptionCount);
+    }
+
+    pub fn load_option_count(env: &Env) -> u32 {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::OptionCount);
+        env.storage().persistent().get(&DataKey::OptionCount).unwrap_or(2)
+    }
+
+    fn extend_persistent_ttl_if_exists<K>(env: &Env, key: &K)
+    where
+        K: IntoVal<Env, Val>,
+    {
+        if env.storage().persistent().has(key) {
+            env.storage().persistent().extend_ttl(
+                key,
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_EXTEND_TO,
+            );
+        }
+    }
+
+    pub fn load_config(env: &Env) -> Result<ArenaConfig, ArenaError> {
+        Self::extend_persistent_ttl_if_exists(env, &symbol_short!("CONFIG"));
+        env.storage()
+            .persistent()
+            .get(&symbol_short!("CONFIG"))
+            .ok_or(ArenaError::NotInitialized)
+    }
+
+    pub fn save_config(env: &Env, config: &ArenaConfig) {
+        env.storage()
+            .persistent()
+            .set(&symbol_short!("CONFIG"), config);
+        Self::extend_persistent_ttl(env, &symbol_short!("CONFIG"));
+        #[cfg(test)]
+        Self::save_storage_version(env, CURRENT_STORAGE_VERSION);
+    }
+
+    pub fn has_config(env: &Env) -> bool {
+        let present = env.storage().persistent().has(&symbol_short!("CONFIG"));
+        if present {
+            Self::extend_persistent_ttl(env, &symbol_short!("CONFIG"));
+        }
+        present
+    }
+
+    fn page_count(count: u32) -> u32 {
+        if count == 0 {
+            0
+        } else {
+            (count - 1) / crate::PAGE_SIZE + 1
+        }
+    }
+
+    fn load_legacy_players(env: &Env) -> Option<Vec<Address>> {
+        let key = symbol_short!("PLAYERS");
+        Self::extend_persistent_ttl_if_exists(env, &key);
+        env.storage().persistent().get(&key)
+    }
+
+    fn remove_legacy_players(env: &Env) {
+        env.storage().persistent().remove(&symbol_short!("PLAYERS"));
+    }
+
+    pub fn load_storage_version_raw(env: &Env) -> u32 {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::StorageVersion);
+        env.storage()
+            .persistent()
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(LEGACY_ROSTER_VERSION)
+    }
+
+    pub fn load_storage_version(env: &Env) -> u32 {
+        Self::ensure_paged_roster(env);
+        Self::load_storage_version_raw(env)
+    }
+
+    pub(crate) fn save_storage_version(env: &Env, version: u32) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::StorageVersion, &version);
+        Self::extend_persistent_ttl(env, &DataKey::StorageVersion);
+    }
+
+    fn load_roster_count_raw(env: &Env) -> u32 {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::RosterCount);
+        env.storage()
+            .persistent()
+            .get(&DataKey::RosterCount)
+            .unwrap_or(0)
+    }
+
+    pub fn load_roster_count(env: &Env) -> u32 {
+        Self::ensure_paged_roster(env);
+        Self::load_roster_count_raw(env)
+    }
+
+    pub(crate) fn save_roster_count(env: &Env, count: u32) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::RosterCount, &count);
+        Self::extend_persistent_ttl(env, &DataKey::RosterCount);
+    }
+
+    fn load_survivor_count_raw(env: &Env) -> u32 {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::SurvivorCount);
+        env.storage()
+            .persistent()
+            .get(&DataKey::SurvivorCount)
+            .unwrap_or(0)
+    }
+
+    pub fn load_survivor_count(env: &Env) -> u32 {
+        Self::ensure_paged_roster(env);
+        Self::load_survivor_count_raw(env)
+    }
+
+    pub(crate) fn save_survivor_count(env: &Env, count: u32) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::SurvivorCount, &count);
+        Self::extend_persistent_ttl(env, &DataKey::SurvivorCount);
+    }
+
+    fn load_roster_page_raw(env: &Env, page: u32) -> Vec<Address> {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::PlayerPage(page));
+        env.storage()
+            .persistent()
+            .get(&DataKey::PlayerPage(page))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    pub fn load_roster_page(env: &Env, page: u32) -> Vec<Address> {
+        Self::ensure_paged_roster(env);
+        Self::load_roster_page_raw(env, page)
+    }
+
+    pub(crate) fn save_roster_page(env: &Env, page: u32, players: &Vec<Address>) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::PlayerPage(page), players);
+        Self::extend_persistent_ttl(env, &DataKey::PlayerPage(page));
+    }
+
+    fn load_survivor_page_raw(env: &Env, page: u32) -> Vec<Address> {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::SurvivorPage(page));
+        env.storage()
+            .persistent()
+            .get(&DataKey::SurvivorPage(page))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    pub fn load_survivor_page(env: &Env, page: u32) -> Vec<Address> {
+        Self::ensure_paged_roster(env);
+        Self::load_survivor_page_raw(env, page)
+    }
+
+    pub(crate) fn save_survivor_page(env: &Env, page: u32, players: &Vec<Address>) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::SurvivorPage(page), players);
+        Self::extend_persistent_ttl(env, &DataKey::SurvivorPage(page));
+    }
+
+    fn write_roster_pages(env: &Env, players: &Vec<Address>) {
+        let previous_pages = Self::page_count(Self::load_roster_count_raw(env));
+        let mut page = Vec::new(env);
+        let mut page_index = 0u32;
+        for player in players.iter() {
+            page.push_back(player);
+            if page.len() == crate::PAGE_SIZE {
+                Self::save_roster_page(env, page_index, &page);
+                page = Vec::new(env);
+                page_index = page_index.saturating_add(1);
+            }
+        }
+        if !page.is_empty() {
+            Self::save_roster_page(env, page_index, &page);
+        }
+        Self::remove_stale_pages(env, previous_pages, Self::page_count(players.len()), false);
+    }
+
+    fn write_survivor_pages(env: &Env, players: &Vec<Address>) {
+        let previous_pages = Self::page_count(Self::load_survivor_count_raw(env));
+        let mut page = Vec::new(env);
+        let mut page_index = 0u32;
+        for player in players.iter() {
+            page.push_back(player);
+            if page.len() == crate::PAGE_SIZE {
+                Self::save_survivor_page(env, page_index, &page);
+                page = Vec::new(env);
+                page_index = page_index.saturating_add(1);
+            }
+        }
+        if !page.is_empty() {
+            Self::save_survivor_page(env, page_index, &page);
+        }
+        Self::remove_stale_pages(env, previous_pages, Self::page_count(players.len()), true);
+    }
+
+    fn remove_stale_pages(env: &Env, previous_pages: u32, current_pages: u32, survivors: bool) {
+        for page_index in current_pages..previous_pages {
+            let key = if survivors {
+                DataKey::SurvivorPage(page_index)
+            } else {
+                DataKey::PlayerPage(page_index)
+            };
+            env.storage().persistent().remove(&key);
+        }
+    }
+
+    fn load_existing_roster_pages(env: &Env) -> Vec<Address> {
+        let total = Self::load_roster_count_raw(env);
+        let mut players = Vec::new(env);
+        for page_index in 0..Self::page_count(total) {
+            let page = Self::load_roster_page_raw(env, page_index);
+            for player in page.iter() {
+                players.push_back(player);
+            }
+        }
+        players
+    }
+
+    pub fn initialize_paged_roster(env: &Env) {
+        Self::save_storage_version(env, PAGED_ROSTER_VERSION);
+        Self::save_roster_count(env, 0);
+        Self::save_survivor_count(env, 0);
+    }
+
+    pub fn ensure_paged_roster(env: &Env) {
+        if Self::load_storage_version_raw(env) >= PAGED_ROSTER_VERSION {
+            return;
+        }
+
+        let legacy = Self::load_legacy_players(env);
+        let has_legacy = legacy.is_some();
+        let players = match legacy {
+            Some(players) => players,
+            None => Self::load_existing_roster_pages(env),
+        };
+        Self::write_roster_pages(env, &players);
+
+        let mut survivors = Vec::new(env);
+        for player in players.iter() {
+            if let Some(state) = Self::load_player(env, &player)
+                && state.active
+                && !survivors.contains(&player)
+            {
+                survivors.push_back(player);
+            }
+        }
+        Self::write_survivor_pages(env, &survivors);
+        Self::save_roster_count(env, players.len());
+        Self::save_survivor_count(env, survivors.len());
+        if let Ok(mut config) = Self::load_config(env) {
+            config.player_count = players.len();
+            config.active_player_count = survivors.len();
+            Self::save_config(env, &config);
+        }
+        if has_legacy {
+            Self::remove_legacy_players(env);
+        }
+        Self::save_storage_version(env, PAGED_ROSTER_VERSION);
+    }
+
+    pub fn migrate_legacy_players(env: &Env) {
+        Self::ensure_paged_roster(env);
+    }
+
+    pub fn require_current_storage_version(env: &Env) -> Result<(), ArenaError> {
+        let v = Self::load_storage_version_raw(env);
+        if v < CURRENT_STORAGE_VERSION {
+            return Err(ArenaError::MigrationPending);
+        }
+        Ok(())
+    }
+
+    pub fn migrate(env: &Env, max_steps: u32) -> u32 {
+        // Idempotent/resumable migration. Current migration is roster pagination;
+        // it runs in bounded work by nature (single roster rewrite) but we keep
+        // the chunked API for future migrations.
+        let _ = max_steps;
+        Self::ensure_paged_roster(env);
+        Self::load_storage_version_raw(env)
+    }
+
+
+    /// Return the list of all player addresses that have joined this arena.
+    pub fn load_all_players(env: &Env) -> Vec<Address> {
+        Self::ensure_paged_roster(env);
+        let total = Self::load_roster_count_raw(env);
+        let mut players = Vec::new(env);
+        for page_index in 0..Self::page_count(total) {
+            let page = Self::load_roster_page_raw(env, page_index);
+            for player in page.iter() {
+                players.push_back(player);
+            }
+        }
+        players
+    }
+
+    /// Return up to `count` player addresses starting at index `start`.
+    ///
+    /// Versioned arenas read one page entry. Legacy arenas use a read-only
+    /// fallback until the next state-changing entry point migrates the roster.
+    pub fn load_player_page(env: &Env, start: u32, count: u32) -> Vec<Address> {
+        if count == 0 {
+            return Vec::new(env);
+        }
+        if Self::load_storage_version_raw(env) < PAGED_ROSTER_VERSION {
+            let players = match Self::load_legacy_players(env) {
+                Some(players) => players,
+                None => Self::load_existing_roster_pages(env),
+            };
+            return Self::slice_player_page(env, &players, start, count);
+        }
+
+        let page_index = start / crate::PAGE_SIZE;
+        let offset = start % crate::PAGE_SIZE;
+        let page = Self::load_roster_page_raw(env, page_index);
+        Self::slice_player_page(env, &page, offset, count)
+    }
+
+    fn slice_player_page(
+        env: &Env,
+        players: &Vec<Address>,
+        start: u32,
+        count: u32,
+    ) -> Vec<Address> {
+        if start >= players.len() {
+            return Vec::new(env);
+        }
+        let end = start.saturating_add(count).min(players.len());
+        let mut result = Vec::new(env);
+        for index in start..end {
+            if let Some(player) = players.get(index) {
+                result.push_back(player);
+            }
+        }
+        result
+    }
+
+    pub fn save_players(env: &Env, players: &Vec<Address>) {
+        let roster_pages = Self::page_count(Self::load_roster_count_raw(env));
+        let survivor_pages = Self::page_count(Self::load_survivor_count_raw(env));
+        Self::remove_stale_pages(env, roster_pages, 0, false);
+        Self::remove_stale_pages(env, survivor_pages, 0, true);
+        let key = symbol_short!("PLAYERS");
+        env.storage().persistent().set(&key, players);
+        Self::extend_persistent_ttl(env, &key);
+        Self::save_storage_version(env, LEGACY_ROSTER_VERSION);
+        env.storage().persistent().remove(&DataKey::RosterCount);
+        env.storage().persistent().remove(&DataKey::SurvivorCount);
+    }
+
+    fn append_roster_player(env: &Env, player: &Address, count: u32) {
+        let mut page_index = count / crate::PAGE_SIZE;
+        let mut page = Self::load_roster_page_raw(env, page_index);
+        if page.len() >= crate::PAGE_SIZE {
+            page_index = page_index.saturating_add(1);
+            page = Self::load_roster_page_raw(env, page_index);
+        }
+        page.push_back(player.clone());
+        Self::save_roster_page(env, page_index, &page);
+    }
+
+    fn append_survivor_player(env: &Env, player: &Address, count: u32) {
+        let mut page_index = count / crate::PAGE_SIZE;
+        let mut page = Self::load_survivor_page_raw(env, page_index);
+        if page.len() >= crate::PAGE_SIZE {
+            page_index = page_index.saturating_add(1);
+            page = Self::load_survivor_page_raw(env, page_index);
+        }
+        page.push_back(player.clone());
+        Self::save_survivor_page(env, page_index, &page);
+    }
+
+    pub fn add_player(env: &Env, player: &Address) {
+        Self::ensure_paged_roster(env);
+        let count = Self::load_roster_count_raw(env);
+        if count == u32::MAX {
+            return;
+        }
+        Self::append_roster_player(env, player, count);
+        Self::save_roster_count(env, count + 1);
+
+        let survivor_count = Self::load_survivor_count_raw(env);
+        Self::append_survivor_player(env, player, survivor_count);
+        Self::save_survivor_count(env, survivor_count.saturating_add(1));
+
+        Self::save_player(
+            env,
+            player,
+            &PlayerState {
+                active: true,
+                rounds_survived: 0,
+            },
+        );
+
+        if let Ok(mut config) = Self::load_config(env) {
+            config.player_count = count + 1;
+            config.active_player_count = config.active_player_count.saturating_add(1);
+            Self::save_config(env, &config);
+        }
+    }
+
+    /// Remove a player who joined but has not yet played, keeping the paged
+    /// roster, the survivor index, and both counters consistent (#1580, #1581).
+    ///
+    /// Returns `false` when the address was not on the roster, so callers can
+    /// distinguish "removed" from "never joined". Pages are rewritten in place
+    /// (roster order is preserved minus the removed address); the `PlayerState`
+    /// entry is deleted so a subsequent `join_arena` is treated as a fresh join.
+    pub fn remove_player(env: &Env, player: &Address) -> bool {
+        Self::ensure_paged_roster(env);
+        if Self::load_player(env, player).is_none() {
+            return false;
+        }
+
+        let roster = Self::load_all_players(env);
+        let mut kept = Vec::new(env);
+        for entry in roster.iter() {
+            if &entry != player {
+                kept.push_back(entry);
+            }
+        }
+        Self::write_roster_pages(env, &kept);
+        Self::save_roster_count(env, kept.len());
+
+        let survivors = Self::load_survivor_index(env);
+        let mut kept_survivors = Vec::new(env);
+        for entry in survivors.iter() {
+            if &entry != player {
+                kept_survivors.push_back(entry);
+            }
+        }
+        Self::write_survivor_pages(env, &kept_survivors);
+        Self::save_survivor_count(env, kept_survivors.len());
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Player(player.clone()));
+
+        if let Ok(mut config) = Self::load_config(env) {
+            config.player_count = config.player_count.saturating_sub(1);
+            config.active_player_count = config.active_player_count.saturating_sub(1);
+            Self::save_config(env, &config);
+        }
+        true
+    }
+
+    pub fn load_active_roster(env: &Env) -> Vec<Address> {
+        Self::ensure_paged_roster(env);
+        let total = Self::load_roster_count_raw(env);
+        let mut active = Vec::new(env);
+        for page_index in 0..Self::page_count(total) {
+            let page = Self::load_roster_page_raw(env, page_index);
+            for player in page.iter() {
+                if active.contains(&player) {
+                    continue;
+                }
+                if let Some(state) = Self::peek_player(env, &player)
+                    && state.active
+                {
+                    active.push_back(player);
+                }
+            }
+        }
+        active
+    }
+
+    pub fn load_survivor_index(env: &Env) -> Vec<Address> {
+        Self::ensure_paged_roster(env);
+        let total = Self::load_survivor_count_raw(env);
+        let mut active = Vec::new(env);
+        for page_index in 0..Self::page_count(total) {
+            let page = Self::load_survivor_page_raw(env, page_index);
+            for player in page.iter() {
+                if !active.contains(&player) {
+                    active.push_back(player);
+                }
+            }
+        }
+        active
+    }
+
+    pub fn rebuild_survivor_index(env: &Env, players: &Vec<Address>) {
+        Self::ensure_paged_roster(env);
+        Self::write_survivor_pages(env, players);
+        Self::save_survivor_count(env, players.len());
+    }
+
+    /// Load a single player's state, or `None` if they never joined.
+    pub fn load_player(env: &Env, player: &Address) -> Option<PlayerState> {
+        let key = DataKey::Player(player.clone());
+        let value = env.storage().persistent().get(&key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, &key);
+        }
+        value
+    }
+
+    pub fn save_player(env: &Env, player: &Address, state: &PlayerState) {
+        let key = DataKey::Player(player.clone());
+        env.storage().persistent().set(&key, state);
+        Self::extend_persistent_ttl(env, &key);
+    }
+
+    pub fn set_player_banned(env: &Env, player: &Address, banned: bool) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::BannedPlayer(player.clone()), &banned);
+        Self::extend_persistent_ttl(env, &DataKey::BannedPlayer(player.clone()));
+    }
+
+    pub fn is_player_banned(env: &Env, player: &Address) -> bool {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::BannedPlayer(player.clone()));
+        env.storage()
+            .persistent()
+            .get(&DataKey::BannedPlayer(player.clone()))
+            .unwrap_or(false)
+    }
+
+    pub fn save_player_limits(env: &Env, min_players: u32, max_players: u32) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::MinPlayers, &min_players);
+        Self::extend_persistent_ttl(env, &DataKey::MinPlayers);
+        env.storage()
+            .persistent()
+            .set(&DataKey::MaxPlayers, &max_players);
+        Self::extend_persistent_ttl(env, &DataKey::MaxPlayers);
+    }
+
+    pub fn load_min_players(env: &Env) -> u32 {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::MinPlayers);
+        env.storage()
+            .persistent()
+            .get(&DataKey::MinPlayers)
+            .unwrap_or(crate::MIN_PLAYERS_TO_START)
+    }
+
+    pub fn load_max_players(env: &Env) -> Option<u32> {
+        let value = env.storage().persistent().get(&DataKey::MaxPlayers);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, &DataKey::MaxPlayers);
+        }
+        value
+    }
+
+    /// Lobby start deadline (#1579), or `0` when none is configured.
+    pub fn save_start_deadline(env: &Env, deadline: u64) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::StartDeadline, &deadline);
+        Self::extend_persistent_ttl(env, &DataKey::StartDeadline);
+    }
+
+    pub fn load_start_deadline(env: &Env) -> u64 {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::StartDeadline);
+        env.storage()
+            .persistent()
+            .get(&DataKey::StartDeadline)
+            .unwrap_or(0)
+    }
+
+    /// Ledger timestamp at which the protocol admin paused this arena (#1629).
+    ///
+    /// `None` means the arena was never paused by the protocol — including
+    /// the case of a pause recorded before the role split, which carries no
+    /// timestamp and is therefore treated as already expired.
+    pub fn save_paused_at(env: &Env, paused_at: u64) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::PausedAt, &paused_at);
+        Self::extend_persistent_ttl(env, &DataKey::PausedAt);
+    }
+
+    pub fn load_paused_at(env: &Env) -> Option<u64> {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::PausedAt);
+        env.storage().persistent().get(&DataKey::PausedAt)
+    }
+
+    pub fn clear_paused_at(env: &Env) {
+        if env.storage().persistent().has(&DataKey::PausedAt) {
+            env.storage().persistent().remove(&DataKey::PausedAt);
+        }
+    }
+
+    pub fn save_last_transition_at(env: &Env, timestamp: u64) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::LastTransitionAt, &timestamp);
+        Self::extend_persistent_ttl(env, &DataKey::LastTransitionAt);
+    }
+
+    pub fn load_last_transition_at(env: &Env) -> u64 {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::LastTransitionAt);
+        env.storage()
+            .persistent()
+            .get(&DataKey::LastTransitionAt)
+            .unwrap_or(0)
+    }
+
+    pub fn save_inter_round_timeout(env: &Env, timeout: u64) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::InterRoundTimeout, &timeout);
+        Self::extend_persistent_ttl(env, &DataKey::InterRoundTimeout);
+    }
+
+    pub fn load_inter_round_timeout(env: &Env) -> u64 {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::InterRoundTimeout);
+        env.storage()
+            .persistent()
+            .get(&DataKey::InterRoundTimeout)
+            .unwrap_or(crate::DEFAULT_INTER_ROUND_TIMEOUT_SECONDS)
+    }
+
+    pub fn save_paused_deadline_seconds(env: &Env, seconds: u64) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::PausedDeadlineSeconds, &seconds);
+        Self::extend_persistent_ttl(env, &DataKey::PausedDeadlineSeconds);
+    }
+
+    pub fn load_paused_deadline_seconds(env: &Env) -> u64 {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::PausedDeadlineSeconds);
+        env.storage()
+            .persistent()
+            .get(&DataKey::PausedDeadlineSeconds)
+            .unwrap_or(0)
+    }
+
+    pub fn save_commitment(env: &Env, player: &Address, round: u32, commitment: &BytesN<32>) {
+        // Issue #1612: CommitmentForRound uses temporary storage. Commitments
+        // are only valid until the round resolves (~minutes). Using temporary
+        // storage avoids the higher persistent-entry rent and write fees.
+        //
+        // TTL = round_duration + COMMIT_TTL_GRACE_LEDGERS, clamped to
+        // SOROBAN_TEMP_MAX_TTL.  If it expires before resolution the missing
+        // entry is treated as "no commitment" — documented below in
+        // `load_commitment`.
+        let round_dur = Self::load_round_duration(env);
+        // Approximate ledgers for the round duration (5-second ledger cadence).
+        let dur_ledgers = (round_dur / 5) as u32;
+        let ttl = dur_ledgers
+            .saturating_add(COMMIT_TTL_GRACE_LEDGERS)
+            .min(SOROBAN_TEMP_MAX_TTL);
+        let key = DataKey::CommitmentForRound(player.clone(), round);
+        env.storage().temporary().set(&key, commitment);
+        env.storage().temporary().extend_ttl(&key, ttl, ttl);
+    }
+
+    /// Returns the commitment hash for `(player, round)`, or `None` when:
+    ///   - the player never committed, OR
+    ///   - the temporary entry expired (treated as no-commit per #1612 spec).
+    ///
+    /// Resolution callers should treat `None` as an absent / late commitment
+    /// and score the player as having not participated.
+    pub fn load_commitment(env: &Env, player: &Address, round: u32) -> Option<BytesN<32>> {
+        env.storage()
+            .temporary()
+            .get(&DataKey::CommitmentForRound(player.clone(), round))
+    }
+
+    pub fn save_choice(env: &Env, player: &Address, round: u32, choice: &Choice) {
+        // Issue #1612: ChoiceForRound uses temporary storage for the same
+        // reasons as CommitmentForRound above.
+        let round_dur = Self::load_round_duration(env);
+        let dur_ledgers = (round_dur / 5) as u32;
+        let ttl = dur_ledgers
+            .saturating_add(COMMIT_TTL_GRACE_LEDGERS)
+            .min(SOROBAN_TEMP_MAX_TTL);
+        let key = DataKey::ChoiceForRound(player.clone(), round);
+        env.storage().temporary().set(&key, choice);
+        env.storage().temporary().extend_ttl(&key, ttl, ttl);
+    }
+
+    pub fn load_choice(env: &Env, player: &Address, round: u32) -> Option<Choice> {
+        env.storage()
+            .temporary()
+            .get(&DataKey::ChoiceForRound(player.clone(), round))
+    }
+
+    /// Remove a single player's choice for a round (#1075: clear stale choice on elimination).
+    /// No-op when the entry has already expired or was never written.
+    pub fn remove_player_choice(env: &Env, player: &Address, round: u32) {
+        env.storage()
+            .temporary()
+            .remove(&DataKey::ChoiceForRound(player.clone(), round));
+    }
+
+    pub fn save_round_start(env: &Env, timestamp: u64) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::RoundStart, &timestamp);
+        Self::extend_persistent_ttl(env, &DataKey::RoundStart);
+    }
+
+    pub fn load_round_start(env: &Env) -> Option<u64> {
+        let value = env.storage().persistent().get(&DataKey::RoundStart);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, &DataKey::RoundStart);
+        }
+        value
+    }
+
+    pub fn save_round_duration(env: &Env, duration_seconds: u64) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::RoundDuration, &duration_seconds);
+        Self::extend_persistent_ttl(env, &DataKey::RoundDuration);
+    }
+
+    pub fn save_round_schedule(env: &Env, schedule: &RoundSchedule) {
+        Self::extend_persistent_ttl(env, &DataKey::RoundSchedule);
+        env.storage()
+            .persistent()
+            .set(&DataKey::RoundSchedule, schedule);
+    }
+
+    pub fn load_round_schedule(env: &Env) -> Option<RoundSchedule> {
+        Self::extend_persistent_ttl(env, &DataKey::RoundSchedule);
+        if let Some(schedule) = env.storage().persistent().get(&DataKey::RoundSchedule) {
+            return Some(schedule);
+        }
+        // Migration: derive from legacy fields on read (#1836)
+        if let Some(started_at) = Self::load_round_start(env) {
+            let duration = Self::load_round_duration(env);
+            let config = Self::load_config(env).ok();
+            let commit_deadline = if let Some(ref c) = config {
+                if c.commit_deadline > 0 {
+                    c.commit_deadline
+                } else {
+                    started_at.saturating_add(duration)
+                }
+            } else {
+                started_at.saturating_add(duration)
+            };
+            return Some(RoundSchedule {
+                started_at,
+                commit_deadline,
+                reveal_deadline: commit_deadline,
+                paused_total: 0,
+            });
+        }
+        if let Ok(config) = Self::load_config(env) {
+            if config.commit_deadline > 0 {
+                let duration = Self::load_round_duration(env);
+                let started_at = config.commit_deadline.saturating_sub(duration);
+                return Some(RoundSchedule {
+                    started_at,
+                    commit_deadline: config.commit_deadline,
+                    reveal_deadline: config.commit_deadline,
+                    paused_total: 0,
+                });
+            }
+        }
+        None
+    }
+
+    pub fn load_round_duration(env: &Env) -> u64 {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::RoundDuration);
+        env.storage()
+            .persistent()
+            .get(&DataKey::RoundDuration)
+            .unwrap_or(0)
+    }
+
+    pub fn save_round_yield_bps(env: &Env, round: u32, yield_bps: u32) {
+        let key = DataKey::RoundYieldBps(round);
+        env.storage().persistent().set(&key, &yield_bps);
+        Self::extend_persistent_ttl(env, &key);
+    }
+
+    pub fn save_yield_snapshot(env: &Env, round: u32, snapshot: &YieldSnapshot) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::YieldSnapshot(round), snapshot);
+        Self::extend_persistent_ttl(env, &DataKey::YieldSnapshot(round));
+    }
+
+    pub fn load_yield_snapshot(env: &Env, round: u32) -> Option<YieldSnapshot> {
+        let key = DataKey::YieldSnapshot(round);
+        let value = env.storage().persistent().get(&key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, &key);
+        }
+        value
+    }
+
+    pub fn save_round_result(env: &Env, round: u32, result: &RoundResult) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::RoundResult(round), result);
+        Self::extend_persistent_ttl(env, &DataKey::RoundResult(round));
+    }
+
+    pub fn load_round_result(env: &Env, round: u32) -> Option<RoundResult> {
+        let key = DataKey::RoundResult(round);
+        let value = env.storage().persistent().get(&key);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, &key);
+        }
+        value
+    }
+
+    pub fn save_last_vault_balance(env: &Env, balance: i128) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::LastVaultBalance, &balance);
+        Self::extend_persistent_ttl(env, &DataKey::LastVaultBalance);
+    }
+
+    pub fn load_last_vault_balance(env: &Env) -> i128 {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::LastVaultBalance);
+        env.storage()
+            .persistent()
+            .get(&DataKey::LastVaultBalance)
+            .unwrap_or(0)
+    }
+
+    /// Returns true once the prize has been claimed for this arena. Read inside
+    /// `claim` so a reentrant call sees the flag and bails out with
+    /// `PrizeAlreadyClaimed` before the token transfer can run a second time.
+    pub fn prize_claimed(env: &Env) -> bool {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::PrizeClaimed);
+        env.storage()
+            .persistent()
+            .get(&DataKey::PrizeClaimed)
+            .unwrap_or(false)
+    }
+
+    /// Persist the prize-claimed flag. MUST be called before any external
+    /// (cross-contract) call in `claim` so that a malicious token contract
+    /// re-entering the arena cannot replay the claim.
+    pub fn mark_prize_claimed(env: &Env) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::PrizeClaimed, &true);
+        Self::extend_persistent_ttl(env, &DataKey::PrizeClaimed);
+    }
+
+    /// Whether a settlement-time vault withdrawal failed and the principal is
+    /// still parked in the vault (#1631). Refunds are blocked while this is set.
+    pub fn load_funds_in_vault(env: &Env) -> bool {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::FundsInVault);
+        env.storage()
+            .persistent()
+            .get(&DataKey::FundsInVault)
+            .unwrap_or(false)
+    }
+
+    /// Persist the funds-in-vault flag (#1631).
+    pub fn save_funds_in_vault(env: &Env, in_vault: bool) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::FundsInVault, &in_vault);
+        Self::extend_persistent_ttl(env, &DataKey::FundsInVault);
+    }
+
+    /// Return whether a state-changing entry point is already executing.
+    pub fn reentrancy_guard_entered(env: &Env) -> bool {
+        env.storage()
+            .temporary()
+            .get(&DataKey::ReentrancyGuard)
+            .unwrap_or(false)
+    }
+
+    /// Set the temporary reentrancy guard before state-changing logic performs
+    /// any checks/effects/interactions.
+    pub fn enter_reentrancy_guard(env: &Env) -> Result<(), ArenaError> {
+        if Self::reentrancy_guard_entered(env) {
+            return Err(ArenaError::ReentrantCall);
+        }
+
+        env.storage()
+            .temporary()
+            .set(&DataKey::ReentrancyGuard, &true);
+        Ok(())
+    }
+
+    /// Clear the temporary reentrancy guard after a guarded entry point exits.
+    pub fn exit_reentrancy_guard(env: &Env) {
+        env.storage().temporary().remove(&DataKey::ReentrancyGuard);
+    }
+
+    #[allow(dead_code)]
+    fn is_terminal_pool_state(state: &GameState) -> bool {
+        matches!(
+            state,
+            GameState::Finished | GameState::Cancelled | GameState::Settled
+        )
+    }
+
+    pub fn save_pending_admin(env: &Env, pending: &PendingAdmin) {
+        env.storage()
+            .persistent()
+            .set(&symbol_short!("PADMIN"), pending);
+        Self::extend_persistent_ttl(env, &symbol_short!("PADMIN"));
+    }
+
+    pub fn load_pending_admin(env: &Env) -> Option<PendingAdmin> {
+        Self::extend_persistent_ttl_if_exists(env, &symbol_short!("PADMIN"));
+        env.storage().persistent().get(&symbol_short!("PADMIN"))
+    }
+
+    pub fn delete_pending_admin(env: &Env) {
+        env.storage().persistent().remove(&symbol_short!("PADMIN"));
+    }
+
+    pub fn get_winner(env: &Env) -> Option<Address> {
+        let value = env.storage().persistent().get(&DataKey::Winner);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, &DataKey::Winner);
+        }
+        value
+    }
+
+    pub fn set_winner(env: &Env, winner: &Address) {
+        env.storage().persistent().set(&DataKey::Winner, winner);
+        Self::extend_persistent_ttl(env, &DataKey::Winner);
+    }
+
+    pub fn is_refund_claimed(env: &Env, player: &Address) -> bool {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::RefundClaimed(player.clone()));
+        env.storage()
+            .persistent()
+            .get(&DataKey::RefundClaimed(player.clone()))
+            .unwrap_or(false)
+    }
+
+    pub fn set_refund_claimed(env: &Env, player: &Address) {
+        let key = DataKey::RefundClaimed(player.clone());
+        env.storage().persistent().set(&key, &true);
+        Self::extend_persistent_ttl(env, &key);
+    }
+
+    /// Record the payer who funded a sponsored entry (#1715).
+    pub fn save_sponsor(env: &Env, player: &Address, sponsor: &Address) {
+        let key = DataKey::Sponsor(player.clone());
+        env.storage().persistent().set(&key, sponsor);
+        Self::extend_persistent_ttl(env, &key);
+    }
+
+    /// Remove the sponsor record when a player leaves the lobby (#1715).
+    pub fn remove_sponsor(env: &Env, player: &Address) {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Sponsor(player.clone()));
+    }
+
+    /// Who receives an entry-fee refund for `player` (#1715). Sponsored
+    /// entries return the fee to the payer who funded it; self-funded entries
+    /// return it to the player.
+    pub fn refund_recipient(env: &Env, player: &Address) -> Address {
+        Self::peek_sponsor(env, player).unwrap_or_else(|| player.clone())
+    }
+
+    pub fn load_leaderboard(env: &Env) -> Vec<crate::types::LeaderboardEntry> {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::Leaderboard);
+        env.storage()
+            .persistent()
+            .get(&DataKey::Leaderboard)
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    pub fn save_leaderboard(env: &Env, leaderboard: &Vec<crate::types::LeaderboardEntry>) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Leaderboard, leaderboard);
+        Self::extend_persistent_ttl(env, &DataKey::Leaderboard);
+    }
+
+    pub fn load_leaderboard_limit(env: &Env) -> u32 {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::LeaderboardLimit);
+        env.storage()
+            .persistent()
+            .get(&DataKey::LeaderboardLimit)
+            .unwrap_or(100)
+    }
+
+    pub fn save_leaderboard_limit(env: &Env, limit: u32) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::LeaderboardLimit, &limit);
+        Self::extend_persistent_ttl(env, &DataKey::LeaderboardLimit);
+    }
+
+    /// Global platform fee in basis points. Defaults to 1000 (10%) until the
+    /// admin calls `update_platform_fee`. New arenas snapshot this value into
+    /// their `ArenaConfig.platform_fee_bps` at `initialize` time.
+    pub fn load_platform_fee_bps(env: &Env) -> u32 {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::PlatformFeeBps);
+        env.storage()
+            .persistent()
+            .get(&DataKey::PlatformFeeBps)
+            .unwrap_or(1000)
+    }
+
+    pub fn save_platform_fee_bps(env: &Env, fee_bps: u32) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::PlatformFeeBps, &fee_bps);
+        Self::extend_persistent_ttl(env, &DataKey::PlatformFeeBps);
+    }
+
+    /// Per-instance oracle freshness policy (#1512). Defaults to
+    /// `OracleFreshnessPolicy::default_policy()` until the admin calls
+    /// `set_oracle_freshness_policy` — mirrors `load_platform_fee_bps`'s
+    /// read-with-default pattern above.
+    pub fn load_oracle_freshness_policy(env: &Env) -> OracleFreshnessPolicy {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::OracleFreshnessPolicy);
+        env.storage()
+            .persistent()
+            .get(&DataKey::OracleFreshnessPolicy)
+            .unwrap_or_else(OracleFreshnessPolicy::default_policy)
+    }
+
+    pub fn save_oracle_freshness_policy(env: &Env, policy: &OracleFreshnessPolicy) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::OracleFreshnessPolicy, policy);
+        Self::extend_persistent_ttl(env, &DataKey::OracleFreshnessPolicy);
+    }
+
+    pub fn save_pending_upgrade(env: &Env, upgrade: &PendingUpgrade) {
+        env.storage()
+            .persistent()
+            .set(&symbol_short!("UPGRADE"), upgrade);
+        Self::extend_persistent_ttl(env, &symbol_short!("UPGRADE"));
+    }
+
+    pub fn load_pending_upgrade(env: &Env) -> Option<PendingUpgrade> {
+        Self::extend_persistent_ttl_if_exists(env, &symbol_short!("UPGRADE"));
+        env.storage().persistent().get(&symbol_short!("UPGRADE"))
+    }
+
+    pub fn clear_pending_upgrade(env: &Env) {
+        env.storage().persistent().remove(&symbol_short!("UPGRADE"));
+    }
+
+    pub fn save_elimination_reason(env: &Env, player: &Address, reason: &EliminationReason) {
+        let key = DataKey::EliminationReason(player.clone());
+        env.storage().persistent().set(&key, reason);
+    }
+
+    // ── Read-only accessors (#1582) ─────────────────────────────────────────
+    //
+    // Unlike the `load_*` helpers, these never extend TTLs or migrate the
+    // roster, so a view composed only of them performs no ledger writes.
+
+    pub fn peek_config(env: &Env) -> Result<ArenaConfig, ArenaError> {
+        env.storage()
+            .persistent()
+            .get(&symbol_short!("CONFIG"))
+            .ok_or(ArenaError::NotInitialized)
+    }
+
+    pub fn peek_player(env: &Env, player: &Address) -> Option<PlayerState> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Player(player.clone()))
+    }
+
+    pub fn has_commitment(env: &Env, player: &Address, round: u32) -> bool {
+        // Temporary storage since #1612, matching `save_commitment`: an
+        // expired entry counts as no commitment.
+        env.storage()
+            .temporary()
+            .has(&DataKey::CommitmentForRound(player.clone(), round))
+    }
+
+    pub fn has_choice(env: &Env, player: &Address, round: u32) -> bool {
+        // Temporary storage since #1612, matching `save_choice`: an expired
+        // entry counts as no reveal.
+        env.storage()
+            .temporary()
+            .has(&DataKey::ChoiceForRound(player.clone(), round))
+    }
+
+    pub fn peek_elimination_reason(env: &Env, player: &Address) -> Option<EliminationReason> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::EliminationReason(player.clone()))
+    }
+
+    pub fn peek_refund_claimed(env: &Env, player: &Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RefundClaimed(player.clone()))
+            .unwrap_or(false)
+    }
+
+    /// Read-only sponsor lookup used by `get_player_status` (#1715).
+    pub fn peek_sponsor(env: &Env, player: &Address) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Sponsor(player.clone()))
+    }
+
+    pub fn peek_winner(env: &Env) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::Winner)
+    }
+
+    /// Clear all players' choices and commitments for the specified round.
+    /// Since commitments and choices now live in temporary storage (#1612),
+    /// explicit removal is optional — entries will expire on their own TTL.
+    /// This helper is retained for callers that want to release storage
+    /// immediately (e.g. after resolution) rather than waiting for expiry.
+    pub fn clear_round_data(env: &Env, round: u32) {
+        Self::ensure_paged_roster(env);
+        let total = Self::load_roster_count_raw(env);
+        for page_index in 0..Self::page_count(total) {
+            let page = Self::load_roster_page_raw(env, page_index);
+            for player in page.iter() {
+                // Temporary storage: use temporary().remove()
+                env.storage()
+                    .temporary()
+                    .remove(&DataKey::ChoiceForRound(player.clone(), round));
+                env.storage()
+                    .temporary()
+                    .remove(&DataKey::CommitmentForRound(player.clone(), round));
+            }
+        }
+    }
+
+    // ── Paged resolution (#1639) ─────────────────────────────────────────────
+
+    pub fn save_resolution(env: &Env, progress: &ResolutionProgress) {
+        env.storage().persistent().set(&DataKey::Resolution, progress);
+        Self::extend_persistent_ttl(env, &DataKey::Resolution);
+    }
+
+    pub fn load_resolution(env: &Env) -> Option<ResolutionProgress> {
+        let value = env.storage().persistent().get(&DataKey::Resolution);
+        if value.is_some() {
+            Self::extend_persistent_ttl(env, &DataKey::Resolution);
+        }
+        value
+    }
+
+    pub fn save_resolution_players(env: &Env, players: &Vec<Address>) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::ResolutionPlayers, players);
+        Self::extend_persistent_ttl(env, &DataKey::ResolutionPlayers);
+    }
+
+    pub fn load_resolution_players(env: &Env) -> Vec<Address> {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::ResolutionPlayers);
+        env.storage()
+            .persistent()
+            .get(&DataKey::ResolutionPlayers)
+            .unwrap_or(Vec::new(env))
+    }
+
+    pub fn save_resolution_leaderboard(env: &Env, entries: &Vec<LeaderboardEntry>) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::ResolutionLeaderboard, entries);
+        Self::extend_persistent_ttl(env, &DataKey::ResolutionLeaderboard);
+    }
+
+    pub fn load_resolution_leaderboard(env: &Env) -> Vec<LeaderboardEntry> {
+        Self::extend_persistent_ttl_if_exists(env, &DataKey::ResolutionLeaderboard);
+        env.storage()
+            .persistent()
+            .get(&DataKey::ResolutionLeaderboard)
+            .unwrap_or(Vec::new(env))
+    }
+
+    /// Drop all paged-resolution state. Called by `finalize_resolution` once
+    /// the round is committed, and when a fresh resolution is created.
+    pub fn clear_resolution(env: &Env) {
+        env.storage().persistent().remove(&DataKey::Resolution);
+        env.storage().persistent().remove(&DataKey::ResolutionPlayers);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ResolutionLeaderboard);
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use crate::ArenaContract;
+    use soroban_sdk::testutils::Address as _;
+
+    fn config(env: &Env, admin: &Address, state: GameState) -> ArenaConfig {
+        ArenaConfig {
+            admin: admin.clone(),
+            stake_token: Address::generate(env),
+            yield_vault: Address::generate(env),
+            entry_fee: 100,
+            state,
+            paused: false,
+            player_count: 0,
+            active_player_count: 0,
+            cumulative_yield: 0,
+            commit_deadline: 0,
+            round_count: 0,
+            oracle_contract: Address::generate(env),
+            factory: Address::generate(env),
+            pool_id: 0,
+            platform_fee_bps: 1000,
+        }
+    }
+
+    #[test]
+    fn paged_roster_handles_empty_boundaries_and_maximum_roster() {
+        let env = Env::default();
+        let contract_id = env.register(ArenaContract, ());
+        let admin = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            ArenaStorage::save_config(&env, &config(&env, &admin, GameState::Open));
+            assert_eq!(ArenaStorage::load_roster_count(&env), 0);
+            assert!(ArenaStorage::load_roster_page(&env, 0).is_empty());
+            assert!(ArenaStorage::load_player_page(&env, 0, 0).is_empty());
+
+            for _ in 0..100 {
+                ArenaStorage::add_player(&env, &Address::generate(&env));
+            }
+
+            assert_eq!(ArenaStorage::load_roster_count(&env), 100);
+            assert_eq!(ArenaStorage::load_roster_page(&env, 0).len(), 50);
+            assert_eq!(ArenaStorage::load_roster_page(&env, 1).len(), 50);
+            assert!(ArenaStorage::load_roster_page(&env, 2).is_empty());
+            assert!(ArenaStorage::load_player_page(&env, u32::MAX, 50).is_empty());
+        });
+    }
+
+    #[test]
+    fn legacy_roster_migration_is_complete_and_idempotent() {
+        let env = Env::default();
+        let contract_id = env.register(ArenaContract, ());
+        let admin = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            ArenaStorage::save_config(&env, &config(&env, &admin, GameState::Open));
+            let mut legacy = Vec::new(&env);
+            for index in 0..51 {
+                let player = Address::generate(&env);
+                legacy.push_back(player.clone());
+                ArenaStorage::save_player(
+                    &env,
+                    &player,
+                    &PlayerState {
+                        active: index % 3 != 0,
+                        rounds_survived: 0,
+                    },
+                );
+            }
+            ArenaStorage::save_players(&env, &legacy);
+            assert_eq!(ArenaStorage::load_player_page(&env, 0, 50).len(), 50);
+            assert_eq!(ArenaStorage::load_player_page(&env, 50, 50).len(), 1);
+            assert_eq!(
+                ArenaStorage::load_storage_version_raw(&env),
+                LEGACY_ROSTER_VERSION
+            );
+
+            ArenaStorage::migrate_legacy_players(&env);
+            let migrated = ArenaStorage::load_all_players(&env);
+            assert_eq!(
+                ArenaStorage::load_storage_version(&env),
+                PAGED_ROSTER_VERSION
+            );
+            assert_eq!(ArenaStorage::load_roster_count(&env), 51);
+            assert_eq!(ArenaStorage::load_survivor_count(&env), 34);
+            assert_eq!(migrated.len(), legacy.len());
+            for index in 0..legacy.len() {
+                assert_eq!(migrated.get(index), legacy.get(index));
+            }
+            assert!(!env.storage().persistent().has(&symbol_short!("PLAYERS")));
+
+            let before = ArenaStorage::load_roster_page(&env, 0);
+            ArenaStorage::migrate_legacy_players(&env);
+            assert_eq!(ArenaStorage::load_roster_page(&env, 0), before);
+        });
+    }
+}

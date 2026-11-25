@@ -7,7 +7,7 @@ import type {
   NotificationConfig, 
   InternalNotification, 
   NotificationContextValue 
-} from '../../shared-d/types/notification';
+} from '@/shared/lib/notification';
 import { NotificationCard } from './NotificationCard';
 
 const NotificationContext = createContext<NotificationContextValue | null>(null);

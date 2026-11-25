@@ -1,61 +1,405 @@
-import { PrismaClient } from '@prisma/client';
-import type { RoundData, PlayerChoice, RoundResolution } from '../types/round';
+import { Prisma, PrismaClient } from '@prisma/client';
+import type {
+  PaginatedResult,
+  PlayerChoice,
+  RoundData,
+  RoundMetadata,
+  RoundResolution,
+} from '../types/round';
 import { RoundState } from '../types/round';
+import { enforcePayloadLimits } from '../validation/payloadLimits';
+import { roundMetadataMismatchesTotal } from '../utils/metrics';
+import { logger } from '../utils/logger';
+import { decodeCursorInput, encodeKeysetCursor } from '../utils/keysetPagination';
+import { getConfiguredNetwork } from "../config/network";
 
 export class RoundRepository {
   constructor(private prisma: PrismaClient) {}
 
   async create(arenaId: string, roundNumber: number): Promise<RoundData> {
-    const round = await this.prisma.round.create({
-      data: {
-        arenaId,
-        roundNumber,
-      },
+    const round = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.round.create({ data: { arenaId, roundNumber, network: getConfiguredNetwork() } });
+      const players = await tx.pool.count({ where: { arenaId, network: getConfiguredNetwork() } });
+      await tx.arenaStats.upsert({
+        where: { arenaId, network: getConfiguredNetwork() },
+        create: { arenaId, rounds: 1, players },
+        update: { rounds: { increment: 1 }, players, version: { increment: 1 } },
+      });
+      return created;
     });
 
-    return {
-      id: round.id,
-      arenaId: round.arenaId,
-      roundNumber: round.roundNumber,
-      state: RoundState.OPEN,
-      playerChoices: [],
-      createdAt: round.createdAt,
-      updatedAt: round.updatedAt,
-    };
+    return this.mapRound(round);
   }
 
   async findById(roundId: string): Promise<RoundData | null> {
-    const round = await this.prisma.round.findUnique({
-      where: { id: roundId },
+    const round = await this.prisma.round.findFirst({
+      where: { id: roundId, network: getConfiguredNetwork() },
     });
 
     if (!round) return null;
 
+    return this.mapRound(round);
+  }
+
+  async saveResolution(
+    roundId: string,
+    resolution: RoundResolution,
+    metadata: RoundMetadata,
+  ): Promise<void> {
+    await this.prisma.round.update({
+      where: { id: roundId, network: getConfiguredNetwork() },
+      data: {
+        oracleYield: metadata.oracleYield ?? null,
+        randomSeed: metadata.randomSeed ?? null,
+        playerChoices: metadata.playerChoices ? (metadata.playerChoices as unknown as Prisma.InputJsonValue) : Prisma.DbNull,
+        allActivePlayerIds: metadata.allActivePlayerIds ?? [],
+        resolution: resolution ? (resolution as unknown as Prisma.InputJsonValue) : Prisma.DbNull,
+        metadata: this.toJsonMetadata({
+          ...metadata,
+          resolution,
+        }),
+        updatedAt: new Date(),
+      },
+    });
+
+    if (resolution.eliminatedPlayers.length > 0) {
+      await this.prisma.eliminationLog.createMany({
+        data: resolution.eliminatedPlayers.map((userId) => ({
+          roundId,
+          userId,
+          reason: 'ELIMINATED_BY_ROUND',
+        })),
+      });
+    }
+  }
+
+  async listByArenaId(
+    arenaId: string,
+    limit: number,
+    cursor?: string,
+  ): Promise<PaginatedResult<RoundData>> {
+    const decoded = decodeCursorInput(cursor);
+
+    let whereClause: Prisma.RoundWhereInput = { arenaId };
+    let skip: number | undefined = undefined;
+
+    if (decoded.mode === "keyset") {
+      const lastRoundNumber = Number(decoded.cursor.sortValues.roundNumber);
+      const lastId = decoded.cursor.id;
+      whereClause = {
+        arenaId,
+        OR: [
+          { roundNumber: { gt: lastRoundNumber } },
+          { roundNumber: lastRoundNumber, id: { gt: lastId } },
+        ],
+      };
+    } else if (decoded.mode === "legacy") {
+      skip = decoded.offset;
+    }
+
+    const rounds = await this.prisma.round.findMany({
+      where: whereClause,
+      orderBy: [{ roundNumber: "asc" }, { id: "asc" }],
+      take: limit + 1,
+      ...(skip !== undefined ? { skip } : {}),
+    });
+
+    const hasMore = rounds.length > limit;
+    const pageRounds = rounds.slice(0, limit);
+    const items = pageRounds.map((round) => this.mapRound(round));
+
+    let nextCursor: string | null = null;
+    if (hasMore && pageRounds.length > 0) {
+      const last = pageRounds[pageRounds.length - 1];
+      nextCursor = encodeKeysetCursor({ roundNumber: last.roundNumber }, last.id);
+    }
+
+    return {
+      items,
+      cursor: nextCursor,
+      hasMore,
+    };
+  }
+
+  private encodeCursor(offset: number): string {
+    return Buffer.from(JSON.stringify({ offset })).toString("base64url");
+  }
+
+  private decodeCursor(cursor: string): number {
+    const res = decodeCursorInput(cursor);
+    return res.mode === "legacy" ? res.offset : 0;
+  }
+
+  async findByArenaAndNumber(
+    arenaId: string,
+    roundNumber: number,
+  ): Promise<RoundData | null> {
+    const round = await this.prisma.round.findFirst({
+      where: {
+        network_arenaId_roundNumber: {
+          network: getConfiguredNetwork(),
+          arenaId,
+          roundNumber,
+        },
+      },
+    });
+
+    return round ? this.mapRound(round) : null;
+  }
+
+  async resolveAtomically(
+    roundId: string,
+    state: RoundState,
+    resolution: RoundResolution,
+    metadata: RoundMetadata,
+  ): Promise<void> {
+    await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      // Optimistic lock (#1125): claim the round first with a conditional
+      // UPDATE. Two concurrent resolutions can both pass the service-level
+      // state check at ReadCommitted isolation, but only one of them matches
+      // this guard — the loser sees zero updated rows and aborts before any
+      // elimination logs are written, preventing duplicate records.
+      const claimed = await tx.round.updateMany({
+        where: {
+          id: roundId,
+          state: { in: [RoundState.OPEN, RoundState.CLOSED] },
+        },
+        data: {
+          state,
+          oracleYield: metadata.oracleYield ?? null,
+          randomSeed: metadata.randomSeed ?? null,
+          playerChoices: metadata.playerChoices ? (metadata.playerChoices as unknown as Prisma.InputJsonValue) : Prisma.DbNull,
+          allActivePlayerIds: metadata.allActivePlayerIds ?? [],
+          resolution: resolution ? (resolution as unknown as Prisma.InputJsonValue) : Prisma.DbNull,
+          metadata: this.toJsonMetadata({
+            ...metadata,
+            resolution,
+          }),
+          updatedAt: new Date(),
+        },
+      });
+
+      if (claimed.count === 0) {
+        throw new Error(`Round ${roundId} was already resolved by a concurrent request`);
+      }
+
+      if (resolution.eliminatedPlayers.length > 0) {
+        await tx.eliminationLog.createMany({
+          data: resolution.eliminatedPlayers.map((userId) => ({
+            roundId,
+            userId,
+            reason: 'ELIMINATED_BY_ROUND',
+          })),
+        });
+      }
+
+      const roundRow = await tx.round.findFirst({ where: { id: roundId, network: getConfiguredNetwork() }, select: { arenaId: true } });
+      if (!roundRow) throw new Error(`Round ${roundId} not found for network`);
+      const arenaId = roundRow.arenaId;
+      const players = await tx.pool.count({ where: { arenaId, network: getConfiguredNetwork() } });
+      await tx.arenaStats.upsert({
+        where: { arenaId },
+        create: {
+          arenaId,
+          players,
+          eliminations: resolution.eliminatedPlayers.length,
+          yieldAccrued: metadata.oracleYield ?? 0,
+        },
+        update: {
+          eliminations: { increment: resolution.eliminatedPlayers.length },
+          players,
+          yieldAccrued: { increment: metadata.oracleYield ?? 0 },
+          version: { increment: 1 },
+        },
+      });
+    });
+  }
+
+  private mapRound(round: {
+    id: string;
+    arenaId: string;
+    roundNumber: number;
+    state: string;
+    metadata: Prisma.JsonValue | null;
+    oracleYield?: number | null;
+    randomSeed?: string | null;
+    playerChoices?: Prisma.JsonValue | null;
+    allActivePlayerIds?: string[] | null;
+    resolution?: Prisma.JsonValue | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }): RoundData {
+    const legacyMeta = this.fromJsonMetadata(round.metadata);
+
+    const hasTypedFields =
+      (round.oracleYield !== undefined && round.oracleYield !== null) ||
+      (round.randomSeed !== undefined && round.randomSeed !== null) ||
+      (round.playerChoices !== undefined && round.playerChoices !== null) ||
+      (round.allActivePlayerIds !== undefined && round.allActivePlayerIds !== null && round.allActivePlayerIds.length > 0) ||
+      (round.resolution !== undefined && round.resolution !== null);
+
+    if (hasTypedFields && legacyMeta) {
+      this.checkAndReportMismatches(round.id, round, legacyMeta);
+    }
+
+    const oracleYield =
+      round.oracleYield !== undefined && round.oracleYield !== null
+        ? round.oracleYield
+        : legacyMeta?.oracleYield;
+
+    const randomSeed =
+      round.randomSeed !== undefined && round.randomSeed !== null
+        ? round.randomSeed
+        : legacyMeta?.randomSeed;
+
+    const playerChoices: PlayerChoice[] =
+      round.playerChoices !== undefined && round.playerChoices !== null
+        ? (round.playerChoices as unknown as PlayerChoice[])
+        : (legacyMeta?.playerChoices ?? []);
+
+    const allActivePlayerIds: string[] | undefined =
+      round.allActivePlayerIds !== undefined && round.allActivePlayerIds !== null && round.allActivePlayerIds.length > 0
+        ? round.allActivePlayerIds
+        : legacyMeta?.allActivePlayerIds;
+
+    const resolution: RoundResolution | undefined =
+      round.resolution !== undefined && round.resolution !== null
+        ? (round.resolution as unknown as RoundResolution)
+        : legacyMeta?.resolution;
+
+    const metadata: RoundMetadata = {
+      playerChoices,
+      oracleYield: oracleYield ?? 0,
+      randomSeed: randomSeed ?? undefined,
+      resolution: resolution ?? undefined,
+      allActivePlayerIds: allActivePlayerIds ?? undefined,
+    };
+
     return {
       id: round.id,
       arenaId: round.arenaId,
       roundNumber: round.roundNumber,
-      state: RoundState.OPEN,
-      playerChoices: [],
+      state: this.parseState(round.state),
+      playerChoices,
+      oracleYield: oracleYield ?? undefined,
+      randomSeed: randomSeed ?? undefined,
+      resolution: resolution ?? undefined,
+      metadata,
+      allActivePlayerIds: allActivePlayerIds ?? undefined,
       createdAt: round.createdAt,
       updatedAt: round.updatedAt,
     };
   }
 
+  private checkAndReportMismatches(
+    roundId: string,
+    typed: {
+      oracleYield?: number | null;
+      randomSeed?: string | null;
+      playerChoices?: Prisma.JsonValue | null;
+      allActivePlayerIds?: string[] | null;
+      resolution?: Prisma.JsonValue | null;
+    },
+    legacy: RoundMetadata,
+  ): void {
+    if (typed.oracleYield !== undefined && typed.oracleYield !== null && legacy.oracleYield !== undefined) {
+      if (typed.oracleYield !== legacy.oracleYield) {
+        roundMetadataMismatchesTotal.inc({ field: 'oracleYield' });
+        logger.warn(
+          { event: 'round_metadata_mismatch', roundId, field: 'oracleYield', typed: typed.oracleYield, legacy: legacy.oracleYield },
+          'Round metadata mismatch detected on oracleYield',
+        );
+      }
+    }
+    if (typed.randomSeed !== undefined && typed.randomSeed !== null && legacy.randomSeed !== undefined) {
+      if (typed.randomSeed !== legacy.randomSeed) {
+        roundMetadataMismatchesTotal.inc({ field: 'randomSeed' });
+        logger.warn(
+          { event: 'round_metadata_mismatch', roundId, field: 'randomSeed' },
+          'Round metadata mismatch detected on randomSeed',
+        );
+      }
+    }
+    if (typed.allActivePlayerIds !== undefined && typed.allActivePlayerIds !== null && legacy.allActivePlayerIds !== undefined) {
+      const typedIds = [...typed.allActivePlayerIds].sort().join(',');
+      const legacyIds = [...legacy.allActivePlayerIds].sort().join(',');
+      if (typedIds !== legacyIds) {
+        roundMetadataMismatchesTotal.inc({ field: 'allActivePlayerIds' });
+        logger.warn(
+          { event: 'round_metadata_mismatch', roundId, field: 'allActivePlayerIds' },
+          'Round metadata mismatch detected on allActivePlayerIds',
+        );
+      }
+    }
+    if (typed.playerChoices !== undefined && typed.playerChoices !== null && legacy.playerChoices !== undefined) {
+      const typedStr = JSON.stringify(typed.playerChoices);
+      const legacyStr = JSON.stringify(legacy.playerChoices);
+      if (typedStr !== legacyStr) {
+        roundMetadataMismatchesTotal.inc({ field: 'playerChoices' });
+        logger.warn(
+          { event: 'round_metadata_mismatch', roundId, field: 'playerChoices' },
+          'Round metadata mismatch detected on playerChoices',
+        );
+      }
+    }
+    if (typed.resolution !== undefined && typed.resolution !== null && legacy.resolution !== undefined) {
+      const typedStr = JSON.stringify(typed.resolution);
+      const legacyStr = JSON.stringify(legacy.resolution);
+      if (typedStr !== legacyStr) {
+        roundMetadataMismatchesTotal.inc({ field: 'resolution' });
+        logger.warn(
+          { event: 'round_metadata_mismatch', roundId, field: 'resolution' },
+          'Round metadata mismatch detected on resolution',
+        );
+      }
+    }
+  }
+
   async updateState(roundId: string, state: RoundState): Promise<void> {
-    await this.prisma.round.update({
-      where: { id: roundId },
-      data: { updatedAt: new Date() },
+    await this.prisma.round.updateMany({
+      where: { id: roundId, network: getConfiguredNetwork() },
+      data: { state, updatedAt: new Date() },
     });
   }
 
-  async saveResolution(roundId: string, resolution: RoundResolution): Promise<void> {
-    await this.prisma.eliminationLog.createMany({
-      data: resolution.eliminatedPlayers.map(userId => ({
-        roundId,
-        userId,
-        reason: 'ELIMINATED_BY_ROUND',
-      })),
+  /**
+   * Conditionally transition a round from `fromState` to `toState`, only
+   * if it is still in `fromState` (#1386). Mirrors resolveAtomically's
+   * optimistic-lock pattern: two concurrent closeRound calls can both pass
+   * the service-level state check at ReadCommitted isolation, but only one
+   * matches this conditional UPDATE — the loser sees zero updated rows and
+   * throws instead of silently double-transitioning (and double-counting
+   * arenaStateTransitionsTotal).
+   */
+  async closeAtomically(roundId: string, fromState: RoundState, toState: RoundState): Promise<void> {
+    const claimed = await this.prisma.round.updateMany({
+      where: { id: roundId, state: fromState },
+      data: { state: toState, updatedAt: new Date() },
     });
+
+    if (claimed.count === 0) {
+      throw new Error(`Round ${roundId} was already closed by a concurrent request`);
+    }
+  }
+
+  private parseState(state: string): RoundState {
+    if (Object.values(RoundState).includes(state as RoundState)) {
+      return state as RoundState;
+    }
+    return RoundState.OPEN;
+  }
+
+  private fromJsonMetadata(metadata: Prisma.JsonValue | null): RoundMetadata | null {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return null;
+    }
+
+    return metadata as unknown as RoundMetadata;
+  }
+
+  private toJsonMetadata(metadata: RoundMetadata): Prisma.InputJsonValue {
+    // #1455: reject oversized/over-nested metadata before it reaches the JSON column.
+    return enforcePayloadLimits(JSON.parse(JSON.stringify(metadata)) as Prisma.InputJsonValue, "round_metadata");
   }
 }
+

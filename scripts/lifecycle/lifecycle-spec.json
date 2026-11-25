@@ -1,0 +1,47 @@
+{
+  "$comment": "Machine-readable lifecycle specification (#1693). Source of truth for state enums, legal transitions and terminal states consumed by the backend, the frontend and contract fixtures. Wire values MUST NOT change: each `states` entry is the exact string persisted or emitted today. Edit this file, then run `node scripts/lifecycle/generate-lifecycle.mjs`; never edit the generated files by hand.",
+  "specVersion": 1,
+  "domains": {
+    "round": {
+      "description": "Per-round lifecycle stored in the backend `rounds.state` column.",
+      "wireOwner": "backend/src/types/round.ts (RoundState); transitions in backend/src/repositories/roundRepository.ts (closeAtomically) and backend/src/services/roundService.ts",
+      "states": ["OPEN", "CLOSED", "RESOLVED", "SETTLED"],
+      "initial": "OPEN",
+      "terminal": ["SETTLED"],
+      "transitions": {
+        "OPEN": ["CLOSED"],
+        "CLOSED": ["RESOLVED"],
+        "RESOLVED": ["SETTLED"],
+        "SETTLED": []
+      }
+    },
+    "arenaGame": {
+      "description": "On-chain arena GameState as defined by the arena contract enum (contract/arena/src/types.rs). `Active` and `Settled` are real contract variants; the backend's legacy `InProgress` string is not.",
+      "wireOwner": "contract/arena/src/types.rs (GameState); legal transitions mirror contract/arena/src/state_machine.rs (can_transition)",
+      "states": ["Open", "Active", "Finished", "Cancelled", "Settled"],
+      "initial": "Open",
+      "terminal": ["Cancelled", "Settled"],
+      "transitions": {
+        "Open": ["Active", "Cancelled"],
+        "Active": ["Open", "Finished", "Cancelled"],
+        "Finished": ["Settled"],
+        "Cancelled": [],
+        "Settled": []
+      }
+    },
+    "transaction": {
+      "description": "Lifecycle of a backend-tracked Soroban transaction (backend/src/domain/transactionState.ts).",
+      "wireOwner": "backend/src/domain/transactionState.ts (TransactionState); transitions in backend/src/services/transactionStateMachine.ts",
+      "states": ["submitted", "confirmed", "failed", "dead", "unknown"],
+      "initial": "submitted",
+      "terminal": ["confirmed", "dead"],
+      "transitions": {
+        "submitted": ["confirmed", "failed", "unknown", "dead"],
+        "unknown": ["confirmed", "failed", "dead"],
+        "failed": ["dead"],
+        "confirmed": [],
+        "dead": []
+      }
+    }
+  }
+}

@@ -1,27 +1,52 @@
+import { timingSafeEqual } from "crypto";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import type { AuthService } from "../services/authService";
+import { apiError } from "../utils/apiError";
+import { env } from "../config/env";
+
+// TODO(#1504): bind an authorization epoch claim to privileged sessions.
+const CLAIM_AUTH_EPOCH = "authz_epoch";
 
 // Augment Express Request so controllers can read adminId / user without casting
 declare global {
   namespace Express {
     interface Request {
       adminId?: string;
-      user?: { id: string; walletAddress: string };
+      user?: { id: string; walletAddress: string; jti: string };
+      /**
+       * API key metadata attached by the apiKeyAuth middleware (#1737).
+       * Present when the request authenticated via X-Api-Key header.
+       */
+      apiKey?: {
+        id: string;
+        keyPrefix: string;
+        owner: string;
+        scopes: string[];
+      };
+      /**
+       * Raw request body bytes, captured by the `express.json({ verify })`
+       * hook mounted ahead of the oracle webhook route (see app.ts). Only
+       * set for requests parsed by that parser — used by
+       * verifyWebhookSignature so HMAC verification runs against exactly
+       * what the sender signed, not a re-serialized copy of req.body.
+       */
+      rawBody?: Buffer;
     }
   }
 }
 
 export function requireAuth(authService: AuthService): RequestHandler {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
+      // #1780: cookie-backed token acceptance is tracked in a follow-up.
       const header = req.headers.authorization ?? "";
       const token = header.startsWith("Bearer ") ? header.slice(7) : "";
       if (!token) {
-        res.status(401).json({ error: "Unauthorized" });
+        next(apiError(401, "UNAUTHORIZED", "Unauthorized"));
         return;
       }
-      const payload = authService.verifyAccessToken(token);
-      req.user = { id: payload.sub, walletAddress: payload.wallet };
+      const payload = await authService.verifyAccessToken(token);
+      req.user = { id: payload.sub, walletAddress: payload.wallet, jti: payload.jti };
       next();
     } catch (err) {
       next(err);
@@ -42,15 +67,19 @@ export class ApiKeyAuthProvider implements AdminAuthProvider {
   private readonly apiKey: string;
 
   constructor() {
-    const key = process.env.ADMIN_API_KEY;
+    const key = env.ADMIN_API_KEY;
     if (!key) throw new Error("ADMIN_API_KEY environment variable is required");
+    if (key.length < 32) {
+      throw new Error("ADMIN_API_KEY must be at least 32 characters to resist brute-force and timing attacks");
+    }
     this.apiKey = key;
   }
 
   async isAdmin(req: Request): Promise<boolean> {
     const header = req.headers.authorization ?? "";
     const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-    return token === this.apiKey;
+    if (!token || token.length !== this.apiKey.length) return false;
+    return timingSafeEqual(Buffer.from(token), Buffer.from(this.apiKey));
   }
 
   getAdminId(req: Request): string {
@@ -66,7 +95,7 @@ export function requireAdmin(provider: AdminAuthProvider): RequestHandler {
     try {
       const ok = await provider.isAdmin(req);
       if (!ok) {
-        res.status(401).json({ error: "Unauthorized" });
+        next(apiError(401, "UNAUTHORIZED", "Unauthorized"));
         return;
       }
       req.adminId = provider.getAdminId(req);

@@ -1,0 +1,126 @@
+import type { Request, Response, NextFunction, RequestHandler } from "express";
+import { AuditLogModel } from "../db/models/auditLog.model";
+import type { AuditActor, AuditResource } from "../types/admin";
+import { logger } from "../utils/logger";
+import { PAYLOAD_LIMITS, findPayloadLimitViolation } from "../validation/payloadLimits";
+import { payloadLimitRejectionsTotal } from "../utils/metrics";
+
+/**
+ * Bound handler-supplied audit context before it reaches the Mongo Mixed
+ * field (#1455). An oversized value is replaced by a small marker rather than
+ * dropping the audit entry — the fact that the action happened must survive.
+ */
+export function boundAuditMetadata(metadata: unknown): Record<string, unknown> | undefined {
+  if (metadata === undefined || metadata === null) return undefined;
+  if (typeof metadata !== "object" || Array.isArray(metadata)) {
+    return { truncated: true, reason: "metadata must be a plain object" };
+  }
+  const violation = findPayloadLimitViolation(metadata, PAYLOAD_LIMITS.audit_metadata);
+  if (!violation) return metadata as Record<string, unknown>;
+  payloadLimitRejectionsTotal.inc({ boundary: "audit_metadata", limit: violation.kind });
+  logger.warn({ event: "payload_limit_rejected", boundary: "audit_metadata", kind: violation.kind, path: violation.path }, "audit metadata truncated");
+  return { truncated: true, limit: violation.kind, path: violation.path.slice(0, 8).join(".") };
+}
+
+/**
+ * Express middleware that automatically writes an audit log entry for every
+ * admin route response.  Attach it after authentication so req.adminId is set.
+ *
+ * The action name is derived from the HTTP method + route path, e.g.:
+ *   POST /admin/rounds/resolve  →  "POST /admin/rounds/resolve"
+ *
+ * Additional context (resourceId, metadata) can be injected by route handlers
+ * via res.locals before the response is sent:
+ *   res.locals.auditResourceId = req.params.id;
+ *   res.locals.auditMetadata   = { dryRun: true };
+ */
+export function auditLogMiddleware(): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    // Intercept the response finish event to know the final status
+    const originalJson = res.json.bind(res);
+
+    res.json = function (body: unknown) {
+      // Write the audit log entry asynchronously — do not block the response
+      writeAuditLog(req, res, body).catch((err) => {
+        // Log but never crash the request due to audit failure
+        logger.error({ err, method: req.method, path: req.path }, "Failed to write audit log entry");
+      });
+      return originalJson(body);
+    };
+
+    next();
+  };
+}
+
+async function writeAuditLog(
+  req: Request,
+  res: Response,
+  _body: unknown
+): Promise<void> {
+  const startedAt = Date.now();
+  const adminId = req.adminId;
+  const action = `${req.method} ${req.route?.path ?? req.path}`;
+  const resourceId =
+    (res.locals.auditResourceId as string | undefined) ??
+    req.params.id ??
+    undefined;
+  const actor: AuditActor = adminId
+    ? { type: "admin", id: adminId }
+    : { type: "anonymous", id: `unauthenticated:${req.ip ?? "unknown"}` };
+  const resource: AuditResource = {
+    type: deriveResourceType(req.path),
+    id: resourceId ?? "unknown",
+  };
+  const correlationId = (req.headers["x-correlation-id"] as string | undefined)?.slice(0, 128);
+
+  if (!adminId) {
+    // Authentication itself failed (bad/missing API key), so req.adminId was
+    // never set. Still record the attempt — keyed by IP rather than adminId —
+    // so repeated unauthorized hits against destructive admin routes leave a
+    // trail instead of vanishing silently.
+    if (res.statusCode !== 401) return; // Not an admin-auth failure — skip
+
+    await AuditLogModel.create({
+      adminId: `unauthenticated:${req.ip ?? "unknown"}`,
+      actor,
+      action,
+      resourceType: deriveResourceType(req.path),
+      resourceId: resourceId ?? "unknown",
+      resource,
+      correlationId,
+      status: "auth_failed",
+      metadata: boundAuditMetadata(res.locals.auditMetadata),
+      ipAddress: req.ip,
+      userAgent: req.headers["user-agent"],
+    });
+    logger.info({ event: "audit_write", status: "auth_failed", latencyMs: Date.now() - startedAt }, "Audit event recorded");
+    return;
+  }
+
+  const status: "success" | "failed" = res.statusCode < 400 ? "success" : "failed";
+
+  await AuditLogModel.create({
+    adminId,
+    actor,
+    action,
+    resourceType: deriveResourceType(req.path),
+    resourceId: resourceId ?? "unknown",
+    resource,
+    correlationId,
+    status,
+    metadata: boundAuditMetadata(res.locals.auditMetadata),
+    ipAddress: req.ip,
+    userAgent: req.headers["user-agent"],
+  });
+  logger.info({ event: "audit_write", status, latencyMs: Date.now() - startedAt }, "Audit event recorded");
+}
+
+export function deriveResourceType(path: string): string {
+  // Extract the first meaningful path segment, skipping any leading
+  // "api"/"admin" mount-prefix segments. req.path is router-relative while
+  // handling the request (e.g. "/audit-logs") but reverts to the full
+  // mounted path once a request has unwound to the top-level error handler
+  // (e.g. "/api/admin/reconciliation/run") — this handles both.
+  const segments = path.split("/").filter((s) => s.length > 0 && s !== "api" && s !== "admin");
+  return segments[0] ?? "unknown";
+}

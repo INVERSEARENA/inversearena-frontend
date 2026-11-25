@@ -1,330 +1,458 @@
+import { createCipheriv, createDecipheriv, createECDH, createHmac, randomBytes } from "crypto";
+import type { PrismaClient } from "@prisma/client";
+import jwt from "jsonwebtoken";
+import { NotificationPreferencesService } from "./notificationPreferencesService";
+import { logger } from "../utils/logger";
+import { env } from "../config/env";
+import { NotificationDispatcher, NotificationScheduler, type NotificationChannel } from "./notificationChannels";
+
 /**
- * Web Push Notification Service
- * 
- * Handles batch web push notifications with:
- * - Bulk queueing via BullMQ addBulk
- * - Rate limiting per endpoint host
- * - Subscription pruning
- * - Delivery latency metrics
+ * Web Push delivery for time-critical round phase alerts (#1571).
+ *
+ * - Subscriptions are bound to the authenticated wallet (`userId`) and
+ *   support multiple devices per wallet (one row per push endpoint).
+ * - The subscription `p256dh`/`auth` keys are AES-256-GCM encrypted at rest
+ *   with `PUSH_ENCRYPTION_KEY`; the service never returns them to clients.
+ * - Payloads use RFC 8291 `aes128gcm` content encoding with VAPID
+ *   authentication, so the service worker receives `{title, body, url, tag}`
+ *   and click-through opens the arena deep link.
+ * - The scheduler deduplicates per (user, arena, round, type) via the
+ *   delivery ledger, honors user notification preferences, suppresses
+ *   latency-bound warnings for very short rounds, and removes subscriptions
+ *   the push service reports as gone (404/410).
  */
 
-import webpush from 'web-push';
-import type { Queue } from 'bullmq';
-import type {
-  PushAlert,
-  PushSubscription,
-  PushJobData,
-  PushResult,
-  PushDeliveryMetrics,
-} from '../types/push';
-import {
-  pushNotificationsSent,
-  pushNotificationsFailed,
-  pushDeliveryLatency,
-  pushSubscriptionsPruned,
-} from '../utils/metrics';
+export class PushNotConfiguredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PushNotConfiguredError";
+  }
+}
+
+export interface PushSubscriptionPayload {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+  userAgent?: string;
+}
+
+export interface StoredPushSubscription {
+  id: string;
+  userId: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  userAgent: string | null;
+}
+
+export interface PushMessage {
+  title: string;
+  body: string;
+  /** Deep link opened on notification click (e.g. `/arena/<id>`). */
+  url: string;
+  /** Deduplicates visible notifications on the device. */
+  tag: string;
+}
+
+/** Round phase alert kinds the scheduler can emit. */
+export type PushAlertType =
+  | "round-started"
+  | "commit-closing"
+  | "reveal-open"
+  | "you-won"
+  | "refund-available"
+  | "rematch";
+
+export interface SchedulePushesInput {
+  arenaId: string;
+  roundNumber: number;
+  type: PushAlertType;
+  message: PushMessage;
+  /** Wallet user IDs to notify (arena participants). */
+  userIds: string[];
+  /** Wall-clock length of the round in seconds, when known. */
+  roundDurationSecs?: number;
+  /**
+   * Warnings whose window is shorter than this are suppressed: push latency
+   * would exceed the window, so delivery is misleading (#1571 edge case).
+   * Defaults to 60s for `commit-closing`, ignored for other types.
+   */
+  minDurationSecs?: number;
+}
+
+export interface SchedulePushesResult {
+  sent: number;
+  failed: number;
+  /** Subscriptions removed after 404/410 from the push service. */
+  expired: number;
+  /** Users skipped by preference or prior delivery. */
+  skipped: number;
+  suppressed: boolean;
+}
+
+type Sender = (endpoint: string, init: RequestInit) => Promise<Response>;
+
+interface PushServiceDeps {
+  prisma: PrismaClient;
+  prefs: NotificationPreferencesService;
+  sender?: Sender;
+  vapid?: { publicKey: string; privateKey: string; subject: string };
+  encryptionKey?: Buffer;
+}
+
+const ENCRYPTION_PREFIX = "v1";
+
+function vapidConfigFromEnv(): PushServiceDeps["vapid"] {
+  const publicKey = env.VAPID_PUBLIC_KEY;
+  const privateKey = env.VAPID_PRIVATE_KEY;
+  const subject = env.VAPID_SUBJECT;
+  if (!publicKey || !privateKey || !subject) return undefined;
+  return { publicKey, privateKey, subject };
+}
+
+function encryptionKeyFromEnv(): Buffer | undefined {
+  const raw = env.PUSH_ENCRYPTION_KEY;
+  if (!raw) return undefined;
+  if (!/^[0-9a-fA-F]{64}$/.test(raw)) {
+    throw new PushNotConfiguredError(
+      "PUSH_ENCRYPTION_KEY must be 32 random bytes as 64 hex characters",
+    );
+  }
+  return Buffer.from(raw, "hex");
+}
+
+function base64UrlDecode(input: string): Buffer {
+  const padded = input.replace(/-/g, "+").replace(/_/g, "/");
+  return Buffer.from(padded, "base64");
+}
+
+function base64UrlEncode(input: Buffer): string {
+  return input
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+/** Single-round HKDF-Expand (RFC 8291 §3.2: L <= 32 always fits in T(1)). */
+function hkdfExpand(prk: Buffer, info: Buffer, length: number): Buffer {
+  return createHmac("sha256", prk)
+    .update(Buffer.concat([info, Buffer.from([0x01])]))
+    .digest()
+    .subarray(0, length);
+}
 
 export class PushService {
-  private rateLimiters = new Map<string, { count: number; resetAt: number }>();
-  private readonly defaultRateLimit = 100; // requests per minute per host
-  private readonly defaultTTL = 3600; // 1 hour
+  private readonly sender: Sender;
+  private readonly vapid: { publicKey: string; privateKey: string; subject: string } | undefined;
+  private readonly encryptionKey: Buffer | undefined;
+  private readonly dispatcher: NotificationDispatcher;
+  private readonly scheduler: NotificationScheduler;
 
-  constructor(private readonly pushQueue?: Queue<PushJobData>) {
-    // Initialize web-push with VAPID keys
-    const vapidPublicKey = process.env.VAPID_PUBLIC_KEY;
-    const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY;
-    const vapidSubject = process.env.VAPID_SUBJECT || 'mailto:admin@inversearena.com';
-
-    if (vapidPublicKey && vapidPrivateKey) {
-      webpush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
-    } else {
-      console.warn('[PushService] VAPID keys not configured - push notifications disabled');
-    }
+  constructor(private prisma: PrismaClient, private prefs: NotificationPreferencesService, deps?: Partial<Pick<PushServiceDeps, "sender" | "vapid" | "encryptionKey">>) {
+    this.sender =
+      deps?.sender ??
+      ((endpoint, init) => fetch(endpoint, init));
+    this.vapid = deps?.vapid ?? vapidConfigFromEnv();
+    this.encryptionKey =
+      deps?.encryptionKey !== undefined ? deps.encryptionKey : encryptionKeyFromEnv();
+    this.dispatcher = new NotificationDispatcher(prefs);
+    this.scheduler = new NotificationScheduler(this.dispatcher);
   }
 
-  /**
-   * Send alert to multiple subscriptions using bulk queueing
-   * 
-   * This is the main entry point for sending notifications
-   */
-  async sendAlertBulk(
-    alert: PushAlert,
-    subscriptions: PushSubscription[]
-  ): Promise<{ queued: number; skipped: number }> {
-    if (!this.pushQueue) {
-      console.warn('[PushService] Queue not configured, falling back to sequential send');
-      return this.sendAlertSequential(alert, subscriptions);
+  private requireVapid() {
+    if (!this.vapid) {
+      throw new PushNotConfiguredError(
+        "Web Push is not configured (VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY/VAPID_SUBJECT)",
+      );
     }
-
-    // Filter out expired subscriptions
-    const now = Date.now();
-    const validSubscriptions = subscriptions.filter(
-      (sub) => !sub.expirationTime || sub.expirationTime > now
-    );
-
-    const skipped = subscriptions.length - validSubscriptions.length;
-
-    // Check if alert is already stale
-    if (alert.expiresAt && alert.expiresAt.getTime() < now) {
-      console.log(`[PushService] Alert ${alert.id} is stale, skipping`);
-      return { queued: 0, skipped: subscriptions.length };
-    }
-
-    // Create jobs for bulk queueing
-    const jobs = validSubscriptions.map((subscription) => ({
-      name: 'send-push',
-      data: {
-        alertId: alert.id,
-        subscriptionId: subscription.id,
-        alert,
-        subscription,
-        idempotencyKey: `${alert.id}:${subscription.id}`,
-      } as PushJobData,
-      opts: {
-        jobId: `push:${alert.id}:${subscription.id}`, // Prevents duplicates
-        attempts: 3,
-        backoff: { type: 'exponential' as const, delay: 1000 },
-        removeOnComplete: 100,
-        removeOnFail: 500,
-      },
-    }));
-
-    // Bulk enqueue
-    await this.pushQueue.addBulk(jobs);
-
-    console.log(
-      `[PushService] Bulk queued ${validSubscriptions.length} push notifications for alert ${alert.id}`
-    );
-
-    return { queued: validSubscriptions.length, skipped };
+    return this.vapid;
   }
 
-  /**
-   * Fallback: Send notifications sequentially (for testing/no-queue environments)
-   */
-  private async sendAlertSequential(
-    alert: PushAlert,
-    subscriptions: PushSubscription[]
-  ): Promise<{ queued: number; skipped: number }> {
-    let successful = 0;
-    let failed = 0;
-
-    for (const subscription of subscriptions) {
-      try {
-        await this.sendPushNotification(subscription, alert);
-        successful++;
-      } catch (error) {
-        console.error(
-          `[PushService] Failed to send to ${subscription.id}:`,
-          error
-        );
-        failed++;
-      }
+  private requireEncryptionKey(): Buffer {
+    if (!this.encryptionKey) {
+      throw new PushNotConfiguredError(
+        "Web Push storage is not configured (PUSH_ENCRYPTION_KEY)",
+      );
     }
-
-    return { queued: successful, skipped: failed };
+    return this.encryptionKey;
   }
 
-  /**
-   * Send a single push notification
-   * 
-   * Called by the worker for each queued job
-   */
-  async sendPushNotification(
-    subscription: PushSubscription,
-    alert: PushAlert
-  ): Promise<PushResult> {
-    const startTime = Date.now();
+  // ── Subscription storage (keys encrypted at rest) ───────────────────
 
+  encryptField(plaintext: string): string {
+    const key = this.requireEncryptionKey();
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", key, iv);
+    const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return [ENCRYPTION_PREFIX, iv.toString("base64"), ciphertext.toString("base64"), tag.toString("base64")].join(":");
+  }
+
+  decryptField(payload: string): string {
+    const key = this.requireEncryptionKey();
+    const [prefix, ivB64, ctB64, tagB64] = payload.split(":");
+    if (prefix !== ENCRYPTION_PREFIX || !ivB64 || !ctB64 || !tagB64) {
+      throw new Error("Unrecognized encrypted push field format");
+    }
+    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(ivB64, "base64"));
+    decipher.setAuthTag(Buffer.from(tagB64, "base64"));
+    return decipher.update(Buffer.from(ctB64, "base64"), undefined, "utf8") + decipher.final("utf8");
+  }
+
+  private validateSubscriptionPayload(payload: PushSubscriptionPayload): void {
+    let endpointUrl: URL;
     try {
-      // Check if alert is stale
-      if (alert.expiresAt && alert.expiresAt.getTime() < Date.now()) {
-        console.log(
-          `[PushService] Alert ${alert.id} expired, skipping subscription ${subscription.id}`
-        );
-        return {
-          subscriptionId: subscription.id,
-          success: false,
-          error: 'Alert expired',
-        };
-      }
-
-      // Rate limit check
-      const host = this.extractHost(subscription.endpoint);
-      if (!(await this.checkRateLimit(host))) {
-        throw new Error(`Rate limit exceeded for ${host}`);
-      }
-
-      // Prepare push payload
-      const payload = JSON.stringify({
-        title: alert.title,
-        body: alert.body,
-        data: {
-          alertId: alert.id,
-          type: alert.type,
-          ...alert.data,
-        },
-        timestamp: Date.now(),
-      });
-
-      // Send push notification
-      const response = await webpush.sendNotification(
-        {
-          endpoint: subscription.endpoint,
-          keys: {
-            p256dh: subscription.keys.p256dh,
-            auth: subscription.keys.auth,
-          },
-        },
-        payload,
-        {
-          urgency: alert.urgency || 'normal',
-          TTL: alert.ttl || this.defaultTTL,
-        }
-      );
-
-      const deliveryLatencyMs = Date.now() - startTime;
-
-      // Record metrics
-      pushNotificationsSent.inc({ alert_type: alert.type });
-      pushDeliveryLatency.observe(
-        { alert_type: alert.type },
-        deliveryLatencyMs / 1000
-      );
-
-      return {
-        subscriptionId: subscription.id,
-        success: true,
-        statusCode: response.statusCode,
-        deliveryLatencyMs,
-      };
-    } catch (error: any) {
-      const deliveryLatencyMs = Date.now() - startTime;
-
-      // Check if subscription should be pruned
-      const shouldPrune = this.shouldPruneSubscription(error);
-
-      if (shouldPrune) {
-        console.log(
-          `[PushService] Marking subscription ${subscription.id} for pruning`
-        );
-        pushSubscriptionsPruned.inc({ reason: 'expired' });
-      }
-
-      // Record metrics
-      pushNotificationsFailed.inc({
-        alert_type: alert.type,
-        reason: shouldPrune ? 'subscription_invalid' : 'delivery_failed',
-      });
-      pushDeliveryLatency.observe(
-        { alert_type: alert.type },
-        deliveryLatencyMs / 1000
-      );
-
-      return {
-        subscriptionId: subscription.id,
-        success: false,
-        statusCode: error.statusCode,
-        error: error.message,
-        shouldPrune,
-        deliveryLatencyMs,
-      };
-    }
-  }
-
-  /**
-   * Check rate limit for endpoint host
-   */
-  private async checkRateLimit(host: string): Promise<boolean> {
-    const now = Date.now();
-    const limiter = this.rateLimiters.get(host);
-
-    if (!limiter || limiter.resetAt < now) {
-      // Reset rate limiter
-      this.rateLimiters.set(host, {
-        count: 1,
-        resetAt: now + 60_000, // 1 minute window
-      });
-      return true;
-    }
-
-    if (limiter.count >= this.defaultRateLimit) {
-      return false;
-    }
-
-    limiter.count++;
-    return true;
-  }
-
-  /**
-   * Extract host from endpoint URL
-   */
-  private extractHost(endpoint: string): string {
-    try {
-      const url = new URL(endpoint);
-      return url.hostname;
+      endpointUrl = new URL(payload.endpoint);
     } catch {
-      return 'unknown';
+      throw new Error("Invalid push endpoint URL");
+    }
+    if (endpointUrl.protocol !== "https:") {
+      throw new Error("Push endpoint must use https");
+    }
+    if (payload.endpoint.length > 2000) throw new Error("Push endpoint too long");
+    for (const [name, value] of Object.entries(payload.keys)) {
+      if (typeof value !== "string" || value.length === 0 || value.length > 256) {
+        throw new Error(`Invalid push subscription key: ${name}`);
+      }
+      // Must be valid base64url (p256dh 65B uncompressed key, auth 16B secret).
+      base64UrlDecode(value);
     }
   }
 
+  async createSubscription(
+    userId: string,
+    payload: PushSubscriptionPayload,
+  ): Promise<{ id: string; endpoint: string; createdAt: Date }> {
+    this.requireVapid();
+    this.validateSubscriptionPayload(payload);
+    const userAgent =
+      payload.userAgent !== undefined ? payload.userAgent.slice(0, 512) : undefined;
+    // Never silently transfer an existing browser endpoint to another wallet.
+    // An endpoint is bearer-like delivery authority; the previous owner must
+    // explicitly revoke it before a different wallet can subscribe it.
+    const existing = await this.prisma.pushSubscription.findUnique({
+      where: { endpoint: payload.endpoint },
+      select: { userId: true },
+    });
+    if (existing && existing.userId !== userId) {
+      throw new Error("PUSH_ENDPOINT_OWNED_BY_ANOTHER_WALLET");
+    }
+    const record = await this.prisma.pushSubscription.upsert({
+      where: { endpoint: payload.endpoint },
+      create: {
+        userId,
+        endpoint: payload.endpoint,
+        p256dh: this.encryptField(payload.keys.p256dh),
+        auth: this.encryptField(payload.keys.auth),
+        ...(userAgent !== undefined ? { userAgent } : {}),
+      },
+      update: {
+        userId,
+        p256dh: this.encryptField(payload.keys.p256dh),
+        auth: this.encryptField(payload.keys.auth),
+        ...(userAgent !== undefined ? { userAgent } : {}),
+      },
+      select: { id: true, endpoint: true, createdAt: true },
+    });
+    return record;
+  }
+
+  async deleteSubscription(userId: string, endpoint: string): Promise<boolean> {
+    const result = await this.prisma.pushSubscription.deleteMany({
+      where: { userId, endpoint },
+    });
+    return result.count > 0;
+  }
+
+  async listSubscriptions(
+    userId: string,
+  ): Promise<Array<{ id: string; endpoint: string; userAgent: string | null; createdAt: Date }>> {
+    return this.prisma.pushSubscription.findMany({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, endpoint: true, userAgent: true, createdAt: true },
+    });
+  }
+
+  // ── Web Push delivery (RFC 8291 aes128gcm + VAPID) ───────────────────
+
   /**
-   * Determine if subscription should be pruned based on error
+   * Encrypt a JSON message for one subscription (RFC 8291 `aes128gcm`).
+   * Exported for unit tests; prefer {@link sendPush} in production paths.
    */
-  private shouldPruneSubscription(error: any): boolean {
-    // HTTP 410: Gone - subscription expired
-    if (error.statusCode === 410) {
-      return true;
+  encryptMessageContent(subscription: Pick<StoredPushSubscription, "p256dh" | "auth">, message: PushMessage): Buffer {
+    const plaintext = Buffer.from(JSON.stringify(message), "utf8");
+    if (plaintext.length > 3800) {
+      throw new Error("Push message too large for a single Web Push record");
+    }
+    const clientPublicKey = base64UrlDecode(subscription.p256dh);
+    if (clientPublicKey.length !== 65 || clientPublicKey[0] !== 0x04) {
+      throw new Error("Invalid subscription p256dh key (expected 65-byte uncompressed P-256)");
+    }
+    const authSecret = base64UrlDecode(subscription.auth);
+    if (authSecret.length !== 16) {
+      throw new Error("Invalid subscription auth secret (expected 16 bytes)");
     }
 
-    // HTTP 404: Not Found - subscription no longer exists
-    if (error.statusCode === 404) {
-      return true;
-    }
+    const serverECDH = createECDH("prime256v1");
+    serverECDH.generateKeys();
+    const serverPublicKey = serverECDH.getPublicKey();
+    const sharedSecret = serverECDH.computeSecret(clientPublicKey);
 
-    // Check for specific error messages indicating invalid subscription
-    const message = error.message?.toLowerCase() || '';
-    if (
-      message.includes('expired') ||
-      message.includes('unsubscribed') ||
-      message.includes('invalid')
-    ) {
-      return true;
-    }
+    const keyInfo = Buffer.concat([
+      Buffer.from("WebPush: info\0", "utf8"),
+      clientPublicKey,
+      serverPublicKey,
+    ]);
+    const prk = createHmac("sha256", authSecret).update(sharedSecret).digest();
+    const cek = hkdfExpand(prk, Buffer.concat([Buffer.from("Content-Encoding: aes128gcm\0", "utf8")]), 16);
+    const nonce = hkdfExpand(prk, Buffer.concat([Buffer.from("Content-Encoding: nonce\0", "utf8")]), 12);
 
-    return false;
+    const padded = Buffer.concat([plaintext, Buffer.from([0x02])]);
+    const cipher = createCipheriv("aes-128-gcm", cek, nonce);
+    const ciphertext = Buffer.concat([cipher.update(padded), cipher.final(), cipher.getAuthTag()]);
+    const salt = randomBytes(16);
+
+    const header = Buffer.alloc(16 + 4 + 1 + 65);
+    salt.copy(header, 0);
+    header.writeUInt32BE(4096, 16);
+    header.writeUInt8(65, 20);
+    serverPublicKey.copy(header, 21);
+    return Buffer.concat([header, ciphertext]);
+  }
+
+  private buildVapidAuthHeader(endpoint: string): string {
+    const vapid = this.requireVapid();
+    const audience = new URL(endpoint).origin;
+    const token = jwt.sign(
+      { aud: audience, exp: Math.floor(Date.now() / 1000) + 12 * 60 * 60, sub: vapid.subject },
+      vapid.privateKey,
+      { algorithm: "ES256" },
+    );
+    return `vapid t=${token}, k=${vapid.publicKey}`;
   }
 
   /**
-   * Calculate delivery metrics for an alert
+   * Send one push message. Returns `"sent"`, or `"expired"` when the push
+   * service reports the subscription gone (caller must delete it).
    */
-  calculateMetrics(results: PushResult[]): PushDeliveryMetrics {
-    const successful = results.filter((r) => r.success).length;
-    const failed = results.filter((r) => !r.success).length;
-    const pruned = results.filter((r) => r.shouldPrune).length;
-
-    const latencies = results
-      .filter((r) => r.deliveryLatencyMs !== undefined)
-      .map((r) => r.deliveryLatencyMs!)
-      .sort((a, b) => a - b);
-
-    const averageLatencyMs =
-      latencies.length > 0
-        ? latencies.reduce((sum, l) => sum + l, 0) / latencies.length
-        : 0;
-
-    const p95Index = Math.floor(latencies.length * 0.95);
-    const p99Index = Math.floor(latencies.length * 0.99);
-
-    return {
-      alertId: results[0]?.subscriptionId || 'unknown',
-      totalSubscriptions: results.length,
-      successful,
-      failed,
-      pruned,
-      averageLatencyMs,
-      p95LatencyMs: latencies[p95Index] || 0,
-      p99LatencyMs: latencies[p99Index] || 0,
+  async sendPush(
+    subscription: StoredPushSubscription,
+    message: PushMessage,
+  ): Promise<"sent" | "expired"> {
+    const decrypted = {
+      p256dh: this.decryptField(subscription.p256dh),
+      auth: this.decryptField(subscription.auth),
     };
+    let body: Buffer;
+    try {
+      body = this.encryptMessageContent(decrypted, message);
+    } catch {
+      // Keys the push service can never use are equivalent to gone.
+      return "expired";
+    }
+    const response = await this.sender(subscription.endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "Content-Encoding": "aes128gcm",
+        TTL: "2419200",
+        Authorization: this.buildVapidAuthHeader(subscription.endpoint),
+        Urgency: "high",
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      body: body as any,
+    });
+    if (response.status === 404 || response.status === 410) return "expired";
+    if (!response.ok) {
+      throw new Error(`Push service responded with status ${response.status}`);
+    }
+    return "sent";
+  }
+
+  // ── Scheduler ───────────────────────────────────────────────────────
+
+  private dedupeKey(arenaId: string, roundNumber: number, type: PushAlertType): string {
+    return `push:${arenaId}:${roundNumber}:${type}`;
+  }
+
+  /**
+   * Fan out a round phase alert to subscribed wallets (#1571).
+   *
+   * Per user the alert is sent at most once per (arena, round, type):
+   * preferences are checked first, then the delivery ledger, then each of
+   * the wallet's devices is sent to. Expired subscriptions (404/410) are
+   * removed. Never throws for per-user/per-device failures — they are
+   * counted in the result.
+   */
+  async scheduleRoundPhasePushes(input: SchedulePushesInput): Promise<SchedulePushesResult> {
+    const result: SchedulePushesResult = {
+      sent: 0,
+      failed: 0,
+      expired: 0,
+      skipped: 0,
+      suppressed: false,
+    };
+
+    const minDuration = input.minDurationSecs ?? (input.type === "commit-closing" ? 60 : 0);
+    if (
+      minDuration > 0 &&
+      typeof input.roundDurationSecs === "number" &&
+      input.roundDurationSecs < minDuration
+    ) {
+      // Push latency would exceed the window — delivering would mislead.
+      result.suppressed = true;
+      return result;
+    }
+
+    let vapid: { publicKey: string; privateKey: string; subject: string };
+    try {
+      vapid = this.requireVapid();
+    } catch (err) {
+      logger.warn(
+        { subsystem: "push", err: err instanceof Error ? err.message : String(err) },
+        "Push scheduler skipped: Web Push not configured",
+      );
+      result.suppressed = true;
+      return result;
+    }
+    void vapid;
+
+    const dedupeKey = this.dedupeKey(input.arenaId, input.roundNumber, input.type);
+    // A rematch invite (#1572) is recorded under its own preference type;
+    // every other alert is a round alert.
+    const prefType = input.type === "rematch" ? "rematch" : "round";
+
+    const channel: NotificationChannel<StoredPushSubscription, PushMessage> = {
+      name: "push",
+      validateSubscription: (subscription) => {
+        this.decryptField(subscription.p256dh);
+        this.decryptField(subscription.auth);
+      },
+      send: (subscription, message) => this.sendPush(subscription, message),
+      mapError: (error) => ({ retryable: true, message: error instanceof Error ? error.message : String(error) }),
+    };
+    const dispatch = await this.scheduler.fanout({
+      userIds: input.userIds,
+      preferenceType: prefType,
+      dedupeKey,
+      channel,
+      message: input.message,
+      store: {
+        list: async (targetUserId) => this.prisma.pushSubscription.findMany({
+          where: { userId: targetUserId },
+          select: { id: true, userId: true, endpoint: true, p256dh: true, auth: true, userAgent: true },
+        }) as Promise<StoredPushSubscription[]>,
+        removeExpired: async (targetUserId, subscription) => {
+          await this.prisma.pushSubscription.deleteMany({ where: { userId: targetUserId, endpoint: subscription.endpoint } });
+        },
+      },
+    });
+    result.sent = dispatch.sent;
+    result.failed = dispatch.failed;
+    result.expired = dispatch.expired;
+    result.skipped = dispatch.skipped;
+
+    return result;
   }
 }

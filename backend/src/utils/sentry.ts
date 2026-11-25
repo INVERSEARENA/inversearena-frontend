@@ -2,27 +2,35 @@
 import * as Sentry from "@sentry/node";
 // @ts-ignore
 import { ProfilingIntegration } from "@sentry/profiling-node";
+import { redactSecrets } from "../../../frontend/src/shared/lib/security/redaction";
+import { env } from "../config/env";
+import { activeTraceContext } from "./logger";
 
 export const initSentry = () => {
-    if (process.env.SENTRY_DSN) {
+    if (env.SENTRY_DSN) {
         Sentry.init({
-            dsn: process.env.SENTRY_DSN,
+            dsn: env.SENTRY_DSN,
             integrations: [
                 new ProfilingIntegration(),
             ],
             tracesSampleRate: 1.0,
             profilesSampleRate: 1.0,
             beforeSend: (event: any) => {
-                // Redact JWT_SECRET in case it accidentally leaks into Sentry payload
-                if (process.env.JWT_SECRET && event.exception?.values?.[0]?.value?.includes(process.env.JWT_SECRET)) {
-                    event.exception.values[0].value = event.exception.values[0].value.replace(
-                        process.env.JWT_SECRET,
-                        "[REDACTED]"
-                    );
+                const traceCtx = activeTraceContext();
+                if (traceCtx) {
+                    event.tags = {
+                        traceId: traceCtx.traceId,
+                        spanId: traceCtx.spanId,
+                        ...event.tags,
+                    };
                 }
-                return event;
+                const configuredSecrets = [
+                    env.JWT_SECRET,
+                    env.ADMIN_API_KEY,
+                ].filter(Boolean) as string[];
+                return redactSecrets(event, { configuredSecrets }) as any;
             },
-            environment: process.env.NODE_ENV || "development",
+            environment: env.NODE_ENV || "development",
         });
     }
 };

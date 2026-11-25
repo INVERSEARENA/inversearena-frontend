@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Allow: /leaderboard
+Disallow: /dashboard
+Disallow: /arena/
+
+Sitemap: https://app.inversearena.io/sitemap.xml

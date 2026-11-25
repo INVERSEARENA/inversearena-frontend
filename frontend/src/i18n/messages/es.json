@@ -1,0 +1,126 @@
+{
+  "common": {
+    "playNow": "JUGAR AHORA",
+    "cancel": "Cancelar",
+    "retry": "Reintentar",
+    "checking": "Comprobando...",
+    "connected": "Conectado",
+    "disconnect": "Desconectar",
+    "xlm": "XLM"
+  },
+  "locale": {
+    "label": "Idioma",
+    "en": "English",
+    "es": "Español"
+  },
+  "landing": {
+    "hero": {
+      "tagline1": "EL JUEGO DE ELIMINACIÓN SOCIAL DONDE LA MINORÍA",
+      "tagline2": "GANA Y TODOS GANAN."
+    },
+    "nav": {
+      "protocol": "El_Protocolo",
+      "why": "¿Por_Inverso?",
+      "yield": "Gana_O_Pierde"
+    },
+    "footer": {
+      "about": "UN PROTOCOLO DE TEORÍA DE JUEGO DESCENTRALIZADO EN SOROBAN. DONDE LA ESTRATEGIA SE ENCUENTRA CON RENDIMIENTO SOSTENIBLE.",
+      "system": "SISTEMA",
+      "statusLog": "REGISTRO_ESTADO",
+      "yieldOracle": "ORÁCULO_RENDIMIENTO",
+      "securityAudit": "AUDITORÍA_SEGURIDAD",
+      "community": "COMUNIDAD",
+      "discord": "DISCORD",
+      "xTerminal": "TERMINAL_X",
+      "governance": "GOBERNANZA",
+      "legal": "LEGAL",
+      "copyright": "© 2026 PROTOCOLO_INVERSE_ARENA",
+      "network": "SOROBAN_MAINNET_03",
+      "networkStatus": "ESTADO_RED: ÓPTIMO",
+      "builtWith": "construido_con_soroban_y_stellar"
+    }
+  },
+  "wallet": {
+    "passkeyTitle": "Cartera de passkey",
+    "networkMismatch": "La cartera está en la red incorrecta",
+    "networkMismatchHint": "Cámbiala en la extensión de tu cartera y vuelve a comprobar.",
+    "checkAgain": "Comprobar de nuevo",
+    "connecting": "Conectando...",
+    "connectExtension": "Conectar cartera de extensión",
+    "usePasskey": "🔑 Usar passkey (FaceID / TouchID)",
+    "passkeyPlaceholder": "Nombre de usuario para la passkey",
+    "passkeyAriaLabel": "Nombre de usuario para el registro de passkey",
+    "registerPasskey": "Registrar passkey",
+    "passkeyRegistrationFailed": "Error al registrar la passkey"
+  },
+  "lobby": {
+    "arenaPending": "ARENA #{arenaId}: DESPLEGAMIENTO PENDIENTE",
+    "waitingQuorum": "ESPERANDO EL QUÓRUM MÍNIMO: {currentPlayers} / {requiredPlayers} JUGADORES LISTOS",
+    "estimatedStart": "INICIO ESTIMADO",
+    "quorumStatus": "ESTADO DEL QUÓRUM DE JUGADORES",
+    "moreParticipants": "SE NECESITAN {remaining} PARTICIPANTES MÁS PARA EL DISPARO",
+    "blockHeight": "ALTURA_BLOQUE: {blockHeight}",
+    "entryStake": "APUESTA DE ENTRADA",
+    "prizePool": "BOLSA DE PREMIOS",
+    "rwaLiveYield": "RENDIMIENTO RWA EN VIVO",
+    "stakingActive": "STAKING ACTIVO"
+  },
+  "arena": {
+    "heads": "CARAS",
+    "tails": "CRUZ",
+    "estimatedYield": "REND. EST. +{value}%",
+    "roundEndsIn": "La ronda termina en"
+  },
+  "result": {
+    "loading": "CARGANDO RESULTADOS...",
+    "unavailable": "Resultados no disponibles.",
+    "loadFailed": "No se pudieron cargar los resultados. Inténtalo de nuevo.",
+    "backToGames": "VOLVER A JUEGOS",
+    "gameOver": "ARENA #{arenaId} — FIN DEL JUEGO",
+    "youWon": "¡GANASTE!",
+    "winnerDeclared": "GANADOR DECLARADO",
+    "survivedAllRounds": "{address} SOBREVIVIÓ LAS {rounds} RONDAS",
+    "prizeBreakdown": "DESGLOSE DE PREMIOS",
+    "entryFees": "TARIFAS DE ENTRADA",
+    "yieldEarned": "RENDIMIENTO OBTENIDO",
+    "totalPrize": "PREMIO TOTAL",
+    "yourResult": "TU RESULTADO",
+    "youAreWinner": "ERES EL GANADOR — POSICIÓN 1 DE {totalPlayers}",
+    "finishedPosition": "TERMINASTE EN LA POSICIÓN {position} DE {totalPlayers} JUGADORES",
+    "notInArena": "NO ESTABAS EN ESTA ARENA",
+    "roundTimeline": "CRONOLOGÍA DE RONDAS",
+    "round": "RONDA {round}",
+    "eliminated": "-{count} ELIMINADOS",
+    "survived": "{count} SOBREVIVIERON",
+    "shareTitle": "COMPARTIR TU RESULTADO",
+    "shareOnX": "COMPARTIR EN X (TWITTER)",
+    "copyShareText": "COPIAR TEXTO PARA COMPARTIR",
+    "shareText": "¡Acabo de ver cómo terminó la Arena #{arenaId}! El ganador se llevó {prize} XLM en @InverseArena 🏆",
+    "findNewArena": "BUSCAR UNA NUEVA ARENA",
+    "backToDashboard": "VOLVER AL PANEL",
+    "rematchTitle": "REVANCHA DISPONIBLE",
+    "rematchDescription": "Inicia una nueva arena con la misma apuesta, velocidad de ronda y capacidad que esta.",
+    "startRematch": "INICIAR REVANCHA",
+    "rematchYourPrevious": "Jugaste en esta arena.",
+    "rematchUnavailable": "La revancha no esta disponible en este momento."
+  },
+  "pool": {
+    "title": "Creación de piscina",
+    "subtitle": "Desplegar una nueva instancia de arena en la red Soroban",
+    "stakeAmount": "Importe de la apuesta",
+    "currency": "Moneda",
+    "roundSpeed": "Velocidad de ronda",
+    "arenaCapacity": "Capacidad de la arena",
+    "deploy": "Desplegar arena",
+    "estimatedFee": "Comisión de red estimada",
+    "totalCost": "Coste total",
+    "invalidStake": "Introduce un importe de apuesta válido",
+    "insufficientBalance": "Saldo insuficiente",
+    "stakeTooLow": "El importe de la apuesta está por debajo del mínimo",
+    "stakeTooHigh": "El importe de la apuesta está por encima del máximo",
+    "invalidCapacity": "La capacidad de la arena debe estar entre {min} y {max}",
+    "creating": "Desplegando...",
+    "prefilled": "Rellenado desde la arena #{arenaId}",
+    "changedFromOriginal": "Modificado respecto al valor original"
+  }
+}

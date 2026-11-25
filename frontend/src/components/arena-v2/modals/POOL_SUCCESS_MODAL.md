@@ -190,7 +190,7 @@ The component uses Framer Motion for smooth, staggered animations:
 ## Dependencies
 
 - `react`: Core React library
-- `framer-motion`: Animation library
+- `motion/react`: Animation library (`m` inside `LazyMotion`)
 - `lucide-react`: Icon library (Zap, Share2)
 - `@/components/ui/Modal`: Base modal component
 

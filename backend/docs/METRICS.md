@@ -25,8 +25,56 @@ The backend exposes Prometheus-compatible metrics at `/metrics` for monitoring:
 ### Worker Metrics
 
 **`worker_jobs_pending`** (Gauge)
-- Number of pending worker jobs
+- Number of pending database-batch worker jobs
 - Labels: `job_type`
+
+**`inversearena_queue_backlog`** (Gauge)
+- Runnable `tx-confirm` jobs in waiting, prioritized, or waiting-child states
+- Delayed retries and paused jobs are excluded from scale-up demand
+
+**`inversearena_queue_oldest_age_seconds`** (Gauge)
+- Age of the oldest runnable confirmation job; `-1` means unavailable
+
+**`inversearena_queue_delayed`** (Gauge)
+- Jobs waiting for retry backoff
+
+**`inversearena_queue_active` / `inversearena_queue_capacity` / `inversearena_queue_saturation_ratio`** (Gauges)
+- Current jobs, configured worker concurrency, and `active / capacity`
+
+**`inversearena_queue_snapshot_available`** (Gauge)
+- `1` for a valid snapshot and `0` when Redis collection failed; an empty queue remains available with zero values
+
+**`inversearena_worker_job_attempts_total` / `inversearena_worker_job_retries_total` / `inversearena_worker_terminal_failures_total` / `inversearena_worker_jobs_success_total`** (Counters)
+- Attempt, retry, terminal-failure, and successful-completion rates
+
+**`inversearena_queue_refresh_*` / `inversearena_worker_job_processing_duration_seconds`** (Counter/Histogram)
+- Snapshot success/failure and refresh/job latency
+
+### Retention & Partition Metrics (#1622)
+
+Emitted by the retention worker that maintains the monthly partitions of
+`elimination_logs` and `transactions` — see
+[PARTITION_RETENTION_RUNBOOK.md](./PARTITION_RETENTION_RUNBOOK.md).
+Action counters carry a `mode` label: `applied` for real actions, `planned`
+for dry-run previews.
+
+**`inversearena_retention_runs_total`** (Counter)
+- Retention worker runs by outcome (`status`: success, failed)
+
+**`inversearena_retention_run_duration_seconds`** (Histogram)
+- Wall-clock time of a retention pass
+
+**`inversearena_retention_partitions_created_total`** (Counter)
+- Monthly partitions created ahead of time; labels: `table`, `mode`
+
+**`inversearena_retention_partitions_archived_total`** (Counter)
+- Monthly partitions moved to the cold `archive` schema; labels: `table`, `mode`
+
+**`inversearena_retention_ephemeral_deleted_total`** (Counter)
+- Expired nonces, refresh tokens and transaction intents removed; labels: `collection`, `mode`
+
+**`inversearena_retention_hot_partitions`** (Gauge)
+- Monthly partitions currently attached per managed table; label: `table`
 
 ### Transaction Metrics
 
@@ -43,6 +91,108 @@ The backend exposes Prometheus-compatible metrics at `/metrics` for monitoring:
 **`round_resolution_duration_seconds`** (Histogram)
 - Round resolution duration in seconds
 - Buckets: 0.1, 0.5, 1, 2, 5, 10 seconds
+
+### Contract Capability Negotiation Metrics (#1409)
+
+**`inversearena_capability_negotiations_total`** (Counter)
+- Contract capability negotiation attempts
+- Labels: `contract` (arena, factory, payout, staking), `outcome` (success, failure, retry)
+
+**`inversearena_capability_negotiation_duration_seconds`** (Histogram)
+- Time to resolve a contract's negotiated capability set, including retries
+- Labels: `contract`
+- Buckets: 0.01, 0.05, 0.1, 0.5, 1, 2, 5 seconds
+
+**`inversearena_capability_cache_hits_total`** (Counter)
+- Negotiation results served from the in-memory version cache instead of a fresh on-chain read
+- Labels: `contract`
+
+A sustained rise in the `failure` outcome, or negotiation duration approaching the RPC circuit breaker's timeout, indicates a contract instance's `version()` entrypoint is unreachable or the deployment is genuinely running a version older than any TypeScript-callable entrypoint expects — see `backend/src/services/contractCapability.ts`.
+
+### Arena Stream Publication Metrics (#1500)
+
+**`inversearena_arena_polls_total`** (Counter)
+- Arena poller fetch+verify attempts
+- Labels: `outcome` (ok, error)
+- Polls/minute ≈ (active arenas with subscribers × 60 / 2.5s); an `error` ratio above a few percent means Soroban RPC reads are failing (correlate with the circuit breaker gauge)
+
+**`inversearena_arena_semantic_changes_total`** (Counter)
+- Polls whose canonical snapshot fingerprint changed and were therefore published
+
+**`inversearena_arena_suppressed_publishes_total`** (Counter)
+- Polls with unchanged verified state where publication was suppressed (heartbeat metadata only)
+- For an idle arena this is ~24/min; `semantic_changes` should stay near 0 in the same window
+
+**`inversearena_arena_stream_resyncs_total`** (Counter)
+- Client-requested full-snapshot resynchronisations after a detected version gap
+- Labels: `reason` (gap)
+- A sustained rise means clients are missing versions (short replay history, process restarts, or network loss between polls)
+
+### Dashboard Bootstrap Metrics (#1501)
+
+**`inversearena_dashboard_bootstrap_total`** (Counter)
+- Dashboard bootstrap requests
+- Labels: `outcome` (ok = all sections live, partial = some unavailable/stale, error = request rejected)
+
+**`inversearena_dashboard_bootstrap_section_duration_seconds`** (Histogram)
+- Per-section composition latency
+- Labels: `section` (profile, watchlist, portfolio, notifications, activity, platform), `state` (ok, unavailable, stale)
+- Buckets: 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5 seconds
+
+**`inversearena_dashboard_bootstrap_section_failures_total`** (Counter)
+- Sections that failed or hit their per-section timeout
+- Labels: `section`, `reason` (timeout, error)
+
+No arena id, user id, or wallet address is ever used as a label — see "Metric Cardinality" below.
+
+### Administrative Audit Chain Metrics (#1503)
+
+**`inversearena_audit_appends_total`** (Counter)
+- Chained audit record appends
+- Labels: `outcome` (ok, conflict, error)
+- A rising `conflict` rate means concurrent writers are contending on the chain head (expected under bursty admin traffic; the append retries). A rising `error` rate means appends are being rejected — alert, audit coverage is at risk
+
+**`inversearena_audit_chain_verification_total`** (Counter)
+- Verification runs of the audit chain
+- Labels: `outcome` (valid, invalid, error)
+- Any `invalid` result must page: it means a record was modified, deleted, inserted, reordered, or the chain forked — the report names the first invalid sequence
+
+**`inversearena_audit_checkpoints_total`** (Counter)
+- Signed audit chain checkpoints persisted to the relational store
+- Labels: `outcome` (ok, error)
+- Alert when no successful checkpoint appears for the checkpoint interval × 3
+
+**`inversearena_audit_chain_protection_available`** (Gauge)
+- 1 = checkpoint store reachable and signing key configured, 0 = degraded
+- Degraded state is also logged (`audit_chain_degraded`) — protection is never disabled silently
+
+Suggested alerting additions:
+
+```yaml
+- alert: AuditChainVerificationFailed
+  expr: increase(inversearena_audit_chain_verification_total{outcome="invalid"}[5m]) > 0
+  for: 1m
+  labels:
+    severity: critical
+  annotations:
+    summary: Audit chain verification detected tampering — inspect the first invalid sequence immediately
+
+- alert: AuditChainProtectionDegraded
+  expr: inversearena_audit_chain_protection_available == 0
+  for: 10m
+  labels:
+    severity: warning
+  annotations:
+    summary: Audit chain protection is degraded (checkpoint store or signing key unavailable)
+
+- alert: ArenaStreamResyncStorm
+  expr: increase(inversearena_arena_stream_resyncs_total[10m]) > 50
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: Arena stream clients are frequently detecting version gaps — check poller restarts and replay history sizing
+```
 
 ## Quick Start
 
@@ -63,6 +213,8 @@ docker-compose -f docker-compose.monitoring.yml up -d
 
 - Prometheus: http://localhost:9090
 - Grafana: http://localhost:3000 (admin/admin)
+
+The Compose stack provisions the Prometheus datasource and dashboard automatically. The backend must be running separately and scrape successfully before queue signals appear.
 
 ## Prometheus Configuration
 
@@ -111,6 +263,19 @@ histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by 
 ```promql
 worker_jobs_pending
 ```
+
+### Confirmation Queue Scaling Signals
+```promql
+inversearena_queue_backlog{queue="tx-confirm"}
+inversearena_queue_oldest_age_seconds{queue="tx-confirm"}
+inversearena_queue_saturation_ratio{queue="tx-confirm"}
+rate(inversearena_worker_jobs_success_total{queue="tx-confirm"}[5m])
+rate(inversearena_worker_job_retries_total{queue="tx-confirm"}[5m])
+/
+clamp_min(rate(inversearena_worker_job_attempts_total{queue="tx-confirm"}[5m]), 0.000000001)
+```
+
+Scale-up should require sustained backlog or oldest-age pressure together with available snapshots and saturation. A rising retry ratio should suppress aggressive scale-up and page the operator because the bottleneck may be Soroban or Redis rather than worker capacity. A value of `-1` or snapshot availability `0` is stale/unavailable and must not be interpreted as an empty queue.
 
 ### Transaction Confirmation Rate
 ```promql
@@ -213,6 +378,27 @@ groups:
         annotations:
           summary: "High transaction failure rate"
 ```
+
+### Poller & XDR Worker Decode Pool Metrics (#1834)
+
+Exported to monitor event-loop responsiveness and offloaded XDR deserialization across worker threads:
+
+**`inversearena_event_loop_lag_seconds`** (Histogram)
+- Event loop lag measured via `perf_hooks.monitorEventLoopDelay` in seconds
+- Captures event-loop delays and thread blocking under high arena load
+- Buckets: 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2 seconds
+
+**`inversearena_xdr_decode_duration_seconds`** (Histogram)
+- Latency of XDR decoding operations
+- Labels: `mode` (`inline` for small batches, `worker` for offloaded thread pool execution)
+- Buckets: 0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25 seconds
+
+**`inversearena_xdr_decode_pool_tasks_total`** (Counter)
+- Tasks dispatched to the XDR worker decode pool
+- Labels: `outcome` (`ok`, `error`, `timeout`)
+
+**`inversearena_xdr_decode_pool_queue_depth`** (Gauge)
+- Current queue depth of pending tasks waiting for worker threads
 
 ## Metric Cardinality
 

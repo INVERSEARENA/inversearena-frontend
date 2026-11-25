@@ -1,0 +1,126 @@
+'use client';
+
+import { useState, useCallback } from 'react';
+import { localStorageManager, StorageKey } from '@/shared/lib/localStorage';
+
+export interface PasskeyWalletState {
+  address: string | null;
+  keyId: string | null;
+  isRegistered: boolean;
+  error: string | null;
+}
+
+function loadStored(): { address: string; keyId: string } | null {
+  return localStorageManager.getItem<{ address: string; keyId: string } | null>(StorageKey.PASSKEY, null);
+}
+
+/**
+ * Hard-disabled outside non-production builds (see issue #1281): this
+ * derivation is not cryptographic and must never produce an address a user
+ * could mistake for a real wallet in a build real users can reach. Read at
+ * call time (not cached at module load) so it stays testable and reflects
+ * the environment at the moment it matters.
+ */
+export function isPasskeyDemoModeEnabled(): boolean {
+  return (
+    process.env.NODE_ENV !== "production" &&
+    process.env.NEXT_PUBLIC_PASSKEY_DEMO_MODE === "true"
+  );
+}
+
+function deriveAddress(credentialId: string): string {
+  if (!isPasskeyDemoModeEnabled()) {
+    throw new Error(
+      "deriveAddress is a placeholder for demo/preview only, and is disabled " +
+      "in production builds regardless of NEXT_PUBLIC_PASSKEY_DEMO_MODE. " +
+      "In production, the passkey-kit deploys a secp256r1 smart wallet on Soroban " +
+      "and returns the real contract address.",
+    );
+  }
+  // Deterministic Stellar-format address (G...) derived from the credential ID.
+  // WARNING: This is NOT cryptographically derived and must NOT be used on mainnet.
+  const base32Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let hash = 0;
+  for (let i = 0; i < credentialId.length; i++) {
+    hash = ((hash << 5) - hash + credentialId.charCodeAt(i)) | 0;
+  }
+  let addr = 'G';
+  let seed = Math.abs(hash);
+  for (let i = 0; i < 55; i++) {
+    addr += base32Chars[seed % 32]!;
+    seed = Math.abs(((seed * 1103515245 + 12345) | 0));
+  }
+  return addr;
+}
+
+export function usePasskeyWallet() {
+  const stored = loadStored();
+  const [state, setState] = useState<PasskeyWalletState>({
+    address: stored?.address ?? null,
+    keyId: stored?.keyId ?? null,
+    isRegistered: stored !== null,
+    error: null,
+  });
+
+  const isAvailable = useCallback((): boolean => {
+    return (
+      typeof window !== 'undefined' &&
+      typeof window.PublicKeyCredential !== 'undefined' &&
+      typeof navigator.credentials?.create === 'function'
+    );
+  }, []);
+
+  const register = useCallback(async (username: string): Promise<{ address: string; keyId: string }> => {
+    if (!isAvailable()) {
+      throw new Error('WebAuthn / Passkeys are not supported in this browser.');
+    }
+
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    const userId = crypto.getRandomValues(new Uint8Array(16));
+
+    const credential = await navigator.credentials.create({
+      publicKey: {
+        challenge,
+        rp: { name: 'Inverse Arena', id: window.location.hostname },
+        user: { id: userId, name: username, displayName: username },
+        pubKeyCredParams: [
+          { type: 'public-key', alg: -7 },   // ES256 (secp256r1)
+          { type: 'public-key', alg: -257 },  // RS256 fallback
+        ],
+        authenticatorSelection: {
+          residentKey: 'required',
+          userVerification: 'required',
+        },
+        timeout: 60000,
+      },
+    }) as PublicKeyCredential | null;
+
+    if (!credential) throw new Error('Passkey registration was cancelled.');
+
+    const keyId = btoa(String.fromCharCode(...new Uint8Array(credential.rawId)));
+    const address = deriveAddress(keyId);
+
+    localStorageManager.setItem(StorageKey.PASSKEY, { address, keyId });
+    setState({ address, keyId, isRegistered: true, error: null });
+    return { address, keyId };
+  }, [isAvailable]);
+
+  const sign = useCallback(async (_txXdr: string): Promise<string> => {
+    throw new Error(
+      'Passkeys authenticate access to a wallet-bound account; they cannot sign Stellar transactions.',
+    );
+  }, []);
+
+  const disconnect = useCallback(() => {
+    localStorageManager.removeItem(StorageKey.PASSKEY);
+    setState({ address: null, keyId: null, isRegistered: false, error: null });
+  }, []);
+
+  return {
+    ...state,
+    isAvailable: isAvailable(),
+    register,
+    sign,
+    disconnect,
+  };
+}
