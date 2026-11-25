@@ -198,6 +198,28 @@ Optional API override used by telemetry module:
 NEXT_PUBLIC_COINGECKO_SIMPLE_PRICE_URL=https://api.coingecko.com/api/v3/simple/price?ids=cardano&vs_currencies=usd
 ```
 
+### Security headers & Content-Security-Policy
+
+`src/proxy.ts` sets the response security headers on every non-asset route:
+
+- **Content-Security-Policy** — `script-src` is `'self' 'nonce-<random>'
+  'strict-dynamic'` (plus `'unsafe-eval'` in dev for the Next dev runtime).
+  There is **no `'unsafe-inline'`**, so an injected inline `<script>` (e.g. via
+  a future `dangerouslySetInnerHTML` or a compromised dependency) will not
+  execute. A fresh nonce is generated per request and forwarded to the app as
+  the `x-nonce` header; `src/app/layout.tsx` reads it and passes it to
+  `next-themes` so its inline anti-flash script is allowed. `style-src` keeps
+  `'unsafe-inline'` — React inline `style` props depend on it and it is not a
+  script-execution vector.
+- **Strict-Transport-Security** — `max-age=63072000; includeSubDomains;
+  preload`. Instructs browsers to only ever connect over HTTPS, so a
+  downgrade/MITM cannot intercept wallet transaction data.
+
+`next.config.ts` applies the same non-CSP headers (including HSTS) statically
+to every route, covering the static-asset responses `proxy.ts` does not run
+on. The nonce'd CSP makes every route server-rendered on demand (a nonce
+cannot be baked into static HTML).
+
 ---
 
 ## 🚨 Frontend Error Reporting (Sentry)
@@ -207,7 +229,7 @@ Unhandled React render errors caught by the `ErrorBoundary` are automatically re
 ### How it works
 
 - `sentry.client.config.ts` (project root) initialises the SDK on the browser.
-- `src/lib/sentry.ts` exposes `captureReactError()`, called by `ErrorBoundary.componentDidCatch`.
+- `src/shared/lib/sentry.ts` exposes `captureReactError()`, called by `ErrorBoundary.componentDidCatch`.
 - Each report includes the **React component stack** so you can pinpoint the exact component that threw.
 - The existing fallback UI ("Retry / Go Home / Report Issue") is unchanged.
 
@@ -257,17 +279,11 @@ Sensitive write endpoints are protected with a Redis-backed limiter (`rate-limit
 
 ### Protected Endpoints
 
-- `POST /auth/nonce`
-- `POST /pools`
+- `POST /api/auth/nonce` (backend-issued wallet login challenge; the former
+  Next.js `/auth/nonce` stub has been removed)
 
-### POST /pools Validation
-
-Request body accepts optional fields:
-
-- `name`: optional string, trimmed, maximum `256` characters
-- `walletAddress`: optional Stellar public key, format `^G[A-Z2-7]{55}$`
-
-Invalid payloads return HTTP `400` with an `issues` array describing validation failures.
+Pool creation is served by the backend API (`POST /api/pools`) and is rate
+limited there.
 
 ### On Limit Violation
 
@@ -276,14 +292,35 @@ APIs return:
 - HTTP `429`
 - `Retry-After` response header (seconds)
 
+### Client IP resolution & trusted proxies
+
+Rate-limit buckets are keyed by client IP (plus optional wallet address). The
+client IP is taken from `X-Forwarded-For` **only** when `TRUSTED_PROXY_COUNT`
+says how many trusted proxies sit in front of the app:
+
+- `TRUSTED_PROXY_COUNT=0` (default) — the app is assumed to be exposed
+  directly, so `X-Forwarded-For` / `X-Real-IP` are attacker-controlled and are
+  ignored. Every caller shares a single bucket (fail closed). A direct caller
+  therefore cannot spoof the header to mint a fresh bucket per request.
+- `TRUSTED_PROXY_COUNT=N` (`N ≥ 1`) — the right-most `N` entries of
+  `X-Forwarded-For` are treated as appended by our own infrastructure; the real
+  client is the entry immediately to their left. Values a client prepends are
+  ignored.
+
+Set `TRUSTED_PROXY_COUNT` to match the deployment (`1` behind a single
+CDN/proxy, `2` behind `CDN → load balancer`, …).
+
+When `REDIS_URL` is unset the limiter logs a startup warning and falls back to
+per-process in-memory counting; the effective global limit then becomes
+`points × instance_count`. A startup warning is also logged whenever
+`TRUSTED_PROXY_COUNT` is `0`.
+
 ### Configuration
 
 Environment variables:
 
 - `REDIS_URL` (required for multi-instance shared limits)
+- `TRUSTED_PROXY_COUNT` (default: `0`)
 - `RATE_LIMIT_NONCE_PREFIX` (default: `rl:auth:nonce`)
 - `RATE_LIMIT_NONCE_POINTS` (default: `5`)
 - `RATE_LIMIT_NONCE_WINDOW_SECONDS` (default: `60`)
-- `RATE_LIMIT_POOLS_PREFIX` (default: `rl:pools:create`)
-- `RATE_LIMIT_POOLS_POINTS` (default: `3`)
-- `RATE_LIMIT_POOLS_WINDOW_SECONDS` (default: `60`)

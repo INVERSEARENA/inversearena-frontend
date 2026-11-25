@@ -8,7 +8,14 @@ export interface TransactionDocument extends Omit<TransactionRecord, "id"> {
 const TransactionSchema = new Schema<TransactionDocument>(
   {
     _id: { type: String, required: true },
-    payoutId: { type: String, required: true },
+    network: { type: String, required: true, default: process.env.STELLAR_NETWORK_PASSPHRASE || "Test SDF Network ; September 2015", index: true },
+    // Unique: one on-chain payout per payout id. Without this a retry that
+    // generated a fresh idempotencyKey passed the de-dup check and produced a
+    // second, independently-submittable transaction for the same prize (#1353).
+    payoutId: { type: String, required: true, unique: true },
+    // Arena the payout is validated against on-chain (#1632); null on rows
+    // created before arena-validated payouts.
+    arenaId: { type: String, default: null },
     idempotencyKey: { type: String, required: true, unique: true },
     sourceAccount: { type: String, required: true },
     destinationAccount: { type: String, required: true },
@@ -17,7 +24,7 @@ const TransactionSchema = new Schema<TransactionDocument>(
     nonce: { type: Number, required: true },
     status: {
       type: String,
-      enum: ["built", "queued", "awaiting_signature", "submitted", "confirmed", "failed"] satisfies PaymentStatus[],
+      enum: ["built", "queued", "awaiting_signature", "submitted", "confirmed", "failed", "dead"] satisfies PaymentStatus[],
       required: true,
     },
     unsignedXdr: { type: String, required: true },
@@ -26,6 +33,13 @@ const TransactionSchema = new Schema<TransactionDocument>(
     errorMessage: { type: String, default: null },
     attempts: { type: Number, required: true, default: 0 },
     confirmedAt: { type: Date, default: null },
+    replacesTransactionId: { type: String, default: null, index: true },
+    replacedByTransactionId: { type: String, default: null },
+    ownerId: { type: String, default: null },
+    principal: { type: Number, default: null },
+    yieldAmount: { type: Number, default: null },
+    platformFee: { type: Number, default: null },
+    dust: { type: Number, default: null },
   },
   {
     timestamps: true,
@@ -33,8 +47,16 @@ const TransactionSchema = new Schema<TransactionDocument>(
   }
 );
 
-TransactionSchema.index({ sourceAccount: 1, nonce: -1 });
-TransactionSchema.index({ status: 1 });
-TransactionSchema.index({ txHash: 1 });
+// Unique so two concurrent payout creations can never win the same
+// {sourceAccount, nonce} slot — the loser fails closed instead of double-spend.
+TransactionSchema.index({ network: 1, sourceAccount: 1, nonce: 1 }, { unique: true });
+TransactionSchema.index({ network: 1, status: 1 });
+TransactionSchema.index({ network: 1, txHash: 1 });
+
+// Claim inbox (#1489): one wallet's positions, newest first, keyset-paged.
+// The trailing `_id` matches the sort exactly so a page boundary can be served
+// from the index without an in-memory sort. Without this the query scans the
+// whole collection for every inbox request.
+TransactionSchema.index({ network: 1, destinationAccount: 1, updatedAt: -1, _id: -1 });
 
 export const TransactionModel = model<TransactionDocument>("Transaction", TransactionSchema);

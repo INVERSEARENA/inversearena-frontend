@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { motion } from 'framer-motion';
+import { m as motion } from "motion/react";
 import { Modal } from '../../ui/Modal';
 import { Zap, Share2, ActivitySquare } from 'lucide-react';
 

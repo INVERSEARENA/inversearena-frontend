@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-import type { NavItem } from "../navItems";
+import type { NavItem } from "../model/navItems";
 
 import type { ReactNode } from "react";
 

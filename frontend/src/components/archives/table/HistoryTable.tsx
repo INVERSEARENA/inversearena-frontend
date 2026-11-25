@@ -1,5 +1,8 @@
 "use client";
 
+import { DownloadReceiptButton } from "./DownloadReceiptButton";
+import { useState } from "react";
+
 /* Match history data type for each arena entry */
 type MatchEntry = {
   arenaId: string; // Truncated arena identifier (e.g., "0x4F2A...91A")
@@ -7,6 +10,9 @@ type MatchEntry = {
   rounds: number; // Number of rounds played in the match
   yield: string; // Yield earned from the match (e.g., "12.4 XLM")
   status: "SURVIVED" | "ELIMINATED"; // Final outcome status for the match
+  // #1407: the payoutId a settled winning match was paid out under, if any.
+  // Only a SURVIVED (winning) match has a real payout/receipt to download.
+  payoutId?: string;
 };
 
 /* Static mock data representing historical match entries */
@@ -17,6 +23,7 @@ const mockMatches: MatchEntry[] = [
     rounds: 18, // Rounds survived
     yield: "12.4 XLM", // Yield earned
     status: "SURVIVED", // Player survived this match
+    payoutId: "payout-4f2a91a",
   },
   {
     arenaId: "0xBC11...E82", // Second arena match identifier
@@ -31,6 +38,7 @@ const mockMatches: MatchEntry[] = [
     rounds: 22, // Rounds survived
     yield: "24.5 XLM", // Yield earned
     status: "SURVIVED", // Player survived this match
+    payoutId: "payout-98ffaa2",
   },
   {
     arenaId: "0xD421...9B0", // Fourth arena match identifier
@@ -45,11 +53,12 @@ const mockMatches: MatchEntry[] = [
     rounds: 15, // Rounds survived
     yield: "8.22 XLM", // Yield earned
     status: "SURVIVED", // Player survived this match
+    payoutId: "payout-76e2c11",
   },
 ];
 
 /* Column header labels for the history table */
-const columns = ["ARENA_ID", "DATE", "ROUNDS", "YIELD", "FINAL_STATUS"] as const;
+const columns = ["ARENA_ID", "DATE", "ROUNDS", "YIELD", "FINAL_STATUS", "RECEIPT"] as const;
 
 /* Props interface for the HistoryTable component */
 interface HistoryTableProps {
@@ -59,11 +68,16 @@ interface HistoryTableProps {
 
 /* HistoryTable renders the scrollable match history data table with hover and selection states */
 export function HistoryTable({ onSelectMatch, selectedIndex }: HistoryTableProps) {
+  const [start, setStart] = useState(0);
+  const visibleMatches = mockMatches.slice(start, start + 50);
   return (
     /* Outer wrapper with dark border and hidden overflow for table scroll */
     <div className="border-[3px] border-[#0F1B2D] bg-[#0A1324] overflow-hidden">
       {/* Inner container with horizontal scroll support for narrow viewports */}
-      <div className="overflow-x-auto">
+      <div className="max-h-[32rem] overflow-auto" onScroll={(event) => {
+        const element = event.currentTarget;
+        if (element.scrollTop + element.clientHeight >= element.scrollHeight - 32) setStart((value) => Math.min(value + 25, Math.max(0, mockMatches.length - 50)));
+      }}>
         {/* Full-width table with fixed layout and monospace font for data alignment */}
         <table className="w-full table-fixed font-mono text-[10px] md:text-[11px]">
           {/* Table header row with sticky positioning and bottom border */}
@@ -82,7 +96,7 @@ export function HistoryTable({ onSelectMatch, selectedIndex }: HistoryTableProps
           </thead>
           {/* Table body rendering each match row */}
           <tbody>
-            {mockMatches.map((match, idx) => (
+            {visibleMatches.map((match, localIndex) => { const idx = start + localIndex; return (
               <tr
                 key={match.arenaId} // Unique key from arena identifier
                 onClick={() => onSelectMatch(idx)} // Fire selection callback on row click
@@ -133,8 +147,15 @@ export function HistoryTable({ onSelectMatch, selectedIndex }: HistoryTableProps
                     {match.status} {/* SURVIVED or ELIMINATED text */}
                   </span>
                 </td>
-              </tr>
-            ))}
+                {/* Receipt cell: only a settled winning payout has one to download */}
+                <td className="px-3 py-3 md:px-4">
+                  {match.payoutId ? (
+                    <DownloadReceiptButton payoutId={match.payoutId} />
+                  ) : (
+                    <span className="text-[#3A4A60]">—</span>
+                  )}
+                </td>
+              </tr>); })}
           </tbody>
         </table>
       </div>

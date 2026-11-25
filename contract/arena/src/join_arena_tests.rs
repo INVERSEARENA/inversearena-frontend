@@ -1,0 +1,559 @@
+//! Regression tests for issue #777.
+//!
+//! Verifies that `join_arena()` rejects every non-Open state and accepts a
+//! join when the arena is Open.
+//!
+//! State guard in lib.rs join_arena() (lines 70-72):
+//!   !Open → ArenaError::InvalidGameState
+
+#![cfg(test)]
+
+extern crate std;
+
+use super::*;
+use soroban_sdk::{
+    Address, Env, IntoVal, Val, contract, contractimpl, symbol_short,
+    testutils::{Address as _, Events as _},
+    token::{StellarAssetClient, TokenClient},
+};
+
+// ── Mock vault (needed by join_arena's try_deposit call) ─────────────────────
+
+#[contract]
+struct MockVault;
+
+#[contractimpl]
+impl MockVault {
+    pub fn deposit(_env: Env, _from: Address, _amount: i128) {}
+    pub fn balance_of(_env: Env, _user: Address) -> i128 {
+        0
+    }
+    pub fn withdraw(_env: Env, _user: Address, amount: i128) -> i128 {
+        amount
+    }
+    pub fn withdraw_all(_env: Env, _user: Address) -> i128 {
+        0
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Build an arena contract whose on-chain config is set to `state`.
+/// Returns (Env, ArenaContractClient, token_address).
+fn setup_arena(state: GameState) -> (Env, ArenaContractClient<'static>, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ArenaContract, ());
+    let vault_id = env.register(MockVault, ());
+
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let oracle = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        let config = ArenaConfig {
+            admin: Address::generate(&env),
+            stake_token: token_id.clone(),
+            yield_vault: vault_id,
+            entry_fee: 100,
+            state,
+            paused: false,
+            player_count: 0,
+            active_player_count: 0,
+            cumulative_yield: 0,
+            commit_deadline: u64::MAX,
+            round_count: 0,
+            oracle_contract: oracle,
+            factory: Address::generate(&env),
+            pool_id: 0,
+            platform_fee_bps: 1000,
+        };
+        ArenaStorage::save_config(&env, &config);
+        ArenaStorage::save_last_vault_balance(&env, 0);
+    });
+
+    let client = ArenaContractClient::new(&env, &contract_id);
+    (env, client, token_id)
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+/// join_arena() accepts a player when the arena is Open.
+#[test]
+fn join_accepted_when_arena_is_open() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+
+    let player = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&player, &100);
+
+    assert!(
+        client.try_join_arena(&player).is_ok(),
+        "join_arena() must succeed when arena is Open"
+    );
+}
+
+#[test]
+fn creator_cannot_join_own_arena() {
+    let (env, client, _) = setup_arena(GameState::Open);
+    let creator = env.as_contract(&client.address, || {
+        ArenaStorage::load_config(&env).unwrap().admin
+    });
+
+    assert_eq!(
+        client.try_join_arena(&creator),
+        Err(Ok(ArenaError::CreatorCannotJoin)),
+        "arena creator/admin must not be able to join their own arena"
+    );
+}
+
+#[test]
+fn banned_player_cannot_join_until_unbanned() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+    let player = Address::generate(&env);
+
+    client.ban_player(&player);
+    assert!(client.is_player_banned(&player));
+    assert_eq!(
+        client.try_join_arena(&player),
+        Err(Ok(ArenaError::PlayerBanned)),
+        "banned player must not be able to join"
+    );
+
+    client.unban_player(&player);
+    assert!(!client.is_player_banned(&player));
+    StellarAssetClient::new(&env, &token_id).mint(&player, &100);
+    assert!(
+        client.try_join_arena(&player).is_ok(),
+        "unbanned player should be able to join normally"
+    );
+}
+
+#[test]
+fn banning_a_joined_lobby_player_refunds_and_removes_them() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+    let player = Address::generate(&env);
+    let token = StellarAssetClient::new(&env, &token_id);
+    token.mint(&player, &100);
+
+    client.join_arena(&player);
+    assert_eq!(client.player_count(), 1);
+
+    client.ban_player(&player);
+
+    assert_eq!(client.player_count(), 0, "ban must remove the joined player");
+    assert_eq!(client.get_players(&0).len(), 0);
+    assert!(client.is_player_banned(&player));
+    assert_eq!(
+        TokenClient::new(&env, &token_id).balance(&player),
+        100,
+        "ban must refund the entry fee"
+    );
+
+    // The ban list still applies to future join attempts.
+    token.mint(&player, &100);
+    assert_eq!(
+        client.try_join_arena(&player),
+        Err(Ok(ArenaError::PlayerBanned))
+    );
+}
+
+/// join_arena() rejects with InvalidGameState when the arena is Active.
+#[test]
+fn join_rejected_when_arena_is_active() {
+    let (env, client, _) = setup_arena(GameState::Active);
+    let player = Address::generate(&env);
+    assert_eq!(
+        client.try_join_arena(&player),
+        Err(Ok(ArenaError::InvalidGameState)),
+        "join_arena() must reject when Active; removing the guard allows mid-game joins"
+    );
+}
+
+/// join_arena() rejects with InvalidGameState when the arena is Finished.
+#[test]
+fn join_rejected_when_arena_is_finished() {
+    let (env, client, _) = setup_arena(GameState::Finished);
+    let player = Address::generate(&env);
+    assert_eq!(
+        client.try_join_arena(&player),
+        Err(Ok(ArenaError::InvalidGameState)),
+        "join_arena() must reject when Finished; removing the guard allows post-game joins"
+    );
+}
+
+/// join_arena() rejects with InvalidGameState when the arena is Cancelled.
+#[test]
+fn join_rejected_when_arena_is_cancelled() {
+    let (env, client, _) = setup_arena(GameState::Cancelled);
+    let player = Address::generate(&env);
+    assert_eq!(
+        client.try_join_arena(&player),
+        Err(Ok(ArenaError::InvalidGameState)),
+        "join_arena() must reject when Cancelled; removing the guard accepts fees after cancellation"
+    );
+}
+
+/// join_arena() rejects with InvalidGameState when the arena is Settled.
+#[test]
+fn join_rejected_when_arena_is_settled() {
+    let (env, client, _) = setup_arena(GameState::Settled);
+    let player = Address::generate(&env);
+    assert_eq!(
+        client.try_join_arena(&player),
+        Err(Ok(ArenaError::InvalidGameState)),
+        "join_arena() must reject when Settled; removing the guard allows joins after prize payout"
+    );
+}
+
+// ── Duplicate-join protection (issue #939) ──────────────────────────────────
+
+/// A player must not be able to join the same arena twice — doing so would
+/// charge the entry fee again and inflate the player count.
+#[test]
+fn second_join_by_same_player_is_rejected() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+    let player = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&player, &1_000);
+
+    // First join succeeds normally.
+    assert!(
+        client.try_join_arena(&player).is_ok(),
+        "first join_arena() must succeed"
+    );
+    assert_eq!(client.player_count(), 1);
+    let token = TokenClient::new(&env, &token_id);
+    assert_eq!(token.balance(&player), 900, "exactly one entry fee charged");
+
+    // Second join by the same player must be rejected.
+    assert_eq!(
+        client.try_join_arena(&player),
+        Err(Ok(ArenaError::AlreadyJoined)),
+        "a player must not be able to join the same arena twice"
+    );
+
+    // The rejected retry must not change state: no extra player, no extra fee.
+    assert_eq!(
+        client.player_count(),
+        1,
+        "player count must not double-count"
+    );
+    assert_eq!(
+        token.balance(&player),
+        900,
+        "rejected duplicate join must not charge a second entry fee"
+    );
+}
+
+/// Two distinct players joining is unaffected by the duplicate-join guard.
+#[test]
+fn distinct_players_can_each_join_once() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+    let asset = StellarAssetClient::new(&env, &token_id);
+    let p1 = Address::generate(&env);
+    let p2 = Address::generate(&env);
+    asset.mint(&p1, &100);
+    asset.mint(&p2, &100);
+
+    assert!(client.try_join_arena(&p1).is_ok());
+    assert!(client.try_join_arena(&p2).is_ok());
+    assert_eq!(client.player_count(), 2);
+}
+
+// ── Vault deposit failure path (issue #952) ─────────────────────────────────
+
+/// A vault whose `deposit` always fails. `join_arena` calls it via
+/// `try_deposit` and ignores the error, so the join must still succeed.
+///
+/// Kept in its own module because `#[contractimpl]` emits module-scoped spec
+/// symbols that would otherwise clash with the sibling `MockVault`.
+mod failing_vault {
+    use soroban_sdk::{Address, Env, contract, contracterror, contractimpl};
+
+    #[contracterror]
+    #[derive(Clone, Copy)]
+    #[repr(u32)]
+    pub enum FailingVaultError {
+        DepositRejected = 1,
+    }
+
+    #[contract]
+    pub struct FailingVault;
+
+    #[contractimpl]
+    impl FailingVault {
+        pub fn deposit(_env: Env, _from: Address, _amount: i128) -> Result<(), FailingVaultError> {
+            Err(FailingVaultError::DepositRejected)
+        }
+        pub fn balance_of(_env: Env, _user: Address) -> i128 {
+            0
+        }
+        pub fn withdraw_all(_env: Env, _user: Address) -> i128 {
+            0
+        }
+    }
+}
+
+/// Build an Open arena whose yield vault always rejects deposits.
+/// Returns (Env, ArenaContractClient, token_address).
+fn setup_arena_failing_vault() -> (Env, ArenaContractClient<'static>, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ArenaContract, ());
+    let vault_id = env.register(failing_vault::FailingVault, ());
+
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let oracle = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        let config = ArenaConfig {
+            admin: Address::generate(&env),
+            stake_token: token_id.clone(),
+            yield_vault: vault_id,
+            entry_fee: 100,
+            state: GameState::Open,
+            paused: false,
+            player_count: 0,
+            active_player_count: 0,
+            cumulative_yield: 0,
+            commit_deadline: u64::MAX,
+            round_count: 0,
+            oracle_contract: oracle,
+            factory: Address::generate(&env),
+            pool_id: 0,
+            platform_fee_bps: 1000,
+        };
+        ArenaStorage::save_config(&env, &config);
+        ArenaStorage::save_last_vault_balance(&env, 0);
+    });
+
+    let client = ArenaContractClient::new(&env, &contract_id);
+    (env, client, token_id)
+}
+
+/// A failed vault deposit rejects the join outright rather than leaving the
+/// entry fee stranded in the arena: (a) the call returns `VaultDepositFailed`,
+/// (b) the entry-fee transfer is rolled back with the rest of the invocation,
+/// (c) no player is recorded and no join event is emitted, and (d) the yield
+/// baseline is left untouched.
+#[test]
+fn join_rejected_when_vault_deposit_fails() {
+    let (env, client, token_id) = setup_arena_failing_vault();
+    let player = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&player, &100);
+
+    // (a) The join fails loudly instead of swallowing the vault error.
+    assert_eq!(
+        client.try_join_arena(&player),
+        Err(Ok(ArenaError::VaultDepositFailed)),
+        "a rejected vault deposit must fail the join"
+    );
+
+    // (c) No player_joined event on this path. Capture events immediately after
+    // the join — `events().all()` reflects the most recent invocation, so the
+    // read-only calls below would otherwise clear it.
+    let join_topic: soroban_sdk::Vec<Val> = (symbol_short!("join"), player.clone()).into_val(&env);
+    let join_event_emitted = env
+        .events()
+        .all()
+        .iter()
+        .any(|(contract, topics, _data)| contract == client.address && topics == join_topic);
+    assert!(
+        !join_event_emitted,
+        "no player_joined event may be emitted when the join is rejected"
+    );
+
+    assert_eq!(client.player_count(), 0);
+
+    // (b) Returning an error rolls the invocation back, so the entry fee never
+    // leaves the player and no funds are stranded in the arena.
+    let token = TokenClient::new(&env, &token_id);
+    assert_eq!(token.balance(&player), 100);
+    assert_eq!(token.balance(&client.address), 0);
+
+    // (d) The yield baseline is captured fresh from the real vault balance when
+    // `start_round` is called (#1072); a rejected join must not move it.
+    let tracked = env.as_contract(&client.address, || {
+        ArenaStorage::load_last_vault_balance(&env)
+    });
+    assert_eq!(
+        tracked, 0,
+        "a rejected join must not advance the yield baseline"
+    );
+}
+
+// ── Regression: joins after eliminations (#1358) ─────────────────────────────
+//
+// `Open` covers two different situations: the initial recruiting lobby, and the
+// gap between rounds when more than one survivor remains. Only the first should
+// accept new players — otherwise someone who watched round 1 thin the field can
+// buy in at the original entry fee against far better odds.
+
+/// Set `round_count` on an already-built arena, simulating "a round has been played".
+fn set_round_count(env: &Env, contract_id: &Address, round_count: u32) {
+    env.as_contract(contract_id, || {
+        let mut config = ArenaStorage::load_config(env).unwrap();
+        config.round_count = round_count;
+        ArenaStorage::save_config(env, &config);
+    });
+}
+
+#[test]
+fn join_rejected_after_a_round_has_been_played_even_though_state_is_open() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+    set_round_count(&env, &client.address, 1);
+
+    let latecomer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&latecomer, &100);
+
+    assert_eq!(
+        client.try_join_arena(&latecomer),
+        Err(Ok(ArenaError::ArenaAlreadyStarted)),
+        "a player must not be able to join once eliminations have happened",
+    );
+}
+
+#[test]
+fn join_rejected_for_every_round_count_above_zero() {
+    for round_count in [1u32, 2, 7] {
+        let (env, client, token_id) = setup_arena(GameState::Open);
+        set_round_count(&env, &client.address, round_count);
+
+        let latecomer = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_id).mint(&latecomer, &100);
+
+        assert_eq!(
+            client.try_join_arena(&latecomer),
+            Err(Ok(ArenaError::ArenaAlreadyStarted)),
+            "join must stay closed at round_count = {round_count}",
+        );
+    }
+}
+
+#[test]
+fn join_still_accepted_in_the_initial_lobby() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+    // round_count is 0 from setup — the recruiting lobby.
+    let player = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&player, &100);
+
+    assert!(
+        client.try_join_arena(&player).is_ok(),
+        "the initial lobby must still accept players",
+    );
+}
+
+#[test]
+fn late_join_does_not_charge_the_entry_fee() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+    set_round_count(&env, &client.address, 1);
+
+    let latecomer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&latecomer, &100);
+
+    let _ = client.try_join_arena(&latecomer);
+
+    // The guard runs before the transfer, so a rejected join must not move funds.
+    assert_eq!(
+        TokenClient::new(&env, &token_id).balance(&latecomer),
+        100,
+        "a rejected late join must not take the entry fee",
+    );
+}
+
+#[test]
+fn late_join_does_not_increase_the_player_count() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+
+    let original = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&original, &100);
+    client.join_arena(&original);
+
+    let before = client.get_players(&0).len();
+    set_round_count(&env, &client.address, 1);
+
+    let latecomer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&latecomer, &100);
+    let _ = client.try_join_arena(&latecomer);
+
+    assert_eq!(
+        client.get_players(&0).len(),
+        before,
+        "a rejected late join must not dilute the field",
+    );
+}
+
+// ── Sponsored entries (#1715) ─────────────────────────────────────────────────
+
+#[test]
+fn sponsored_join_charges_the_payer_and_registers_the_player() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+    let payer = Address::generate(&env);
+    let player = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &100);
+
+    client.join_arena_for(&payer, &player);
+
+    let token = TokenClient::new(&env, &token_id);
+    assert_eq!(token.balance(&payer), 0, "the payer funds the entry fee");
+    assert_eq!(token.balance(&player), 100, "the recipient pays nothing");
+    assert_eq!(token.balance(&client.address), 100);
+    assert_eq!(client.player_count(), 1);
+    let roster = client.get_players(&0);
+    assert_eq!(roster.len(), 1);
+    assert_eq!(roster.get(0).unwrap(), player);
+    assert_eq!(
+        client.get_player_status(&player).sponsor,
+        Some(payer),
+        "the sponsor is exposed for refund routing"
+    );
+}
+
+#[test]
+fn sponsored_join_emits_the_sponsored_topic_with_both_addresses() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+    let payer = Address::generate(&env);
+    let player = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &100);
+
+    client.join_arena_for(&payer, &player);
+
+    let topic: soroban_sdk::Vec<Val> = (
+        symbol_short!("arena"),
+        symbol_short!("join_spon"),
+        payer.clone(),
+        player.clone(),
+    )
+        .into_val(&env);
+    assert!(
+        env.events()
+            .all()
+            .iter()
+            .any(|(contract, topics, _)| contract == client.address && topics == topic),
+        "join_arena_for must emit player_joined_sponsored(payer, player)"
+    );
+}
+
+#[test]
+fn a_payer_can_fund_more_than_one_seat() {
+    let (env, client, token_id) = setup_arena(GameState::Open);
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &200);
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+
+    client.join_arena_for(&payer, &first);
+    client.join_arena_for(&payer, &second);
+
+    assert_eq!(client.player_count(), 2);
+    assert_eq!(TokenClient::new(&env, &token_id).balance(&payer), 0);
+    assert_eq!(client.get_player_status(&second).sponsor, Some(payer));
+}

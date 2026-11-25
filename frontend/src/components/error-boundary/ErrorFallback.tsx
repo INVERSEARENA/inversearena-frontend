@@ -4,9 +4,11 @@ import React, { ErrorInfo } from "react";
 import { useRouter } from "next/navigation";
 
 interface ErrorFallbackProps {
-  error: Error | null;
-  errorInfo: ErrorInfo | null;
-  onReset: () => void;
+  error?: Error | null;
+  errorInfo?: ErrorInfo | null;
+  onReset?: () => void;
+  /** Optional context label shown in the error message (e.g. "arena", "dashboard") */
+  context?: string;
 }
 
 /**
@@ -16,9 +18,10 @@ interface ErrorFallbackProps {
  * Matches the app's design system with dark theme and neon-green accents.
  */
 export function ErrorFallback({
-  error,
-  errorInfo,
-  onReset,
+  error = null,
+  errorInfo = null,
+  onReset = () => {},
+  context,
 }: ErrorFallbackProps) {
   const router = useRouter();
   const [copied, setCopied] = React.useState(false);
@@ -26,6 +29,11 @@ export function ErrorFallback({
   const handleGoHome = () => {
     onReset();
     router.push("/");
+  };
+
+  const handleGoToDashboard = () => {
+    onReset();
+    router.push("/dashboard");
   };
 
   const handleRetry = () => {
@@ -71,35 +79,41 @@ Timestamp: ${new Date().toISOString()}
             System Error
           </h1>
           <p className="text-gray-400 text-lg mb-2">
-            Something went wrong in the arena
+            {context
+              ? `Something went wrong loading the ${context}`
+              : "Something went wrong in the arena"}
           </p>
           <p className="text-gray-500 text-sm">
             Don't worry, your data is safe. Try one of the recovery options below.
           </p>
         </div>
 
-        {/* Error Details (Collapsed by default) */}
-        <details className="mb-8 bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
-          <summary className="cursor-pointer p-4 hover:bg-gray-800 transition-colors text-gray-400 font-mono text-sm">
-            View Technical Details
-          </summary>
-          <div className="p-4 border-t border-gray-800 bg-black">
-            <div className="mb-4">
-              <p className="text-red-400 font-mono text-xs mb-2">Error Message:</p>
-              <p className="text-gray-300 font-mono text-xs bg-gray-900 p-3 rounded break-all">
-                {error?.message || "Unknown error occurred"}
-              </p>
-            </div>
-            {error?.stack && (
-              <div>
-                <p className="text-red-400 font-mono text-xs mb-2">Stack Trace:</p>
-                <pre className="text-gray-400 font-mono text-xs bg-gray-900 p-3 rounded overflow-x-auto max-h-48 overflow-y-auto">
-                  {error.stack}
-                </pre>
+        {/* Error Details (Collapsed by default) — only shown outside
+            production, since error.message/error.stack can reveal internal
+            file paths and function names to end users. */}
+        {process.env.NODE_ENV !== "production" && (
+          <details className="mb-8 bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+            <summary className="cursor-pointer p-4 hover:bg-gray-800 transition-colors text-gray-400 font-mono text-sm">
+              View Technical Details
+            </summary>
+            <div className="p-4 border-t border-gray-800 bg-black">
+              <div className="mb-4">
+                <p className="text-red-400 font-mono text-xs mb-2">Error Message:</p>
+                <p className="text-gray-300 font-mono text-xs bg-gray-900 p-3 rounded break-all">
+                  {error?.message || "Unknown error occurred"}
+                </p>
               </div>
-            )}
-          </div>
-        </details>
+              {error?.stack && (
+                <div>
+                  <p className="text-red-400 font-mono text-xs mb-2">Stack Trace:</p>
+                  <pre className="text-gray-400 font-mono text-xs bg-gray-900 p-3 rounded overflow-x-auto max-h-48 overflow-y-auto">
+                    {error.stack}
+                  </pre>
+                </div>
+              )}
+            </div>
+          </details>
+        )}
 
         {/* Recovery Actions */}
         <div className="space-y-4">
@@ -119,6 +133,15 @@ Timestamp: ${new Date().toISOString()}
             aria-label="Navigate back to the home page"
           >
             🏠 Go Home
+          </button>
+
+          {/* Go to Dashboard Button */}
+          <button
+            onClick={handleGoToDashboard}
+            className="w-full bg-gray-800 text-white font-pixel py-4 px-6 rounded-lg hover:bg-gray-700 transition-all border border-gray-700 uppercase tracking-wider text-sm focus:outline-none focus:ring-2 focus:ring-gray-600 focus:ring-offset-2 focus:ring-offset-black"
+            aria-label="Navigate to the dashboard"
+          >
+            📊 Go to Dashboard
           </button>
 
           {/* Report Issue Button */}

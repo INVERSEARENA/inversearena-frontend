@@ -1,0 +1,126 @@
+{
+  "common": {
+    "playNow": "PLAY NOW",
+    "cancel": "Cancel",
+    "retry": "Retry",
+    "checking": "Checking...",
+    "connected": "Connected",
+    "disconnect": "Disconnect",
+    "xlm": "XLM"
+  },
+  "locale": {
+    "label": "Language",
+    "en": "English",
+    "es": "Español"
+  },
+  "landing": {
+    "hero": {
+      "tagline1": "THE SOCIAL ELIMINATION GAME WHERE THE MINORITY",
+      "tagline2": "WINS AND EVERYONE EARNS."
+    },
+    "nav": {
+      "protocol": "The_Protocol",
+      "why": "Why_Inverse?",
+      "yield": "Win_Or_Lose"
+    },
+    "footer": {
+      "about": "A DECENTRALIZED GAME THEORY PROTOCOL ON SOROBAN. WHERE STRATEGY MEETS SUSTAINABLE YIELD.",
+      "system": "SYSTEM",
+      "statusLog": "STATUS_LOG",
+      "yieldOracle": "YIELD_ORACLE",
+      "securityAudit": "SECURITY_AUDIT",
+      "community": "COMMUNITY",
+      "discord": "DISCORD",
+      "xTerminal": "X_TERMINAL",
+      "governance": "GOVERNANCE",
+      "legal": "LEGAL",
+      "copyright": "© 2026 INVERSE_ARENA_PROTOCOL",
+      "network": "SOROBAN_MAINNET_03",
+      "networkStatus": "NETWORK_STATUS: OPTIMAL",
+      "builtWith": "built_with_soroban_and_stellar"
+    }
+  },
+  "wallet": {
+    "passkeyTitle": "Passkey wallet",
+    "networkMismatch": "Wallet is on the wrong network",
+    "networkMismatchHint": "Switch it in your wallet extension, then check again.",
+    "checkAgain": "Check again",
+    "connecting": "Connecting...",
+    "connectExtension": "Connect Extension Wallet",
+    "usePasskey": "🔑 Use Passkey (FaceID / TouchID)",
+    "passkeyPlaceholder": "Username for passkey",
+    "passkeyAriaLabel": "Username for passkey registration",
+    "registerPasskey": "Register Passkey",
+    "passkeyRegistrationFailed": "Passkey registration failed"
+  },
+  "lobby": {
+    "arenaPending": "ARENA #{arenaId}: DEPLOYMENT PENDING",
+    "waitingQuorum": "WAITING FOR MINIMUM QUORUM: {currentPlayers} / {requiredPlayers} PLAYERS READY",
+    "estimatedStart": "ESTIMATED START",
+    "quorumStatus": "PLAYER QUORUM STATUS",
+    "moreParticipants": "{remaining} MORE PARTICIPANTS REQUIRED FOR TRIGGER",
+    "blockHeight": "BLOCK_HEIGHT: {blockHeight}",
+    "entryStake": "ENTRY STAKE",
+    "prizePool": "PRIZE POOL",
+    "rwaLiveYield": "RWA LIVE YIELD",
+    "stakingActive": "STAKING ACTIVE"
+  },
+  "arena": {
+    "heads": "HEADS",
+    "tails": "TAILS",
+    "estimatedYield": "EST. YIELD +{value}%",
+    "roundEndsIn": "Round Ends In"
+  },
+  "result": {
+    "loading": "LOADING RESULTS...",
+    "unavailable": "Results unavailable.",
+    "loadFailed": "Failed to load game results. Please try again.",
+    "backToGames": "BACK TO GAMES",
+    "gameOver": "ARENA #{arenaId} — GAME OVER",
+    "youWon": "YOU WON!",
+    "winnerDeclared": "WINNER DECLARED",
+    "survivedAllRounds": "{address} SURVIVED ALL {rounds} ROUNDS",
+    "prizeBreakdown": "PRIZE BREAKDOWN",
+    "entryFees": "ENTRY FEES",
+    "yieldEarned": "YIELD EARNED",
+    "totalPrize": "TOTAL PRIZE",
+    "yourResult": "YOUR RESULT",
+    "youAreWinner": "YOU ARE THE WINNER — POSITION 1 OF {totalPlayers}",
+    "finishedPosition": "YOU FINISHED IN POSITION {position} OF {totalPlayers} PLAYERS",
+    "notInArena": "YOU WERE NOT IN THIS ARENA",
+    "roundTimeline": "ROUND TIMELINE",
+    "round": "ROUND {round}",
+    "eliminated": "-{count} ELIMINATED",
+    "survived": "{count} SURVIVED",
+    "shareTitle": "SHARE YOUR RESULT",
+    "shareOnX": "SHARE ON X (TWITTER)",
+    "copyShareText": "COPY SHARE TEXT",
+    "shareText": "I just witnessed Arena #{arenaId} end! Winner took home {prize} XLM on @InverseArena 🏆",
+    "findNewArena": "FIND A NEW ARENA",
+    "backToDashboard": "BACK TO DASHBOARD",
+    "rematchTitle": "REMATCH AVAILABLE",
+    "rematchDescription": "Start a new arena with the same stake, round speed and capacity as this one.",
+    "startRematch": "START REMATCH",
+    "rematchYourPrevious": "You played in this arena.",
+    "rematchUnavailable": "A rematch is not available right now."
+  },
+  "pool": {
+    "title": "Pool Creation",
+    "subtitle": "Deploy new arena instance to Soroban network",
+    "stakeAmount": "Stake Amount",
+    "currency": "Currency",
+    "roundSpeed": "Round Speed",
+    "arenaCapacity": "Arena Capacity",
+    "deploy": "Deploy Arena",
+    "estimatedFee": "Estimated network fee",
+    "totalCost": "Total cost",
+    "invalidStake": "Please enter a valid stake amount",
+    "insufficientBalance": "Insufficient balance",
+    "stakeTooLow": "Stake amount is below the minimum",
+    "stakeTooHigh": "Stake amount is above the maximum",
+    "invalidCapacity": "Arena capacity must be between {min} and {max}",
+    "creating": "Deploying...",
+    "prefilled": "Prefilled from arena #{arenaId}",
+    "changedFromOriginal": "Changed from original value"
+  }
+}

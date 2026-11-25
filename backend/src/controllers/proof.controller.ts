@@ -4,15 +4,15 @@
 
 import type { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
-import { RoundProofBundleService } from '../services/roundProofBundleService';
-import { DisputeEvidenceService } from '../services/disputeEvidenceService';
+import { AsyncProofBundleService } from '../services/asyncProofBundleService';
+import { AsyncProofEvidenceService } from '../services/asyncProofEvidenceService';
 import { ProofStorageService } from '../services/proofStorageService';
 import type { Queue } from 'bullmq';
 import type { ProofGenerationJob } from '../types/proof';
 
 export class ProofController {
-  private bundleService: RoundProofBundleService;
-  private evidenceService: DisputeEvidenceService;
+  private bundleService: AsyncProofBundleService;
+  private evidenceService: AsyncProofEvidenceService;
   private storage: ProofStorageService;
 
   constructor(
@@ -20,8 +20,8 @@ export class ProofController {
     private proofQueue?: Queue<ProofGenerationJob>
   ) {
     this.storage = new ProofStorageService();
-    this.bundleService = new RoundProofBundleService(prisma, this.storage);
-    this.evidenceService = new DisputeEvidenceService(prisma, this.storage, this.bundleService);
+    this.bundleService = new AsyncProofBundleService(prisma, this.storage);
+    this.evidenceService = new AsyncProofEvidenceService(prisma, this.storage, this.bundleService);
   }
 
   /**

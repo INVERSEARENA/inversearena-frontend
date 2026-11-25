@@ -1,0 +1,350 @@
+# InverseArena — Deployment Guide
+
+End-to-end reference for building, deploying, and running the InverseArena stack.
+
+---
+
+## Quick Start for Contributors
+
+> Get from `git clone` to a running testnet environment in under 5 minutes.
+
+### 1. Install prerequisites
+
+| Tool | Purpose | Install |
+|------|---------|---------|
+| **Node 20.20.2** | Backend + frontend | [nodejs.org](https://nodejs.org) |
+| **Rust 1.96.0** | Soroban contract builds | `rustup toolchain install 1.96.0` |
+| **WASM targets** | Cross-compile contracts | `rustup target add wasm32-unknown-unknown wasm32v1-none --toolchain 1.96.0` |
+| **Stellar CLI 22.6.0** | Build / deploy contracts | `cargo install --locked stellar-cli@22.6.0` |
+| **PostgreSQL** | Backend DB | docker or local install |
+
+Verify:
+
+```bash
+node --version        # v20.20.2
+stellar --version        # 22.6.0
+rustc --version
+```
+
+### 2. Fund testnet accounts
+
+Run the contributor setup script to create and fund all required Stellar testnet accounts:
+
+```bash
+cd scripts
+npm install
+npx tsx setup-testnet.ts
+```
+
+This sets up four accounts—an admin, a payout source, and two test players—funds them through Stellar Friendbot, and stores their keys in the `.env.test` file at the repository root.
+
+> **WARNING:** Never commit `.env.test`. It contains private keys. It is already in `.gitignore`.
+
+### 3. Build and deploy contracts
+
+```bash
+# From repo root
+make contracts-build                       # compile + optimise all contracts
+make contracts-deploy NETWORK=testnet      # upload + deploy, writes deployed.json
+make contracts-init-factory NETWORK=testnet
+```
+
+Contract addresses are written to `contract/deployed.json`. Copy them into your environment files.
+
+### 4. Configure environment
+
+Copy the relevant IDs from `contract/deployment-manifest.json` into generated env files:
+
+```
+backend/.env        # MONGODB_URI, PORT=3001, ...
+frontend/.env.local # NEXT_PUBLIC_API_BASE_URL=http://localhost:3001, ...
+```
+
+`make dev` / `scripts/dev-stack.sh` writes these files with corrected ports and env keys. See `contract/DEPLOY.md` for the full env var reference.
+
+### 5. Start the stack
+
+```bash
+make backend-dev    # terminal 1
+make frontend-dev   # terminal 2
+```
+
+---
+
+## Contract Build and Deploy Scripts
+
+Scripts live in `contract/scripts/`. Run them from the `contract/` directory or via `make` targets from the repo root.
+
+### `build.sh`
+
+Compiles all workspace contracts to WASM and optimises each:
+
+```bash
+cd contract
+bash scripts/build.sh                    # all contracts
+bash scripts/build.sh --package arena   # single contract
+```
+
+### `deploy.sh`
+
+Uploads WASM and deploys contract instances, writing addresses to `deployed.json`:
+
+```bash
+cd contract
+bash scripts/deploy.sh --network testnet --source deployer
+```
+
+### `init-factory.sh`
+
+Initialises the factory contract with the deployed arena WASM hash:
+
+```bash
+cd contract
+bash scripts/init-factory.sh --network testnet --source deployer
+```
+
+### Makefile targets (from repo root)
+
+```bash
+make contracts-build
+make contracts-deploy NETWORK=testnet
+make contracts-init-factory NETWORK=testnet
+make contracts-abi-check
+```
+
+---
+
+## Local Development — Game Simulation
+
+To test the full game lifecycle without real players, use the simulation CLI:
+
+```bash
+cd backend
+npm run simulate -- --players 10 --rounds 5 --network testnet
+```
+
+Options:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--players <n>` | `10` | Number of simulated players |
+| `--rounds <n>` | `5` | Maximum rounds to play |
+| `--network` | `testnet` | `testnet` or `mainnet` |
+| `--arena-id` | (new) | Reuse an existing arena instead of creating one |
+
+The script:
+
+1. Creates N funded keypairs (from environment-configured accounts or generates ephemeral ones)
+2. Creates an arena via the factory contract
+3. Joins all players
+4. Starts the arena and runs rounds, randomly assigning heads/tails
+5. Resolves each round, logging eliminations
+6. Logs the winner and prize amount
+
+See `backend/scripts/simulate-game.ts` for source and extension points.
+
+---
+
+## Admin Audit Log
+
+Every admin action is written to the `audit_logs` collection in MongoDB. The log is append-only.
+
+Retrieve logs (admin auth required):
+
+```
+GET /api/admin/audit-logs?limit=50&action=resolve_round&adminId=apikey:abcdef01
+```
+
+Query parameters: `limit` (1–200, default 50), `action`, `adminId`.
+
+---
+
+## Mainnet checklist
+
+- [ ] Run `make release-preflight DRY_RUN=1 NETWORK=mainnet` and confirm `"status": "pass"`
+- [ ] Separate funded mainnet deployer identity with minimal balance
+- [ ] Review all contract WASM with `scripts/generate_abi_snapshots.sh --check`
+- [ ] Run `deploy.sh --network mainnet` — script pauses 5 s before proceeding
+- [ ] Update frontend + backend env vars with mainnet contract IDs
+- [ ] Do not use accounts from `.env.test` on mainnet
+
+---
+
+## Release Preflight (#1465)
+
+Before deploying to testnet or mainnet, run the unified release preflight command:
+
+```bash
+make release-preflight DRY_RUN=1 NETWORK=testnet
+```
+
+It validates four domains and emits a machine-readable JSON report (`schemaVersion: 1`) on stdout (with structured check logs on stderr), exiting `1` if any artifact is incompatible:
+
+| Check | What it verifies |
+| --- | --- |
+| `prisma.migrations` | `migration_lock.toml` provider, non-empty bounded `migration.sql` files, and live `prisma migrate status` when `DATABASE_URL` is set (skipped in `--dry-run`) |
+| `soroban.abis_and_manifest` | `contract/*/abi_snapshot.json`, `contract/deployment-manifest.json` (`schemaVersion`, contract IDs, WASM hashes), `network_mismatch`, and `generate_abi_snapshots.sh --check` when WASM + CLI are present |
+| `env.config_and_network` | `backend/.env.example` schema sync and `STELLAR_NETWORK_PASSPHRASE` alignment with `--network` |
+| `release.rollback_readiness` | Flags unguarded destructive DDL (`DROP TABLE`, `DROP COLUMN`, `TRUNCATE`) lacking a `-- rollback:` note, plus manifest/compatibility-doc rollback readiness |
+
+See `docs/design/release-preflight.md` for ownership, state transitions, and failure semantics.
+
+---
+
+## Environment variables reference
+
+Copy `backend/.env.example` → `backend/.env` and `frontend/.env.example` →
+`frontend/.env.local`, then fill in the values below. Contract IDs come from
+`contract/deployed.json` after `deploy.sh`.
+
+### Backend (`backend/.env`)
+
+| Variable | Purpose |
+| --- | --- |
+| `PORT` | HTTP port the API listens on |
+| `DATABASE_URL` | Postgres connection string (Prisma) |
+| `MONGODB_URI` | MongoDB connection string |
+| `REDIS_URL` | Redis URL for caching (arena stats, leaderboard) |
+| `ADMIN_API_KEY` | API key gating admin routes |
+| `ADMIN_TOKEN_TTL_SECONDS` | Lifetime of issued admin tokens |
+| `JWT_SECRET` | Secret for signing auth JWTs (current key, ≥ 32 chars) |
+| `JWT_SECRET_KID` | Optional key id for the current JWT secret (default: SHA-256 fingerprint) |
+| `JWT_SECRET_PREVIOUS` / `JWT_SECRET_PREVIOUS_KID` / `JWT_SECRET_PREVIOUS_EXPIRES_AT` | Rotation overlap: previous secret stays verify-only until the ISO expiry (≤ 30 days). See `docs/design/secret-rotation.md` |
+| `ORACLE_WEBHOOK_SECRET` (+ `_KID`, `_PREVIOUS`, `_PREVIOUS_KID`, `_PREVIOUS_EXPIRES_AT`) | Oracle webhook HMAC key and its rotation overlap, same rules as JWT |
+| `JWT_EXPIRES_IN` / `JWT_REFRESH_EXPIRES_IN` | Access / refresh token lifetimes |
+| `NONCE_TTL_SECONDS` | Validity window for auth challenge nonces |
+| `SOROBAN_RPC_URL` | Soroban RPC endpoint |
+| `STELLAR_NETWORK_PASSPHRASE` | Network passphrase (testnet/mainnet) |
+| `PAYOUT_CONTRACT_ID` | Deployed payout contract id |
+| `PAYOUT_SOURCE_ACCOUNT` | Account that submits payout transactions |
+| `PAYOUT_METHOD_NAME` | Payout contract method (default `distribute_winnings`) |
+| `PAYOUTS_LIVE_EXECUTION` | `true` to submit on-chain; `false` builds only |
+| `PAYOUTS_SIGN_WITH_HOT_KEY` | Sign payouts with a hot key vs. external signer |
+| `PAYOUTS_MAX_GAS_STROOPS` | Reject prepared txs whose fee exceeds this |
+| `PAYOUTS_MAX_ATTEMPTS` | Max submission attempts before a payout fails |
+| `PAYOUTS_CONFIRM_POLL_MS` / `PAYOUTS_CONFIRM_MAX_POLLS` | Confirmation polling cadence/limit |
+
+### Frontend (`frontend/.env.local`)
+
+| Variable | Purpose |
+| --- | --- |
+| `NEXT_PUBLIC_STELLAR_NETWORK` | `testnet` or `public` |
+| `NEXT_PUBLIC_STELLAR_NETWORK_PASSPHRASE` | Network passphrase |
+| `NEXT_PUBLIC_SOROBAN_RPC_URL` | Soroban RPC endpoint |
+| `NEXT_PUBLIC_HORIZON_URL` | Horizon endpoint |
+| `NEXT_PUBLIC_FACTORY_CONTRACT_ID` | Deployed factory contract id |
+| `NEXT_PUBLIC_USDC_CONTRACT_ID` | USDC token contract id |
+| `NEXT_PUBLIC_APP_ORIGIN` | Public app origin (used for share links / sitemap) |
+| `ALLOWED_ORIGINS` | CORS allow-list for the API |
+| `REDIS_URL` | Redis URL (if the frontend uses server-side caching) |
+| `NEXT_PUBLIC_SENTRY_DSN` | Sentry DSN (optional) |
+| `NEXT_PUBLIC_SENTRY_ENVIRONMENT` / `NEXT_PUBLIC_SENTRY_RELEASE` | Sentry tagging (optional) |
+
+> There is no `docker-compose.yml` in this repo today; local services (Postgres,
+> MongoDB, Redis) are expected to be provided by the developer, and the app is run
+> with the `make backend-dev` / `make frontend-dev` targets above.
+
+---
+
+## Client compatibility manifest (#1491)
+
+`GET /api/config/compatibility[?arenaId=C...]` returns the network, a
+`configRevision` (the ledger it was derived at), each negotiated contract
+version, and per-capability support (`join`, `commit`, `reveal`, `claim`,
+`admin`). Responses are cacheable for 15 s; the frontend never replaces a
+manifest with a lower `configRevision` and stops trusting one older than 5 min.
+The capability map in `backend/src/services/contractCapability.ts` decides which
+contract version each entrypoint needs.
+
+**Rollout order**
+
+1. **Deploy the backend first.** Existing frontend versions safely ignore the new endpoint.
+2. **Upgrade the contracts.** Arenas running older contract versions report the affected capabilities as unsupported. The new frontend disables only those actions, while read operations remain available.
+3. **Deploy the frontend last.** If the backend does not expose the endpoint (returns 404), the frontend preserves its existing behavior by allowing all actions.
+
+**Rollback**
+
+- Frontend rollback: safe at any point; the older build never calls the endpoint.
+- Backend rollback: the new frontend gets 404, treats it as an old backend and
+  stops gating. Rolling back a contract upgrade makes the manifest report
+  the capability as unsupported again at the next refresh (within 15 s cache +
+  60 s poll).
+- A newer manifest `schemaVersion` than the frontend supports blocks mutations
+  with a "refresh to update" message rather than guessing.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause / fix |
+| --- | --- |
+| `NotInitialised` from payout calls | The payout contract was deployed but `initialize(admin, token)` was never called. |
+| Payout returns `AlreadyPaid` | The `payout_id` was already executed — idempotency guard. Use a fresh id. |
+| Frontend can't reach contracts | `NEXT_PUBLIC_*` contract IDs don't match `contract/deployed.json`, or RPC URL points at the wrong network. |
+| API 500s with no obvious cause | Grab the `X-Request-Id` response header and grep the backend logs / Sentry for that id. |
+| Arena stats look stale | Redis cache TTL not yet expired; stats are invalidated automatically on round resolution. |
+| `make deploy` fails funding accounts | Testnet friendbot rate-limited — wait and retry, or fund manually (see step 2). |
+
+---
+
+## BullMQ Queue Split & Payload Versioning Rolling Deployment (#1839)
+
+Issue #1839 separates the monolithic `tx-confirm` queue into three prioritised queues:
+1. `payout-confirm` (high priority, low concurrency, critical winner payouts)
+2. `tx-reconcile` (bulk background ledger reconciliation)
+3. `notify` (notification fan-out)
+
+### Rolling Deploy Procedure
+
+During a rolling deployment across multiple instances, old workers and new workers co-exist:
+
+1. **Deploy Phase 1 — Workers First**:
+   - Deploy backend instances running the updated workers (`txReconciler`, `paymentWorker`).
+   - The consumers understand both versioned payloads (`{ v: 1, ... }`) and legacy payloads (`{ transactionId: ... }`).
+   - The alias `TX_CONFIRM_QUEUE = PAYOUT_QUEUE` guarantees that jobs targeting the old queue name are consumed by the new payout workers.
+   - Any unparseable payload is routed to structured dead-letter logging (`deadLetterJob`) and does not crash worker loops.
+
+2. **Deploy Phase 2 — Producers**:
+   - Deploy backend API nodes producing jobs.
+   - Producers stamp `v: 1` on all new payloads using `defineJob(name, version, schema)`.
+   - New jobs are routed to `payout-confirm`, `tx-reconcile`, or `notify` with their respective priorities and retry configurations.
+
+3. **Deploy Phase 3 — Verification & Metric Checks**:
+   - Verify Prometheus metrics across the separated queues:
+     - `inversearena_queue_backlog{queue="payout-confirm"}`
+     - `inversearena_queue_backlog{queue="tx-reconcile"}`
+     - `inversearena_queue_backlog{queue="notify"}`
+     - `inversearena_worker_terminal_failures_total`
+   - Check that dead-letter counts remain zero or expected.
+
+4. **Rollback Strategy**:
+   - If rolling back to the previous release, old workers can process legacy unversioned payloads. New producers only add `v: 1` to standard fields, which old JSON readers safely ignore as extraneous fields.
+
+---
+
+## Multi-Provider Soroban RPC Pool Runbook (#1830)
+
+The backend and frontend server-side Stellar adapters route Soroban RPC calls through `SorobanRpcPool`, supporting automatic failover, health scoring, ledger-lag exclusion, and sticky transaction polling.
+
+### Configuration
+- `SOROBAN_RPC_URLS` (backend) / `NEXT_PUBLIC_SOROBAN_RPC_URLS` (frontend): Comma-separated list of Soroban RPC endpoints in priority order (e.g., `https://rpc1.stellar.org,https://rpc2.stellar.org`).
+- `SOROBAN_RPC_URL` / `NEXT_PUBLIC_SOROBAN_RPC_URL`: Still supported for single-endpoint environments.
+- `SOROBAN_MAX_LEDGER_LAG` (default `5`): Maximum ledgers a provider may lag behind the pool's highest known ledger before being excluded from read routing.
+
+### Health Scoring & Failover Behavior
+- **Reads (`simulateTransaction`, `getLedgerEntries`, `getEvents`, `getLatestLedger`)**: Routed to the highest-scoring healthy, non-lagging provider. On network error, HTTP 5xx, or timeout, the request automatically fails over to the next healthiest provider.
+- **Writes & Sticky Polling (`sendTransaction` → `getTransaction`)**: `sendTransaction` routes to the best healthy provider and pins the resulting `txHash` to that provider (5-minute TTL). Subsequent `getTransaction` polls target that sticky provider first, automatically falling back across the pool if it becomes unresponsive.
+
+### Prometheus Observability & Alerts
+Monitor the following gauges and counters on `/metrics`:
+- `inversearena_soroban_rpc_provider_health_score{provider}` (0–100)
+- `inversearena_soroban_rpc_provider_latency_seconds{provider}`
+- `inversearena_soroban_rpc_provider_ledger_lag{provider}`
+- `inversearena_soroban_rpc_provider_status{provider, status}` (`1` = healthy, `0` = lagging/down)
+- `inversearena_soroban_rpc_failovers_total{from_provider, to_provider}`
+- `inversearena_soroban_rpc_provider_errors_total{provider, error_type}`
+
+### Troubleshooting
+1. **Frequent Failovers**: Inspect `soroban_rpc_provider_errors_total` and `soroban_rpc_provider_latency_seconds`. Replace or deprioritize degraded providers in `SOROBAN_RPC_URLS`.
+2. **All Providers Marked Lagging**: Verify upstream Stellar network status or increase `SOROBAN_MAX_LEDGER_LAG` temporarily if all providers experience sync jitter.
+

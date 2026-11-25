@@ -2,8 +2,10 @@ import type { Request, Response } from "express";
 import { z } from "zod";
 import type { AdminService } from "../services/adminService";
 import type { PaymentService } from "../services/paymentService";
+import type { MaintenanceService } from "../services/maintenanceService";
 import type { TransactionRepository } from "../repositories/transactionRepository";
 import { AuditLogModel } from "../db/models/auditLog.model";
+import { maintenanceWindowsScheduledTotal } from "../utils/metrics";
 
 const RequestTokenSchema = z.object({
   action: z.string().min(1).max(64),
@@ -28,13 +30,29 @@ const ListAuditLogsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional().default(50),
   action: z.string().optional(),
   adminId: z.string().optional(),
+  actor: z.string().trim().min(1).max(128).optional(),
+  resource: z.string().trim().min(1).max(128).optional(),
+  result: z.enum(["success", "failed", "auth_failed"]).optional(),
+  correlationId: z.string().trim().min(1).max(128).optional(),
+});
+
+const ScheduleMaintenanceSchema = z.object({
+  token: z.string().min(1),
+  startLedgerSequence: z.number().int().positive(),
+  endLedgerSequence: z.number().int().positive().nullable().optional().transform((v) => v ?? null),
+  reason: z.string().trim().min(1).max(500),
+});
+
+const CancelMaintenanceSchema = z.object({
+  token: z.string().min(1),
 });
 
 export class AdminController {
   constructor(
     private readonly adminService: AdminService,
     private readonly paymentService: PaymentService,
-    private readonly transactions: TransactionRepository
+    private readonly transactions: TransactionRepository,
+    private readonly maintenanceService: MaintenanceService
   ) {}
 
   requestToken = async (req: Request, res: Response): Promise<void> => {
@@ -49,13 +67,13 @@ export class AdminController {
     const { token, targetStatus } = ForceResolveSchema.parse(req.body);
     const adminId = req.adminId!;
 
-    await this.adminService.verifyAndConsumeToken(token, "force_resolve", id, adminId);
+    await this.adminService.verifyAndConsumeToken(token, "force_resolve", id!, adminId);
 
     let transaction;
     try {
-      transaction = await this.transactions.update(id, {
+      transaction = await this.transactions.update(id!, {
         status: targetStatus,
-        confirmedAt: targetStatus === "confirmed" ? new Date() : undefined,
+        confirmedAt: targetStatus === "confirmed" ? new Date() : null,
         errorMessage: targetStatus === "failed" ? "Force-resolved by admin" : null,
         updatedAt: new Date(),
       });
@@ -64,22 +82,22 @@ export class AdminController {
         adminId,
         action: "force_resolve",
         resourceType: "transaction",
-        resourceId: id,
+        resourceId: id!,
         status: "success",
         metadata: { targetStatus },
-        ipAddress: req.ip,
-        userAgent: req.headers["user-agent"],
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
       });
     } catch (err) {
       await this.adminService.log({
         adminId,
         action: "force_resolve",
         resourceType: "transaction",
-        resourceId: id,
+        resourceId: id!,
         status: "failed",
         errorMessage: err instanceof Error ? err.message : "Unknown error",
-        ipAddress: req.ip,
-        userAgent: req.headers["user-agent"],
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
       });
       throw err;
     }
@@ -92,11 +110,11 @@ export class AdminController {
     const { token } = TokenOnlySchema.parse(req.body);
     const adminId = req.adminId!;
 
-    await this.adminService.verifyAndConsumeToken(token, "resubmit", id, adminId);
+    await this.adminService.verifyAndConsumeToken(token, "resubmit", id!, adminId);
 
     let transaction;
     try {
-      transaction = await this.transactions.update(id, {
+      transaction = await this.transactions.update(id!, {
         status: "queued",
         attempts: 0,
         errorMessage: null,
@@ -107,21 +125,21 @@ export class AdminController {
         adminId,
         action: "resubmit",
         resourceType: "transaction",
-        resourceId: id,
+        resourceId: id!,
         status: "success",
-        ipAddress: req.ip,
-        userAgent: req.headers["user-agent"],
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
       });
     } catch (err) {
       await this.adminService.log({
         adminId,
         action: "resubmit",
         resourceType: "transaction",
-        resourceId: id,
+        resourceId: id!,
         status: "failed",
         errorMessage: err instanceof Error ? err.message : "Unknown error",
-        ipAddress: req.ip,
-        userAgent: req.headers["user-agent"],
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
       });
       throw err;
     }
@@ -129,24 +147,49 @@ export class AdminController {
     res.json({ transaction });
   };
 
+  /**
+   * Pool reindex — **not implemented** (#1350).
+   *
+   * This previously consumed the confirmation token, wrote a `success` audit
+   * entry and answered "Pool reindex queued", while no queue, worker or reindex
+   * logic existed anywhere in the codebase. An admin reaching for this to repair
+   * a stale pool record got a 200 and an audit trail saying it worked, and the
+   * pool stayed exactly as broken as before — the worst possible failure mode
+   * for a repair tool.
+   *
+   * Until a real indexer exists, the endpoint reports itself unimplemented:
+   *
+   *  - responds 501, so callers and monitoring see the truth;
+   *  - does **not** consume the single-use confirmation token, so the admin does
+   *    not have to mint a new one once this is implemented;
+   *  - records the attempt as `failed`, so the audit log stops asserting that a
+   *    repair happened.
+   */
   reindexPool = async (req: Request, res: Response): Promise<void> => {
     const { id } = req.params;
-    const { token } = TokenOnlySchema.parse(req.body);
+    TokenOnlySchema.parse(req.body);
     const adminId = req.adminId!;
 
-    await this.adminService.verifyAndConsumeToken(token, "reindex_pool", id, adminId);
+    const message =
+      "Pool reindex is not implemented: no indexer exists to rebuild pool state. " +
+      "The confirmation token has not been consumed and no changes were made.";
 
     await this.adminService.log({
       adminId,
       action: "reindex_pool",
       resourceType: "pool",
-      resourceId: id,
-      status: "success",
-      ipAddress: req.ip,
-      userAgent: req.headers["user-agent"],
+      resourceId: id!,
+      status: "failed",
+      errorMessage: "not_implemented",
+      ...(req.ip !== undefined && { ipAddress: req.ip }),
+      ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
     });
 
-    res.json({ message: "Pool reindex queued", poolId: id });
+    res.status(501).json({
+      error: "Not Implemented",
+      message,
+      poolId: id,
+    });
   };
 
   runReconciliation = async (req: Request, res: Response): Promise<void> => {
@@ -178,8 +221,8 @@ export class AdminController {
         resourceId: "global",
         status: "success",
         metadata: result,
-        ipAddress: req.ip,
-        userAgent: req.headers["user-agent"],
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
       });
     } catch (err) {
       await this.adminService.log({
@@ -189,8 +232,8 @@ export class AdminController {
         resourceId: "global",
         status: "failed",
         errorMessage: err instanceof Error ? err.message : "Unknown error",
-        ipAddress: req.ip,
-        userAgent: req.headers["user-agent"],
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
       });
       throw err;
     }
@@ -198,12 +241,103 @@ export class AdminController {
     res.json(result);
   };
 
+  scheduleMaintenance = async (req: Request, res: Response): Promise<void> => {
+    const { token, startLedgerSequence, endLedgerSequence, reason } =
+      ScheduleMaintenanceSchema.parse(req.body);
+    const adminId = req.adminId!;
+
+    await this.adminService.verifyAndConsumeToken(token, "schedule_maintenance", "global", adminId);
+
+    let window;
+    try {
+      window = await this.maintenanceService.schedule({
+        scheduledBy: adminId,
+        startLedgerSequence,
+        endLedgerSequence,
+        reason,
+      });
+
+      maintenanceWindowsScheduledTotal.inc({ status: "success" });
+      await this.adminService.log({
+        adminId,
+        action: "schedule_maintenance",
+        resourceType: "maintenance_window",
+        resourceId: window.id,
+        status: "success",
+        metadata: { startLedgerSequence, endLedgerSequence, reason },
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
+      });
+    } catch (err) {
+      maintenanceWindowsScheduledTotal.inc({ status: "failed" });
+      await this.adminService.log({
+        adminId,
+        action: "schedule_maintenance",
+        resourceType: "maintenance_window",
+        resourceId: "global",
+        status: "failed",
+        errorMessage: err instanceof Error ? err.message : "Unknown error",
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
+      });
+      throw err;
+    }
+
+    res.status(201).json({ window });
+  };
+
+  cancelMaintenance = async (req: Request, res: Response): Promise<void> => {
+    const { id } = req.params;
+    const { token } = CancelMaintenanceSchema.parse(req.body);
+    const adminId = req.adminId!;
+
+    await this.adminService.verifyAndConsumeToken(token, "cancel_maintenance", id!, adminId);
+
+    let window;
+    try {
+      window = await this.maintenanceService.cancel(id!, adminId);
+
+      await this.adminService.log({
+        adminId,
+        action: "cancel_maintenance",
+        resourceType: "maintenance_window",
+        resourceId: id!,
+        status: "success",
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
+      });
+    } catch (err) {
+      await this.adminService.log({
+        adminId,
+        action: "cancel_maintenance",
+        resourceType: "maintenance_window",
+        resourceId: id!,
+        status: "failed",
+        errorMessage: err instanceof Error ? err.message : "Unknown error",
+        ...(req.ip !== undefined && { ipAddress: req.ip }),
+        ...(req.headers["user-agent"] !== undefined && { userAgent: req.headers["user-agent"] }),
+      });
+      throw err;
+    }
+
+    res.json({ window });
+  };
+
+  listMaintenanceWindows = async (_req: Request, res: Response): Promise<void> => {
+    const windows = await this.maintenanceService.list();
+    res.json({ windows });
+  };
+
   listAuditLogs = async (req: Request, res: Response): Promise<void> => {
-    const { limit, action, adminId } = ListAuditLogsQuerySchema.parse(req.query);
+    const { limit, action, adminId, actor, resource, result, correlationId } = ListAuditLogsQuerySchema.parse(req.query);
     const filter: Record<string, unknown> = {};
 
     if (action !== undefined) filter.action = action;
     if (adminId !== undefined) filter.adminId = adminId;
+    if (actor !== undefined) filter.$or = [{ "actor.id": actor }, { adminId: actor }];
+    if (resource !== undefined) filter.$and = [{ $or: [{ "resource.id": resource }, { resourceId: resource }] }];
+    if (result !== undefined) filter.status = result;
+    if (correlationId !== undefined) filter.correlationId = correlationId;
 
     const [logs, total] = await Promise.all([
       AuditLogModel.find(filter).sort({ createdAt: -1 }).limit(limit).lean(),

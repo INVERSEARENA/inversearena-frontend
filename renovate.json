@@ -1,0 +1,49 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "timezone": "UTC",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 5,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on monday"]
+  },
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "groupName": "Stellar SDKs",
+      "matchPackageNames": ["@stellar/**", "@creit-tech/stellar-wallets-kit", "stellar-sdk", "stellar-xdr", "stellar-strkey"]
+    },
+    {
+      "groupName": "Next and React",
+      "matchPackageNames": ["next", "react", "react-dom", "eslint-config-next", "@types/react", "@types/react-dom"]
+    },
+    {
+      "groupName": "Soroban SDK",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["soroban-sdk", "soroban-sdk-testutils"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "groupName": "GitHub Actions",
+      "matchManagers": ["github-actions"]
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["major-update"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Automerge only minor and patch dev dependencies, and only after CI and the dependency threat gate pass",
+      "matchDepTypes": ["devDependencies", "dev-dependencies"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": true
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": ["security"],
+    "schedule": ["at any time"]
+  }
+}

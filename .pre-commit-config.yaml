@@ -1,0 +1,46 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-added-large-files
+  - repo: local
+    hooks:
+      - id: check-fast-backend
+        name: check-fast backend
+        entry: bash scripts/check-fast.sh backend
+        language: system
+        pass_filenames: false
+      - id: check-fast-frontend
+        name: check-fast frontend
+        entry: bash scripts/check-fast.sh frontend
+        language: system
+        pass_filenames: false
+      - id: check-fast-contract-fmt
+        name: check-fast contract-fmt
+        entry: bash scripts/check-fast.sh contract-fmt
+        language: system
+        pass_filenames: false
+      - id: check-fast-contract
+        name: check-fast contract
+        entry: bash scripts/check-fast.sh contract
+        language: system
+        pass_filenames: false
+      - id: check-fast-ops-cli
+        name: check-fast ops-cli
+        entry: bash scripts/check-fast.sh ops-cli
+        language: system
+        pass_filenames: false
+      - id: check-fast-deps-gate-self
+        name: check-fast deps-gate-self
+        entry: bash scripts/check-fast.sh deps-gate-self
+        language: system
+        pass_filenames: false
+      - id: toolchain-config-test
+        name: toolchain config tests
+        entry: node --test scripts/toolchain-config.test.mjs
+        language: system
+        pass_filenames: false

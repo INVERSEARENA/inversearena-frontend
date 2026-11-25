@@ -1,0 +1,14 @@
+{
+  "name": "inversearena-frontend-root",
+  "private": true,
+  "packageManager": "pnpm@10.11.1",
+  "engines": {
+    "node": "20.20.2"
+  },
+  "scripts": {
+    "lint": "pnpm -r --if-present run lint",
+    "typecheck": "pnpm --filter @inversearena/rate-limit run build && pnpm -r --if-present run typecheck",
+    "test": "pnpm --filter @inversearena/rate-limit run build && pnpm -r --if-present run test",
+    "build": "pnpm -r run build"
+  }
+}

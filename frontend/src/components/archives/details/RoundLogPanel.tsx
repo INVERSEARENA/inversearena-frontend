@@ -73,7 +73,7 @@ interface RoundLogPanelProps {
 /* RoundLogPanel renders the round-by-round detail side panel for a selected arena match */
 export function RoundLogPanel({ selectedIndex }: RoundLogPanelProps) {
   /* Look up the round data for the selected match, fallback to first entry */
-  const data = mockRoundData[selectedIndex] ?? mockRoundData[0];
+  const data = mockRoundData[selectedIndex] ?? mockRoundData[0]!;
 
   return (
     /* Outer container with dark border and background matching the archives design system */

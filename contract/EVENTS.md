@@ -1,6 +1,6 @@
 # Contract Event Reference
 
-All events include a version marker (`v: u32`) as the first field of the
+Arena and factory events include a version marker (`v: u32`) in the
 data payload. Consumers should check this field to detect schema changes
 without requiring redeployment.
 
@@ -20,9 +20,19 @@ Current payload version: **1**
 | `R_START`     | `start_round()`        | `(round_number: u32, round_start_ledger: u32, round_deadline_ledger: u32, v)` |
 | `R_TOUT`      | `timeout_round()`      | `(round_number: u32, total_submissions: u32, v)` |
 | `RSLVD`       | `resolve_round()`      | `(round_number: u32, heads_count: u32, tails_count: u32, outcome: Symbol, eliminated_count: u32, survivor_count: u32, v)` |
-| `WIN_SET`     | `set_winner()`         | `(player: Address, stake: i128, yield_comp: i128)` |
+| `WIN_SET`     | `set_winner()`         | `(player: Address, stake: i128, yield_comp: i128, v)` |
 | `CLAIM`       | `claim()`              | `(winner: Address, prize: i128, v)`      |
-| `G_END`       | *(reserved)*           | *(not currently emitted)*                |
+| `frsh_pol`    | `set_oracle_freshness_policy()` (#1512) | `(admin: Address, max_age_secs: u64, warn_age_secs: u64)` |
+| `oracle_freshness_observed` | `resolve_round()` (#1512) | `(round: u32, classification_code: u32, age_secs: u64)` — emitted on every attempt, success or rejection; `classification_code`: 0=Fresh, 1=Warning, 2=Stale, 3=Unavailable |
+| `oracle_stale_rejected` | `resolve_round()` (#1512) | `(round: u32, age_secs: u64)` — emitted only when resolution is refused for staleness |
+| `left`        | `leave_arena()` (#1580) | `(player_count: u32)` — topics `(left, player)` |
+| `refunded`    | `leave_arena()`, `ban_player()` (#1580, #1581) | `(amount: i128)` — topics `(refunded, player)`; emitted alongside `left`/`ban` |
+| `join_spon`   | `join_arena_for()` (#1715) | `(v, player_count: u32)` — topics `(arena, join_spon, payer, player)`; the payer is the refund destination and the player owns the seat/prizes |
+| `limits`      | `configure_player_limits()` (#1640) | `(min_players: u32, max_players: u32)` — topics `(limits)`; emitted only on success. Calls fail with `ArenaAlreadyHasPlayers` (45) once `player_count > 0`, so the event never fires for a post-join change. |
+
+> Note (#1512): several rows in this table (e.g. `fee_upd`, `vault_oracle_failed`)
+> predate this table and were never added to it — pre-existing drift, not
+> introduced here. `contract/arena/src/events.rs` is the source of truth.
 
 ## Factory Contract
 
@@ -30,10 +40,18 @@ Current payload version: **1**
 |---------------|------------------------|------------------------------------------|
 | `WL_ADD`      | `add_to_whitelist()`   | `(v, host: Address)`                     |
 | `WL_REM`      | `remove_from_whitelist()` | `(v, host: Address)`                  |
-| `POOL_CRE`    | `create_pool()`        | `(v, pool_id: u32, creator: Address, capacity: u32, stake_amount: i128)` |
+| `POOL_CRE`    | `create_pool()`        | `(pool_id: u32, host: Address, entry_fee: i128, arena: Address, min_players: u32, max_players: u32, round_duration: u64, metadata_hash: BytesN<32>)` — the metadata hash is appended by #1577 |
 | `UP_PROP`     | `propose_upgrade()`    | `(v, new_wasm_hash: BytesN<32>, execute_after: u64)` |
 | `UP_EXEC`     | `execute_upgrade()`    | `(v, new_wasm_hash: BytesN<32>)`         |
 | `UP_CANC`     | `cancel_upgrade()`     | `(v)`                                    |
+| `GPAUSE`      | `set_global_pause()` (#1583) | `(paused: bool, reason: Symbol)` — protocol-wide emergency pause set or cleared |
+| `VLT_DEP` / `VLT_DIS` / `VLT_REA` | `deprecate_approved_vault()` / `disable_approved_vault()` / `reactivate_approved_vault()` (#1688) | `(vault: Address, effective_ledger: u32, reason: Symbol, revision: u32)` — the yield vault's lifecycle transition |
+| `ORC_DEP` / `ORC_DIS` / `ORC_REA` | `deprecate_approved_oracle()` / `disable_approved_oracle()` / `reactivate_approved_oracle()` (#1688) | `(oracle: Address, effective_ledger: u32, reason: Symbol, revision: u32)` — the oracle's lifecycle transition |
+| `TOK_DEP` / `TOK_DIS` / `TOK_REA` | `deprecate_supported_token()` / `disable_supported_token()` / `reactivate_supported_token()` (#1688) | `(token: Address, effective_ledger: u32, reason: Symbol, revision: u32)` — the stake token's lifecycle transition |
+
+> Note (#1688): the lifecycle events carry the registry revision, which is
+> bumped on every transition. A consumer that caches the lifecycle can
+> invalidate its cache on the revision alone, without replaying events.
 
 ## Staking Contract
 
@@ -57,10 +75,50 @@ address, amounts) is in the data payload so indexers can filter on `STAKED` /
 |---------------|---------------------------|---------------------------------------|
 | `PAYOUT`      | `distribute_winnings()`   | `(v, winner: Address, amount: i128, currency: Symbol)` |
 
+## Oracle Contract (#1570)
+
+Bounded, delayed rate updates. `rate_sch` / `par_sched` carry the scheduled
+value plus its `effective_at`; `rate_appl` / `par_appl` fire when a due
+schedule is persisted by the next admin write.
+
+| Topic       | Emitting Function      | Data Fields                                      |
+|-------------|------------------------|--------------------------------------------------|
+| `rate_set`  | `set_yield_bps()`      | `(rate_bps: u32)` — applied immediately (delay 0) |
+| `rate_sch`  | `set_yield_bps()`      | `(rate_bps: u32, effective_at: u64)` — scheduled |
+| `rate_appl` | (settle on next write) | `(rate_bps: u32)` — due schedule applied        |
+| `rate_obs`  | every application      | `(rate_bps: u32, observed_at: u64)` — freshness provenance (#1512); fires on immediate set, scheduled apply, and emergency zero |
+| `maxd_set`  | `set_max_delta_bps()`  | `(max_delta_bps: u32)` — applied immediately     |
+| `dly_set`   | `set_activation_delay()` | `(delay_secs: u64)` — applied immediately       |
+| `max_set`   | `set_max_rate()`       | `(max_rate_bps: u32)` — applied immediately      |
+| `par_sched` | `set_max_delta_bps()` / `set_activation_delay()` / `set_max_rate()` | `((which: Symbol, value, effective_at: u64))` with `which` in `max_delta` / `delay` / `max_rate` |
+| `par_appl`  | (settle on next write) | `(params_effective_at: u64)` — due params applied |
+| `zeroed`    | `set_rate_to_zero()`   | `(0u32)` — emergency zero                        |
+| `adm_chg`   | `accept_admin()`       | `(old_admin: Address, new_admin: Address)`       |
+
+### Reporter set (#1578)
+
+Median aggregation over an admin-managed reporter set. `sub_ok` fires on
+every accepted submission; when a submission brings the fresh count to
+quorum the median is finalized: `out_rej` fires once per outlier dropped
+(beyond `max_deviation_bps` from the pre-filter median), then `med_set`
+and the usual `rate_obs` record the applied value. A finalized median
+supersedes any pending scheduled admin rate.
+
+| Topic       | Emitting Function      | Data Fields                                      |
+|-------------|------------------------|--------------------------------------------------|
+| `rep_add`   | `add_reporter()`       | `(reporter: Address, reporter_count: u32)`       |
+| `rep_rem`   | `remove_reporter()`    | `(reporter: Address, reporter_count: u32)`       |
+| `quorum`    | `set_quorum()`         | `(quorum: u32)`                                  |
+| `mage_set`  | `set_max_age_secs()`   | `(max_age_secs: u64)`                            |
+| `mdev_set`  | `set_max_deviation_bps()` | `(max_deviation_bps: u32)`                     |
+| `sub_ok`    | `submit_rate()`        | `(reporter: Address, rate_bps: u32, submitted_at: u64)` |
+| `out_rej`   | median finalization    | `(reporter: Address, rate_bps: u32, median_bps: u32)` — outlier dropped |
+| `med_set`   | median finalization    | `(median_bps: u32, report_count: u32, quorum: u32)` |
+
 ---
 
 ## Versioning Policy
 
-- The `v` field is always the **first** element of the data tuple.
+- The `v` field is included in every arena/factory event payload.
 - When fields are added, removed, or reordered the version is bumped.
 - Consumers should fall back gracefully on unknown versions.

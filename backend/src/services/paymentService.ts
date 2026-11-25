@@ -1,31 +1,54 @@
-import {
-  Address,
-  BASE_FEE,
-  Contract,
-  Keypair,
-  TransactionBuilder,
-  nativeToScVal,
-} from "@stellar/stellar-sdk";
-// @ts-ignore
-import { rpc } from "@stellar/stellar-sdk";
+import { Address, TransactionBuilder, rpc, scValToNative, xdr } from "@stellar/stellar-sdk";
+import type { Transaction } from "@stellar/stellar-sdk";
 const { Api, Server } = rpc;
 import { z } from "zod";
 
+import { readOnChainGameState } from "./onChainReader";
+import { requireReadValue } from "../types/onChainRead";
 import { getPaymentConfig, type PaymentConfig } from "../config/paymentConfig";
 import type { TransactionRepository } from "../repositories/transactionRepository";
+import { payoutsSuccessTotal, txConfirmEnqueuedTotal, txConfirmWaitHistogram } from "../utils/metrics";
+import { CircuitOpenError, getSorobanBreaker, resetSorobanBreakerForTest, type CircuitBreaker } from "../utils/circuitBreaker";
+import type { Queue } from "bullmq";
+import {
+  TX_CONFIRM_QUEUE,
+  injectTraceContext,
+  withBullMqProducerSpan,
+  type ConfirmJobData,
+} from "../queues/txQueue";
+import { setSorobanSpanLedger, withSorobanRpcSpan } from "../utils/sorobanTracing";
 import type {
   BuildPayoutResult,
   CreatePayoutRequest,
   SubmitResult,
   TransactionRecord,
 } from "../types/payment";
+import { createConfiguredSigner, SorobanSubmitter, StellarPayoutBuilder, type PayoutBuilder, type Signer, type Submitter } from "./payoutExecution";
+
+export { toStroops } from "./payoutExecution";
 
 const PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
+const CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
 const IDEMPOTENCY_REGEX = /^[a-zA-Z0-9:_-]{8,128}$/;
-const AMOUNT_REGEX = /^\d+(\.\d{1,7})?$/;
+const AMOUNT_REGEX = /^\d+(\.\d{0,7})?$/;
+
+const PayoutBreakdownSchema = z.object({
+  principal: z.number().finite().nonnegative(),
+  yieldAmount: z.number().finite().nonnegative(),
+  platformFee: z.number().finite().nonnegative(),
+  dust: z.number().finite().nonnegative(),
+});
 
 const CreatePayoutRequestSchema = z.object({
   payoutId: z.string().trim().min(1).max(128),
+  // #1632: the payout contract validates every payout against an arena. When
+  // omitted, a payoutId that is itself an arena contract id (the convention
+  // getClaimReadiness and the claim inbox already rely on) is used.
+  arenaId: z
+    .string()
+    .trim()
+    .regex(CONTRACT_ID_REGEX, "Invalid arena contract id")
+    .optional(),
   destinationAccount: z
     .string()
     .trim()
@@ -39,20 +62,25 @@ const CreatePayoutRequestSchema = z.object({
     .string()
     .trim()
     .regex(IDEMPOTENCY_REGEX, "Invalid idempotency key format"),
+  // #1407: optional settlement breakdown, populated when the caller (e.g. an
+  // operator submitting a round-settlement payout computed via
+  // roundService.computePayouts) has one. Persisted verbatim — this service
+  // does not recompute or validate it against `amount` beyond basic shape,
+  // since that game-economics logic belongs to whoever produced it.
+  breakdown: PayoutBreakdownSchema.optional(),
+}).transform((request, ctx) => {
+  const arenaId =
+    request.arenaId ?? (CONTRACT_ID_REGEX.test(request.payoutId) ? request.payoutId : undefined);
+  if (!arenaId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["arenaId"],
+      message: "arenaId is required unless payoutId is the arena contract id",
+    });
+    return z.NEVER;
+  }
+  return { ...request, arenaId };
 });
-
-function toStroops(amount: string): string {
-  const [wholePart, fractionPart = ""] = amount.split(".");
-  const padded = (fractionPart + "0000000").slice(0, 7);
-  const combined = `${wholePart}${padded}`.replace(/^0+(?=\d)/, "");
-  if (!/^\d+$/.test(combined)) {
-    throw new Error("Amount contains invalid digits");
-  }
-  if (BigInt(combined) <= BigInt(0)) {
-    throw new Error("Amount must be greater than zero");
-  }
-  return combined;
-}
 
 function generateRecordId(): string {
   if (globalThis.crypto?.randomUUID) {
@@ -65,19 +93,49 @@ function deriveResponseMode(status: TransactionRecord["status"]): BuildPayoutRes
   return status === "queued" ? "queued" : "build_only";
 }
 
-const delay = async (ms: number): Promise<void> =>
-  new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-
 export interface PaymentServiceOptions {
   config?: PaymentConfig;
   rpcServer?: any;
+  circuitBreaker?: CircuitBreaker;
+  /**
+   * BullMQ queue for persistent confirmation jobs (#1602). When provided,
+   * `submitQueuedTransaction` enqueues a `tx-confirm` job with a deterministic
+   * `jobId` equal to `transactionId` so duplicate enqueues are idempotent.
+   */
+  txQueue?: Queue<ConfirmJobData>;
+  signer?: Signer;
+  payoutBuilder?: PayoutBuilder;
+  submitter?: Submitter;
 }
 
-export class PaymentService {
+/**
+ * Raised when a second payout is attempted for a payout id that already has a
+ * transaction, under a different idempotency key (#1353).
+ */
+export class PayoutConflictError extends Error {
+  readonly status = 409;
+  readonly code = "PAYOUT_ALREADY_EXISTS";
+
+  constructor(
+    readonly payoutId: string,
+    readonly existingIdempotencyKey: string,
+  ) {
+    super(
+      `A payout transaction already exists for payoutId ${payoutId}. ` +
+        "Re-send the original idempotency key to retrieve it rather than creating a second payout.",
+    );
+    this.name = "PayoutConflictError";
+  }
+}
+
+export class PayoutOrchestrator {
   private readonly config: PaymentConfig;
   private readonly rpcServer: any;
+  private readonly breaker: CircuitBreaker;
+  private readonly txQueue: Queue<ConfirmJobData> | undefined;
+  private readonly signer: Signer;
+  private readonly payoutBuilder: PayoutBuilder;
+  private readonly submitter: Submitter;
 
   constructor(
     private readonly transactions: TransactionRepository,
@@ -85,9 +143,39 @@ export class PaymentService {
   ) {
     this.config = options.config ?? getPaymentConfig();
     this.rpcServer = options.rpcServer ?? new Server(this.config.sorobanRpcUrl);
+    this.breaker = options.circuitBreaker ?? getSorobanBreaker();
+    this.txQueue = options.txQueue;
+    this.signer = options.signer ?? createConfiguredSigner(this.config);
+    this.payoutBuilder = options.payoutBuilder ?? new StellarPayoutBuilder(this.config, this.rpcServer, this.breaker);
+    this.submitter = options.submitter ?? new SorobanSubmitter(this.rpcServer, this.breaker);
   }
 
-  async createPayoutTransaction(input: unknown): Promise<BuildPayoutResult> {
+  async getClaimReadiness(arenaId: string): Promise<{ version: 1; arenaId: string; ready: boolean; chainState: string; payoutStatus: string | null; reason: string }> {
+    const startedAt = Date.now();
+    if (!/^C[A-Z2-7]{55}$/ .test(arenaId)) throw new Error("Invalid arena contract id");
+    try {
+      const [chainStateResult, records] = await Promise.all([readOnChainGameState(arenaId), this.transactions.listByStatus(["built", "queued", "awaiting_signature", "submitted", "confirmed", "failed", "dead"], 1000)]);
+      // #1519: an unavailable read must not be reported as "not finished" and
+      // thereby tell the caller the claim is simply not ready yet. Throwing
+      // lets the catch below log it as a failure so the caller retries.
+      const chainState = requireReadValue(chainStateResult);
+      const payout = records.filter((record) => record.payoutId === arenaId).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0];
+      const payoutBlocksClaim = payout?.status === "submitted" || payout?.status === "confirmed";
+      const ready = chainState === "Finished" && !payoutBlocksClaim;
+      const reason = chainState !== "Finished" ? "contract_not_finished" : payoutBlocksClaim ? "payout_already_in_progress_or_complete" : "ready";
+      console.info(JSON.stringify({ event: "claim_readiness_success", arenaId, ready, latencyMs: Date.now() - startedAt }));
+      return { version: 1, arenaId, ready, chainState, payoutStatus: payout?.status ?? null, reason };
+    } catch (error) {
+      console.error(JSON.stringify({ event: "claim_readiness_failure", arenaId, latencyMs: Date.now() - startedAt, error: error instanceof Error ? error.message : "unknown" }));
+      throw error;
+    }
+  }
+
+  getSorobanBreakerStats() {
+    return this.breaker.getStats();
+  }
+
+  async createPayoutTransaction(input: unknown, ownerId?: string | null): Promise<BuildPayoutResult> {
     const request = CreatePayoutRequestSchema.parse(input) as CreatePayoutRequest;
 
     const existing = await this.transactions.findByIdempotencyKey(request.idempotencyKey);
@@ -99,11 +187,23 @@ export class PaymentService {
       };
     }
 
+    // De-duplicating on the caller-supplied idempotency key alone was not enough
+    // (#1353). A retry after an ambiguous timeout typically generates a *fresh*
+    // key, which sailed past the check above, reserved its own nonce and built a
+    // second, independently-submittable transaction for the same prize — a real
+    // double payment. The payout id is the business identity of the payout, so
+    // it is what uniqueness must be enforced on.
+    //
+    // The database now also carries a unique constraint on payout_id; this check
+    // exists so the caller gets a clear conflict instead of a driver error, and
+    // so the nonce below is never burned on a duplicate.
+    const duplicate = await this.transactions.findByPayoutId(request.payoutId);
+    if (duplicate) {
+      throw new PayoutConflictError(request.payoutId, duplicate.idempotencyKey);
+    }
+
     const nonce = await this.transactions.reserveNextNonce(this.config.sourceAccount);
-    const { preparedTransaction, amountStroops } = await this.buildPreparedTransaction(
-      request,
-      nonce
-    );
+    const { preparedTransaction, amountStroops } = await this.payoutBuilder.build(request);
 
     const unsignedXdr = preparedTransaction.toXDR();
     const now = new Date();
@@ -112,18 +212,14 @@ export class PaymentService {
     let signedXdr: string | null = null;
 
     if (this.config.liveExecution) {
-      if (this.config.signWithHotKey && this.config.hotSignerSecret) {
-        preparedTransaction.sign(Keypair.fromSecret(this.config.hotSignerSecret));
-        signedXdr = preparedTransaction.toXDR();
-        status = "queued";
-      } else {
-        status = "awaiting_signature";
-      }
+      if (this.config.signWithHotKey) signedXdr = await this.signer.sign(unsignedXdr);
+      status = signedXdr ? "queued" : "awaiting_signature";
     }
 
     const transaction: TransactionRecord = {
       id: generateRecordId(),
       payoutId: request.payoutId,
+      arenaId: request.arenaId,
       idempotencyKey: request.idempotencyKey,
       sourceAccount: this.config.sourceAccount,
       destinationAccount: request.destinationAccount,
@@ -139,6 +235,11 @@ export class PaymentService {
       createdAt: now,
       updatedAt: now,
       confirmedAt: null,
+      ownerId: ownerId ?? null,
+      principal: request.breakdown?.principal ?? null,
+      yieldAmount: request.breakdown?.yieldAmount ?? null,
+      platformFee: request.breakdown?.platformFee ?? null,
+      dust: request.breakdown?.dust ?? null,
     };
 
     await this.transactions.insert(transaction);
@@ -157,7 +258,9 @@ export class PaymentService {
       throw new Error(`Transaction ${transactionId} is not waiting for signature`);
     }
 
-    TransactionBuilder.fromXDR(signedXdr, this.config.networkPassphrase);
+    // Audit the signed XDR before queuing (#667): a compromised external signer
+    // could return a validly-signed transaction that redirects the payout.
+    this.assertSignedTransactionMatches(signedXdr, transaction);
 
     return this.transactions.update(transactionId, {
       signedXdr,
@@ -203,7 +306,25 @@ export class PaymentService {
         transaction.signedXdr,
         this.config.networkPassphrase
       );
-      const sendResult = await this.rpcServer.sendTransaction(signedTransaction);
+
+      let sendResult: Awaited<ReturnType<typeof this.rpcServer.sendTransaction>>;
+      try {
+        sendResult = await withSorobanRpcSpan(
+          { method: "sendTransaction", contractId: this.config.payoutContractId, fn: "payout" },
+          async (span) => {
+            const res = await this.submitter.submit(signedTransaction);
+            if ("latestLedger" in res) {
+              setSorobanSpanLedger(span, res.latestLedger);
+            }
+            return res;
+          },
+        );
+      } catch (err) {
+        if (err instanceof CircuitOpenError) {
+          return { transaction, submitted: false };
+        }
+        throw err;
+      }
 
       if (sendResult.status === "ERROR") {
         const failed = await this.transactions.update(transaction.id, {
@@ -232,6 +353,27 @@ export class PaymentService {
         errorMessage: null,
         updatedAt: new Date(),
       });
+
+      // Enqueue a confirmation job onto the BullMQ queue (#1602). The jobId is
+      // the transactionId so duplicate enqueues (e.g. a retry that finds the
+      // transaction already submitted) are silently deduped by BullMQ.
+      if (this.txQueue) {
+        const enqueuedAt = Date.now();
+        await withBullMqProducerSpan(
+          TX_CONFIRM_QUEUE,
+          "confirm",
+          transaction.id,
+          () =>
+            this.txQueue!.add(
+              "confirm",
+              injectTraceContext({ transactionId: transaction.id }),
+              { jobId: transaction.id },
+            ),
+        );
+        txConfirmEnqueuedTotal.inc();
+        txConfirmWaitHistogram.observe((Date.now() - enqueuedAt) / 1000);
+      }
+
       return { transaction: submitted, submitted: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown submission failure";
@@ -252,9 +394,29 @@ export class PaymentService {
       return transaction;
     }
 
-    const onChain = await this.rpcServer.getTransaction(transaction.txHash);
+    let onChain: Awaited<ReturnType<typeof this.rpcServer.getTransaction>>;
+    try {
+      onChain = await withSorobanRpcSpan(
+        { method: "getTransaction", contractId: this.config.payoutContractId, fn: "confirm" },
+        async (span) => {
+          const res = await this.breaker.fire(() =>
+            this.rpcServer.getTransaction(transaction.txHash)
+          );
+          if ("ledger" in res) {
+            setSorobanSpanLedger(span, res.ledger);
+          }
+          return res;
+        },
+      );
+    } catch (err) {
+      if (err instanceof CircuitOpenError) {
+        return transaction;
+      }
+      throw err;
+    }
 
     if (onChain.status === Api.GetTransactionStatus.SUCCESS) {
+      payoutsSuccessTotal.inc({ asset: transaction.asset });
       return this.transactions.update(transaction.id, {
         status: "confirmed",
         confirmedAt: new Date(),
@@ -274,18 +436,87 @@ export class PaymentService {
     return transaction;
   }
 
-  async pollConfirmation(transactionId: string): Promise<TransactionRecord> {
-    let current = await this.requireTransaction(transactionId);
-
-    for (let poll = 0; poll < this.config.confirmMaxPolls; poll += 1) {
-      current = await this.confirmSubmittedTransaction(current.id);
-      if (current.status === "confirmed" || current.status === "failed") {
-        return current;
-      }
-      await delay(this.config.confirmPollMs);
+  /**
+   * Verify that a signed payout transaction matches the stored payout record
+   * and this service's configuration before it is queued for submission (#667).
+   *
+   * Rejects if the source account, invoked contract, called method, payout
+   * destination, or amount differ from what was authorised. Without this, a
+   * compromised KMS signer could return a validly-signed XDR redirecting funds.
+   */
+  private assertSignedTransactionMatches(
+    signedXdr: string,
+    transaction: TransactionRecord
+  ): void {
+    let parsed: ReturnType<typeof TransactionBuilder.fromXDR>;
+    try {
+      parsed = TransactionBuilder.fromXDR(signedXdr, this.config.networkPassphrase);
+    } catch {
+      throw new Error("Signed XDR could not be parsed");
     }
 
-    return current;
+    // Fee-bump wrappers are not expected for payouts.
+    if (!(parsed instanceof Transaction)) {
+      throw new Error("Signed transaction must not be a fee-bump transaction");
+    }
+    const tx = parsed;
+
+    if (tx.source !== this.config.sourceAccount) {
+      throw new Error("Signed transaction source account does not match the payout source");
+    }
+    if (tx.operations.length !== 1) {
+      throw new Error("Signed transaction must contain exactly one operation");
+    }
+
+    const op = tx.operations[0] as { type: string; func?: xdr.HostFunction };
+    if (op.type !== "invokeHostFunction" || !op.func) {
+      throw new Error("Signed transaction operation is not a contract invocation");
+    }
+    if (op.func.switch().name !== "hostFunctionTypeInvokeContract") {
+      throw new Error("Signed transaction does not invoke a contract");
+    }
+
+    const invoke = op.func.invokeContract();
+    const contractId = Address.fromScAddress(invoke.contractAddress()).toString();
+    if (contractId !== this.config.payoutContractId) {
+      throw new Error("Signed transaction targets an unexpected contract");
+    }
+    if (invoke.functionName().toString() !== this.config.payoutMethodName) {
+      throw new Error("Signed transaction calls an unexpected contract method");
+    }
+
+    const args = invoke.args();
+    if (args.length !== 3) {
+      throw new Error("Signed transaction must have exactly 3 contract arguments");
+    }
+
+    // distribute_winnings(arena: Address, winner: Address, amount: i128) (#1632).
+    // The contract checks the winner and amount against this arena, so the
+    // arena itself must be the one the record was created for.
+    if (!transaction.arenaId) {
+      throw new Error("Payout record predates arena-validated payouts and cannot be signed");
+    }
+    const arena = Address.fromScVal(args[0]!).toString();
+    if (arena !== transaction.arenaId) {
+      throw new Error("Signed transaction arena does not match the payout record");
+    }
+    const destination = Address.fromScVal(args[1]!).toString();
+    if (destination !== transaction.destinationAccount) {
+      throw new Error("Signed transaction destination does not match the payout record");
+    }
+    const amount = String(scValToNative(args[2]!));
+    if (amount !== transaction.amountStroops) {
+      throw new Error("Signed transaction amount does not match the payout record");
+    }
+  }
+
+  /**
+   * Tears down shared async resources held by this service instance.
+   * Must be called in `afterAll` / `afterEach` hooks in tests to prevent
+   * Jest from reporting open async handles (#1194).
+   */
+  destroy(): void {
+    resetSorobanBreakerForTest();
   }
 
   private async requireTransaction(transactionId: string): Promise<TransactionRecord> {
@@ -296,43 +527,7 @@ export class PaymentService {
     return transaction;
   }
 
-  private async buildPreparedTransaction(request: CreatePayoutRequest, nonce: number) {
-    const sourceAccount = await this.rpcServer.getAccount(this.config.sourceAccount);
-    const contract = new Contract(this.config.payoutContractId);
-    const amountStroops = toStroops(request.amount);
-
-    const operation = contract.call(
-      this.config.payoutMethodName,
-      new Address(request.destinationAccount).toScVal(),
-      nativeToScVal(BigInt(amountStroops), { type: "i128" }),
-      nativeToScVal(request.asset),
-      nativeToScVal(BigInt(nonce), { type: "u64" }),
-      nativeToScVal(request.payoutId)
-    );
-
-    const built = new TransactionBuilder(sourceAccount, {
-      fee: BASE_FEE,
-      networkPassphrase: this.config.networkPassphrase,
-    })
-      .addOperation(operation)
-      .setTimeout(60)
-      .build();
-
-    const preparedTransaction = await this.rpcServer.prepareTransaction(built);
-
-    const feeStroops = Number(preparedTransaction.fee);
-    if (!Number.isFinite(feeStroops) || feeStroops <= 0) {
-      throw new Error("Unable to determine prepared transaction fee");
-    }
-    if (feeStroops > this.config.maxGasStroops) {
-      throw new Error(
-        `Prepared transaction fee ${feeStroops} exceeds max gas ${this.config.maxGasStroops}`
-      );
-    }
-
-    return {
-      preparedTransaction,
-      amountStroops,
-    };
-  }
 }
+
+/** Backwards-compatible service name used by controllers and application wiring. */
+export class PaymentService extends PayoutOrchestrator {}

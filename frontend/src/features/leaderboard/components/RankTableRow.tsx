@@ -1,15 +1,19 @@
 "use client";
 
-import { Survivor } from "../types";
-import { formatAgentId, formatCurrency } from "../data/mockLeaderboard";
+import Link from "next/link";
+import { Survivor } from "../model/types";
+import { formatAgentId, formatCurrency } from "../model/format";
+import { RankBadge } from "./RankBadge";
 
 interface RankTableRowProps {
   survivor: Survivor;
   onChallenge?: (survivorId: string) => void;
+  /** Highlight the connected wallet's own row (#1567). */
+  isHighlighted?: boolean;
 }
 
 // Single row in the leaderboard table
-export function RankTableRow({ survivor, onChallenge }: RankTableRowProps) {
+export function RankTableRow({ survivor, onChallenge, isHighlighted = false }: RankTableRowProps) {
   const handleChallenge = () => {
     onChallenge?.(survivor.id);
   };
@@ -22,17 +26,21 @@ export function RankTableRow({ survivor, onChallenge }: RankTableRowProps) {
   };
 
   return (
-    <tr className="border-b border-white/5 transition-colors hover:bg-white/[0.02]">
+    <tr
+      className={`border-b border-white/5 transition-colors hover:bg-white/[0.02]${isHighlighted ? " bg-[#37FF1C]/10" : ""}`}
+      {...(isHighlighted ? { "aria-current": "true" } : {})}
+    >
       <td className="py-5 pl-6 pr-4">
-        <span className="font-display text-3xl font-light italic text-white">
-          {survivor.rank}
-        </span>
+        <RankBadge rank={survivor.rank} movement={survivor.rankMovement!} />
       </td>
 
       <td className="px-4 py-5">
-        <span className="font-mono text-sm tracking-wider text-neon-pink">
+        <Link
+          href={`/p/${survivor.agentId}`}
+          className="font-mono text-sm tracking-wider text-neon-pink hover:underline"
+        >
           {formatAgentId(survivor.agentId)}
-        </span>
+        </Link>
       </td>
 
       <td className="px-4 py-5">

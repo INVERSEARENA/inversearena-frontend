@@ -8,8 +8,8 @@
 import { Worker, type Job } from 'bullmq';
 import { PrismaClient } from '@prisma/client';
 import type { ProofGenerationJob, ProofGenerationResult } from '../types/proof';
-import { RoundProofBundleService } from '../services/roundProofBundleService';
-import { DisputeEvidenceService } from '../services/disputeEvidenceService';
+import { AsyncProofBundleService } from '../services/asyncProofBundleService';
+import { AsyncProofEvidenceService } from '../services/asyncProofEvidenceService';
 import { ProofStorageService } from '../services/proofStorageService';
 import { PROOF_QUEUE } from '../queues/proofQueue';
 import { workerJobsPending } from '../utils/metrics';
@@ -29,8 +29,8 @@ export function startProofWorker(
   } = config;
 
   const storage = new ProofStorageService();
-  const bundleService = new RoundProofBundleService(prisma, storage);
-  const evidenceService = new DisputeEvidenceService(prisma, storage, bundleService);
+  const bundleService = new AsyncProofBundleService(prisma, storage);
+  const evidenceService = new AsyncProofEvidenceService(prisma, storage, bundleService);
 
   console.log(`[ProofWorker] Starting with concurrency: ${concurrency}`);
 

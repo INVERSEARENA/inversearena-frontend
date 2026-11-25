@@ -1,0 +1,15 @@
+{
+  "name": "inversearena-docs-portal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.11.1",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "generate": "node scripts/generate-openapi.mjs && node scripts/generate-contract-docs.mjs",
+    "generate:openapi": "node scripts/generate-openapi.mjs",
+    "generate:contracts": "node scripts/generate-contract-docs.mjs",
+    "links": "node scripts/check-links.mjs",
+    "test": "node --test scripts/*.test.mjs"
+  }
+}

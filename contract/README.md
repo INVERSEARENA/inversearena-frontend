@@ -1,0 +1,146 @@
+# Contract Workspace
+
+Soroban smart contracts for Inverse Arena, written in Rust and compiled to WASM for the Stellar network.
+
+## Status
+
+These contracts are **open for contribution**. The directory structure and interfaces are defined; the implementations are tracked as issues in the project issue tracker. Each contract's `src/lib.rs` contains a documented stub explaining what needs to be built.
+
+| Contract | Role | Status |
+| --- | --- | --- |
+| `arena` | Round lifecycle, player choices, elimination logic | Open for implementation |
+| `factory` | Pool creation, host whitelist, protocol configuration | Open for implementation |
+| `payout` | Winnings distribution (principal + yield) | Open for implementation |
+| `staking` | XLM deposits routed to RWA yield vaults | Open for implementation |
+
+## Structure
+
+```
+contract/
+├── Cargo.toml               # Workspace manifest
+├── arena/src/lib.rs         # Arena contract stub
+├── factory/src/lib.rs       # Factory contract stub
+├── payout/src/lib.rs        # Payout contract stub
+├── staking/src/lib.rs       # Staking contract stub
+├── scripts/
+│   ├── generate_abi_snapshots.sh   # ABI snapshot generation / CI check
+│   └── optimize_and_check_wasm.sh  # WASM build + size budget enforcement
+├── ARCHITECTURE.md          # System design and contract interaction model
+├── CONTRACTS.md             # Detailed entrypoint and storage specs
+├── DATA_MODEL.md            # On-chain data structures
+├── EVENTS.md                # Contract event definitions
+├── ERRORS.md                # Error codes and conditions
+├── BOUNDS.md                # Numeric limits and constants
+└── DEPLOY.md                # Deployment and upgrade runbook
+```
+
+## Getting Started
+
+### Prerequisites
+
+- Rust 1.96.0 (pinned by `rust-toolchain.toml` / `contract/rust-toolchain.toml`) with `wasm32-unknown-unknown` and `wasm32v1-none` targets
+- Stellar CLI 22.6.0: `cargo install --locked stellar-cli@22.6.0`
+- Node 20.20.2 for script-based checks
+
+### Build
+
+```bash
+cd contract
+cargo build --target wasm32v1-none --release
+```
+
+### Test
+
+```bash
+cargo test --workspace
+```
+
+Several tests embed compiled WASM, so run `cargo build --workspace --target wasm32v1-none --release` first.
+
+### Coverage and Cost Benchmarks
+
+CI gates per-crate line and branch coverage (#1651) and per-entry-point resource costs (#1649):
+
+```bash
+make contracts-coverage     # from the repo root; see docs/COVERAGE.md
+make contracts-cost-bench   # see docs/COST_BENCHMARKS.md
+make contracts-mutants      # see docs/MUTATION_TESTING.md
+```
+
+Scheduled mutation testing (#1798) guards state-machine and settlement paths.
+See `docs/MUTATION_TESTING.md` for setup, triage, and thresholds.
+
+### Bounded Model Checking (Kani)
+
+Core elimination logic, staking share accounting, and payout arithmetic are verified exhaustively using Kani bounded model checking (#1845) under `#[cfg(kani)]`.
+
+Proofs cover:
+- **Elimination fairness**: `surviving_choice` leaves a strict minority (or no one on a tie), `is_eliminated` agrees with `surviving_choice`, and choice tally totals equal input lengths.
+- **Staking money conservation**: `calculate_stake_shares` and `calculate_unstake_tokens` round down against the caller and never mint value or dilute stakers.
+- **Payout conservation**: `calculate_payout_distribution` guarantees winner prize $principal + yield \le withdrawn$ from vault.
+
+#### Running Kani Proofs
+```bash
+# Prerequisites
+cargo install --locked kani-verifier
+cargo kani setup
+
+# Run model checking across harnesses
+cd contract
+cargo kani -p arena -p staking -p payout
+```
+
+#### Adding New Proofs
+1. Refactor pure logic out of `Env`-dependent functions into pure helper modules (`share_math.rs`, `payout_math.rs`, `eliminations.rs`).
+2. Add a verification submodule gated with `#[cfg(kani)]`.
+3. Mark harness functions with `#[kani::proof]`.
+4. Generate symbolic values with `kani::any()`, set input bounds with `kani::assume(...)`, and assert mathematical invariants with `assert!(...)`.
+
+### ABI Snapshots
+
+ABI snapshots live at `<contract>/abi_snapshot.json` and are generated from compiled WASM artifacts.
+
+```bash
+# Regenerate after an interface change
+./scripts/generate_abi_snapshots.sh
+
+# Verify snapshots match (runs in CI)
+./scripts/generate_abi_snapshots.sh --check
+```
+
+After regenerating, commit the updated snapshot file and document the interface change in your PR.
+
+### Error Mappings
+
+The error tables in `ERRORS.md` and the frontend's `contract-errors.generated.ts` are generated from each contract's `#[contracterror]` enum in its compiled spec (#1597). Regenerate them whenever a variant is added or renumbered:
+
+```bash
+cargo build --workspace --target wasm32v1-none --release
+node scripts/generate-contract-errors.mjs          # needs frontend/node_modules
+
+# Verify they match the WASM (runs in CI)
+node scripts/generate-contract-errors.mjs --check
+```
+
+## Contributing
+
+1. Pick an issue from the tracker.
+2. Read `ARCHITECTURE.md` to understand where your contract fits in the system.
+3. Read the relevant `CONTRACTS.md` section for the expected entrypoints and storage layout.
+4. Implement, test, and add a snapshot test before opening a PR.
+5. Run `./scripts/generate_abi_snapshots.sh` to generate an initial ABI snapshot.
+
+See the top-level `CONTRIBUTING.md` for snapshot testing requirements.
+
+## Arena Events
+
+| Event | Topic key | Data |
+| --- | --- | --- |
+| initialized | `init` | `admin` |
+| player_joined | `join` | `player_count` |
+| game_started | `started` | `(round, duration_seconds)` |
+| round_resolved | `resolved` | `(round, eliminated, survivors)` |
+| player_eliminated | `elim` | `round` |
+| game_finished | `finished` | `(winner, round)` |
+| prize_claimed | `claimed` | `(amount, yield_amount)` |
+| admin_changed | `admin` | `(old_admin, new_admin)` |

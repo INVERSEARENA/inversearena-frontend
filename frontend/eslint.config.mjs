@@ -1,6 +1,38 @@
+import { readdirSync } from "node:fs";
 import { defineConfig, globalIgnores } from "eslint/config";
 import nextVitals from "eslint-config-next/core-web-vitals";
 import nextTs from "eslint-config-next/typescript";
+
+// #1598 — module boundaries (see ARCHITECTURE.md, "Frontend layout").
+// A feature may use another feature only through its public `index.ts`,
+// `shared/` never depends on `features/`, and production code never imports
+// test doubles. Zones are derived from the directory so new features are
+// covered without editing this file.
+const FEATURES = readdirSync(new URL("./src/features", import.meta.url), { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => entry.name);
+
+const boundaryZones = [
+  ...FEATURES.map((feature) => ({
+    target: `./src/features/${feature}`,
+    from: "./src/features",
+    except: [
+      `./${feature}`,
+      ...FEATURES.filter((other) => other !== feature).map((other) => `./${other}/index.ts`),
+    ],
+    message: "Import another feature only through its public index (`@/features/<name>`).",
+  })),
+  {
+    target: "./src/shared",
+    from: "./src/features",
+    message: "shared/ is a lower layer and must not depend on features/.",
+  },
+  {
+    target: "./src",
+    from: ["./src/test", "./src/__mocks__"],
+    message: "Test doubles are for tests only; production code must not import them.",
+  },
+];
 
 const eslintConfig = defineConfig([
   ...nextVitals,
@@ -13,6 +45,60 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
+  {
+    files: ["src/**/*.{ts,tsx,js,jsx}"],
+    ignores: ["src/test/**", "src/__mocks__/**", "**/__tests__/**", "**/*.test.{ts,tsx,js,jsx}"],
+    rules: {
+      "import/no-restricted-paths": ["error", { zones: boundaryZones }],
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "framer-motion",
+              message: "Use motion/react. The app keeps a single animation package (#1774).",
+            },
+            {
+              name: "motion/react",
+              importNames: ["motion"],
+              message: "Import m (inside LazyMotion) instead of motion so the full feature set is not bundled (#1774).",
+            },
+          ],
+        },
+      ],
+      "no-restricted-globals": [
+        "error",
+        { name: "localStorage", message: "Use localStorageManager from '@/shared/lib/localStorage'." },
+        { name: "sessionStorage", message: "Use sessionStorageManager from '@/shared/lib/localStorage'." },
+      ],
+      "no-restricted-properties": [
+        "error",
+        { object: "window", property: "localStorage", message: "Use localStorageManager from '@/shared/lib/localStorage'." },
+        { object: "window", property: "sessionStorage", message: "Use sessionStorageManager from '@/shared/lib/localStorage'." },
+      ],
+    },
+  },
+  {
+    files: ["src/features/**/*.{ts,tsx}"],
+    ignores: ["src/test/**", "src/__mocks__/**", "**/__tests__/**", "**/*.test.{ts,tsx}"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "CallExpression[callee.name='fetch']",
+          message:
+            "Direct fetch() is forbidden in features. Use apiClient from '@/shared/lib/api/client' instead.",
+        },
+      ],
+    },
+  },
+  {
+    files: ["src/shared/lib/localStorage.ts"],
+    rules: {
+      "no-restricted-globals": "off",
+      "no-restricted-properties": "off",
+    },
+  },
 ]);
 
 export default eslintConfig;
