@@ -5,6 +5,7 @@ import {
   formatCountdown,
   formatCount,
   formatTimestamp,
+  formatFiat,
   decimalSeparator,
   groupSeparator,
 } from "../formatters";
@@ -122,5 +123,23 @@ describe("decimalSeparator / groupSeparator (#1575)", () => {
     expect(decimalSeparator("de")).toBe(",");
     expect(groupSeparator("en")).toBe(",");
     expect(groupSeparator("de")).toBe(".");
+  });
+});
+
+describe("formatFiat (#1858)", () => {
+  it("prefixes with ≈ and formats as USD", () => {
+    expect(formatFiat(1234.5, "en")).toBe("≈ $1,234.50");
+  });
+
+  it("returns null when value is null", () => {
+    expect(formatFiat(null)).toBeNull();
+  });
+
+  it("returns null when value is undefined", () => {
+    expect(formatFiat(undefined)).toBeNull();
+  });
+
+  it("returns null when value is not finite", () => {
+    expect(formatFiat(NaN)).toBeNull();
   });
 });

@@ -32,7 +32,13 @@ import { createArenaMessagesRouter } from "./arenaMessages";
 import { createFollowsRouter } from "./follows";
 import { createClansRouter } from "./clans";
 import { createReferralsRouter } from "./referrals";
+import { createDatasetsRouter } from "./datasets";
+import { createPricesRouter } from "./prices";
+import { createDeadLetterRouter } from "./deadLetters";
 import type { PrismaClient } from "@prisma/client";
+import type { PriceService } from "../services/priceService";
+import type { DeadLetterService } from "../services/deadLetterService";
+import type { AdminService } from "../services/adminService";
 import type { PayoutsController } from "../controllers/payouts.controller";
 import type { WorkerController } from "../controllers/worker.controller";
 import type { AuthController } from "../controllers/auth.controller";
@@ -62,6 +68,9 @@ export function createApiRouter(
   landingStatsService?: LandingStatsService,
   revalidationService?: RevalidationService,
   prisma?: PrismaClient,
+  priceService?: PriceService,
+  deadLetterService?: DeadLetterService,
+  adminService?: AdminService,
 ): Router {
   const router = Router();
 
@@ -130,6 +139,16 @@ export function createApiRouter(
     router.use(
       createHostWhitelistRouter(prisma, requireAuth, adminAuthMiddleware),
     );
+  }
+
+  if (priceService) {
+    router.use("/prices", createPricesRouter(priceService));
+  }
+
+  router.use("/datasets", createDatasetsRouter());
+
+  if (deadLetterService && adminService) {
+    router.use("/admin/dead-letters", createDeadLetterRouter(deadLetterService, adminService, adminAuthMiddleware));
   }
 
   return router;

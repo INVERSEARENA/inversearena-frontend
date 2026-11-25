@@ -6,6 +6,7 @@ import { useWallet } from "@/features/wallet/hooks/useWallet";
 import { useAdminRole } from "@/features/wallet/hooks/useAdminRole";
 import { useCapability } from "@/shared/lib/hooks/useCompatibility";
 import { PoolCreationModal } from "@/components/modals/PoolCreationModal";
+import { DeadLetterPanel } from "@/features/admin/components/DeadLetterPanel";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -395,6 +396,14 @@ export default function AdminDashboardPage() {
             </table>
           </div>
         )}
+      </section>
+
+      {/* Dead-letter operator console */}
+      <section className="space-y-3">
+        <h2 className="font-pixel text-[10px] text-white/60 tracking-widest uppercase">
+          Dead-Letter Jobs
+        </h2>
+        <DeadLetterPanel adminToken="" />
       </section>
 
       {/* Confirm dialog */}
