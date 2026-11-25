@@ -14,3 +14,4 @@ export * from "../metrics/domains/round.metrics";
 export * from "../metrics/domains/soroban.metrics";
 export * from "../metrics/domains/ops.metrics";
 export * from "../metrics/domains/auth.metrics";
+export * from "../metrics/domains/proof.metrics";
